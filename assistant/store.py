@@ -94,6 +94,17 @@ class Store:
                     status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),
                     plan_json TEXT NOT NULL, result_json TEXT, error TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT);
+                CREATE TABLE IF NOT EXISTS autonomous_goals (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    objective TEXT NOT NULL, status TEXT NOT NULL,
+                    sources_json TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+                    question TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '',
+                    notice TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS autonomous_steps (
+                    id INTEGER PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
+                    sequence INTEGER NOT NULL, action_json TEXT NOT NULL, observation_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(goal_id,sequence));
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:

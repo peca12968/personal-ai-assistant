@@ -19,6 +19,7 @@ from .communication import conversation_style
 from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
 from . import answer_runs
+from .autonomy_status import goal_context
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_PROMPT_BYTES = 2 * 1024 * 1024
@@ -93,7 +94,7 @@ class CodexEngine:
                "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
                "-c", "project_doc_max_bytes=0",
                "-C", str(self.workdir), "--output-last-message", str(output)]
-        # This assistant produces advice only; tools belong in a later, scoped execution mode.
+        # Model output is text only. Scoped autonomy tools are dispatched by the host.
         for feature in ("shell_tool", "unified_exec", "apps", "plugins", "multi_agent",
                         "browser_use", "computer_use", "image_generation", "skill_search"):
             cmd.extend(["--disable", feature])
@@ -207,6 +208,7 @@ class Assistant:
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents,
                                                   reference_query=question)
         context['task_runs'] = task_context(self.store, sid, question)
+        context['autonomous_goals'] = goal_context(self.store, sid)
         context['communication'] = conversation_style(question, history)
         context['self_improvement'] = improvement_context(ROOT, question)
         context['answer_attempts'] = answer_runs.context_status(self.store, sid)

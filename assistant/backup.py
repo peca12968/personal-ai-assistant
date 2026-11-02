@@ -27,6 +27,8 @@ TABLES = {
     'documents': {'id', 'session_id', 'name', 'source_path', 'path_key', 'content', 'sha256', 'encoding', 'size_bytes', 'imported_at'},
     'answer_checks': {'message_id', 'payload'},
     'task_runs': {'id', 'session_id', 'status', 'plan_json', 'result_json', 'error', 'created_at', 'finished_at'},
+    'autonomous_goals': {'id', 'session_id', 'objective', 'status', 'sources_json', 'notes', 'question', 'result', 'notice', 'created_at', 'updated_at'},
+    'autonomous_steps': {'id', 'goal_id', 'sequence', 'action_json', 'observation_json', 'created_at'},
 }
 
 
@@ -53,7 +55,9 @@ def validate_database(path):
         if any(kind not in {'table', 'index'} or (sql and 'VIRTUAL TABLE' in sql.upper()) for kind, _, sql in objects):
             raise ValueError('備份含不支援的資料庫物件。')
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs'} <= actual_tables <= set(TABLES):
+        if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
+            raise ValueError('自主目標資料表不完整。')
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps'} <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:

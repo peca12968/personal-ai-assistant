@@ -1,10 +1,14 @@
 """Hidden Tk geometry checks; these do not replace desktop visual acceptance."""
 import tkinter as tk
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
 from assistant.feedback_ui import FeedbackWindow
 from assistant.evolution_ui import EvolutionWindow
+from assistant.autonomy_ui import AutonomousWindow
+from assistant.store import Store
 
 
 class FormGeometryTests(unittest.TestCase):
@@ -71,3 +75,16 @@ class FormGeometryTests(unittest.TestCase):
         self.assert_reachable(layout, view.goal)
         self.assertEqual(view.imported_suite, draft['acceptance'])
         self.assertFalse(view.busy)
+
+    def test_autonomous_goal_entry_and_saved_state_reachable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            view = AutonomousWindow(self.root, store, store.new_session(), None)
+            layout = self.allocate(view)
+            self.assert_reachable(layout, view.start)
+            self.assert_reachable(layout, view.reply)
+            view.objective.insert('1.0', '整理比較報告')
+            view.new_goal()
+            self.assertIn('整理比較報告', view.output.get('1.0', 'end'))
+            self.assertEqual(len(view.listing.get_children()), 1)
+            self.assertFalse(view.busy)

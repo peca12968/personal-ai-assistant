@@ -16,6 +16,7 @@ class App:
         self.events = queue.Queue()
         self.cancel = threading.Event()
         self.busy = False
+        self.autonomous_windows = []
         self.last_answer = None
         root.title("個人 AI 助理")
         from .engine import ROOT
@@ -36,6 +37,7 @@ class App:
                  font=("Microsoft JhengHei UI", 22, "bold")).pack(side="left")
         ttk.Button(header, text="工作工具", command=self.work_tools).pack(side='right', padx=(12, 0))
         ttk.Button(header, text='自我改進', command=self.self_improve).pack(side='right', padx=(8, 0))
+        ttk.Button(header, text='自主目標', command=self.autonomous_goals).pack(side='right', padx=(8, 0))
         tk.Label(header, text="聊天建議  ·  本機記憶", bg=BG, fg=ACCENT,
                  font=("Microsoft JhengHei UI", 11)).pack(side="right")
         body = tk.Frame(root, bg=BG, padx=18)
@@ -105,6 +107,11 @@ class App:
     def self_improve(self):
         from .evolution_ui import EvolutionWindow
         EvolutionWindow(self.root)
+
+    def autonomous_goals(self):
+        from .autonomy_ui import AutonomousWindow
+        self.autonomous_windows = [window for window in self.autonomous_windows if window.window.winfo_exists()]
+        self.autonomous_windows.append(AutonomousWindow(self.root, self.store, self.sid, self.assistant.engine))
 
     def refresh_sessions(self):
         self.session_rows = self.store.sessions()
@@ -292,7 +299,9 @@ class App:
 
     def close(self):
         self.cancel.set()
-        if self.busy:
+        for window in self.autonomous_windows:
+            window.cancel.set()
+        if self.busy or any(window.busy for window in self.autonomous_windows):
             self.status.set("正在停止推理引擎…")
             self.root.after(200, self.close)
         else:

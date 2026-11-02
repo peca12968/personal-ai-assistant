@@ -29,6 +29,12 @@ def main():
     parser.add_argument('--request', help='搭配 --propose-csv 的工作需求')
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
+    mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    mode.add_argument('--run-goal', help='開始／接續自主目標 ID；需 --session')
+    mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
+    mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session 與 --goal-reply')
+    parser.add_argument('--goal-reply', help='搭配 --reply-goal 的回答')
+    parser.add_argument('--goal-steps', type=int, help='搭配 --run-goal，每輪最多1到12步，預設6步')
     mode.add_argument('--export-task', help='匯出已完成報告；需 --session 與 --output')
     mode.add_argument('--improve', help='指定方向，自我修改限定程式、驗證並發布一輪')
     mode.add_argument('--rollback-improvement', help='回復仍為最新版本的自我改進紀錄 ID 並發布')
@@ -43,6 +49,13 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal))
+    if autonomous and not args.session:
+        parser.error('自主目標需要 --session 指定對話。')
+    if (args.reply_goal is not None) != (args.goal_reply is not None):
+        parser.error('--reply-goal 與 --goal-reply 需一起使用。')
+    if args.goal_steps is not None and (args.run_goal is None or not 1 <= args.goal_steps <= 12):
+        parser.error('--goal-steps 需搭配 --run-goal，範圍1到12。')
     if args.retry_answer and (not args.session or args.file):
         parser.error('--retry-answer 需要 --session，不能同時匯入文件；會使用目前已保存的參考資料。')
     if bool(args.plan_workflow) != bool(args.workflow_spec):
@@ -137,6 +150,25 @@ def main():
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
         print("Codex:", find_codex())
+        return
+    if autonomous:
+        from .autonomy import create_goal, get_goal, reply, run_goal
+        try:
+            store = Store(args.data_dir / 'assistant.sqlite3')
+            if args.new_goal is not None:
+                gid = create_goal(store, args.session, args.new_goal)
+                result = get_goal(store, args.session, gid)
+            elif args.run_goal is not None:
+                result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),
+                                  max_steps=args.goal_steps or 6)
+            elif args.reply_goal is not None:
+                reply(store, args.session, args.reply_goal, args.goal_reply)
+                result = get_goal(store, args.session, args.reply_goal)
+            else:
+                result = get_goal(store, args.session, args.goal_status)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+            parser.exit(1, '自主工作未完成：' + str(exc) + '\n')
         return
     store = Store(args.data_dir / "assistant.sqlite3")
     engine = CodexEngine(args.data_dir)
