@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from . import autonomy
 from . import continuous
 from . import artifacts
+from . import work_plan
 from .goal_conversation import describe as describe_conversation
 from .ui_layout import ScrollableForm, fit_window
 from .companion_profile import describe as describe_profile
@@ -209,6 +210,10 @@ class AutonomousWindow:
         self.csv_results.configure(state='normal' if goal['csv_plans'] else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
+        if goal['result']:
+            lines += ['成果（待你確認）：', goal['result'], '此目標已交付成果；後續工作請保存新目標。']
+        if goal['work_plan']:
+            lines += [work_plan.describe(goal['work_plan'])]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
         if goal['continuous_runs']:
             lines += ['最近10次持續執行紀錄（本機保存；執行中標記不代表程序仍存活）：']
@@ -241,6 +246,8 @@ class AutonomousWindow:
                       '上一階段與本階段的文件版本：' + ('相同，引用仍需重新讀取' if previous['sources_match_current'] else '不同，需重新核對')]
             if 'checkpoint' in previous:
                 saved = previous['checkpoint']
+                if saved.get('work_plan'):
+                    lines += ['上一階段的歷史工作清單：', work_plan.describe(saved['work_plan'])]
                 lines += [f"上一階段尚未交付，保留{saved['step_count']}步的有限進度：", saved['notice'],
                           '當時未回答的問題：' + (saved['question'] or '無'), saved['omissions']]
                 for item in saved['activity']:
@@ -256,9 +263,6 @@ class AutonomousWindow:
                       json.dumps(observation, ensure_ascii=False, indent=2)]
             if profile:
                 lines += ['此步使用的夥伴設定：\n' + describe_profile(profile)]
-        if goal['result']:
-            lines += ['成果（待你確認）：', goal['result']]
-            lines += ['此目標已交付成果；後續工作請保存新目標。']
         self.output.configure(state='normal')
         self.output.delete('1.0', 'end')
         self.output.insert('1.0', '\n\n'.join(lines))

@@ -304,6 +304,30 @@ class FormGeometryTests(unittest.TestCase):
             view.previous_stage()
             self.assertEqual(view.selected_id(), gid)
 
+    def test_work_plan_and_delivered_report_precede_raw_step_details(self):
+        from test_autonomy import ScriptedEngine, action
+        from test_work_plan import item
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'assistant.sqlite3');sid=store.new_session()
+            gid=autonomy.create_goal(store,sid,'整理工作')
+            autonomy.run_goal(store,sid,gid,ScriptedEngine(
+                action('calculate',operation='sum',values=['3','4']),
+                action('update_plan',items=[item(state='done',refs=[1])])),max_steps=2)
+            view=AutonomousWindow(self.root,store,sid,None)
+            self.allocate(view);view.refresh(gid)
+            text=view.output.get('1.0','end')
+            self.assertLess(text.index('工作清單（助理回報'),text.index('步驟 1 ·'))
+            self.assertIn('依據步驟 1',text)
+            self.assertIn('已暫停',text)
+            with store.connect() as db:
+                db.execute("UPDATE autonomous_goals SET notes='更正條件' WHERE id=?",(gid,))
+            view.refresh(gid)
+            self.assertIn('完成標記需重新核對',view.output.get('1.0','end'))
+            autonomy.run_goal(store,sid,gid,ScriptedEngine(action('finish',report='最後的報告')))
+            view.refresh(gid)
+            text=view.output.get('1.0','end')
+            self.assertLess(text.index('最後的報告'),text.index('步驟 1 ·'))
+
     def test_stopped_goal_checkpoint_entry_preserves_drafts_and_does_not_start(self):
         from test_autonomy import ScriptedEngine, action
         with tempfile.TemporaryDirectory() as tmp:

@@ -140,6 +140,9 @@ def validate_database(path):
             from .goal_stages import read
             for (gid,) in db.execute('SELECT goal_id FROM autonomous_handoffs'):
                 read(db, gid)
+        if 'autonomous_steps' in actual_tables:
+            from .work_plan import validate_saved
+            validate_saved(db)
         if 'memory_sequence' in actual_tables:
             counters = db.execute('SELECT id,last_id FROM memory_sequence').fetchall()
             largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]

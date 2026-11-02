@@ -1,6 +1,7 @@
 """Explicit one-stage handoffs of reports or bounded, historical work checkpoints."""
 import hashlib
 import json
+from . import work_plan
 
 
 STOPPED = {'paused', 'failed', 'needs_input'}
@@ -57,13 +58,18 @@ def checkpoint(db, row):
                       (row['id'],)).fetchall()
     if not eligible(row['status'], len(rows)):
         raise ValueError('請選取已交付成果，或已有步驟且已停止的目標；未開始或執行中不能帶入。')
-    return {'step_count': len(rows), 'activity': [activity(step) for step in rows],
+    value = {'step_count': len(rows), 'activity': [activity(step) for step in rows],
             'question': row['question'], 'notice': row['notice'],
             'saved_files': [dict(item) for item in db.execute(
                 'SELECT name,sha256,status AS recorded_status FROM autonomous_artifacts WHERE goal_id=? ORDER BY rowid', (row['id'],))],
             'saved_csv_plans': [dict(item) for item in db.execute(
                 'SELECT id AS plan_id,status,report_sha256 FROM autonomous_csv_plans WHERE goal_id=? ORDER BY rowid', (row['id'],))],
             'omissions': '僅含直接上一階段的動作目的、有限參數與結果中繼資料；不含原文、記憶內容、文件內文、CSV規格與數值表、聊天或祖先背景。不是完整工作內容，也不授予本階段引用範圍或舊計畫／檔案操作權限。'}
+    plan = work_plan.latest([{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
+                             'observation': json.loads(r['observation_json'])} for r in rows])
+    if plan is not None:
+        value['work_plan'] = plan
+    return value
 
 
 def capture(db, sid, parent_id):
