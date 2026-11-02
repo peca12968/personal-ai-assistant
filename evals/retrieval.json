@@ -1,0 +1,8 @@
+[
+  {"query":"程式專案要放在哪裡？", "memory":"程式專案統一放在 F 槽", "distractor":"喜歡週末健行"},
+  {"query":"GitHub repository visibility", "memory":"GitHub repository 必須為私人", "distractor":"早餐喝咖啡"},
+  {"query":"幫我處理 Python 錯誤", "memory":"開發主要使用 Python", "distractor":"晚餐喜歡義大利麵"},
+  {"query":"如何備份我的資料？", "memory":"備份資料必須保留原檔", "distractor":"窗簾是藍色"},
+  {"query":"回答格式怎麼安排？", "memory":"回答格式先結論再步驟", "distractor":"週六早上買菜"},
+  {"query":"解決網路連線問題", "memory":"網路連線使用有線乙太網路", "distractor":"常用文書軟體"}
+]
