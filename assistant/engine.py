@@ -30,7 +30,8 @@ def find_codex():
 def build_prompt(question, history, memories):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     # Structured data avoids interpolating user text into shell commands.
-    context = {"memories": [{"id": m["id"], "kind": m["kind"], "content": m["content"]}
+    context = {"memories": [{"id": m["id"], "kind": m["kind"], "content": m["content"],
+                             "updated_at": m.get("updated_at"), "expires_on": m.get("expires_on")}
                             for m in memories],
                "recent_conversation": [{"role": m["role"], "content": m["content"][:6000]}
                                        for m in history[-16:]],

@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 
+from .retrieval import rank_memories, terms
 
-def terms(text: str) -> set[str]:
-    """English tokens and Chinese bigrams, without external dependencies."""
-    tokens = set(re.findall(r"[a-z0-9_]+", text.lower()))
-    for block in re.findall(r"[\u3400-\u9fff]+", text):
-        tokens.update(block[i:i + 2] for i in range(len(block) - 1))
-        if len(block) == 1:
-            tokens.add(block)
-    return tokens
+
+def validate_memory(content, kind, expires_on):
+    content = content.strip()
+    if not content or len(content) > 4000:
+        raise ValueError("記憶需為 1–4000 字。")
+    if kind not in {"preference", "fact", "lesson"}:
+        raise ValueError("未知的記憶類型。")
+    if expires_on:
+        try:
+            if date.fromisoformat(expires_on).isoformat() != expires_on:
+                raise ValueError()
+        except ValueError:
+            raise ValueError("到期日請使用 YYYY-MM-DD 格式。") from None
+    return content
 
 
 class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        existed = self.path.exists()
         with self.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -41,6 +49,25 @@ class Store:
                     correction TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             """)
+            columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
+            if "active" not in columns:
+                # Preserve old data before a schema change; never copy a live SQLite file.
+                if existed:
+                    backup_dir = self.path.parent / "backups"
+                    backup_dir.mkdir(exist_ok=True)
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    backup_path = backup_dir / f"pre-memory-v2-{stamp}-{uuid.uuid4().hex[:8]}.sqlite3"
+                    backup_db = sqlite3.connect(backup_path)
+                    try:
+                        db.backup(backup_db)
+                    finally:
+                        backup_db.close()
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("ALTER TABLE memories ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))")
+                db.execute("ALTER TABLE memories ADD COLUMN expires_on TEXT")
+                db.execute("ALTER TABLE memories ADD COLUMN updated_at TEXT")
+                db.execute("UPDATE memories SET updated_at=created_at")
+                db.execute("PRAGMA user_version = 2")
 
     @contextmanager
     def connect(self):
@@ -77,12 +104,28 @@ class Store:
                 "SELECT * FROM (SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?) ORDER BY id",
                 (sid, limit))]
 
-    def remember(self, content, kind="fact"):
-        content = content.strip()
-        if not content or len(content) > 4000:
-            raise ValueError("記憶需為 1–4000 字。")
+    def remember(self, content, kind="fact", expires_on=None, active=True):
+        content = validate_memory(content, kind, expires_on)
         with self.connect() as db:
-            return db.execute("INSERT INTO memories(content, kind) VALUES (?, ?)", (content, kind)).lastrowid
+            return db.execute("""INSERT INTO memories(content, kind, expires_on, active, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (content, kind, expires_on or None, int(bool(active)))).lastrowid
+
+    def edit_memory(self, memory_id, content, kind="fact", expires_on=None, active=True):
+        content = validate_memory(content, kind, expires_on)
+        with self.connect() as db:
+            result = db.execute("""UPDATE memories SET content=?, kind=?, expires_on=?, active=?,
+                updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (content, kind, expires_on or None, int(bool(active)), memory_id))
+            if result.rowcount != 1:
+                raise ValueError("這筆記憶已不存在，請重新整理。")
+
+    def set_memory_active(self, memory_id, active):
+        with self.connect() as db:
+            result = db.execute("UPDATE memories SET active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                (int(bool(active)), memory_id))
+            if result.rowcount != 1:
+                raise ValueError("這筆記憶已不存在，請重新整理。")
 
     def memories(self):
         with self.connect() as db:
@@ -92,15 +135,11 @@ class Store:
         with self.connect() as db:
             db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
 
-    def retrieve(self, query, limit=8):
-        query_terms = terms(query)
-        ranked = []
-        for row in self.memories():
-            overlap = len(query_terms & terms(row["content"]))
-            if row["kind"] == "preference" or overlap:
-                score = overlap + (0.5 if row["kind"] == "preference" else 0)
-                ranked.append((score, row["id"], row))
-        return [r[2] for r in sorted(ranked, key=lambda r: (r[0], r[1]), reverse=True)[:limit]]
+    def retrieve(self, query, limit=8, today=None):
+        today = today or date.today().isoformat()
+        rows = [row for row in self.memories() if row["active"] and
+                (not row["expires_on"] or row["expires_on"] >= today)]
+        return rank_memories(query, rows, limit)
 
     def rate(self, message_id, rating, correction=""):
         if rating not in (-1, 1):

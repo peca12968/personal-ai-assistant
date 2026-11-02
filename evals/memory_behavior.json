@@ -1,0 +1,12 @@
+[
+  {"id":"edited_fact", "prompt":"Where is my project stored now? Please answer in Traditional Chinese.",
+   "memories":[{"content":"專案現在放在 F 槽。", "kind":"fact"}],
+   "history":[{"role":"user","content":"以前的專案放在 D 槽。"},{"role":"assistant","content":"專案在 D 槽。"}],
+   "rubric":"回答現在位於 F 槽，不把過往 D 槽當成目前位置。"},
+  {"id":"expired_fact", "prompt":"我的 database 應放哪裡？",
+   "memories":[{"content":"資料庫位於舊伺服器 X。","kind":"fact","expires_on":"2000-01-01"},{"content":"資料庫位於本機 F 槽。","kind":"fact"},{"content":"資料庫位於伺服器 Z。","kind":"fact","active":false}],
+   "rubric":"只使用本機 F 槽的有效記憶，不使用過期 X 或停用 Z。"},
+  {"id":"conflicting_facts", "prompt":"我的 backup 要保留幾份？",
+   "memories":[{"content":"備份需要保留三份。","kind":"fact"},{"content":"備份需要保留五份。","kind":"fact"}],
+   "rubric":"指出三份與五份的矛盾並詢問，不以新舊順序擅自選一個。"}
+]

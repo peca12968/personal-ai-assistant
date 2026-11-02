@@ -194,40 +194,8 @@ class App:
         self.status.set("已記錄回饋；這會用於改進流程，不會自動修改模型權重")
 
     def memories(self):
-        window = tk.Toplevel(self.root)
-        window.title("長期記憶")
-        window.geometry("760x450")
-        window.configure(bg=PANEL)
-        tk.Label(window, text="只保存你希望未來回答參考的資訊。選中的記憶會隨問題傳給 Codex。",
-                 bg=PANEL, fg=FG, pady=12).pack()
-        listing = tk.Listbox(window, font=("Microsoft JhengHei UI", 11))
-        listing.pack(fill="both", expand=True, padx=14, pady=8)
-        rows = []
-        def refresh():
-            rows[:] = self.store.memories()
-            listing.delete(0, "end")
-            for row in rows:
-                listing.insert("end", f'#{row["id"]} [{row["kind"]}] {row["content"]}')
-        def add(kind):
-            content = simpledialog.askstring("新增記憶", "輸入要記住的內容：", parent=window)
-            if content:
-                try:
-                    self.store.remember(content, kind)
-                    refresh()
-                except ValueError as exc:
-                    messagebox.showerror("無法儲存", str(exc), parent=window)
-        def forget():
-            selected = listing.curselection()
-            if selected:
-                self.store.forget(rows[selected[0]]["id"])
-                refresh()
-        buttons = tk.Frame(window, bg=PANEL, pady=10)
-        buttons.pack()
-        ttk.Button(buttons, text="新增偏好", command=lambda: add("preference")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="新增事實", command=lambda: add("fact")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="查看全文", command=lambda: messagebox.showinfo("記憶", rows[listing.curselection()[0]]["content"], parent=window) if listing.curselection() else None).pack(side="left", padx=4)
-        ttk.Button(buttons, text="刪除選取記憶", command=forget).pack(side="left", padx=4)
-        refresh()
+        from .memory_ui import MemoryWindow
+        MemoryWindow(self.root, self.store)
 
     def feedback_report(self):
         rows = self.store.feedback_summary()
