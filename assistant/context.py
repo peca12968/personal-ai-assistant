@@ -26,7 +26,7 @@ def is_explicit_correction(text):
 def correction_context(question, rows):
     # Keep this separate from relevance-ranked excerpts so unrelated old rows
     # cannot displace an explicit correction. Preserve uncertainty and ordering.
-    if TOPIC_CHANGE.search(question):
+    if context_reset(question):
         return {'excerpts': [], 'selection_limited': False}
     chosen = sorted(rows, key=lambda row: row['id'])[-MAX_EARLIER_CORRECTIONS:]
     excerpts = []
@@ -68,9 +68,124 @@ NO_PREVIOUS = re.compile(
     r"(?:the\s+)?(?:previous|prior|earlier|above)\s+(?:context|conversation|messages?|answers?)\b", re.I)
 
 
+def _instruction_text(question):
+    """Mask quoted/code spans with spaces, keeping offsets and line breaks."""
+    text = unicodedata.normalize('NFKC', question)
+    chars = list(text)
+
+    def hide(start, end):
+        for index in range(start, end):
+            if chars[index] not in '\r\n':
+                chars[index] = ' '
+
+    # Fences and blockquotes are recognized before inline markup and quotes.
+    fence = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if fence:
+            hide(offset, offset + len(line))
+            if re.fullmatch(r' {0,3}' + re.escape(fence[0]) +
+                            r'{' + str(fence[1]) + r',}[ \t]*(?:\r?\n)?', line):
+                fence = None
+        elif re.match(r' {0,3}>', line):
+            hide(offset, offset + len(line))
+        else:
+            opening = re.match(r' {0,3}(`{3,}|~{3,})', line)
+            if opening:
+                run = opening.group(1)
+                fence = (run[0], len(run))
+                hide(offset, offset + len(line))
+        offset += len(line)
+
+    visible = ''.join(chars)
+    index = 0
+    while index < len(visible):
+        if visible[index] != '`':
+            index += 1
+            continue
+        opening = re.match(r'`+', visible[index:]).group()
+        end = index + len(opening)
+        closing = re.search(r'(?<!`)`{' + str(len(opening)) + r'}(?!`)', visible[end:])
+        if closing:
+            end += closing.end()
+            hide(index, end)
+        index = end
+
+    # Keep directional quotes distinct: replacing right curly quotes first
+    # would destroy their pairing. Apostrophes inside words are punctuation.
+    pairs = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'"}
+    stack = []
+    visible = ''.join(chars)
+    for index, char in enumerate(visible):
+        if char in "'’" and index and index + 1 < len(visible):
+            if visible[index - 1].isalnum() and visible[index + 1].isalnum():
+                continue
+        if stack and char == stack[-1][0]:
+            _, start = stack.pop()
+            hide(start, index + 1)
+        elif char in pairs:
+            stack.append((pairs[char], index))
+    return ''.join(chars)
+
+
+# These are deliberately bounded textual hints, not general semantic parsing.
+# A local negation or reported/mentioned phrase is not a reset instruction.
+_RESET_NEGATION = re.compile(
+    r"(?:不要|不用|不必|別|不是|並非|并非|沒有|没有|不想|無須|无需|避免)"
+    r"[^。.!！?？;；\n]{0,16}$|"
+    r"\b(?:do\s+not|don't|don’t|not|never|no\s+need\s+to|avoid)"
+    r"(?:\s+[\w’'-]+){0,5}\s*$", re.I)
+_RESET_REPORT = re.compile(
+    r"(?:他說|她說|你說|我說|提到|提及|寫著|写着|寫了|標題|标题|字樣|字样|"
+    r"詞語|词语|這句|这句|意思是|例如|比如|所謂|所谓)"
+    r"[^。.!！?？;；\n]{0,24}$|"
+    r"\b(?:said|says|wrote|written|quoted|mention(?:ed|s)?|phrase|word|"
+    r"heading|title|label|example|means?)\b[^.!?;\n]{0,48}$", re.I)
+_RESET_MENTION_END = re.compile(
+    r"^\s*(?:這(?:句|個詞)|这(?:句|个词)|這幾個字|这几个字|的(?:意思|字樣|字样|說法|说法)|"
+    r"(?:is|was)\s+(?:a\s+|the\s+)?(?:phrase|heading|title|label|example)\b)", re.I)
+_NOMINAL_RESET_PREFIX = re.compile(
+    r"\s*(?:(?:好|好的|那|現在|现在|接下來|接下来|請|请|我有|問個|问个|"
+    r"另外問個|另外问个)\s*|"
+    r"(?:ok(?:ay)?|then|now|please|a|an|start|begin|let's|let’s|"
+    r"i\s+have|i\s+have\s+an?)\s+)*", re.I)
+
+
+def context_reset(question):
+    """Recognize explicit unquoted reset requests using bounded local hints.
+
+    This intentionally favors retaining context for negated or reported wording.
+    It does not attempt to infer arbitrary intent or rewrite the user's text.
+    """
+    text = _instruction_text(question)
+    # Normalize contraction punctuation only after directional quote masking.
+    text = text.replace('’', "'")
+    for pattern in (NO_PREVIOUS, TOPIC_CHANGE):
+        for match in pattern.finditer(text):
+            before = text[max(0, match.start() - 100):match.start()]
+            after = text[match.end():match.end() + 64]
+            if (_RESET_NEGATION.search(before) or _RESET_REPORT.search(before)
+                    or _RESET_MENTION_END.search(after)):
+                continue
+            if pattern is NO_PREVIOUS:
+                # Explicit prohibitions can be embedded in an answer request,
+                # e.g. 'Then answer without using the previous context.'
+                return True
+            phrase = match.group().lower()
+            if phrase in ('新問題', '另外一件事', 'new topic', 'unrelated question'):
+                clause = re.split(r'[。.!！?？,，;；:：\n]', before)[-1]
+                if not _NOMINAL_RESET_PREFIX.fullmatch(clause):
+                    continue
+                # Nominal labels require a delimiter, an instruction, or end.
+                if after.strip() and not re.match(r'^[\s]*[,，:：。.!！?？;；\n]', after):
+                    continue
+            return True
+    return False
+
+
 def is_followup(question):
     text = unicodedata.normalize("NFKC", question).strip()
-    if TOPIC_CHANGE.search(text) or NO_PREVIOUS.search(text):
+    if context_reset(question):
         return False
     text = POLITE.sub("", text, count=1)
     return bool(FOLLOWUP.search(text) or SHORT_FOLLOWUP.fullmatch(text)
@@ -92,7 +207,7 @@ def clip(text, limit):
 
 def followup_query(question, history):
     """Use only preceding user turns, and only for recognizable continuations."""
-    if TOPIC_CHANGE.search(question) or not is_followup(question):
+    if context_reset(question) or not is_followup(question):
         return None
     earlier = []
     for row in reversed(history):
@@ -100,13 +215,13 @@ def followup_query(question, history):
             continue
         text = row["content"]
         earlier.append(clip(text, 1000)[0])
-        if TOPIC_CHANGE.search(text) or not is_followup(text) or len(earlier) == 4:
+        if context_reset(text) or not is_followup(text) or len(earlier) == 4:
             break
     return "\n".join(reversed(earlier)) if earlier else None
 
 
 def select_excerpts(question, older, limit=6):
-    if not older or limit <= 0 or TOPIC_CHANGE.search(question):
+    if not older or limit <= 0 or context_reset(question):
         return []
     query = terms(question)
     ranked = []
