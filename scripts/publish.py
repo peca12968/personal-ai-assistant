@@ -22,7 +22,7 @@ def validate_path(name):
     path = Path(name)
     return (name in ALLOWED_ROOT or (path.parts and path.parts[0] in ALLOWED_DIRS)) and not any(
         p in {"__pycache__", "data", ".venv"} or p.startswith(".env") for p in path.parts
-    ) and path.suffix.lower() not in {".db", ".sqlite3", ".log", ".pem", ".key", ".pyc"}
+    ) and path.suffix.lower() not in {".db", ".sqlite3", ".paibackup", ".log", ".pem", ".key", ".pyc"}
 
 
 def main():

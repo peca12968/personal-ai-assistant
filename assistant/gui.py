@@ -17,6 +17,9 @@ class App:
         self.busy = False
         self.last_answer = None
         root.title("個人 AI 助理")
+        from .engine import ROOT
+        if store.path.parent.resolve() != (ROOT / 'data').resolve():
+            root.title('個人 AI 助理 · ' + str(store.path.parent.resolve()))
         root.geometry("1120x780")
         root.minsize(840, 600)
         root.configure(bg=BG)
@@ -49,6 +52,7 @@ class App:
         ttk.Button(sidebar, text="管理長期記憶", command=self.memories).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
+        ttk.Button(sidebar, text="本機備份與還原", command=self.backups).pack(fill="x", pady=4)
         main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True)
         main.rowconfigure(0, weight=1)
@@ -208,6 +212,10 @@ class App:
     def manage_documents(self):
         from .document_ui import DocumentWindow
         DocumentWindow(self.root, self.store, self.sid)
+
+    def backups(self):
+        from .backup_ui import BackupWindow
+        BackupWindow(self.root, self.store)
 
     def inspect_context(self):
         from .context_ui import show_context

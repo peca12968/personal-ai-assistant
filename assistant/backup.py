@@ -1,0 +1,159 @@
+"""Local, validated SQLite snapshots; restore never overwrites a data directory."""
+import hashlib
+import json
+import os
+import shutil
+import sqlite3
+import tempfile
+import time
+import uuid
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import __version__
+
+MAX_DATABASE_BYTES = 512 * 1024 * 1024
+TABLES = {
+    'sessions': {'id', 'title', 'created_at'},
+    'messages': {'id', 'session_id', 'role', 'content', 'created_at'},
+    'memories': {'id', 'content', 'kind', 'created_at', 'active', 'expires_on', 'updated_at'},
+    'feedback': {'message_id', 'rating', 'correction', 'updated_at'},
+    'session_briefs': {'session_id', 'objective', 'constraints_text', 'decisions', 'updated_at'},
+    'answer_contexts': {'message_id', 'payload'},
+    'documents': {'id', 'session_id', 'name', 'source_path', 'path_key', 'content', 'sha256', 'encoding', 'size_bytes', 'imported_at'},
+    'answer_checks': {'message_id', 'payload'},
+}
+
+
+def stamp():
+    return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
+
+
+def readonly(path):
+    db = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
+    db.execute('PRAGMA trusted_schema=OFF')
+    db.execute('PRAGMA query_only=ON')
+    return db
+
+
+def digest(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def validate_database(path):
+    db = readonly(path)
+    try:
+        objects = db.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
+        if any(kind not in {'table', 'index'} or (sql and 'VIRTUAL TABLE' in sql.upper()) for kind, _, sql in objects):
+            raise ValueError('備份含不支援的資料庫物件。')
+        if {name for kind, name, _ in objects if kind == 'table'} != set(TABLES):
+            raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
+        for name, columns in TABLES.items():
+            if {row[1] for row in db.execute(f'PRAGMA table_info({name})')} != columns:
+                raise ValueError('資料庫欄位不相容：' + name)
+        if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+            raise ValueError('資料庫完整性檢查未通過。')
+        if db.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('資料庫關聯檢查未通過。')
+        return {name: db.execute(f'SELECT COUNT(*) FROM {name}').fetchone()[0] for name in TABLES}
+    finally:
+        db.close()
+
+
+def create_backup(database, destination=None):
+    database = Path(database).resolve(strict=True)
+    destination = Path(destination) if destination else database.parent / 'backups' / ('assistant-' + stamp() + '.paibackup')
+    destination = destination.resolve()
+    if destination.exists():
+        raise FileExistsError('備份目的檔已存在，不會覆寫。')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='backup-', dir=destination.parent) as tmp:
+        snapshot = Path(tmp) / 'assistant.sqlite3'
+        source, target = readonly(database), sqlite3.connect(snapshot)
+        deadline = time.monotonic() + 60
+        page_size = source.execute('PRAGMA page_size').fetchone()[0]
+        def progress(status, remaining, total):
+            if time.monotonic() > deadline:
+                raise TimeoutError('資料庫忙碌，備份逾時，請稍後重試。')
+            if total * page_size > MAX_DATABASE_BYTES:
+                raise ValueError('目前備份上限為 512 MiB。')
+        try:
+            source.backup(target, pages=256, progress=progress, sleep=0.05)
+        finally:
+            source.close()
+            target.close()
+        counts = validate_database(snapshot)
+        manifest = {'format': 'personal-ai-assistant-backup', 'format_version': 1,
+                    'app_version': __version__, 'created_at': datetime.now(timezone.utc).isoformat(),
+                    'database_bytes': snapshot.stat().st_size, 'sha256': digest(snapshot), 'counts': counts}
+        # Exclusive creation protects existing backups even if another process races us.
+        with destination.open('xb') as output:
+            try:
+                with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.write(snapshot, 'assistant.sqlite3')
+                    archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False))
+                output.flush()
+                os.fsync(output.fileno())
+            except BaseException:
+                output.close()
+                destination.unlink()
+                raise
+    return {'path': str(destination), **manifest}
+
+
+def _unpack(backup, directory):
+    with zipfile.ZipFile(backup) as archive:
+        if sorted(archive.namelist()) != ['assistant.sqlite3', 'manifest.json']:
+            raise ValueError('備份內容不符格式，未還原。')
+        if archive.getinfo('manifest.json').file_size > 65536:
+            raise ValueError('備份描述過大。')
+        size = archive.getinfo('assistant.sqlite3').file_size
+        if size > MAX_DATABASE_BYTES or size < 512:
+            raise ValueError('備份資料庫大小不符合限制。')
+        manifest = json.loads(archive.read('manifest.json'))
+        if not isinstance(manifest, dict) or manifest.get('format') != 'personal-ai-assistant-backup' or manifest.get('format_version') != 1:
+            raise ValueError('不支援的備份格式版本。')
+        snapshot = Path(directory) / 'assistant.sqlite3'
+        with archive.open('assistant.sqlite3') as source, snapshot.open('xb') as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+        if snapshot.stat().st_size != size or size != manifest.get('database_bytes') or digest(snapshot) != manifest.get('sha256'):
+            raise ValueError('備份雜湊或大小不符，未還原。')
+        counts = validate_database(snapshot)
+        if counts != manifest.get('counts'):
+            raise ValueError('備份資料筆數不符，未還原。')
+        return snapshot, manifest
+
+
+def inspect_backup(backup):
+    with tempfile.TemporaryDirectory(prefix='assistant-check-') as tmp:
+        _, manifest = _unpack(backup, tmp)
+        return manifest
+
+
+def restore_backup(backup, data_dir):
+    data_dir = Path(data_dir).resolve()
+    if data_dir.exists():
+        raise FileExistsError('還原需要不存在的新資料夾，不會取代目前資料。')
+    # Validate everything before creating the requested destination.
+    with tempfile.TemporaryDirectory(prefix='assistant-restore-') as tmp:
+        snapshot, manifest = _unpack(backup, tmp)
+        data_dir.mkdir(parents=True, exist_ok=False)
+        destination = data_dir / 'assistant.sqlite3'
+        created = False
+        try:
+            with destination.open('xb') as target:
+                created = True
+                with snapshot.open('rb') as source:
+                    shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+        except BaseException:
+            # Only our newly created file/directory; never recursively delete.
+            if created and destination.exists():
+                destination.unlink()
+            if not any(data_dir.iterdir()):
+                data_dir.rmdir()
+            raise
+    return {'data_dir': str(data_dir), **manifest}

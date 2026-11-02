@@ -51,6 +51,23 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 python -m assistant --ask "比對這兩份設定的差異" --file "F:\Notes\app.txt" --file "F:\Notes\proxy.txt"
 ```
 
+## 本機備份與還原
+
+點「本機備份與還原 → 建立本機備份」，會在目前資料目錄的 `backups` 中建立 `.paibackup`。備份透過 SQLite 一致性快照保存已提交的資料，包含對話、記憶、回饋、目標、文件副本及回答快照；不包含程式、原始文件、Codex 登入或模型。正在生成且尚未儲存的回答不在該次快照內。
+
+「從備份還原到新資料夾」會要求選取備份與存放位置，檢查雜湊、資料庫完整性、關聯及格式後，建立新的 `assistant-restored-日期-識別碼` 資料夾。完成後按「開啟還原後的助理」使用該資料；新視窗標題會顯示資料位置。原視窗與 `Start.cmd` 仍使用原資料，兩份資料不會自動合併。原始文件的路徑可能已失效，但匯入副本仍可分析；重新匯入需原檔仍存在。
+
+```powershell
+python -m assistant --backup
+python -m assistant --inspect-backup "F:\Backups\assistant.paibackup"
+python -m assistant --restore "F:\Backups\assistant.paibackup" --data-dir "F:\AssistantRecovered"
+python -m assistant --data-dir "F:\AssistantRecovered"
+```
+
+命令列還原目的資料夾必須不存在；不會覆寫任何現有資料目錄。備份／檢查／還原不需登入或呼叫模型。支援目前完整資料庫格式，單一資料庫上限 512 MiB；舊版請先以相容新版開啟完成結構升級，再建立備份。未支援未來格式或舊的遷移用裸 SQLite 備份。
+
+備份未加密，應視為私人資料；Git 忽略並拒絕發布 `.paibackup`。請自行將重要備份複製至其他磁碟，留在 F 槽的備份不能防止 F 槽故障。沒有排程備份、雲端備份或自動刪除舊備份。雜湊可發現損壞，不提供來源身分認證。驗證／還原過程會使用作業系統的本機暫存目錄。
+
 ## 更新到 GitHub 私人庫
 
 雙擊 `Publish.cmd`，或執行：

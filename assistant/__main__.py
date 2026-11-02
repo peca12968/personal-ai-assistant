@@ -1,4 +1,7 @@
 import argparse
+import json
+import sqlite3
+import zipfile
 from pathlib import Path
 
 from .engine import Assistant, CodexEngine, ROOT, find_codex
@@ -7,14 +10,31 @@ from .store import Store
 
 def main():
     parser = argparse.ArgumentParser(description="個人 AI 助理")
-    parser.add_argument("--ask", help="單次提問")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--ask", help="單次提問")
+    mode.add_argument("--backup", action="store_true", help="建立目前資料的本機備份")
+    mode.add_argument("--inspect-backup", type=Path, help="檢查備份完整性與內容筆數")
+    mode.add_argument("--restore", type=Path, help="還原備份到 --data-dir 指定的新資料夾")
     parser.add_argument("--session", help="延續指定對話 ID")
-    parser.add_argument("--doctor", action="store_true", help="檢查環境")
+    mode.add_argument("--doctor", action="store_true", help="檢查環境")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
     if args.file and not args.ask:
         parser.error("--file 需搭配 --ask；桌面版請使用「參考文件」。")
+    if args.backup or args.inspect_backup or args.restore:
+        from .backup import create_backup, inspect_backup, restore_backup
+        try:
+            if args.backup:
+                result = create_backup(args.data_dir / 'assistant.sqlite3')
+            elif args.inspect_backup:
+                result = inspect_backup(args.inspect_backup)
+            else:
+                result = restore_backup(args.restore, args.data_dir)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, sqlite3.Error, zipfile.BadZipFile, TimeoutError) as exc:
+            parser.exit(1, '備份／還原失敗：' + str(exc) + '\n')
+        return
     if args.doctor:
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
