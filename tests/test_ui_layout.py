@@ -75,6 +75,28 @@ class FormGeometryTests(unittest.TestCase):
         self.assertGreater(layout.canvas.yview()[0], before[0])
         self.assert_reachable(layout, view.fields['question'])
 
+    def test_feedback_edit_and_withdraw_are_explicit_and_reachable(self):
+        from assistant.answer_feedback import for_chat
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'state.sqlite3')
+            sid = store.new_session()
+            mid = store.add_message(sid,'assistant','原回答')
+            store.rate(mid,-1,'原更正')
+            view = FeedbackWindow(self.root,store)
+            layout = self.allocate(view)
+            view.listing.selection_set(str(mid));view.select()
+            self.assert_reachable(layout,view.saved_correction)
+            self.assert_reachable(layout,view.clear_feedback)
+            # Old answers with no model snapshot can be revised, but cannot be
+            # silently turned into a code-acceptance case.
+            self.assertEqual(str(view.next['state']),'disabled')
+            view.saved_correction.delete('1.0','end');view.saved_correction.insert('1.0','更正為新版')
+            view.save_feedback.invoke()
+            self.assertEqual(for_chat(store,sid,'接續')['items'][0]['correction'],'更正為新版')
+            view.clear_feedback.invoke()
+            self.assertEqual(for_chat(store,sid,'接續')['items'],[])
+            self.assertEqual(view.saved_correction.get('1.0','end').strip(),'')
+
     def test_improvement_actions_reachable_with_imported_cases(self):
         draft = {'goal': '驗證表單', 'selected': ['assistant/context.py'],
                  'acceptance': {'version': 1, 'cases': [

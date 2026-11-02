@@ -1,13 +1,14 @@
 """Local, user-authored acceptance drafts from saved answer feedback."""
 import hashlib
 import json
+from contextlib import nullcontext
 
 from .acceptance import validate_suite
 from .context import clip
 
 
-def feedback_source(store, message_id):
-    with store.connect() as db:
+def feedback_source(store, message_id, *, db=None):
+    with (nullcontext(db) if db is not None else store.connect()) as db:
         row = db.execute('''SELECT f.message_id,f.rating,f.correction,f.updated_at,m.content AS answer,c.payload
             FROM feedback f JOIN messages m ON m.id=f.message_id
             LEFT JOIN answer_contexts c ON c.message_id=m.id WHERE f.message_id=?''', (message_id,)).fetchone()
@@ -78,3 +79,17 @@ def make_followup_draft(source, question, history, problem, selected_turns):
                     '使用者描述的問題：\n' + problem.strip() + '\n不要修改測試或把整句範例硬編碼成規則。',
             'selected': ['assistant/context.py'], 'acceptance': suite,
             'source_message_id': source['message_id'], 'source_fingerprint': source['fingerprint']}
+
+
+def revise_feedback(store, message_id, fingerprint, correction):
+    """Explicit local edit; compare the complete observed source under a write lock."""
+    if not isinstance(correction, str) or len(correction) > 4000:
+        raise ValueError('更正需為最多4000字；清空表示不再帶入未來回答。')
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        source = feedback_source(store, message_id, db=db)
+        if source['fingerprint'] != fingerprint:
+            raise ValueError('回饋或原回答快照已變更，請重新選取後再修改。')
+        db.execute("UPDATE feedback SET rating=-1,correction=?,updated_at=CURRENT_TIMESTAMP WHERE message_id=?",
+                   (correction, message_id))
+    return feedback_source(store, message_id)

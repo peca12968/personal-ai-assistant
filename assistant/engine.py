@@ -18,6 +18,7 @@ from .tasks import task_context
 from .communication import conversation_style
 from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
+from . import answer_feedback
 from . import answer_runs
 from .autonomy_status import goal_context
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -74,6 +75,7 @@ def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     instructions += '\n' + COMPANION_GUIDANCE
+    instructions += '\n' + answer_feedback.GUIDANCE
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
@@ -205,6 +207,7 @@ class Assistant:
         older = self.store.earlier_user_messages(sid, history[0]["id"], exclude_local=True, exclude_message_id=exclude_message_id) if history else []
         context = make_context(question, history, memories, self.store.session_brief(sid), select_excerpts(question, older))
         corrections = self.store.earlier_correction_messages(sid, history[0]['id'], exclude_message_id) if history else []
+        context['answer_feedback'] = answer_feedback.for_chat(self.store, sid, question)
         context['earlier_user_corrections'] = correction_context(question, corrections)
         documents = self.store.documents(sid, include_content=True)
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents,

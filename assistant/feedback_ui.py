@@ -3,7 +3,7 @@ import json
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from .feedback_improvement import check_source, example_from_source, feedback_source, make_draft, make_followup_draft
+from .feedback_improvement import check_source, example_from_source, feedback_source, make_draft, make_followup_draft, revise_feedback
 from .acceptance import strict_json, validate_suite
 from .ui_layout import ScrollableForm, fit_window
 
@@ -11,12 +11,13 @@ from .ui_layout import ScrollableForm, fit_window
 class FeedbackWindow:
     def __init__(self, parent, store):
         self.store, self.source = store, None
+        self.selected_source = None
         self.window = tk.Toplevel(parent)
         self.window.title('回饋與改進例子')
         fit_window(self.window, 880, 900)
         self.layout = ScrollableForm(self.window)
         body = self.layout.body
-        self.layout.wrapped_label(body, text='選取回饋，核對問題與前文，再指定回答長度或接續前文的期望。此處不會自動改碼。',
+        self.layout.wrapped_label(body, text='同一對話後續回答會參考最近三筆「需要改進」的非空更正；改成「有幫助」或清空更正後不再帶入新回答。這不會更新已保存的歷史快照或跨對話記憶。選取回饋還可建立改碼驗收例子。',
                   wraplength=800, padding=10).pack(fill='x')
         self.listing = ttk.Treeview(body, columns=('id', 'rating', 'correction'), show='headings', height=5)
         for key, label, width in [('id', '回答編號', 90), ('rating', '評價', 100), ('correction', '更正', 600)]:
@@ -27,6 +28,15 @@ class FeedbackWindow:
         ttk.Button(body, text='重新整理', command=self.refresh).pack(anchor='e', padx=12)
         self.preview = tk.Text(body, height=6, wrap='word', state='disabled')
         self.preview.pack(fill='x', padx=12)
+        ttk.Label(body, text='修改已保存更正（影響本對話的未來回答）：').pack(anchor='w', padx=12)
+        self.saved_correction = tk.Text(body, height=3, wrap='word')
+        self.saved_correction.pack(fill='x', padx=12)
+        edit_buttons = ttk.Frame(body, padding=12)
+        edit_buttons.pack(fill='x')
+        self.save_feedback = ttk.Button(edit_buttons, text='保存更正', command=self.revise, state='disabled')
+        self.save_feedback.pack(side='left')
+        self.clear_feedback = ttk.Button(edit_buttons, text='停止帶入這筆更正', command=lambda: self.revise(clear=True), state='disabled')
+        self.clear_feedback.pack(side='left', padx=8)
         form = ttk.Frame(body, padding=12)
         form.pack(fill='x')
         self.fields = {}
@@ -87,6 +97,9 @@ class FeedbackWindow:
             self.notice.set(str(exc))
 
     def refresh(self):
+        self.selected_source = None
+        self.save_feedback.configure(state='disabled')
+        self.clear_feedback.configure(state='disabled')
         self.source = None
         self.next.configure(state='disabled')
         for key in self.listing.get_children():
@@ -98,6 +111,10 @@ class FeedbackWindow:
     def select(self, event=None):
         selected = self.listing.selection()
         self.source = None
+        self.selected_source = None
+        self.saved_correction.delete('1.0', 'end')
+        self.save_feedback.configure(state='disabled')
+        self.clear_feedback.configure(state='disabled')
         self.next.configure(state='disabled')
         self.expected.set('')  # Never infer the user's expected grade from the failing implementation.
         self.followup_mode.set('')
@@ -110,6 +127,10 @@ class FeedbackWindow:
             return
         try:
             source = feedback_source(self.store, int(selected[0]))
+            self.selected_source = source
+            self.saved_correction.insert('1.0', source['correction'])
+            self.save_feedback.configure(state='normal')
+            self.clear_feedback.configure(state='normal')
             context = source['context'] or {}
             self.preview.configure(state='normal')
             self.preview.delete('1.0', 'end')
@@ -125,6 +146,20 @@ class FeedbackWindow:
             self.notice.set('下一頁可再核對；按「開始改進並發布」才會將編輯後的描述、問題與前文傳給模型，並執行一輪改碼。原回答不會自動傳送。')
         except (ValueError, KeyError) as exc:
             self.notice.set(str(exc))
+
+    def revise(self, *, clear=False):
+        if self.selected_source is None:
+            return
+        source = self.selected_source
+        try:
+            revise_feedback(self.store, source['message_id'], source['fingerprint'],
+                '' if clear else self.saved_correction.get('1.0', 'end').strip())
+            self.refresh()
+            self.listing.selection_set(str(source['message_id']))
+            self.select()
+            self.notice.set('已更新；下次回答採用最新回饋。既有回答／目標快照及另存的長期記憶不會更動。')
+        except ValueError as exc:
+            messagebox.showerror('無法更新更正', str(exc), parent=self.window)
 
     def prepare(self):
         if self.source is None:
