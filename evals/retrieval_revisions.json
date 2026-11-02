@@ -1,0 +1,723 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "ranked_duplicates",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha green",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "alpha red",
+          "kind": "fact"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        4,
+        1
+      ]
+    },
+    {
+      "id": "ranked_room",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha green",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 5,
+          "content": "alpha gold",
+          "kind": "fact"
+        },
+        {
+          "id": 6,
+          "content": "alpha gold",
+          "kind": "fact"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        6,
+        4,
+        1
+      ]
+    },
+    {
+      "id": "fallback_duplicates",
+      "kind": "retrieval",
+      "query": "unmatched",
+      "memories": [
+        {
+          "id": 5,
+          "content": "warm tone",
+          "kind": "preference"
+        },
+        {
+          "id": 8,
+          "content": "short replies",
+          "kind": "preference"
+        },
+        {
+          "id": 9,
+          "content": "short replies",
+          "kind": "preference"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        9,
+        5
+      ]
+    },
+    {
+      "id": "mixed_duplicates",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha green",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 7,
+          "content": "warm tone",
+          "kind": "preference"
+        },
+        {
+          "id": 8,
+          "content": "short replies",
+          "kind": "preference"
+        },
+        {
+          "id": 9,
+          "content": "short replies",
+          "kind": "preference"
+        }
+      ],
+      "limit": 4,
+      "expect": [
+        4,
+        1,
+        9,
+        7
+      ]
+    },
+    {
+      "id": "unique_fallback_quota",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha green",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "short replies",
+          "kind": "preference"
+        },
+        {
+          "id": 9,
+          "content": "short replies",
+          "kind": "preference"
+        }
+      ],
+      "limit": 3,
+      "expect": [
+        4,
+        1,
+        9
+      ]
+    },
+    {
+      "id": "normalized_duplicates",
+      "kind": "retrieval",
+      "query": "python",
+      "memories": [
+        {
+          "id": 1,
+          "content": "Python virtualenv",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "Python runtime",
+          "kind": "fact"
+        },
+        {
+          "id": 9,
+          "content": "ＰＹＴＨＯＮ runtime",
+          "kind": "fact"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        9,
+        1
+      ]
+    },
+    {
+      "id": "no_unrelated_fill",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 2,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 9,
+          "content": "beta blue",
+          "kind": "fact"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        2
+      ]
+    },
+    {
+      "id": "preference_cap",
+      "kind": "retrieval",
+      "query": "missing",
+      "memories": [
+        {
+          "id": 7,
+          "content": "warm tone",
+          "kind": "preference"
+        },
+        {
+          "id": 8,
+          "content": "short replies",
+          "kind": "preference"
+        },
+        {
+          "id": 9,
+          "content": "plain words",
+          "kind": "preference"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        9,
+        8
+      ]
+    },
+    {
+      "id": "single_slot_relevance",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "short replies",
+          "kind": "preference"
+        },
+        {
+          "id": 9,
+          "content": "short replies",
+          "kind": "preference"
+        }
+      ],
+      "limit": 1,
+      "expect": [
+        3
+      ]
+    },
+    {
+      "id": "distinct_constraints",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha allow",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "alpha deny",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha pending",
+          "kind": "fact"
+        }
+      ],
+      "limit": 3,
+      "expect": [
+        3,
+        2,
+        1
+      ]
+    },
+    {
+      "id": "whitespace_duplicates",
+      "kind": "retrieval",
+      "query": "alpha",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha green",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "  alpha red  ",
+          "kind": "fact"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        4,
+        1
+      ]
+    },
+    {
+      "id": "irrelevant_facts",
+      "kind": "retrieval",
+      "query": "omega",
+      "memories": [
+        {
+          "id": 1,
+          "content": "alpha red",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "beta blue",
+          "kind": "fact"
+        }
+      ],
+      "limit": 4,
+      "expect": []
+    },
+    {
+      "id": "hidden_ranked",
+      "kind": "retrieval",
+      "query": "beta",
+      "memories": [
+        {
+          "id": 2,
+          "content": "beta east",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "beta west",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "beta north",
+          "kind": "fact"
+        },
+        {
+          "id": 9,
+          "content": "beta north",
+          "kind": "fact"
+        },
+        {
+          "id": 10,
+          "content": "beta north",
+          "kind": "fact"
+        }
+      ],
+      "limit": 3,
+      "expect": [
+        10,
+        4,
+        2
+      ]
+    },
+    {
+      "id": "hidden_one_preference",
+      "kind": "retrieval",
+      "query": "unseen",
+      "memories": [
+        {
+          "id": 1,
+          "content": "quiet mode",
+          "kind": "preference"
+        },
+        {
+          "id": 3,
+          "content": "quiet mode",
+          "kind": "preference"
+        },
+        {
+          "id": 2,
+          "content": "brief notes",
+          "kind": "preference"
+        }
+      ],
+      "limit": 1,
+      "expect": [
+        3
+      ]
+    },
+    {
+      "id": "hidden_mixed_kinds",
+      "kind": "retrieval",
+      "query": "gamma",
+      "memories": [
+        {
+          "id": 1,
+          "content": "gamma blue",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "gamma green",
+          "kind": "fact"
+        },
+        {
+          "id": 9,
+          "content": "gamma green",
+          "kind": "lesson"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        9,
+        1
+      ]
+    },
+    {
+      "id": "hidden_same_content_fact",
+      "kind": "retrieval",
+      "query": "unseen",
+      "memories": [
+        {
+          "id": 9,
+          "content": "quiet mode",
+          "kind": "fact"
+        },
+        {
+          "id": 5,
+          "content": "quiet mode",
+          "kind": "preference"
+        },
+        {
+          "id": 2,
+          "content": "brief notes",
+          "kind": "preference"
+        }
+      ],
+      "limit": 3,
+      "expect": [
+        5,
+        2
+      ]
+    },
+    {
+      "id": "hidden_only_preferences",
+      "kind": "retrieval",
+      "query": "unseen",
+      "memories": [
+        {
+          "id": 1,
+          "content": "kind words",
+          "kind": "preference"
+        },
+        {
+          "id": 2,
+          "content": "clear points",
+          "kind": "preference"
+        },
+        {
+          "id": 3,
+          "content": "short prose",
+          "kind": "preference"
+        },
+        {
+          "id": 4,
+          "content": "short prose",
+          "kind": "preference"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        4,
+        2
+      ]
+    },
+    {
+      "id": "hidden_unique_order",
+      "kind": "retrieval",
+      "query": "theta",
+      "memories": [
+        {
+          "id": 4,
+          "content": "theta one",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "theta two",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "theta three",
+          "kind": "fact"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        8,
+        4
+      ]
+    },
+    {
+      "id": "hidden_dense",
+      "kind": "retrieval",
+      "query": "delta",
+      "memories": [
+        {
+          "id": 1,
+          "content": "delta gold",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "delta blue",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "delta green",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "delta white",
+          "kind": "fact"
+        },
+        {
+          "id": 5,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 6,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 7,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 8,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 9,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 10,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 11,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 12,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 13,
+          "content": "delta red",
+          "kind": "fact"
+        },
+        {
+          "id": 14,
+          "content": "delta red",
+          "kind": "fact"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        14,
+        4,
+        3,
+        2,
+        1
+      ]
+    },
+    {
+      "id": "hidden_contradiction",
+      "kind": "retrieval",
+      "query": "omega",
+      "memories": [
+        {
+          "id": 1,
+          "content": "omega permitted",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "omega prohibited",
+          "kind": "fact"
+        }
+      ],
+      "limit": 8,
+      "expect": [
+        2,
+        1
+      ]
+    },
+    {
+      "id": "hidden_preference_quota",
+      "kind": "retrieval",
+      "query": "lambda",
+      "memories": [
+        {
+          "id": 1,
+          "content": "lambda east",
+          "kind": "fact"
+        },
+        {
+          "id": 2,
+          "content": "lambda west",
+          "kind": "fact"
+        },
+        {
+          "id": 3,
+          "content": "lambda west",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "succinct wording",
+          "kind": "preference"
+        },
+        {
+          "id": 5,
+          "content": "succinct wording",
+          "kind": "preference"
+        }
+      ],
+      "limit": 3,
+      "expect": [
+        3,
+        1,
+        5
+      ]
+    },
+    {
+      "id": "hidden_versions",
+      "kind": "retrieval",
+      "query": "sigma",
+      "memories": [
+        {
+          "id": 1,
+          "content": "sigma 3.13",
+          "kind": "fact"
+        },
+        {
+          "id": 4,
+          "content": "sigma 3.12",
+          "kind": "fact"
+        },
+        {
+          "id": 5,
+          "content": "sigma ３.１２",
+          "kind": "fact"
+        }
+      ],
+      "limit": 2,
+      "expect": [
+        5,
+        1
+      ]
+    }
+  ]
+}
