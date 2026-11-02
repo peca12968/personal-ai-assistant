@@ -23,7 +23,12 @@ class FormGeometryTests(unittest.TestCase):
     def setUp(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        def dispose():
+            # Tk timers outlive destroyed widgets; remove test-owned callbacks first.
+            for timer in self.root.tk.call('after', 'info'):
+                self.root.tk.call('after', 'cancel', timer)
+            self.root.destroy()
+        self.addCleanup(dispose)
 
     def allocate(self, view):
         # Allocate the viewport without displaying or focusing a desktop window.
@@ -119,6 +124,51 @@ class FormGeometryTests(unittest.TestCase):
             self.assertIn('已保存的成果', view.output.get('1.0', 'end'))
             view.previous_stage()
             self.assertEqual(view.selected_id(), gid)
+
+    def test_continuous_controls_start_selected_goal_save_reason_and_stop(self):
+        self.addCleanup(patch.stopall)
+        patch('assistant.autonomy_ui.messagebox.showerror', side_effect=AssertionError('unexpected dialog')).start()
+        patch('assistant.autonomy_ui.messagebox.showinfo', side_effect=AssertionError('unexpected dialog')).start()
+        from test_autonomy import ScriptedEngine, action
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            view = AutonomousWindow(self.root, store, sid, None)
+            layout = self.allocate(view)
+            self.assert_reachable(layout, view.continue_start)
+            self.assert_reachable(layout, view.continuous_minutes)
+            self.assert_reachable(layout, view.stop)
+            view.objective.insert('1.0', '完成整理')
+            view.new_goal()
+            view.continuous_steps.set('10')
+            view.continuous_minutes.set('2')
+            def verify_busy():
+                self.assertTrue(view.busy)
+                for widget in (view.start, view.continue_start, view.continuous_steps, view.continuous_minutes):
+                    self.assertEqual(str(widget['state']), 'disabled')
+                return action('calculate', operation='sum', values=['1'])
+            view.engine = ScriptedEngine(verify_busy, *([action('calculate', operation='sum', values=['1'])] * 6),
+                action('finish', report='完成整理'))
+            with patch('assistant.autonomy_ui.threading.Thread', side_effect=lambda target, **kwargs: SimpleNamespace(start=target)):
+                view.continue_start.invoke()
+            view.poll()
+            result = autonomy.get_goal(store, sid, view.selected_id())
+            self.assertEqual(len(result['steps']), 8)
+            self.assertEqual(result['continuous_runs'][0]['max_seconds'], 120)
+            self.assertIn('已記錄8步', view.output.get('1.0', 'end'))
+            self.assertEqual(str(view.continue_start['state']), 'disabled')
+            view.new_goal()
+            def stop():
+                view.stop.invoke()
+                return action('finish', report='不能保存')
+            view.engine = ScriptedEngine(stop)
+            with patch('assistant.autonomy_ui.threading.Thread', side_effect=lambda target, **kwargs: SimpleNamespace(start=target)):
+                view.continue_start.invoke()
+            view.poll()
+            result = autonomy.get_goal(store, sid, view.selected_id())
+            self.assertEqual(result['continuous_runs'][0]['reason'], 'cancelled')
+            self.assertEqual(result['result'], '')
+            self.assertFalse(view.busy)
 
     def test_companion_form_saves_reloads_and_resets_reachable_controls(self):
         with tempfile.TemporaryDirectory() as tmp:

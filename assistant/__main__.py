@@ -45,6 +45,8 @@ def main():
     mode.add_argument('--rebuild-goal-files', help='核對／重建指定目標已保存文件；需 --session，不呼叫模型')
     parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付目標的成果與使用者補充作為歷史背景')
     mode.add_argument('--run-goal', help='開始／接續自主目標 ID；需 --session')
+    parser.add_argument('--continuous-steps', type=int, help='搭配 --run-goal，持續執行新增最多1到32步；預設30分鐘，累計仍最多32步')
+    parser.add_argument('--continuous-minutes', type=int, help='搭配 --continuous-steps，時間上限1到120分鐘')
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
     mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session 與 --goal-reply')
     parser.add_argument('--goal-reply', help='搭配 --reply-goal 的回答')
@@ -94,6 +96,10 @@ def main():
         parser.error('--reply-goal 與 --goal-reply 需一起使用。')
     if args.goal_steps is not None and (args.run_goal is None or not 1 <= args.goal_steps <= 12):
         parser.error('--goal-steps 需搭配 --run-goal，範圍1到12。')
+    if args.continuous_steps is not None and (args.run_goal is None or args.goal_steps is not None or not 1 <= args.continuous_steps <= 32):
+        parser.error('--continuous-steps需搭配 --run-goal，範圍1到32，不能混用 --goal-steps。')
+    if args.continuous_minutes is not None and (args.continuous_steps is None or not 1 <= args.continuous_minutes <= 120):
+        parser.error('--continuous-minutes需搭配 --continuous-steps，範圍1到120。')
     if args.retry_answer and (not args.session or args.file):
         parser.error('--retry-answer 需要 --session，不能同時匯入文件；會使用目前已保存的參考資料。')
     if bool(args.plan_workflow) != bool(args.workflow_spec):
@@ -229,8 +235,13 @@ def main():
                 gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document, from_chat=args.from_chat)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
-                result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),
-                                  max_steps=args.goal_steps or 6)
+                if args.continuous_steps is not None:
+                    from .continuous import run_continuous
+                    result = run_continuous(store, args.session, args.run_goal, CodexEngine(args.data_dir),
+                        max_steps=args.continuous_steps, max_seconds=(args.continuous_minutes or 30) * 60)
+                else:
+                    result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),
+                                      max_steps=args.goal_steps or 6)
             elif args.reply_goal is not None:
                 reply(store, args.session, args.reply_goal, args.goal_reply)
                 result = get_goal(store, args.session, args.reply_goal)

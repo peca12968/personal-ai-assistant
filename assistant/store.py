@@ -133,6 +133,13 @@ class Store:
                     status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),
                     report_json TEXT, report_sha256 TEXT, error TEXT NOT NULL DEFAULT '',
                     exports_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS autonomous_continuous_runs (
+                    id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
+                    max_steps INTEGER NOT NULL CHECK(max_steps BETWEEN 1 AND 32),
+                    max_seconds INTEGER NOT NULL CHECK(max_seconds BETWEEN 60 AND 7200),
+                    start_step INTEGER NOT NULL, end_step INTEGER,
+                    reason TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, stopped_at TEXT);
                 CREATE TABLE IF NOT EXISTS autonomous_conversations (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     context_json TEXT NOT NULL, context_sha256 TEXT NOT NULL);

@@ -36,6 +36,7 @@ TABLES = {
     'goal_reviews': {'goal_id', 'fingerprint', 'hidden_at'},
     'autonomous_csv_sources': {'goal_id', 'config_json'},
     'autonomous_csv_plans': {'id', 'goal_id', 'spec_json', 'mean_policy_json', 'status', 'report_json', 'report_sha256', 'error', 'exports_json', 'created_at'},
+    'autonomous_continuous_runs': {'id', 'goal_id', 'max_steps', 'max_seconds', 'start_step', 'end_step', 'reason', 'started_at', 'stopped_at'},
     'autonomous_conversations': {'goal_id', 'context_json', 'context_sha256'},
 }
 
@@ -65,7 +66,7 @@ def validate_database(path):
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
         if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
             raise ValueError('自主目標資料表不完整。')
-        if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations'} and 'autonomous_goals' not in actual_tables:
+        if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
         delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
         if len(actual_tables & delivery_tables) == 1 or (delivery_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
@@ -73,7 +74,7 @@ def validate_database(path):
         csv_tables = {'autonomous_csv_sources', 'autonomous_csv_plans'}
         if len(actual_tables & csv_tables) == 1 or (csv_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主CSV資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:

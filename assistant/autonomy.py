@@ -108,6 +108,8 @@ def get_goal(store, sid, gid):
         result['artifacts'] = artifacts.inventory(db, gid)
         result['csv_source'] = autonomy_csv.source(db, gid)
         result['csv_plans'] = autonomy_csv.inventory(db, gid)
+        result['continuous_runs'] = [dict(r) for r in db.execute(
+            'SELECT * FROM autonomous_continuous_runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 10', (gid,))]
         result['conversation_context'] = goal_conversation.read(db, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
@@ -235,73 +237,99 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
         raise ValueError('每輪步數需為1到12。')
     cancel = cancel or threading.Event()
     progress = progress or (lambda value: None)
-    with lease(store, gid):  # Acquiring the OS-backed lock also permits recovery after owner exit.
-        goal = get_goal(store, sid, gid)
-        if goal['status'] in ('report_ready', 'needs_input'):
-            return goal
-        documents = store.documents(sid, include_content=True)
-        if signature(documents) != goal['sources']:
-            update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
-            return get_goal(store, sid, gid)
-        profile = get_profile(store)
-        update(store, gid, 'running')
-        catalog = [{**source, 'line_count': len(document['content'].splitlines())}
-                   for source, document in zip(goal['sources'], documents)]
-        try:
-            for _ in range(max_steps):
-                goal = get_goal(store, sid, gid)
-                if cancel.is_set():
-                    update(store, gid, 'paused', notice='已停止本機自主流程。')
-                    break
-                if len(goal['steps']) >= MAX_STEPS:
-                    update(store, gid, 'paused', notice='已達32步，請依目前成果建立下一階段目標。')
-                    break
-                if signature(store.documents(sid)) != goal['sources']:
-                    update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
-                    break
-                payload = {'objective': goal['objective'], 'user_notes': goal['notes'],
-                           'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
-                               if key != 'companion_profile'}} for step in goal['steps']],
-                           'companion_profile': profile,
-                           'previous_stage': goal['previous_stage'],
-                           'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
-                           'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
-                           'conversation_context': goal['conversation_context'],
-                           'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-                raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE +
-                    ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
-                    ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
-                if cancel.is_set():
-                    update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')
-                    break
-                if signature(store.documents(sid)) != goal['sources']:
-                    update(store, gid, 'paused', notice='參考文件已改變，未執行此次動作；請另建目標。')
-                    break
-                try:
-                    if len(raw) > 20000:
-                        raise ValueError('動作輸出過長。')
-                    action = validate_action(strict_json(raw))
-                    observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel)
-                except (ValueError, TypeError, KeyError) as exc:
-                    action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
-                    observation = {'error': str(exc)[:500]}
-                observation['companion_profile'] = profile
-                status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'
-                if cancel.is_set():
-                    status = 'paused'  # Preserve an already executed file action, but do not continue.
-                with store.connect() as db:
-                    db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
-                        (gid, len(goal['steps']) + 1, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
-                    db.execute('UPDATE autonomous_goals SET status=?,question=?,result=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                               (status, observation.get('question', '') if status == 'needs_input' else '',
-                                observation.get('report', '') if status == 'report_ready' else '',
-                                '已停止；此次已執行的動作及文件紀錄保留。' if status == 'paused' else '', gid))
-                progress({'step': len(goal['steps']) + 1, 'tool': action['tool'], 'note': action['note']})
-                if status != 'running':
-                    break
-            else:
-                update(store, gid, 'paused', notice='本輪步數已用完，進度已保存，可接續。')
-        except Exception:
-            update(store, gid, 'paused' if cancel.is_set() else 'failed', notice='流程已停止，已保存的步驟保留；可查看紀錄後接續。')
-            raise
-    return get_goal(store, sid, gid)
+    with lease(store, gid):
+        from .continuous import recover_locked
+        recover_locked(store, gid, len(get_goal(store, sid, gid)['steps']))
+        return _run_locked(store, sid, gid, engine, max_steps=max_steps, cancel=cancel, progress=progress)[0]
+
+
+def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure_limit=None):
+    # Caller holds the same goal lease for the entire operation.
+    goal = get_goal(store, sid, gid)
+    if goal['status'] in ('report_ready', 'needs_input'):
+        return goal, goal['status']
+    documents = store.documents(sid, include_content=True)
+    if signature(documents) != goal['sources']:
+        update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
+        return get_goal(store, sid, gid), 'sources_changed'
+    profile = get_profile(store)
+    update(store, gid, 'running')
+    catalog = [{**source, 'line_count': len(document['content'].splitlines())}
+               for source, document in zip(goal['sources'], documents)]
+    reason = 'step_budget'
+    failures = 0
+    try:
+        for _ in range(max_steps):
+            goal = get_goal(store, sid, gid)
+            if cancel.is_set():
+                reason = 'cancelled'
+                update(store, gid, 'paused', notice='已停止本機自主流程。')
+                break
+            if len(goal['steps']) >= MAX_STEPS:
+                reason = 'goal_limit'
+                update(store, gid, 'paused', notice='已達32步，請依目前成果建立下一階段目標。')
+                break
+            if signature(store.documents(sid)) != goal['sources']:
+                reason = 'sources_changed'
+                update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
+                break
+            payload = {'objective': goal['objective'], 'user_notes': goal['notes'],
+                       'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
+                           if key != 'companion_profile'}} for step in goal['steps']],
+                       'companion_profile': profile,
+                       'previous_stage': goal['previous_stage'],
+                       'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
+                       'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
+                       'conversation_context': goal['conversation_context'],
+                       'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE +
+                ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
+                ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
+            if cancel.is_set():
+                reason = 'cancelled'
+                update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')
+                break
+            if signature(store.documents(sid)) != goal['sources']:
+                reason = 'sources_changed'
+                update(store, gid, 'paused', notice='參考文件已改變，未執行此次動作；請另建目標。')
+                break
+            try:
+                if len(raw) > 20000:
+                    raise ValueError('動作輸出過長。')
+                action = validate_action(strict_json(raw))
+                observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel)
+            except (ValueError, TypeError, KeyError) as exc:
+                action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
+                observation = {'error': str(exc)[:500]}
+            observation['companion_profile'] = profile
+            status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'
+            if cancel.is_set():
+                reason = 'cancelled'
+                status = 'paused'  # Preserve an already executed file action, but do not continue.
+            with store.connect() as db:
+                db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
+                    (gid, len(goal['steps']) + 1, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
+                db.execute('UPDATE autonomous_goals SET status=?,question=?,result=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                           (status, observation.get('question', '') if status == 'needs_input' else '',
+                            observation.get('report', '') if status == 'report_ready' else '',
+                            '已停止；此次已執行的動作及文件紀錄保留。' if status == 'paused' else '', gid))
+            progress({'step': len(goal['steps']) + 1, 'tool': action['tool'], 'note': action['note']})
+            if status != 'running':
+                reason = 'cancelled' if status == 'paused' else status
+                break
+            failed = (action['tool'] == 'invalid' or observation.get('error') or
+                      observation.get('status') in ('failed', 'cancelled') or
+                      any(row['status'] != 'provided' for row in observation.get('requested_ranges', [])))
+            failures = failures + 1 if failed else 0
+            if failure_limit is not None and failures >= failure_limit:
+                reason = 'repeated_errors'
+                update(store, gid, 'paused', notice='連續三次動作未成功，已停止持續執行；請查看紀錄後調整目標。')
+                break
+        else:
+            if len(get_goal(store, sid, gid)['steps']) >= MAX_STEPS:
+                reason = 'goal_limit'
+            update(store, gid, 'paused', notice='已達32步，請依目前成果建立下一階段目標。' if reason == 'goal_limit' else '本輪步數已用完，進度已保存，可接續。')
+    except Exception:
+        update(store, gid, 'paused' if cancel.is_set() else 'failed', notice='流程已停止，已保存的步驟保留；可查看紀錄後接續。')
+        raise
+    return get_goal(store, sid, gid), reason

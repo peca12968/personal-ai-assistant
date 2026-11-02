@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import autonomy
+from . import continuous
 from . import artifacts
 from .goal_conversation import describe as describe_conversation
 from .ui_layout import ScrollableForm, fit_window
@@ -80,6 +81,20 @@ class AutonomousWindow:
         self.start.pack(side='left', padx=8)
         self.stop = ttk.Button(controls, text='停止並保存進度', command=self.cancel.set, state='disabled')
         self.stop.pack(side='left')
+        continuous_controls = ttk.Frame(body, padding=12)
+        continuous_controls.pack(fill='x')
+        ttk.Label(continuous_controls, text='持續執行：新增最多').pack(side='left')
+        self.continuous_steps = ttk.Spinbox(continuous_controls, from_=1, to=32, width=4)
+        self.continuous_steps.set('24')
+        self.continuous_steps.pack(side='left')
+        ttk.Label(continuous_controls, text='步，最多').pack(side='left')
+        self.continuous_minutes = ttk.Spinbox(continuous_controls, from_=1, to=120, width=4)
+        self.continuous_minutes.set('30')
+        self.continuous_minutes.pack(side='left')
+        ttk.Label(continuous_controls, text='分鐘').pack(side='left')
+        self.continue_start = ttk.Button(continuous_controls, text='開始持續執行', command=lambda: self.begin(continuous_mode=True))
+        self.continue_start.pack(side='left', padx=8)
+        self.layout.wrapped_label(body, text='持續執行只處理所選目標，不需逐輪按接續。完成成果、需要補充、來源改變、連續三次工具錯誤或達上限即停止；目標累計仍最多32步。關閉程式會要求停止，重開不會自行啟動。', padding=12).pack(fill='x')
         ttk.Label(body, text='需要補充時，在這裡回答：').pack(anchor='w', padx=12)
         self.answer = tk.Text(body, height=2, wrap='word')
         self.answer.pack(fill='x', padx=12)
@@ -164,7 +179,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -182,6 +197,7 @@ class AutonomousWindow:
         except ValueError:
             return
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
+        self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
         self.follow.configure(state='normal' if not self.busy and goal['status'] == 'report_ready' else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
@@ -191,6 +207,11 @@ class AutonomousWindow:
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
+        if goal['continuous_runs']:
+            lines += ['最近10次持續執行紀錄（本機保存；執行中標記不代表程序仍存活）：']
+            for run in goal['continuous_runs']:
+                count = (run['end_step'] if run['end_step'] is not None else len(goal['steps'])) - run['start_step']
+                lines += [f"{run['started_at']} UTC · 設定最多{run['max_steps']}步／{run['max_seconds'] // 60}分鐘 · 已記錄{count}步 · {continuous.REASONS.get(run['reason'], run['reason'])}"]
         if goal['csv_source']:
             csv = goal['csv_source']
             lines += [f"自主CSV分析：D{csv['document_id']} {csv['name']} · {csv['rows']}筆資料；使用匯入副本。",
@@ -240,13 +261,18 @@ class AutonomousWindow:
         except Exception as exc:
             messagebox.showerror('無法保存補充', str(exc), parent=self.window)
 
-    def begin(self):
+    def begin(self, *, continuous_mode=False):
         if self.busy:
             return
         try:
-            gid, budget = self.selected_id(), int(self.budget.get())
-            if not 1 <= budget <= 12:
-                raise ValueError('每輪步數需為1到12。')
+            gid = self.selected_id()
+            if continuous_mode:
+                budget, seconds = int(self.continuous_steps.get()), int(self.continuous_minutes.get()) * 60
+                continuous.validate_limits(budget, seconds)
+            else:
+                budget = int(self.budget.get())
+                if not 1 <= budget <= 12:
+                    raise ValueError('每輪步數需為1到12。')
         except ValueError as exc:
             messagebox.showinfo('請確認目標', str(exc), parent=self.window)
             return
@@ -254,13 +280,15 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
         def work():
             try:
-                result = autonomy.run_goal(self.store, self.sid, gid, self.engine, max_steps=budget,
+                runner = continuous.run_continuous if continuous_mode else autonomy.run_goal
+                options = {'max_seconds': seconds} if continuous_mode else {}
+                result = runner(self.store, self.sid, gid, self.engine, max_steps=budget, **options,
                     cancel=self.cancel, progress=lambda event: self.events.put(('progress', event)))
                 self.events.put(('done', result))
             except Exception as exc:
@@ -277,7 +305,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))

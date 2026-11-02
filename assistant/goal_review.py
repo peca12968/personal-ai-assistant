@@ -48,6 +48,9 @@ def _rows(db, gid=None):
         # Full local state drives redisplay, even when the visible excerpt is clipped.
         evidence = {**row, 'current_sources': current_sources[sid], 'artifacts': files,
                     'csv_plans': autonomy_csv.inventory(db, row['id'])}
+        latest = db.execute('SELECT * FROM autonomous_continuous_runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1', (row['id'],)).fetchone()
+        if latest is not None:  # Preserve pre-upgrade fingerprints until there is new work.
+            evidence['continuous_run'] = dict(latest)
         fingerprint = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
         sources_match = json.loads(row['sources_json']) == current_sources[sid]
