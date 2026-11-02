@@ -100,6 +100,8 @@ class AutonomousWindow:
         self.answer.pack(fill='x', padx=12)
         self.reply = ttk.Button(body, text='保存補充', command=self.add_reply)
         self.reply.pack(anchor='w', padx=12, pady=6)
+        self.guidance = ttk.Button(body, text='補充／更正此目標', command=self.add_guidance, state='disabled')
+        self.guidance.pack(anchor='w', padx=12, pady=6)
         self.notice = tk.StringVar(value='選擇目標後開始；進度保存在本機。')
         self.layout.wrapped_label(body, textvariable=self.notice, padding=12).pack(fill='x')
         self.output = tk.Text(body, height=14, wrap='word', state='disabled')
@@ -179,7 +181,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -199,6 +201,7 @@ class AutonomousWindow:
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
         self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
+        self.guidance.configure(state='normal' if not self.busy and goal['status'] in ('pending','paused','failed','needs_input') else 'disabled')
         self.follow.configure(state='normal' if not self.busy and goal['status'] == 'report_ready' else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
         self.files.configure(state='normal' if goal['artifacts'] else 'disabled')
@@ -251,6 +254,12 @@ class AutonomousWindow:
         self.output.insert('1.0', '\n\n'.join(lines))
         self.output.configure(state='disabled')
 
+    def add_guidance(self):
+        if self.busy:return
+        from .goal_guidance_ui import GoalGuidanceWindow
+        gid=self.selected_id()
+        return GoalGuidanceWindow(self.window,self.store,self.sid,gid,lambda:self.refresh(gid))
+
     def add_reply(self):
         if self.busy:
             return
@@ -280,7 +289,7 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -305,7 +314,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))

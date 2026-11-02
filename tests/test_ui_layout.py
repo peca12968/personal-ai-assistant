@@ -532,6 +532,37 @@ class FormGeometryTests(unittest.TestCase):
                 self.assertGreater(widget.winfo_height(),10)
             self.assertEqual(str(app.reminder_text['state']),'disabled')
 
+    def test_goal_guidance_reviews_current_state_rejects_stale_and_preserves_unsaved_drafts(self):
+        from assistant.goal_guidance_ui import GoalGuidanceWindow
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');sid=store.new_session()
+            gid=autonomy.create_goal(store,sid,'計算10人的費用')
+            view=AutonomousWindow(self.root,store,sid,None);layout=self.allocate(view)
+            view.objective.insert('1.0','另一份尚未保存的目標')
+            view.answer.insert('1.0','尚未送出的回答')
+            view.refresh(gid);self.assert_reachable(layout,view.guidance)
+            editor=view.add_guidance();editor_layout=self.allocate(editor)
+            other=GoalGuidanceWindow(self.root,store,sid,gid);other.window.withdraw()
+            self.assert_reachable(editor_layout,editor.save_button)
+            self.assertIn('計算10人',editor.context.get('1.0','end'))
+            editor.content.insert('1.0','更正：改為12人。');editor.save_button.invoke()
+            other.content.insert('1.0','再補充：先給總額。')
+            with patch('assistant.goal_guidance_ui.messagebox.showerror') as error:other.save_button.invoke()
+            error.assert_called_once()
+            self.assertIn('先給總額',other.content.get('1.0','end'))
+            other.reload_button.invoke()
+            self.assertIn('12人',other.context.get('1.0','end'))
+            other.save_button.invoke()
+            goal=autonomy.get_goal(store,sid,gid)
+            self.assertEqual(goal['status'],'pending');self.assertEqual(goal['steps'],[])
+            self.assertIn('12人',goal['notes']);self.assertIn('先給總額',goal['notes'])
+            self.assertEqual(view.objective.get('1.0','end').strip(),'另一份尚未保存的目標')
+            self.assertEqual(view.answer.get('1.0','end').strip(),'尚未送出的回答')
+            view.busy=True;view.select();self.assertEqual(str(view.guidance['state']),'disabled')
+            view.busy=False;autonomy.update(store,gid,'report_ready',result='結果')
+            view.refresh(gid);self.assertEqual(str(view.guidance['state']),'disabled')
+            editor.reload();self.assertEqual(str(editor.save_button['state']),'disabled')
+
     def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
         import threading
         from assistant.gui import App

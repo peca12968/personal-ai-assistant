@@ -50,6 +50,10 @@ def main():
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
     mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session 與 --goal-reply')
     parser.add_argument('--goal-reply', help='搭配 --reply-goal 的回答')
+    mode.add_argument('--goal-guidance-status', help='查看可追加補充的目標快照與指紋；需 --session')
+    mode.add_argument('--amend-goal', help='追加目標更正；需 --session、--goal-guidance、--goal-fingerprint')
+    parser.add_argument('--goal-guidance', help='追加到目標的使用者更正或條件')
+    parser.add_argument('--goal-fingerprint', help='從 --goal-guidance-status 取得的指紋')
     parser.add_argument('--goal-steps', type=int, help='搭配 --run-goal，每輪最多1到12步，預設6步')
     mode.add_argument('--export-task', help='匯出已完成報告；需 --session 與 --output')
     mode.add_argument('--improve', help='指定方向，自我修改限定程式、驗證並發布一輪')
@@ -85,7 +89,14 @@ def main():
         parser.error('--profile-revision 只能搭配儲存／重設夥伴設定。')
     if profile_mode and (args.session or args.file):
         parser.error('夥伴設定套用整份資料庫，不搭配 --session 或 --file。')
-    autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal, args.rebuild_goal_files))
+    autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal, args.rebuild_goal_files, args.goal_guidance_status, args.amend_goal))
+    if args.amend_goal is not None:
+        if args.goal_guidance is None or args.goal_fingerprint is None:
+            parser.error('--amend-goal需要 --goal-guidance 與 --goal-fingerprint。')
+    elif args.goal_guidance is not None or args.goal_fingerprint is not None:
+        parser.error('補充內容與指紋只能搭配 --amend-goal。')
+    if (args.amend_goal is not None or args.goal_guidance_status is not None) and args.file:
+        parser.error('補充目標不會匯入或替換來源，不能搭配 --file。')
     if autonomous and not args.session:
         parser.error('自主目標需要 --session 指定對話。')
     if args.from_goal is not None and args.new_goal is None:
@@ -248,6 +259,12 @@ def main():
             elif args.rebuild_goal_files is not None:
                 from .artifacts import rebuild
                 result = rebuild(store, args.session, args.rebuild_goal_files)
+            elif args.goal_guidance_status is not None:
+                from .goal_guidance import snapshot
+                result = snapshot(store, args.session, args.goal_guidance_status)
+            elif args.amend_goal is not None:
+                from .goal_guidance import save
+                result = save(store, args.session, args.amend_goal, args.goal_guidance, expected_fingerprint=args.goal_fingerprint)
             else:
                 result = get_goal(store, args.session, args.goal_status)
             print(json.dumps(result, ensure_ascii=False, indent=2))
