@@ -87,3 +87,19 @@ python scripts/evaluate_understanding.py --live --suite evals/communication_cont
 第一條僅驗證案例及上下文可建立，不代表語意品質通過。發布、GitHub CI 與自我改進回歸均納入此離線命令。完整36題真實基準是在提示修正前收集；本輪修正後只對固定補充6題重新取得真實答案，不把兩者混算為新版42題全數通過。
 
 本輪也修正評估完整性：render_prompt 同時讀取 system.txt 與 communication.txt，原指紋只有前者。新報告另保存 communication_prompt_sha256，恢復執行時必須完全匹配；每題生成後再次檢查，避免最後一題生成途中改版仍被寫入舊版本報告。兩個故障注入／檔案修改測試確認舊答案不被覆寫，變更後的答案不被記在舊指紋下。舊報告仍可閱讀，但不接受缺少新指紋的報告接續新版執行。
+
+
+## 2026-11-03：現行產品操作說明
+
+v0.41新增 `evals/product_help.json` 八個固定情境，涵蓋未完成／步數已滿的階段接續、執行中工作與新階段選項、手動記憶編輯的不同欄位合併、同欄衝突、刪後草稿、工作清單與驗收差別，以及不把本助理控制項套用到其他軟體。
+
+程式已支援未完成工作帶入與記憶逐欄合併，但原提示仍只介紹已交付階段，亦缺少新記憶編輯規則。改前八題的開發評讀為三題通過、五題未符合全部標準；首輪更新後五題通過，仍有三題把下一階段按鈕的立即保存時機或CSV／檔案選項順序說錯。對照實際控制器後補清楚建立前選好選項、按按鈕即保存、之後直接開始，並區分普通保存新目標。最終同題八題均符合本輪三項標準，原三個通過案例維持；案例與選取完全相同，由compare工具核對。
+
+三輪原始報告及逐項評讀保存在忽略的 `data/evaluations/product-help-v041`，評讀者是development_agent，human_grade空白。這是針對已知產品說明缺陷的單次配對觀察，模型服務取樣與評讀差異未受控制，不是獨立驗收、普遍答題成功率或模型權重改善。
+
+```powershell
+python scripts/evaluate_understanding.py --suite evals/product_help.json
+python scripts/evaluate_understanding.py --live --suite evals/product_help.json --report data/evaluations/product-help-new.json
+```
+
+第一條只核對案例與上下文可建立，已加入發布、CI及自我改碼的保護檢查；不呼叫模型，也不判定答案正確。第二條收集實際回答，完整收集後再使用review_understanding.py逐題評讀。產品流程變更時需一併核對提示中的按鈕名稱、保存時機、前置選項及能力範圍；文字更新不代表已替使用者執行操作。

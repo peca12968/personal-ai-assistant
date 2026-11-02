@@ -28,6 +28,7 @@ CHECKS = [('-m', 'unittest', 'discover', '-s', 'tests', '-v')] + [
      'evaluate_understanding', 'evaluate_tasks', 'evaluate_workflows', 'evaluate_memory_commands', 'evaluate_answer_runs')]
 CHECKS.append(('scripts/evaluate_understanding.py', '--suite', 'evals/communication_context.json'))
 CHECKS.append(('scripts/evaluate_understanding.py', '--suite', 'evals/companion_profile.json'))
+CHECKS.append(('scripts/evaluate_understanding.py', '--suite', 'evals/product_help.json'))
 
 
 def git(root, *args):
