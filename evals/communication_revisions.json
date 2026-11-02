@@ -1,0 +1,482 @@
+[
+  {
+    "id": "change_to_detail",
+    "kind": "communication",
+    "question": "請簡短回答。更正：請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "change_to_short",
+    "kind": "communication",
+    "question": "請詳細說明。更正：請簡短回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "change_sentence",
+    "kind": "communication",
+    "question": "請用一句話回答。更正：請逐步解釋二分搜尋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "change_final",
+    "kind": "communication",
+    "question": "請簡短回答。更正：請詳細說明。最後更正：請精簡回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "abandon_short",
+    "kind": "communication",
+    "question": "請簡短回答。算了，改為詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "abandon_detail",
+    "kind": "communication",
+    "question": "請詳細說明。算了，改為簡短回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "english_detail",
+    "kind": "communication",
+    "question": "Please be concise. Actually, explain step by step.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "english_short",
+    "kind": "communication",
+    "question": "Explain in detail. Actually, keep it brief.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "mixed",
+    "kind": "communication",
+    "question": "先簡短結論，再詳細說明原因。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "mixed_after_change",
+    "kind": "communication",
+    "question": "請簡短回答。更正：先簡短結論，再詳細說明原因。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "data_quote",
+    "kind": "communication",
+    "question": "翻譯「更正：請詳細說明」，請簡短回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "quoted_correction",
+    "kind": "communication",
+    "question": "請簡短回答。文件中寫著「更正：請詳細說明」。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "code",
+    "kind": "communication",
+    "question": "請簡短回答。\n```text\n更正：請詳細說明\n```",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "nonstyle_correction",
+    "kind": "communication",
+    "question": "請簡短回答。更正：專案名稱改為星橋。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "nonstyle_mixed",
+    "kind": "communication",
+    "question": "先簡短總結。把變數改成item，然後詳細說明原因。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "negative",
+    "kind": "communication",
+    "question": "不要簡短，請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "not_detail",
+    "kind": "communication",
+    "question": "不用詳細說明，請簡短回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "unspecified",
+    "kind": "communication",
+    "question": "你好，今天怎麼樣？",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "quoted_style",
+    "kind": "communication",
+    "question": "請用「簡短」方式回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "both_without_retraction",
+    "kind": "communication",
+    "question": "請簡短介紹架構並逐步解釋安裝。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "new_detail",
+    "kind": "communication",
+    "question": "請簡短描述流程。更正：請逐步解釋如何排除連線問題。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "new_short",
+    "kind": "communication",
+    "question": "請逐步解釋。更正：請用兩句話說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "new_mixed",
+    "kind": "communication",
+    "question": "先簡短說明。更正：請詳細說明。更正：先簡短總結再逐步解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "english_quote",
+    "kind": "communication",
+    "question": "請簡短回答。「Actually, explain step by step.」是測試資料。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "topic_change",
+    "kind": "communication",
+    "question": "請詳細說明。更正：產品名稱改為「brief」。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "en_short_topic",
+    "kind": "communication",
+    "question": "Explain in detail. Actually, be concise about binary search.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "en_detail_example",
+    "kind": "communication",
+    "question": "Please be concise. Actually, explain in detail with an example.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "negated_new",
+    "kind": "communication",
+    "question": "請簡短回答。更正：不是要詳細說明，仍然簡短即可。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "topic_then_detail",
+    "kind": "communication",
+    "question": "請簡短介紹。更正：方案改為乙，然後詳細說明費率。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "change_topic_then_detail",
+    "kind": "communication",
+    "question": "請簡短介紹。改為乙方案，然後詳細說明費率。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "negated_want",
+    "kind": "communication",
+    "question": "不是要簡短，請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "negated_english_want",
+    "kind": "communication",
+    "question": "I do not want a brief answer. Please explain in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_short",
+    "kind": "communication",
+    "question": "請逐步解釋；更正：簡短回答即可。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_detail",
+    "kind": "communication",
+    "question": "請簡短回答；更正：完整解釋操作流程。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "quoted_folder",
+    "kind": "communication",
+    "question": "請簡短總結。更正：資料夾叫「詳細說明」，不需要改回答方式。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "topic_plus_both",
+    "kind": "communication",
+    "question": "請簡短比較A與B。更正：選項B改成C，並逐步解釋比較依據。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_en_detail",
+    "kind": "communication",
+    "question": "Be concise. Actually, explain it in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_en_negative",
+    "kind": "communication",
+    "question": "Please be concise. Actually, do not explain in detail; keep it brief.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_negative",
+    "kind": "communication",
+    "question": "請簡短回答。更正：不要詳細說明，而要精簡列點。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "second_topic_only",
+    "kind": "communication",
+    "question": "請詳細說明。更正：計畫只改日期。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_detail",
+    "kind": "communication",
+    "question": "請用三句話說明排序。更正：請詳細說明排序原理。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_short",
+    "kind": "communication",
+    "question": "請完整解釋資料庫。更正：請精簡回答，僅列兩個要點。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_topic",
+    "kind": "communication",
+    "question": "先簡短介紹。更正：方案改為丙，再逐步解釋費率。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_mixed",
+    "kind": "communication",
+    "question": "請簡短回答。更正：請詳細說明。更正：先精簡結論，再完整解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_en_it",
+    "kind": "communication",
+    "question": "Please be brief. Actually, explain it in detail using a queue example.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_en_short",
+    "kind": "communication",
+    "question": "Explain it in detail. Actually, be brief about queues.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_quote",
+    "kind": "communication",
+    "question": "請簡短回答。程式註解是「更正：請完整解釋」。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise",
+      "hints_only": true
+    }
+  },
+  {
+    "id": "third_negative",
+    "kind": "communication",
+    "question": "不是要簡短答案，請逐步解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed",
+      "hints_only": true
+    }
+  }
+]
