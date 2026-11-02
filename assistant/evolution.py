@@ -28,7 +28,8 @@ CHECKS = [('-m', 'unittest', 'discover', '-s', 'tests', '-v')] + [
 
 
 def git(root, *args):
-    return subprocess.check_output(['git', *args], cwd=root, encoding='utf-8', errors='strict').strip()
+    return subprocess.check_output(['git', *args], cwd=root, encoding='utf-8', errors='strict',
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0).strip()
 
 
 def digest(content):
@@ -205,6 +206,7 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
                    'Verified self-improvement ' + run_id, '--expected-head', baseline]
         for name in edits:
             command.extend(['--expected-file', name])
+            command.extend(['--expected-sha256', name + '=' + digest(edits[name])])
         run_checked(command, root, folder / 'publish.log', timeout=300)
         report['commit'] = git(root, 'rev-parse', 'HEAD')
         branch = git(root, 'branch', '--show-current')

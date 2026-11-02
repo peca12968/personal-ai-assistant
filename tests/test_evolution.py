@@ -11,9 +11,18 @@ from assistant import evolution as ev
 from assistant.communication import conversation_style
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
+from assistant.evolution_status import improvement_context
+from scripts import publish
 
 
 class CommunicationTests(unittest.TestCase):
+    def test_self_authored_sentence_and_fullwidth_improvement(self):
+        # Independent acceptance cases added after inspecting the actual model edit.
+        for question in ('兩句就好', '一句話回答', '用三句說明', 'in two sentences',
+                         'within 2 sentences', 'ｂｒｉｅｆ'):
+            with self.subTest(question=question):
+                self.assertEqual(conversation_style(question, [])['length_hint'], 'concise')
+
     def test_length_correction_and_history_are_advisory(self):
         result = conversation_style('你誤會了，簡短回答', [{'role': 'user', 'content': 'old'}])
         self.assertEqual(result['length_hint'], 'concise')
@@ -81,6 +90,21 @@ class EvolutionTests(unittest.TestCase):
         item = {'path': self.name, 'content': 'x=1'}
         with self.assertRaises(ValueError):
             ev.parse_proposal(json.dumps({'files': [item, item]}), [self.name])
+
+    def test_publisher_rejects_same_path_with_untested_content(self):
+        def run(*args, capture=False):
+            if args[:3] == ('git', 'rev-parse', 'HEAD'):
+                return self.base
+            if args[:3] == ('git', 'diff', 'HEAD'):
+                return self.name
+            if args[:3] == ('git', 'ls-files', '--others'):
+                return ''
+            return ''
+        argv = ['publish.py', '--expected-head', self.base, '--expected-file', self.name,
+                '--expected-sha256', self.name + '=' + ev.digest(b'NOT the tested contents')]
+        with patch.object(publish, 'ROOT', self.root), patch.object(publish, 'run', side_effect=run), patch.object(sys, 'argv', argv):
+            with self.assertRaisesRegex(RuntimeError, 'source content differs'):
+                publish.main()
 
     def test_dirty_project_and_concurrent_lock_stop_before_model(self):
         (self.root / self.name).write_text('dirty', encoding='utf-8')
@@ -156,10 +180,24 @@ class EvolutionTests(unittest.TestCase):
         self.assertNotIn('private-marker', self.prompt)
         self.assertFalse((Path(result['directory']) / 'candidate/data/private.txt').exists())
         self.assertEqual(ev.clean_head(self.root), result['commit'])
+        context = improvement_context(self.root, '你是不是改了程式？')
+        self.assertTrue(context[0]['revision_verified'])
+        self.assertTrue(context[0]['current_files_match'])
+        self.assertNotIn('goal', context[0])
+        self.assertNotIn('directory', context[0])
+        self.assertEqual(improvement_context(self.root, 'hello'), [])
         with patch.object(ev, 'run_checked', side_effect=run):
             reverted = ev.rollback(result['id'], root=self.root)
         self.assertEqual(reverted['status'], 'published')
         self.assertEqual((self.root / self.name).read_text(), 'VALUE = 1\n')
+        context = improvement_context(self.root, '自我改進')
+        self.assertTrue(context[0]['rollback_recorded'])
+        self.assertFalse(context[0]['current_files_match'])
+        path = Path(result['directory']) / 'report.json'
+        report = json.loads(path.read_text(encoding='utf-8'))
+        report['files'][self.name] = '0' * 64
+        path.write_text(json.dumps(report), encoding='utf-8')
+        self.assertFalse(improvement_context(self.root, '自我改進')[0]['revision_verified'])
         with self.assertRaises(ValueError):
             ev.rollback(result['id'], root=self.root)
 

@@ -29,7 +29,7 @@ def main():
         parser.error('Use a new report path under data/evaluations; existing evidence is preserved.')
     destination.parent.mkdir(parents=True, exist_ok=True)
     fingerprint = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in
-                   ('assistant/communication.py', 'assistant/engine.py', 'prompts/system.txt',
+                   ('assistant/communication.py', 'assistant/engine.py', 'assistant/evolution_status.py', 'prompts/system.txt',
                     'prompts/communication.txt', 'evals/communication.json')}
     report = {'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
               'fingerprint': fingerprint, 'completed': False, 'results': []}

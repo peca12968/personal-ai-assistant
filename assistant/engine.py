@@ -13,6 +13,7 @@ from .context import followup_query, make_context, select_excerpts
 from .documents import check_citations, retrieve_documents
 from .tasks import task_context
 from .communication import conversation_style
+from .evolution_status import improvement_context
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,6 +120,7 @@ class Assistant:
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
         context['task_runs'] = task_context(self.store, sid, question)
         context['communication'] = conversation_style(question, history)
+        context['self_improvement'] = improvement_context(ROOT, question)
         return context
 
     def ask(self, sid, question, cancel=None):

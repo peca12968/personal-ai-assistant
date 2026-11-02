@@ -1,5 +1,6 @@
 """Test, inspect, commit and push only project source to the private origin."""
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
@@ -31,6 +32,7 @@ def main():
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument('--expected-head', help='Self-improvement base commit; reject concurrent revisions')
     parser.add_argument('--expected-file', action='append', help='Exact allowed changed file for a self-improvement release')
+    parser.add_argument('--expected-sha256', action='append', help='path=sha256 of each tested self-improvement file')
     args = parser.parse_args()
     run(sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v")
     run(sys.executable, "scripts/evaluate.py")
@@ -48,6 +50,11 @@ def main():
         untracked = set(filter(None, run('git', 'ls-files', '--others', '--exclude-standard', '-z', capture=True).split('\0')))
         if not changed or changed | untracked != set(args.expected_file):
             raise RuntimeError('Upload stopped: changes differ from the verified self-improvement files.')
+        expected = dict(item.rsplit('=', 1) for item in (args.expected_sha256 or []))
+        if set(expected) != set(args.expected_file) or any(
+            hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != sha for name, sha in expected.items()
+        ):
+            raise RuntimeError('Upload stopped: source content differs from the tested self-improvement.')
     if run("gh", "repo", "view", REPO, "--json", "visibility", "--jq", ".visibility", capture=True) != "PRIVATE":
         raise RuntimeError("Upload stopped: destination must be PRIVATE.")
     remote = run("git", "remote", "get-url", "--push", "origin", capture=True)
