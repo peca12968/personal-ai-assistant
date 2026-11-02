@@ -3,6 +3,7 @@ import hashlib
 import json
 
 from .acceptance import validate_suite
+from .context import clip
 
 
 def feedback_source(store, message_id):
@@ -49,4 +50,31 @@ def make_draft(source, question, history, problem, expected):
     return {'goal': '改善溝通提示的回答長度辨識，遵守使用者指定的驗收期望。提示仍須服從完整原文。\n'
                     '使用者描述的問題：\n' + problem.strip() + '\n不要修改測試或把整句範例硬編碼成規則。',
             'selected': ['assistant/communication.py'], 'acceptance': suite,
+            'source_message_id': source['message_id'], 'source_fingerprint': source['fingerprint']}
+
+
+def make_followup_draft(source, question, history, problem, selected_turns):
+    """Build an exact retrieval-context expectation from explicitly selected turns.
+
+    None is an explicit request to retrieve no previous topic; an empty selection
+    is not treated as consent to that choice. Indices refer to the edited history.
+    """
+    example_from_source(source)
+    if not isinstance(problem, str) or not problem.strip() or len(problem) > 2500:
+        raise ValueError('改善描述需為 1–2500 字。')
+    case = {'id': 'feedback_' + str(source['message_id']), 'kind': 'followup',
+            'question': question, 'history': history, 'expect': None}
+    validate_suite({'version': 1, 'cases': [case]}, ['assistant/context.py'])
+    if selected_turns is not None:
+        if (not isinstance(selected_turns, list) or not 1 <= len(selected_turns) <= 4 or
+                any(type(i) is not int or not 0 <= i < len(history) for i in selected_turns) or
+                selected_turns != sorted(set(selected_turns)) or
+                any(history[i]['role'] != 'user' for i in selected_turns)):
+            raise ValueError('請依前文順序選取一到四則使用者訊息，不能重複或選取助理回答。')
+        case['expect'] = '\n'.join(clip(history[i]['content'], 1000)[0] for i in selected_turns)
+    suite = validate_suite({'version': 1, 'cases': [case]}, ['assistant/context.py'])
+    return {'goal': '改善接續問題的前文檢索選取，依使用者指定的前文或不沿用要求驗收。'
+                    '保留換話題、隔離與長度上限，不能將助理猜測當成使用者事實。\n'
+                    '使用者描述的問題：\n' + problem.strip() + '\n不要修改測試或把整句範例硬編碼成規則。',
+            'selected': ['assistant/context.py'], 'acceptance': suite,
             'source_message_id': source['message_id'], 'source_fingerprint': source['fingerprint']}

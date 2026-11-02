@@ -1,0 +1,552 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "positive_1",
+      "kind": "followup",
+      "question": "第二個呢？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_2",
+      "kind": "followup",
+      "question": "請問第二個呢？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_3",
+      "kind": "followup",
+      "question": "選第二個。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_4",
+      "kind": "followup",
+      "question": "第 2 個怎麼做？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_5",
+      "kind": "followup",
+      "question": "請把上面的回答改成表格。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_6",
+      "kind": "followup",
+      "question": "麻煩換成表格。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_7",
+      "kind": "followup",
+      "question": "請用表格整理。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_8",
+      "kind": "followup",
+      "question": "Please make it shorter.",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_9",
+      "kind": "followup",
+      "question": "What about the second one?",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "positive_10",
+      "kind": "followup",
+      "question": "那接下來呢？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。"
+    },
+    {
+      "id": "negative_1",
+      "kind": "followup",
+      "question": "第二次世界大戰何時結束？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_2",
+      "kind": "followup",
+      "question": "第二個質數是多少？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_3",
+      "kind": "followup",
+      "question": "請問第二個質數是多少？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_4",
+      "kind": "followup",
+      "question": "請幫我解釋光合作用。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_5",
+      "kind": "followup",
+      "question": "Please explain photosynthesis.",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_6",
+      "kind": "followup",
+      "question": "換個話題，第二個質數是多少？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_7",
+      "kind": "followup",
+      "question": "請換個話題，談音樂。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_8",
+      "kind": "followup",
+      "question": "請用 Python 寫 HTTP 伺服器。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_9",
+      "kind": "followup",
+      "question": "「第二個呢？」這句話是什麼意思？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "negative_10",
+      "kind": "followup",
+      "question": "水的化學式是什麼？",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "no_history",
+      "kind": "followup",
+      "question": "第二個呢？",
+      "history": [],
+      "expect": null
+    },
+    {
+      "id": "assistant_only",
+      "kind": "followup",
+      "question": "第二個呢？",
+      "history": [
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "chain",
+      "kind": "followup",
+      "question": "請把上面的回答改成表格。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        },
+        {
+          "role": "user",
+          "content": "第二個呢？"
+        }
+      ],
+      "expect": "比較我的 backup 規劃。\n第二個呢？"
+    },
+    {
+      "id": "topic_boundary",
+      "kind": "followup",
+      "question": "請換成表格。",
+      "history": [
+        {
+          "role": "user",
+          "content": "比較我的 backup 規劃。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以比較第一個與第二個方案。"
+        },
+        {
+          "role": "user",
+          "content": "換個話題，談 database。"
+        },
+        {
+          "role": "user",
+          "content": "第二個呢？"
+        }
+      ],
+      "expect": "換個話題，談 database。\n第二個呢？"
+    },
+    {
+      "id": "feedback_4",
+      "kind": "followup",
+      "question": "可以把剛才的內容整理成清單嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": "請根據已存的 backup 設定說明路徑與時間。"
+    },
+    {
+      "id": "can_reference",
+      "kind": "followup",
+      "question": "能把上述回答改成表格嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": "請根據已存的 backup 設定說明路徑與時間。"
+    },
+    {
+      "id": "could_reference",
+      "kind": "followup",
+      "question": "可以將前面的說明轉成條列嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": "請根據已存的 backup 設定說明路徑與時間。"
+    },
+    {
+      "id": "english_reference",
+      "kind": "followup",
+      "question": "Could you put the previous answer in a table?",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": "請根據已存的 backup 設定說明路徑與時間。"
+    },
+    {
+      "id": "new_furniture",
+      "kind": "followup",
+      "question": "可以把新買的桌子改成書架嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "new_science",
+      "kind": "followup",
+      "question": "可以解釋光合作用嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "quoted_request",
+      "kind": "followup",
+      "question": "可以把「整理成清單」這句翻成英文嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "english_new",
+      "kind": "followup",
+      "question": "Can you explain photosynthesis?",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "explicit_new",
+      "kind": "followup",
+      "question": "換個話題，可以把光合作用的說明整理成清單嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "polite_chain",
+      "kind": "followup",
+      "question": "請把上面的回答改成表格。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的 backup 設定說明路徑與時間。"
+        },
+        {
+          "role": "assistant",
+          "content": "可以依設定整理。"
+        },
+        {
+          "role": "user",
+          "content": "可以把剛才的內容整理成清單嗎？"
+        }
+      ],
+      "expect": "請根據已存的 backup 設定說明路徑與時間。\n可以把剛才的內容整理成清單嗎？"
+    }
+  ]
+}

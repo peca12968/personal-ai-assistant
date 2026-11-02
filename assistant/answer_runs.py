@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 
 ERROR_LABELS = {
+    'temp_cleanup_failed': '推理暫存資料未能完全清理，沒有保存完成答案；此狀態本身不證明雲端請求已停止。',
     'timeout': '上次回答逾時，沒有保存完成答案。',
     'cancelled': '這次回答已取消，沒有保存完成答案。',
     'process_failed': '推理引擎未正常完成；確切登入、網路或額度原因未確認。',

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .context import correction_context, followup_query, make_context, select_excerpts
@@ -28,6 +29,32 @@ class EngineError(RuntimeError):
     def __init__(self, message, code='engine_error'):
         super().__init__(message)
         self.code = code
+
+
+@contextmanager
+def answer_directory(workdir):
+    temporary = tempfile.TemporaryDirectory(prefix='answer-', dir=workdir)
+    original_error = None
+    try:
+        yield temporary.name
+    except Exception as exc:
+        original_error = exc
+        raise
+    finally:
+        # Windows may briefly retain a file handle after process exit. Retry only
+        # cleanup of this owned directory, with a short finite bound.
+        for attempt in range(5):
+            try:
+                temporary.cleanup()
+                break
+            except PermissionError:
+                if attempt < 4:
+                    time.sleep(0.1)
+                    continue
+            except OSError:
+                pass
+            prefix = str(original_error) + ' ' if isinstance(original_error, EngineError) else ''
+            raise EngineError(prefix + '推理暫存資料未能完全清理；本次不標記完成。', 'temp_cleanup_failed') from None
 
 
 def find_codex():
@@ -113,7 +140,7 @@ class CodexEngine:
             raise EngineError('無法讀寫本機推理暫存資料，請檢查磁碟空間與存取權限。', 'local_io') from None
 
     def _answer(self, payload, check_running):
-        with tempfile.TemporaryDirectory(prefix="answer-", dir=self.workdir) as tmp:
+        with answer_directory(self.workdir) as tmp:
             output = Path(tmp) / "answer.txt"
             # A seekable stdin file avoids a blocked parent-side pipe write when the
             # child never reads. All temporary prompt/output files close before cleanup.

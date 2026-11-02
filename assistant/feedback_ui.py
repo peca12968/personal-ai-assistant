@@ -1,9 +1,10 @@
-"""Review local feedback and explicitly author a communication acceptance example."""
+"""Review local feedback and explicitly author communication/context acceptance."""
 import json
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from .feedback_improvement import check_source, example_from_source, feedback_source, make_draft
+from .feedback_improvement import check_source, example_from_source, feedback_source, make_draft, make_followup_draft
+from .acceptance import strict_json, validate_suite
 
 
 class FeedbackWindow:
@@ -11,8 +12,8 @@ class FeedbackWindow:
         self.store, self.source = store, None
         self.window = tk.Toplevel(parent)
         self.window.title('回饋與改進例子')
-        self.window.geometry('880x780')
-        ttk.Label(self.window, text='選取回饋，核對問題與前文，再指定溝通提示應如何辨識。此處不會自動改碼。',
+        self.window.geometry('880x900')
+        ttk.Label(self.window, text='選取回饋，核對問題與前文，再指定回答長度或接續前文的期望。此處不會自動改碼。',
                   wraplength=800, padding=10).pack(fill='x')
         self.listing = ttk.Treeview(self.window, columns=('id', 'rating', 'correction'), show='headings', height=5)
         for key, label, width in [('id', '回答編號', 90), ('rating', '評價', 100), ('correction', '更正', 600)]:
@@ -33,16 +34,54 @@ class FeedbackWindow:
             field = tk.Text(form, height=height, wrap='word')
             field.pack(fill='x', pady=(2, 6))
             self.fields[key] = field
-        row = ttk.Frame(form)
+        choice = ttk.Frame(form)
+        choice.pack(fill='x')
+        ttk.Label(choice, text='改善類型：').pack(side='left')
+        self.kind = ttk.Combobox(choice, values=('回答長度辨識', '接續前文檢索'), state='readonly', width=18)
+        self.kind.set('回答長度辨識')
+        self.kind.pack(side='left')
+        self.kind.bind('<<ComboboxSelected>>', self.change_kind)
+        self.next = ttk.Button(choice, text='帶入自我改進', command=self.prepare, state='disabled')
+        self.next.pack(side='right')
+        self.length_row = row = ttk.Frame(form)
         row.pack(fill='x')
         ttk.Label(row, text='你期望辨識的回答長度：').pack(side='left')
         self.expected = ttk.Combobox(row, values=('簡短', '詳細', '混合', '未指定'), state='readonly', width=10)
         self.expected.pack(side='left')
-        self.next = ttk.Button(row, text='帶入自我改進', command=self.prepare, state='disabled')
-        self.next.pack(side='right')
-        self.notice = tk.StringVar(value='此入口只驗證長度提示，不直接評分模型整篇回答。事實錯誤或工具失敗請另建合適案例。')
+        self.followup_frame = ttk.Frame(form)
+        self.followup_mode = tk.StringVar(value='')
+        ttk.Radiobutton(self.followup_frame, text='不沿用前題作檢索', variable=self.followup_mode, value='none').pack(anchor='w')
+        ttk.Radiobutton(self.followup_frame, text='沿用下方選取的使用者前文（最多四則）', variable=self.followup_mode, value='selected').pack(anchor='w')
+        ttk.Button(self.followup_frame, text='從編輯後前文載入可選訊息', command=self.load_turns).pack(anchor='w')
+        self.turns = tk.Listbox(self.followup_frame, selectmode='multiple', exportselection=False, height=4)
+        self.turns.pack(fill='x')
+        self.loaded_history = None
+        self.turn_indices = []
+        self.notice = tk.StringVar(value='驗證程式的長度提示或前文檢索，不直接評分整篇回答。請明確選擇期望；不會由現有錯誤推算正確答案。')
         ttk.Label(self.window, textvariable=self.notice, wraplength=820, padding=12).pack(fill='x')
         self.refresh()
+
+    def change_kind(self, event=None):
+        self.length_row.pack_forget()
+        self.followup_frame.pack_forget()
+        (self.followup_frame if self.kind.get() == '接續前文檢索' else self.length_row).pack(fill='x')
+
+    def load_turns(self):
+        self.loaded_history = None
+        self.turn_indices = []
+        self.turns.delete(0, 'end')
+        try:
+            history = strict_json(self.fields['history'].get('1.0', 'end'))
+            validate_suite({'version':1, 'cases':[{'id':'preview', 'kind':'followup',
+                'question':self.fields['question'].get('1.0', 'end').strip(), 'history':history, 'expect':None}]})
+            for i, row in enumerate(history):
+                if row['role'] == 'user':
+                    self.turn_indices.append(i)
+                    self.turns.insert('end', f'前文第 {i+1} 則：' + row['content'].replace('\n', ' ')[:150])
+            self.loaded_history = history
+            self.notice.set('請選取期望沿用的使用者前文，或明確選擇不沿用。每則最多一千字；下一頁可查看完整驗收內容。')
+        except (ValueError, KeyError) as exc:
+            self.notice.set(str(exc))
 
     def refresh(self):
         self.source = None
@@ -58,6 +97,10 @@ class FeedbackWindow:
         self.source = None
         self.next.configure(state='disabled')
         self.expected.set('')  # Never infer the user's expected grade from the failing implementation.
+        self.followup_mode.set('')
+        self.loaded_history = None
+        self.turn_indices = []
+        self.turns.delete(0, 'end')
         for field in self.fields.values():
             field.delete('1.0', 'end')
         if not selected:
@@ -85,13 +128,23 @@ class FeedbackWindow:
             return
         try:
             source = check_source(self.store, self.source['message_id'], self.source['fingerprint'])
-            choices = {'簡短': 'concise', '詳細': 'detailed', '混合': 'mixed', '未指定': 'unspecified'}
-            if self.expected.get() not in choices:
-                raise ValueError('請先選擇你期望的回答長度辨識。')
-            from .acceptance import strict_json
             history = strict_json(self.fields['history'].get('1.0', 'end'))
-            draft = make_draft(source, self.fields['question'].get('1.0', 'end').strip(), history,
-                               self.fields['problem'].get('1.0', 'end').strip(), choices[self.expected.get()])
+            question = self.fields['question'].get('1.0', 'end').strip()
+            problem = self.fields['problem'].get('1.0', 'end').strip()
+            if self.kind.get() == '接續前文檢索':
+                if self.followup_mode.get() not in ('none', 'selected'):
+                    raise ValueError('請明確選擇沿用前文，或不沿用前題。')
+                selected_turns = None
+                if self.followup_mode.get() == 'selected':
+                    if history != self.loaded_history:
+                        raise ValueError('前文尚未載入或已變更，請重新載入可選訊息並選取。')
+                    selected_turns = [self.turn_indices[int(i)] for i in self.turns.curselection()]
+                draft = make_followup_draft(source, question, history, problem, selected_turns)
+            else:
+                choices = {'簡短': 'concise', '詳細': 'detailed', '混合': 'mixed', '未指定': 'unspecified'}
+                if self.expected.get() not in choices:
+                    raise ValueError('請先選擇你期望的回答長度辨識。')
+                draft = make_draft(source, question, history, problem, choices[self.expected.get()])
             from .evolution_ui import EvolutionWindow
             EvolutionWindow(self.window, initial_draft=draft,
                             source_check=lambda: check_source(self.store, draft['source_message_id'], draft['source_fingerprint']))

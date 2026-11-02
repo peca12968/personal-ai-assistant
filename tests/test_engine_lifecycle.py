@@ -176,6 +176,37 @@ class EngineLifecycleTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'timeout')
         self.assertIsNotNone(self.processes[0].poll())
 
+    def test_transient_cleanup_permission_error_preserves_original_timeout(self):
+        self.engine.timeout = 0.3
+        cleanup = tempfile.TemporaryDirectory.cleanup
+        attempts = []
+        def temporarily_locked(directory):
+            attempts.append(directory.name)
+            if len(attempts) < 3:
+                raise PermissionError('synthetic transient handle')
+            return cleanup(directory)
+        with patch.object(tempfile.TemporaryDirectory,'cleanup',temporarily_locked), self.assertRaises(EngineError) as caught:
+            self.invoke('import time; time.sleep(30)')
+        self.assertEqual(caught.exception.code,'timeout')
+        self.assertEqual(len(attempts),3)
+        self.assertEqual(len(set(attempts)),1)
+
+    def test_persistent_cleanup_error_is_explicit_and_not_saved_as_success(self):
+        cleanup = tempfile.TemporaryDirectory.cleanup
+        directories = []
+        def locked(directory):
+            directories.append(directory)
+            raise PermissionError('PRIVATE_PATH_OR_ERROR')
+        try:
+            with patch.object(tempfile.TemporaryDirectory,'cleanup',locked), self.assertRaises(EngineError) as caught:
+                self.invoke('import sys; from pathlib import Path; Path(sys.argv[1]).write_text("answer")')
+            self.assertEqual(caught.exception.code,'temp_cleanup_failed')
+            self.assertNotIn('PRIVATE_PATH_OR_ERROR',str(caught.exception))
+            self.assertEqual(len(directories),5)
+        finally:
+            for directory in directories:
+                cleanup(directory)
+
     def test_cli_reports_engine_failure_without_traceback_or_fabricated_answer(self):
         code = ('import sys; from unittest.mock import patch; from assistant.engine import EngineError; '
                 'from assistant.__main__ import main; '

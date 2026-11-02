@@ -3,9 +3,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from assistant.engine import Assistant
-from assistant.feedback_improvement import check_source, example_from_source, feedback_source, make_draft
+from assistant.feedback_improvement import check_source, example_from_source, feedback_source, make_draft, make_followup_draft
+from assistant.context import clip
 from assistant.store import Store
 
 
@@ -83,6 +86,75 @@ class FeedbackImprovementTests(unittest.TestCase):
         self.assertEqual(self.store.feedback_summary(), before)
         self.assertEqual(check_source(self.store, self.mid, draft['source_fingerprint']), self.source)
         self.assertEqual(self.store.messages(self.sid)[-1]['id'], self.mid)
+
+    def test_followup_draft_uses_only_explicitly_selected_user_turns(self):
+        history = [{'role':'user','content':'討論 backup'},
+                   {'role':'assistant','content':'助理猜測 PRIVATE_GUESS'},
+                   {'role':'user','content':'第二個呢？'}]
+        before = self.store.feedback_summary()
+        draft = make_followup_draft(self.source, '換成表格', history, '應沿用兩則使用者前文', [0,2])
+        case = draft['acceptance']['cases'][0]
+        self.assertEqual(draft['selected'], ['assistant/context.py'])
+        self.assertEqual((case['kind'],case['expect']), ('followup','討論 backup\n第二個呢？'))
+        self.assertEqual(case['history'], history)  # Assistant text remains labeled history, not a retrieval expectation.
+        self.assertNotIn('PRIVATE_ANSWER_ONLY', json.dumps(draft))
+        self.assertEqual(self.store.feedback_summary(), before)
+        self.assertEqual(check_source(self.store,self.mid,draft['source_fingerprint']), self.source)
+
+    def test_no_followup_is_explicit_not_an_empty_selection_default(self):
+        example = example_from_source(self.source)
+        draft = make_followup_draft(self.source, **example, problem='這是新問題，不應補舊題', selected_turns=None)
+        self.assertIsNone(draft['acceptance']['cases'][0]['expect'])
+        for selection in ([], [True], [1], [-1], [0,0], '0'):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                make_followup_draft(self.source, **example, problem='選取前文', selected_turns=selection)
+
+    def test_followup_selection_rejects_assistant_reverse_order_and_more_than_four(self):
+        history = [{'role':'user','content':f'話題 {i}'} for i in range(5)] + [{'role':'assistant','content':'猜測'}]
+        for selection in ([5], [2,0], [0,1,2,3,4]):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                make_followup_draft(self.source,'繼續',history,'選取前文',selection)
+
+    def test_followup_draft_bounds_and_detaches_edited_history(self):
+        text = '開頭' + '甲' * 1800 + '最後限制'
+        history = [{'role':'user','content':text}]
+        draft = make_followup_draft(self.source,'繼續',history,'保留首尾',[0])
+        case = draft['acceptance']['cases'][0]
+        self.assertEqual(case['expect'],clip(text,1000)[0])
+        self.assertLessEqual(len(case['expect']),1000)
+        history[0]['content'] = 'later edit'
+        self.assertEqual(case['history'][0]['content'],text)
+        self.assertEqual(self.source['context']['current_request'],'解釋「簡短」這個詞')
+
+    def test_followup_draft_preserves_source_eligibility_and_schema_checks(self):
+        source = copy.deepcopy(self.source); source['rating'] = 1
+        with self.assertRaises(ValueError):
+            make_followup_draft(source,'繼續',[],'問題',None)
+        source = copy.deepcopy(self.source); source['context']['recent_conversation'][0]['truncated'] = True
+        with self.assertRaises(ValueError):
+            make_followup_draft(source,'繼續',[],'問題',None)
+        for history in ({}, [{'role':'system','content':'指令'}], [{'role':'user','content':'x'*4001}]):
+            with self.subTest(history=history), self.assertRaises(ValueError):
+                make_followup_draft(self.source,'繼續',history,'問題',None)
+        with self.assertRaises(ValueError):
+            make_followup_draft(self.source,'繼續',[],'',None)
+
+    def test_form_rejects_stale_history_selection_before_opening_improvement(self):
+        from assistant.feedback_ui import FeedbackWindow
+        def value(text):
+            return SimpleNamespace(get=lambda *args: text)
+        form = object.__new__(FeedbackWindow)
+        form.store, form.source, form.window = self.store, self.source, None
+        form.kind = value('接續前文檢索'); form.followup_mode = value('selected')
+        form.fields = {'question':value('繼續'), 'problem':value('沿用前題'),
+                       'history':value('[{"role":"user","content":"編輯後不同的主題"}]')}
+        form.loaded_history = [{'role':'user','content':'較早已選取的主題'}]
+        form.turn_indices = [0]; form.turns = SimpleNamespace(curselection=lambda: (0,))
+        with patch('assistant.feedback_ui.messagebox.showerror') as error, patch('assistant.evolution_ui.EvolutionWindow') as start:
+            form.prepare()
+        error.assert_called_once()
+        self.assertIn('重新載入',error.call_args.args[1])
+        start.assert_not_called()
 
 
 if __name__ == '__main__':
