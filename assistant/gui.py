@@ -186,7 +186,10 @@ class App:
                     self.last_answer = value["id"]
                     self.append("assistant", value["content"])
                     ids = ", ".join(map(str, value["memory_ids"])) or "無"
-                    self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
+                    if value.get('response_mode') == 'local_memory':
+                        self.status.set('本機記憶操作已回覆 · 未呼叫模型 · 可查看本次操作紀錄')
+                    else:
+                        self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
                 else:
                     self.append("note", value)
                     self.status.set("本次未完成；可重新提問")

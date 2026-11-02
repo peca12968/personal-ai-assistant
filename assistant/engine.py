@@ -14,6 +14,7 @@ from .documents import check_citations, retrieve_documents
 from .tasks import task_context
 from .communication import conversation_style
 from .evolution_status import improvement_context
+from .memory_commands import handle_command, parse_command
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,7 +106,7 @@ class Assistant:
         self.store, self.engine = store, engine
 
     def prepare_context(self, sid, question):
-        history = self.store.messages(sid, 16)
+        history = self.store.messages(sid, 16, exclude_local=True)
         memories = self.store.retrieve(question)
         followup = followup_query(question, history)
         if followup:
@@ -114,7 +115,7 @@ class Assistant:
                 if row["id"] not in seen:
                     memories.append(row)
                     seen.add(row["id"])
-        older = self.store.earlier_user_messages(sid, history[0]["id"]) if history else []
+        older = self.store.earlier_user_messages(sid, history[0]["id"], exclude_local=True) if history else []
         context = make_context(question, history, memories, self.store.session_brief(sid), select_excerpts(question, older))
         documents = self.store.documents(sid, include_content=True)
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
@@ -127,6 +128,9 @@ class Assistant:
         question = question.strip()
         if not question or len(question) > 16000:
             raise ValueError("問題需為 1–16000 字。")
+        command = parse_command(question)
+        if command is not None:
+            return handle_command(self.store, sid, question, command, cancel)
         context = self.prepare_context(sid, question)
         self.store.add_message(sid, "user", question)
         answer = self.engine.answer(render_prompt(context), cancel)

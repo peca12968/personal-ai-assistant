@@ -26,6 +26,17 @@ def validate_memory(content, kind, expires_on):
     return content
 
 
+def allocate_memory_id(db):
+    """Called inside a write transaction; keep IDs stable after deletion."""
+    largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]
+    previous = db.execute('SELECT last_id FROM memory_sequence WHERE id=1').fetchone()[0]
+    value = max(largest, previous) + 1
+    if value > 9223372036854775807:
+        raise ValueError('記憶編號已達資料庫上限。')
+    db.execute('UPDATE memory_sequence SET last_id=? WHERE id=1', (value,))
+    return value
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -44,6 +55,8 @@ class Store:
                     id INTEGER PRIMARY KEY, content TEXT NOT NULL,
                     kind TEXT NOT NULL CHECK(kind IN ('preference', 'fact', 'lesson')),
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS memory_sequence (
+                    id INTEGER PRIMARY KEY CHECK(id=1), last_id INTEGER NOT NULL CHECK(last_id>=0));
                 CREATE TABLE IF NOT EXISTS feedback (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id),
                     rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
@@ -55,6 +68,8 @@ class Store:
                     decisions TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS answer_contexts (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS local_memory_messages (
+                    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE);
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     name TEXT NOT NULL, source_path TEXT NOT NULL, path_key TEXT NOT NULL,
@@ -87,6 +102,8 @@ class Store:
                 db.execute("ALTER TABLE memories ADD COLUMN updated_at TEXT")
                 db.execute("UPDATE memories SET updated_at=created_at")
                 db.execute("PRAGMA user_version = 2")
+            db.execute('INSERT OR IGNORE INTO memory_sequence(id,last_id) VALUES(1,0)')
+            db.execute('UPDATE memory_sequence SET last_id=MAX(last_id,(SELECT COALESCE(MAX(id),0) FROM memories)) WHERE id=1')
 
     @contextmanager
     def connect(self):
@@ -168,18 +185,20 @@ class Store:
                 db.execute("UPDATE sessions SET title=? WHERE id=? AND title='新對話'", (content[:50], sid))
             return cur.lastrowid
 
-    def messages(self, sid, limit=30):
+    def messages(self, sid, limit=30, exclude_local=False):
+        local_filter = ' AND id NOT IN (SELECT message_id FROM local_memory_messages)' if exclude_local else ''
         with self.connect() as db:
             return [dict(r) for r in db.execute(
-                "SELECT * FROM (SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?) ORDER BY id",
+                "SELECT * FROM (SELECT * FROM messages WHERE session_id=?" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
                 (sid, limit))]
 
-    def earlier_user_messages(self, sid, before_id, limit=200):
+    def earlier_user_messages(self, sid, before_id, limit=200, exclude_local=False):
+        local_filter = ' AND id NOT IN (SELECT message_id FROM local_memory_messages)' if exclude_local else ''
         with self.connect() as db:
             rows = [dict(row) for row in db.execute("""SELECT * FROM (SELECT * FROM messages
-                WHERE session_id=? AND role='user' AND id<? ORDER BY id DESC LIMIT ?) ORDER BY id""",
+                WHERE session_id=? AND role='user' AND id<?""" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
                 (sid, before_id, limit))]
-            first = db.execute("SELECT * FROM messages WHERE session_id=? AND role='user' AND id<? ORDER BY id LIMIT 1",
+            first = db.execute("SELECT * FROM messages WHERE session_id=? AND role='user' AND id<?" + local_filter + " ORDER BY id LIMIT 1",
                                (sid, before_id)).fetchone()
             if first and (not rows or rows[0]["id"] != first["id"]):
                 rows.insert(0, dict(first))
@@ -251,9 +270,12 @@ class Store:
     def remember(self, content, kind="fact", expires_on=None, active=True):
         content = validate_memory(content, kind, expires_on)
         with self.connect() as db:
-            return db.execute("""INSERT INTO memories(content, kind, expires_on, active, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (content, kind, expires_on or None, int(bool(active)))).lastrowid
+            db.execute('BEGIN IMMEDIATE')
+            mid = allocate_memory_id(db)
+            db.execute("""INSERT INTO memories(id, content, kind, expires_on, active, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (mid, content, kind, expires_on or None, int(bool(active))))
+            return mid
 
     def edit_memory(self, memory_id, content, kind="fact", expires_on=None, active=True):
         content = validate_memory(content, kind, expires_on)

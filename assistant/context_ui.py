@@ -45,10 +45,13 @@ def show_context(parent, store, message_id):
         messagebox.showinfo("本次參考", "尚無可查看的參考紀錄。升級前的回答未保存快照。", parent=parent)
         return
     window = tk.Toplevel(parent)
-    window.title("本次參考資料 · 送出時快照")
+    local = context.get('response_mode') == 'local_memory'
+    window.title('本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
     window.geometry("820x640")
     window.minsize(600, 420)
-    ttk.Label(window, text="顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。",
+    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local else
+              "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
+    ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
     notebook = ttk.Notebook(window)
     notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -74,6 +77,9 @@ def show_context(parent, store, message_id):
     sections.append(('改版紀錄', json.dumps(context.get('self_improvement', []), ensure_ascii=False, indent=2)))
     sections.append(('工作結果', '以下是提問時已保存的工作狀態快照，並非聊天模型新執行的操作。\n\n' +
                      (json.dumps(context.get('task_runs'), ensure_ascii=False, indent=2) if context.get('task_runs') else '本次未提供工作紀錄。')))
+    if local:
+        sections = [('本機操作', '當時指令：\n' + context['current_request'] + '\n\n' +
+                     json.dumps(context['memory_action'], ensure_ascii=False, indent=2))]
     for title, content in sections:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)

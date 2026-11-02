@@ -20,9 +20,9 @@ class MemoryWindow:
         table.grid(row=1, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.listing = ttk.Treeview(table, columns=("kind", "status", "expires", "content"),
+        self.listing = ttk.Treeview(table, columns=("id", "kind", "status", "expires", "content"),
                                    show="headings", selectmode="browse", height=6)
-        for key, title, width in (("kind", "類型", 70), ("status", "狀態", 70),
+        for key, title, width in (("id", "編號", 70), ("kind", "類型", 70), ("status", "狀態", 70),
                                   ("expires", "到期日", 100), ("content", "內容", 540)):
             self.listing.heading(key, text=title)
             self.listing.column(key, width=width, minwidth=60, stretch=key == "content")
@@ -63,7 +63,7 @@ class MemoryWindow:
         today = date.today().isoformat()
         for key, row in self.rows.items():
             status = "停用" if not row["active"] else "過期" if row["expires_on"] and row["expires_on"] < today else "啟用"
-            self.listing.insert("", "end", iid=key, values=(reverse[row["kind"]], status,
+            self.listing.insert("", "end", iid=key, values=('#' + key, reverse[row["kind"]], status,
                                 row["expires_on"] or "不限", row["content"].replace("\n", " ")))
 
     def new(self):

@@ -18,9 +18,11 @@ TABLES = {
     'sessions': {'id', 'title', 'created_at'},
     'messages': {'id', 'session_id', 'role', 'content', 'created_at'},
     'memories': {'id', 'content', 'kind', 'created_at', 'active', 'expires_on', 'updated_at'},
+    'memory_sequence': {'id', 'last_id'},
     'feedback': {'message_id', 'rating', 'correction', 'updated_at'},
     'session_briefs': {'session_id', 'objective', 'constraints_text', 'decisions', 'updated_at'},
     'answer_contexts': {'message_id', 'payload'},
+    'local_memory_messages': {'message_id'},
     'documents': {'id', 'session_id', 'name', 'source_path', 'path_key', 'content', 'sha256', 'encoding', 'size_bytes', 'imported_at'},
     'answer_checks': {'message_id', 'payload'},
     'task_runs': {'id', 'session_id', 'status', 'plan_json', 'result_json', 'error', 'created_at', 'finished_at'},
@@ -50,7 +52,7 @@ def validate_database(path):
         if any(kind not in {'table', 'index'} or (sql and 'VIRTUAL TABLE' in sql.upper()) for kind, _, sql in objects):
             raise ValueError('備份含不支援的資料庫物件。')
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
-        if actual_tables not in (set(TABLES), set(TABLES) - {'task_runs'}):
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages'} <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -61,6 +63,11 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if 'memory_sequence' in actual_tables:
+            counters = db.execute('SELECT id,last_id FROM memory_sequence').fetchall()
+            largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]
+            if len(counters) != 1 or counters[0][0] != 1 or type(counters[0][1]) is not int or counters[0][1] < max(0, largest):
+                raise ValueError('記憶編號狀態不完整。')
         return {name: db.execute(f'SELECT COUNT(*) FROM {name}').fetchone()[0] for name in TABLES if name in actual_tables}
     finally:
         db.close()
