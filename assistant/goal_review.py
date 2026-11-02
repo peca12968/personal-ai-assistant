@@ -4,6 +4,7 @@ import json
 
 from .autonomy import MAX_STEPS, signature
 from .artifacts import inventory
+from . import autonomy_csv
 
 
 def next_action(status, sources_match, step_count):
@@ -45,7 +46,8 @@ def _rows(db, gid=None):
         files = inventory(db, row['id'])
         hidden_fingerprint = row.pop('hidden_fingerprint')
         # Full local state drives redisplay, even when the visible excerpt is clipped.
-        evidence = {**row, 'current_sources': current_sources[sid], 'artifacts': files}
+        evidence = {**row, 'current_sources': current_sources[sid], 'artifacts': files,
+                    'csv_plans': autonomy_csv.inventory(db, row['id'])}
         fingerprint = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
         sources_match = json.loads(row['sources_json']) == current_sources[sid]

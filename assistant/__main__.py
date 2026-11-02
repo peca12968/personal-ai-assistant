@@ -34,6 +34,9 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    parser.add_argument('--csv-document', type=int, help='搭配 --new-goal，選取此對話已匯入CSV編號，允許開始後自主規劃及執行分析')
+    mode.add_argument('--export-goal-csv', help='匯出已完成自主CSV計畫ID；需 --csv-goal、--session、--output')
+    parser.add_argument('--csv-goal', help='搭配 --export-goal-csv 指定所屬目標ID')
     mode.add_argument('--review-goals', action='store_true', help='本機跨對話回顧自主目標，不呼叫模型或啟動工作')
     parser.add_argument('--review-hidden', action='store_true', help='搭配 --review-goals，也列出暫時收起項目')
     parser.add_argument('--review-offset', type=int, help='搭配 --review-goals，跳過指定數量，每頁100項')
@@ -59,6 +62,12 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if args.csv_document is not None and args.new_goal is None:
+        parser.error('--csv-document只能搭配 --new-goal。')
+    if args.csv_goal is not None and args.export_goal_csv is None:
+        parser.error('--csv-goal只能搭配 --export-goal-csv。')
+    if args.export_goal_csv is not None and not (args.csv_goal and args.session and args.output):
+        parser.error('匯出自主CSV需要 --csv-goal、--session 與 --output。')
     if (args.review_hidden or args.review_offset is not None) and not args.review_goals:
         parser.error('回顧分頁選項只能搭配 --review-goals。')
     if args.review_goals and (args.session or args.file or (args.review_offset is not None and args.review_offset < 0)):
@@ -118,8 +127,8 @@ def main():
         parser.error('--search-folder 與 --query 需一起使用。')
     if (args.group_column is not None or args.value_column is not None) and not args.plan_csv:
         parser.error('欄位參數僅搭配 --plan-csv。')
-    if args.output and not args.export_task:
-        parser.error('--output 僅搭配 --export-task。')
+    if args.output and not (args.export_task or args.export_goal_csv):
+        parser.error('--output 僅搭配 --export-task 或 --export-goal-csv。')
     if args.plan_csv or args.plan_workflow or args.propose_csv or args.run_task or args.task_status or args.export_task:
         from .tasks import execute_task, export_task, plan_csv
         if args.plan_csv and (not args.group_column or not args.value_column):
@@ -177,6 +186,15 @@ def main():
         print("Data:", args.data_dir.resolve())
         print("Codex:", find_codex())
         return
+    if args.export_goal_csv is not None:
+        from .autonomy_csv import export
+        try:
+            receipt = export(Store(args.data_dir / 'assistant.sqlite3'), args.session, args.csv_goal,
+                             args.export_goal_csv, args.output)
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
+            parser.exit(1, 'CSV匯出未完成：' + str(exc) + '\n')
+        return
     if args.review_goals:
         from .goal_review import snapshot
         try:
@@ -205,7 +223,7 @@ def main():
         try:
             store = Store(args.data_dir / 'assistant.sqlite3')
             if args.new_goal is not None:
-                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files)
+                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),

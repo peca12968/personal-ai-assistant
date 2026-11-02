@@ -15,6 +15,8 @@ from assistant.companion_ui import CompanionWindow
 from assistant.companion_profile import get_profile
 from assistant.goal_review_ui import GoalReviewWindow
 from assistant import goal_review
+from assistant import autonomy_csv
+from assistant.autonomy_csv_ui import CsvResultsWindow
 
 
 class FormGeometryTests(unittest.TestCase):
@@ -221,3 +223,41 @@ class FormGeometryTests(unittest.TestCase):
             self.assertEqual(app.autonomous_windows[0].sid, old_sid)
             self.assertEqual(app.autonomous_windows[0].selected_id(), gid)
             self.assertEqual(autonomy.get_goal(store, old_sid, gid)['status'], 'pending')
+
+    def test_autonomous_csv_selection_result_view_and_explicit_full_export(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            path = Path(tmp) / 'data.csv'
+            path.write_text('group,value\nA,10\nA,20\n', encoding='utf-8')
+            did = store.attach_document(sid, path)
+            view = AutonomousWindow(self.root, store, sid, None)
+            layout = self.allocate(view)
+            self.assertIsNone(view.selected_csv_id())
+            view.csv_input.current(1)
+            self.assertEqual(view.selected_csv_id(), did)
+            self.assert_reachable(layout, view.csv_input)
+            view.objective.insert('1.0', '分析這份CSV')
+            view.new_goal()
+            gid = view.selected_id()
+            self.assertEqual(autonomy.get_goal(store, sid, gid)['csv_source']['document_id'], did)
+            plan = autonomy_csv.plan(store, gid, {'group_column': 'group', 'value_column': 'value',
+                'filters': [], 'sort': {'by': 'sum', 'direction': 'desc'}, 'top_n': None})
+            pid = plan['plan_id']
+            results = CsvResultsWindow(self.root, store, sid, gid)
+            results_layout = self.allocate(results)
+            results.listing.selection_set(pid)
+            results.select()
+            self.assertEqual(str(results.export_button['state']), 'disabled')
+            autonomy_csv.execute(store, sid, gid, pid)
+            results.refresh()
+            self.assertEqual(str(results.export_button['state']), 'normal')
+            self.assert_reachable(results_layout, results.export_button)
+            destination = Path(tmp) / 'result.json'
+            with patch('assistant.autonomy_csv_ui.filedialog.asksaveasfilename', return_value=str(destination)):
+                results.export()
+            self.assertEqual(json.loads(destination.read_bytes())['mean'], '15.0000')
+            view.refresh(gid)
+            self.assertEqual(str(view.csv_results['state']), 'normal')
+            self.assert_reachable(layout, view.csv_results)

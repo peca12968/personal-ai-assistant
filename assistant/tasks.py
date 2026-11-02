@@ -37,7 +37,15 @@ def load_csv(path, cancel=None, deadline=None):
     if Path(path).suffix.lower() != '.csv':
         raise ValueError('工作工具目前只接受 CSV。')
     document = read_document(path)
-    reader = csv.reader(io.StringIO(document['content'], newline=''), strict=True)
+    header, rows = parse_csv(document['content'], cancel, deadline)
+    return document, header, rows
+
+
+def parse_csv(content, cancel=None, deadline=None):
+    """Parse a bounded, already imported text snapshot without reopening its path."""
+    deadline = deadline if deadline is not None else time.monotonic() + 30
+    check_running(cancel, deadline)
+    reader = csv.reader(io.StringIO(content, newline=''), strict=True)
     try:
         header = [cell.strip() for cell in next(reader)]
         if not header or any(not cell for cell in header) or len(set(header)) != len(header):
@@ -60,7 +68,7 @@ def load_csv(path, cancel=None, deadline=None):
         raise ValueError('CSV 缺少標頭。') from None
     except csv.Error as exc:
         raise ValueError('CSV 格式無效：' + str(exc)) from None
-    return document, header, rows
+    return header, rows
 
 
 def plan_csv(store, sid, path, group_column, value_column):

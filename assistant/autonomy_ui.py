@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import autonomy
@@ -35,6 +36,13 @@ class AutonomousWindow:
         self.file_delivery = tk.BooleanVar(value=False)
         self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機Markdown／TXT／JSON，不覆寫既有內容）', variable=self.file_delivery)
         self.file_option.pack(anchor='w', padx=12, pady=6)
+        self.layout.wrapped_label(body, text='新目標的CSV分析來源（選取後，開始時可自行規劃並執行篩選、分組、加總與平均；使用已匯入副本）：', padding=12).pack(fill='x')
+        self.csv_input = ttk.Combobox(body, state='readonly')
+        self.csv_input.pack(fill='x', padx=12)
+        self.csv_reload = ttk.Button(body, text='重新載入已匯入CSV清單', command=self.reload_csv_sources)
+        self.csv_reload.pack(anchor='w', padx=12, pady=4)
+        self.csv_choices = [None]
+        self.reload_csv_sources()
         self.create = ttk.Button(body, text='保存新目標（使用目前參考文件）', command=self.new_goal)
         self.create.pack(anchor='w', padx=12, pady=8)
         self.listing = ttk.Treeview(body, columns=('status', 'objective'), show='headings', height=5)
@@ -53,6 +61,8 @@ class AutonomousWindow:
         self.files.pack(anchor='w', padx=12, pady=4)
         self.rebuild = ttk.Button(body, text='核對／重建已保存文件', command=self.rebuild_files, state='disabled')
         self.rebuild.pack(anchor='w', padx=12, pady=4)
+        self.csv_results = ttk.Button(body, text='查看CSV計畫／結果與匯出', command=self.open_csv_results, state='disabled')
+        self.csv_results.pack(anchor='w', padx=12, pady=4)
         controls = ttk.Frame(body, padding=12)
         controls.pack(fill='x')
         ttk.Label(controls, text='本輪最多步數：').pack(side='left')
@@ -82,6 +92,21 @@ class AutonomousWindow:
             raise ValueError('請先選擇一個目標。')
         return selection[0]
 
+    def selected_csv_id(self):
+        index = self.csv_input.current()
+        return self.csv_choices[index] if 0 <= index < len(self.csv_choices) else None
+
+    def reload_csv_sources(self):
+        selected = self.selected_csv_id()
+        docs = [d for d in self.store.documents(self.sid) if Path(d['name']).suffix.lower() == '.csv']
+        self.csv_choices = [None] + [d['id'] for d in docs]
+        self.csv_input['values'] = ['不啟用CSV分析'] + [f"D{d['id']} · {d['name']}" for d in docs]
+        self.csv_input.current(self.csv_choices.index(selected) if selected in self.csv_choices else 0)
+
+    def open_csv_results(self):
+        from .autonomy_csv_ui import CsvResultsWindow
+        CsvResultsWindow(self.window, self.store, self.sid, self.selected_id())
+
     def refresh(self, gid=None):
         selected = gid or (self.listing.selection() or [None])[0]
         for item in self.listing.get_children():
@@ -96,7 +121,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id())
             self.refresh(gid)
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
@@ -105,7 +130,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id())
             self.refresh(gid)
             self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
         except Exception as exc:
@@ -131,7 +156,8 @@ class AutonomousWindow:
             return
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
+        self.csv_input.configure(state='disabled')
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -154,9 +180,14 @@ class AutonomousWindow:
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
         self.files.configure(state='normal' if goal['artifacts'] else 'disabled')
         self.rebuild.configure(state='normal' if goal['artifacts'] and not self.busy else 'disabled')
+        self.csv_results.configure(state='normal' if goal['csv_plans'] else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
+        if goal['csv_source']:
+            csv = goal['csv_source']
+            lines += [f"自主CSV分析：D{csv['document_id']} {csv['name']} · {csv['rows']}筆資料；使用匯入副本。",
+                      '已保存CSV計畫：' + str(len(goal['csv_plans'])) + '份（完整規格與結果請用CSV結果入口查看）']
         if goal['file_delivery']:
             lines += ['成果位置：' + str(self.store.path.resolve().parent / 'autonomy-artifacts' / goal['id'])]
         if goal['artifacts']:
@@ -213,7 +244,8 @@ class AutonomousWindow:
         self.busy = True
         self.active_goal = gid
         self.cancel.clear()
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
+        self.csv_input.configure(state='disabled')
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -235,7 +267,8 @@ class AutonomousWindow:
                     self.refresh(self.active_goal)
                 else:
                     self.busy = False
-                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
+                    self.csv_input.configure(state='readonly')
+                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))

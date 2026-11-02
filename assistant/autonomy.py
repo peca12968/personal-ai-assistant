@@ -17,6 +17,7 @@ from .document_ranges import select_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import artifacts
+from . import autonomy_csv
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 MAX_STEPS = 32
@@ -31,6 +32,7 @@ previous_stage若存在，是使用者明確選取的上一階段歷史背景；
 sources_match_current為false表示文件清單或版本已不同，舊成果只作背景。即使為true，也要重新讀取本階段需要的來源與計算。
 上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
+如果本目標有csv_source，另可使用後附CSV工具處理所選副本；沒有時不可使用CSV工具。
 只有file_delivery=true的目標可用write_artifact及deliver，在此目標管理的成果資料夾建立文件；不能指定其他路徑或覆寫既有內容。
 不能修改原檔、瀏覽網路、發訊息、執行程式或自行改碼。不要假稱已執行不具備的動作。
 若目標需要其他能力，用ask簡短說明需要什麼；資料足夠時自行前進，不反覆要求確認。
@@ -50,7 +52,7 @@ write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在
 deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
 artifacts只是已保存檔案的歷史紀錄，不保證檔案現在未被改動；deliver會重新核對。未被列入deliver的文件仍是草稿，不能冒稱都已交付。不能聲稱上傳或將本機路徑冒充下載網址。
 difference與quotient恰好兩個數；sum與product一至50個數。數字用十進位字串。
-不要不停查詢同一資料；有依據完成成果後使用finish。'''
+不要不停查詢同一資料；有依據完成成果後，文字模式使用finish，文件交付模式使用deliver。'''
 
 
 def text(value, limit):
@@ -63,7 +65,7 @@ def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
 
 
-def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False):
+def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None):
     objective = text(objective, 4000)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
@@ -77,6 +79,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False):
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
             if file_delivery:
                 db.execute('INSERT INTO autonomous_delivery(goal_id,enabled) VALUES(?,1)', (gid,))
+            if csv_document_id is not None:
+                autonomy_csv.configure(db, sid, gid, csv_document_id)
             if previous is not None:
                 db.execute('INSERT INTO autonomous_handoffs(goal_id,parent_goal_id,context_json) VALUES(?,?,?)',
                            (gid, parent_id, json.dumps(previous, ensure_ascii=False)))
@@ -97,6 +101,8 @@ def get_goal(store, sid, gid):
         result['sources'] = json.loads(result.pop('sources_json'))
         result['file_delivery'] = artifacts.enabled(db, gid)
         result['artifacts'] = artifacts.inventory(db, gid)
+        result['csv_source'] = autonomy_csv.source(db, gid)
+        result['csv_plans'] = autonomy_csv.inventory(db, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
             result['previous_stage']['sources_match_current'] = result['previous_stage']['sources'] == result['sources']
@@ -134,7 +140,8 @@ def validate_action(value):
     fields = {'search': {'query'}, 'read': {'document_id', 'start_line', 'end_line'},
               'recall': {'query'}, 'calculate': {'operation', 'values'},
               'ask': {'question'}, 'finish': {'report'},
-              'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'}}
+              'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
+              'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
     if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
         raise ValueError('工具或參數不在允許範圍。')
@@ -179,8 +186,14 @@ def calculate(args):
     return {'exact': str(result), 'decimal': str(decimal), 'rounded': Fraction(decimal) != result}
 
 
-def execute(store, documents, action, steps, *, gid=None):
+def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
     name, args = action['tool'], action['args']
+    if name == 'plan_csv':
+        return autonomy_csv.plan(store, gid, args['spec'])
+    if name == 'execute_csv':
+        return autonomy_csv.execute(store, sid, gid, args['plan_id'], cancel)
+    if name == 'read_csv_result':
+        return autonomy_csv.result_page(store, gid, args['plan_id'], args['offset'])
     if name == 'search':
         return retrieve_documents(args['query'], documents, max_excerpts=4, max_chars=8000, reference_query='')
     if name == 'read':
@@ -246,8 +259,10 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                            'companion_profile': profile,
                            'previous_stage': goal['previous_stage'],
                            'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
+                           'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                            'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-                raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
+                raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE +
+                    ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
                 if cancel.is_set():
                     update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')
                     break
@@ -258,7 +273,7 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                     if len(raw) > 20000:
                         raise ValueError('動作輸出過長。')
                     action = validate_action(strict_json(raw))
-                    observation = execute(store, documents, action, goal['steps'], gid=gid)
+                    observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel)
                 except (ValueError, TypeError, KeyError) as exc:
                     action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                     observation = {'error': str(exc)[:500]}

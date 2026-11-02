@@ -125,6 +125,14 @@ class Store:
                 CREATE TABLE IF NOT EXISTS goal_reviews (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     fingerprint TEXT NOT NULL, hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS autonomous_csv_sources (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id), config_json TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS autonomous_csv_plans (
+                    id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_csv_sources(goal_id),
+                    spec_json TEXT NOT NULL, mean_policy_json TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),
+                    report_json TEXT, report_sha256 TEXT, error TEXT NOT NULL DEFAULT '',
+                    exports_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
