@@ -1,4 +1,5 @@
 import tkinter as tk
+import json
 from tkinter import messagebox, ttk
 
 
@@ -68,6 +69,8 @@ def show_context(parent, store, message_id):
                              ("（部分行內容）" if row["partial_line"] else "") + "\n" + row["text"]
                              for row in documents.get("excerpts", [])))
     sections.append(("文件來源", doc_text))
+    sections.append(('工作結果', '以下是提問時已保存的工作狀態快照，並非聊天模型新執行的操作。\n\n' +
+                     (json.dumps(context.get('task_runs'), ensure_ascii=False, indent=2) if context.get('task_runs') else '本次未提供工作紀錄。')))
     for title, content in sections:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)

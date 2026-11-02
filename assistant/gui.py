@@ -33,7 +33,8 @@ class App:
         header.grid(row=0, column=0, sticky="ew")
         tk.Label(header, text="個人 AI 助理", bg=BG, fg=FG,
                  font=("Microsoft JhengHei UI", 22, "bold")).pack(side="left")
-        tk.Label(header, text="建議模式  ·  本機記憶", bg=BG, fg=ACCENT,
+        ttk.Button(header, text="工作工具", command=self.work_tools).pack(side='right', padx=(12, 0))
+        tk.Label(header, text="聊天建議  ·  本機記憶", bg=BG, fg=ACCENT,
                  font=("Microsoft JhengHei UI", 11)).pack(side="right")
         body = tk.Frame(root, bg=BG, padx=18)
         body.grid(row=1, column=0, sticky="nsew")
@@ -216,6 +217,10 @@ class App:
     def backups(self):
         from .backup_ui import BackupWindow
         BackupWindow(self.root, self.store)
+
+    def work_tools(self):
+        from .task_ui import TaskWindow
+        TaskWindow(self.root, self.store, self.sid)
 
     def inspect_context(self):
         from .context_ui import show_context

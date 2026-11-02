@@ -13,7 +13,7 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 ```
 
 桌面版支援對話紀錄、停止回答、長期記憶新增／編輯／停用／到期日／刪除、對話目標與限制、回答參考快照、回答評分與更正、JSON 匯出。Ctrl+Enter 傳送。
-目前是建議模式：能分析明確選取的文字文件與提供解法，不能修改原檔、瀏覽即時網頁或代替你執行系統工作。
+聊天目前是建議模式：能分析明確選取的文字文件與提供解法；另可由你在「工作工具」選擇並執行 CSV 分組加總。聊天不會自動執行命令，不能修改原檔、瀏覽即時網頁或代替你執行任意系統工作。
 
 ## 記憶與隱私
 
@@ -67,9 +67,32 @@ python -m assistant --search-folder "F:\Notes" --query "備份保留"
 
 Windows 讀檔前會核對已開啟控制代碼的實際路徑，檢查實作依據 [Microsoft GetFinalPathNameByHandleW 文件](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)。不支援實際路徑查詢時拒絕讀取。搜尋沒有改變既有每段對話 8 檔／8 MiB 的匯入上限；找不到結果不代表文件或資訊不存在。
 
+## 實際工作工具：CSV 分組加總
+
+在主視窗右上角點「工作工具」，選取 CSV、分組欄與數值欄，再點「建立計畫」。先核對來源路徑、內容指紋、前五筆預覽與處理規則，再按「執行選取計畫」。計畫保存不代表已執行；只有來源、筆數與分組總和核對成功才標記完成。執行及計算完全在本機，不呼叫模型。
+
+例如 `A,2`、`B,4`、`A,3`，結果為 A 共兩筆加總 5、B 一筆加總 4，總計 9。數字使用十進位精確加總，報告數值以字串保存以避免浮點誤差。「匯出已驗證報告」另存 JSON、核對輸出雜湊並保存匯出紀錄；目的檔已存在時拒絕覆寫。JSON 內的文字不會被當成試算表公式執行。
+
+來源仍以 2 MiB 為上限，最多 200 欄、50000 筆、5000 組、4 MiB 結果。CSV 使用逗號與標準雙引號規則，支援 UTF-8／含 BOM 的 UTF-16；不自動猜分隔符。標頭去除前後空白且不能重複，分組值原樣保留，空白分組是一組；完全空白的記錄行忽略，欄內換行保留。數值去除前後空白，最多 60 字元，只接受普通十進位數字，不接受空值、千分位、貨幣符號、NaN、Infinity 或科學記號。錯誤會使整個工作失敗，不會略過資料或當作零。
+
+執行前與計算後重查來源指紋；來源版本不同時需建立新計畫。每個計畫只能執行一次，重跑需另建計畫。可按「停止」，30 秒限制與取消為檔案處理之間的合作式檢查，無法中斷已阻塞的作業系統 I/O。若程序意外結束，保存的 running 只是未完成紀錄，不代表程序仍活著；請建立新計畫重新處理。
+
+```powershell
+python -m assistant --plan-csv "F:\Notes\orders.csv" --group-column sku --value-column amount
+python -m assistant --run-task 任務ID --session 對話ID
+python -m assistant --task-status 任務ID --session 對話ID
+python -m assistant --export-task 任務ID --session 對話ID --output "F:\Notes\new-report.json"
+```
+
+第一個命令回傳任務 ID 與 `session_id`；後續使用這兩個值。CLI 的輸出為 UTF-8。可以加上 `--data-dir` 使用其他本機資料目錄，所有步驟必須使用同一目錄。
+
+工作紀錄與完整結果保存在本機資料庫，備份會包含它們；外部匯出檔不會隨備份搬移，可從還原的工作重新匯出。保留最近 20 筆匯出紀錄。工作題目提問時，最多提供目前對話最近三筆工作摘要、每筆最多十組與總和給 Codex，絕對來源／匯出路徑不加入該摘要；分組名稱過長會標示省略。可在「查看本次參考 → 工作結果」檢視送出的快照。曾匯出驗證不代表檔案現在仍存在或未變更。
+
+目前只有此 CSV 工作工具，不是任意命令執行、自動修復或通用代理。工作／匯出結果、對話與私人來源檔不納入 GitHub 程式更新。
+
 ## 本機備份與還原
 
-點「本機備份與還原 → 建立本機備份」，會在目前資料目錄的 `backups` 中建立 `.paibackup`。備份透過 SQLite 一致性快照保存已提交的資料，包含對話、記憶、回饋、目標、文件副本及回答快照；不包含程式、原始文件、Codex 登入或模型。正在生成且尚未儲存的回答不在該次快照內。
+點「本機備份與還原 → 建立本機備份」，會在目前資料目錄的 `backups` 中建立 `.paibackup`。備份透過 SQLite 一致性快照保存已提交的資料，包含對話、記憶、回饋、目標、文件副本、回答快照及工作紀錄／結果；不包含程式、原始文件、外部匯出檔、Codex 登入或模型。正在生成且尚未儲存的回答不在該次快照內。可還原 v0.5／v0.6 的備份，開啟時會補上空的工作表；含工作資料的新版備份需用相容新版程式開啟。
 
 「從備份還原到新資料夾」會要求選取備份與存放位置，檢查雜湊、資料庫完整性、關聯及格式後，建立新的 `assistant-restored-日期-識別碼` 資料夾。完成後按「開啟還原後的助理」使用該資料；新視窗標題會顯示資料位置。原視窗與 `Start.cmd` 仍使用原資料，兩份資料不會自動合併。原始文件的路徑可能已失效，但匯入副本仍可分析；重新匯入需原檔仍存在。
 
@@ -104,6 +127,7 @@ python scripts/evaluate_context.py
 python scripts/evaluate_documents.py
 python scripts/evaluate_search.py
 python scripts/evaluate_understanding.py
+python scripts/evaluate_tasks.py
 python scripts/evaluate_search.py --live --ids port_compare policy_conflict late_recovery --report data/evaluations/search-live.json
 python scripts/evaluate_documents.py --live
 python scripts/evaluate.py --live

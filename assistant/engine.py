@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .context import followup_query, make_context, select_excerpts
 from .documents import check_citations, retrieve_documents
+from .tasks import task_context
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,6 +115,7 @@ class Assistant:
         context = make_context(question, history, memories, self.store.session_brief(sid), select_excerpts(question, older))
         documents = self.store.documents(sid, include_content=True)
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
+        context['task_runs'] = task_context(self.store, sid, question)
         return context
 
     def ask(self, sid, question, cancel=None):

@@ -23,7 +23,7 @@ class BackupWindow:
         self.window.minsize(620, 440)
         ttk.Label(self.window, text='保存完整記憶與對話，還原時保留目前資料', padding=14,
                   font=('Microsoft JhengHei UI', 14, 'bold')).pack(anchor='w')
-        ttk.Label(self.window, text='包含對話、長期記憶、回饋、目標、文件副本與回答參考快照。\n不包含程式、Codex 登入或原始文件；備份未加密，請放在你信任的位置。',
+        ttk.Label(self.window, text='包含對話、記憶、回饋、文件副本、回答快照及工作紀錄／報告。\n不包含程式、Codex 登入、原始文件或外部匯出檔；備份未加密，請放在你信任的位置。',
                   wraplength=670, padding=(14, 0, 14, 12)).pack(fill='x')
         ttk.Label(self.window, text='目前資料：' + str(store.path), wraplength=670, padding=14).pack(fill='x')
         controls = ttk.Frame(self.window, padding=14)
@@ -78,7 +78,7 @@ class BackupWindow:
             self.restore_button.configure(state='normal')
             if ok:
                 counts = result['counts']
-                summary = f'對話 {counts["sessions"]} 段、訊息 {counts["messages"]} 則、記憶 {counts["memories"]} 筆、文件 {counts["documents"]} 個。'
+                summary = f'對話 {counts["sessions"]} 段、訊息 {counts["messages"]} 則、記憶 {counts["memories"]} 筆、文件 {counts["documents"]} 個、工作 {counts.get("task_runs", 0)} 筆。'
                 if 'data_dir' in result:
                     self.restored = result['data_dir']
                     self.notice.set('已驗證並還原至：\n' + self.restored + '\n\n' + summary + '\n按下方按鈕可開啟還原資料；原視窗仍使用原資料。')

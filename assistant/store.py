@@ -62,6 +62,11 @@ class Store:
                     imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, path_key));
                 CREATE TABLE IF NOT EXISTS answer_checks (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS task_runs (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),
+                    plan_json TEXT NOT NULL, result_json TEXT, error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
@@ -99,6 +104,57 @@ class Store:
         with self.connect() as db:
             db.execute("INSERT INTO sessions(id, title) VALUES (?, ?)", (sid, title[:80]))
         return sid
+
+    def create_task(self, sid, plan):
+        task_id = uuid.uuid4().hex
+        with self.connect() as db:
+            db.execute('INSERT INTO task_runs(id,session_id,status,plan_json) VALUES (?, ?, ?, ?)',
+                       (task_id, sid, 'planned', json.dumps(plan, ensure_ascii=False)))
+        return task_id
+
+    def tasks(self, sid):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute('SELECT id,status,created_at,finished_at FROM task_runs WHERE session_id=? ORDER BY rowid DESC', (sid,))]
+
+    def task(self, sid, task_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM task_runs WHERE session_id=? AND id=?', (sid, task_id)).fetchone()
+        if row is None:
+            raise ValueError('找不到目前對話的任務。')
+        result = dict(row)
+        result['plan'] = json.loads(result.pop('plan_json'))
+        raw = result.pop('result_json')
+        result['result'] = json.loads(raw) if raw else None
+        return result
+
+    def claim_task(self, sid, task_id):
+        with self.connect() as db:
+            changed = db.execute("UPDATE task_runs SET status='running' WHERE session_id=? AND id=? AND status='planned'", (sid, task_id))
+            if changed.rowcount != 1:
+                raise ValueError('只能執行尚未開始的任務；需重跑時請建立新計畫。')
+
+    def finish_task(self, sid, task_id, status, result=None, error=''):
+        if status not in {'succeeded', 'failed', 'cancelled'} or (status == 'succeeded' and result is None):
+            raise ValueError('任務狀態或結果無效。')
+        with self.connect() as db:
+            changed = db.execute("UPDATE task_runs SET status=?,result_json=?,error=?,finished_at=CURRENT_TIMESTAMP WHERE session_id=? AND id=? AND status='running'",
+                                 (status, json.dumps(result, ensure_ascii=False) if result is not None else None,
+                                  error[:2000], sid, task_id))
+            if changed.rowcount != 1:
+                raise ValueError('任務狀態已改變，未寫入完成紀錄。')
+
+    def record_task_export(self, sid, task_id, record):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT result_json FROM task_runs WHERE session_id=? AND id=? AND status='succeeded'", (sid, task_id)).fetchone()
+            if row is None:
+                raise ValueError('任務尚未完成，無法記錄匯出。')
+            result = json.loads(row['result_json'])
+            if result['report_sha256'] != record['sha256']:
+                raise ValueError('報告版本與匯出結果不一致。')
+            result.setdefault('exports', []).append(record)
+            result['exports'] = result['exports'][-20:]
+            db.execute('UPDATE task_runs SET result_json=? WHERE id=?', (json.dumps(result, ensure_ascii=False), task_id))
 
     def sessions(self):
         with self.connect() as db:
