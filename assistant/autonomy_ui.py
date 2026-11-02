@@ -20,7 +20,9 @@ class AutonomousWindow:
         self.cancel = threading.Event()
         self.events = queue.Queue()
         self.window = tk.Toplevel(parent)
-        self.window.title('自主目標 · AI 夥伴')
+        with store.connect() as db:
+            title = db.execute('SELECT title FROM sessions WHERE id=?', (sid,)).fetchone()
+        self.window.title('自主目標 · ' + (title['title'][:60] if title else 'AI 夥伴'))
         fit_window(self.window, 900, 780)
         self.layout = ScrollableForm(self.window)
         body = self.layout.body

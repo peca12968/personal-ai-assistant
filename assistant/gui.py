@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .engine import Assistant
+from .ui_layout import ScrollableForm
 
 BG, PANEL, FG, MUTED, ACCENT = "#101820", "#192530", "#eef4f7", "#9db0bd", "#52d6ad"
 
@@ -42,11 +43,19 @@ class App:
                  font=("Microsoft JhengHei UI", 11)).pack(side="right")
         body = tk.Frame(root, bg=BG, padx=18)
         body.grid(row=1, column=0, sticky="nsew")
-        sidebar = tk.Frame(body, bg=PANEL, width=220, padx=12, pady=12)
-        sidebar.pack(side="left", fill="y", padx=(0, 14))
-        sidebar.pack_propagate(False)
+        side_shell = tk.Frame(body, bg=PANEL, width=220)
+        side_shell.pack(side="left", fill="y", padx=(0, 14))
+        side_shell.pack_propagate(False)
+        style.configure('Sidebar.TFrame', background=PANEL)
+        self.sidebar_layout = ScrollableForm(side_shell, event_root=root)
+        self.sidebar_layout.configure(style='Sidebar.TFrame')
+        self.sidebar_layout.canvas.configure(bg=PANEL)
+        sidebar = self.sidebar_layout.body
+        sidebar.configure(style='Sidebar.TFrame', padding=12)
         self.new_btn = ttk.Button(sidebar, text="＋ 新對話", command=self.new_session)
         self.new_btn.pack(fill="x", pady=(0, 14))
+        self.review_btn = ttk.Button(sidebar, text='接續與回顧', command=self.review_goals)
+        self.review_btn.pack(fill='x', pady=(0, 8))
         tk.Label(sidebar, text="對話紀錄", bg=PANEL, fg=MUTED).pack(anchor="w")
         self.session_list = tk.Listbox(sidebar, bg=PANEL, fg=FG, bd=0,
             selectbackground="#315766", highlightthickness=0, height=5, font=("Microsoft JhengHei UI", 10))
@@ -62,7 +71,8 @@ class App:
         memory_menu.pack(fill='x', pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
-        ttk.Button(sidebar, text="本機備份與還原", command=self.backups).pack(fill="x", pady=4)
+        self.backup_btn = ttk.Button(sidebar, text="本機備份與還原", command=self.backups)
+        self.backup_btn.pack(fill="x", pady=4)
         main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True)
         main.rowconfigure(0, weight=1)
@@ -113,10 +123,26 @@ class App:
         from .evolution_ui import EvolutionWindow
         EvolutionWindow(self.root)
 
-    def autonomous_goals(self):
+    def autonomous_goals(self, sid=None, gid=None):
         from .autonomy_ui import AutonomousWindow
+        sid = sid or self.sid
         self.autonomous_windows = [window for window in self.autonomous_windows if window.window.winfo_exists()]
-        self.autonomous_windows.append(AutonomousWindow(self.root, self.store, self.sid, self.assistant.engine))
+        existing = next((window for window in self.autonomous_windows if window.sid == sid), None)
+        if existing is None:
+            existing = AutonomousWindow(self.root, self.store, sid, self.assistant.engine)
+            self.autonomous_windows.append(existing)
+        if gid:
+            existing.refresh(gid)
+        existing.window.lift()
+
+    def refresh_review_count(self):
+        from .goal_review import snapshot
+        count = snapshot(self.store, limit=1)['visible_count']
+        self.review_btn.configure(text=f'接續與回顧（{count}）')
+
+    def review_goals(self):
+        from .goal_review_ui import GoalReviewWindow
+        GoalReviewWindow(self.root, self.store, self.autonomous_goals, self.refresh_review_count)
 
     def refresh_sessions(self):
         self.session_rows = self.store.sessions()
@@ -135,6 +161,7 @@ class App:
         self.chat.see("end")
 
     def render(self):
+        self.refresh_review_count()
         from .answer_runs import recover, runs, ERROR_LABELS
         recovery_notice = ''
         try:

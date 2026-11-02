@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from assistant.feedback_ui import FeedbackWindow
 from assistant.evolution_ui import EvolutionWindow
@@ -12,6 +13,8 @@ from assistant.store import Store
 from assistant import autonomy, artifacts
 from assistant.companion_ui import CompanionWindow
 from assistant.companion_profile import get_profile
+from assistant.goal_review_ui import GoalReviewWindow
+from assistant import goal_review
 
 
 class FormGeometryTests(unittest.TestCase):
@@ -156,3 +159,65 @@ class FormGeometryTests(unittest.TestCase):
             view.select()
             self.assertEqual(str(view.rebuild['state']), 'disabled')
             view.busy = False
+
+    def test_review_form_opens_selected_session_and_hides_without_mutating_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '尚待補充的工作')
+            autonomy.update(store, gid, 'needs_input', question='生效日期？')
+            selected = []
+            view = GoalReviewWindow(self.root, store, lambda sid, gid: selected.append((sid, gid)))
+            layout = self.allocate(view)
+            view.listing.selection_set(gid)
+            view.select()
+            self.assertIn('先保存必要補充', view.output.get('1.0', 'end'))
+            self.assertIn('生效日期？', view.output.get('1.0', 'end'))
+            self.assert_reachable(layout, view.open)
+            self.assert_reachable(layout, view.hide)
+            view.open_selected()
+            self.assertEqual(selected, [(sid, gid)])
+            view.toggle_hidden()
+            self.assertEqual(len(view.listing.get_children()), 0)
+            self.assertEqual(str(view.open['state']), 'disabled')
+            self.assertEqual(autonomy.get_goal(store, sid, gid)['status'], 'needs_input')
+            view.include_hidden.set(True)
+            view.reset_page()
+            view.listing.selection_set(gid)
+            view.select()
+            self.assertEqual(view.hide['text'], '重新顯示在回顧')
+            view.toggle_hidden()
+            self.assertEqual(goal_review.snapshot(store)['visible_count'], 1)
+
+    def test_app_startup_review_count_and_old_goal_navigation_keep_chat_session(self):
+        from assistant.gui import App
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            old_sid = store.new_session()
+            gid = autonomy.create_goal(store, old_sid, '舊對話目標')
+            recent_sid = store.new_session()
+            engine = SimpleNamespace(answer=lambda *args: self.fail('navigation must not call model'))
+            app = App(self.root, store, engine)
+            app.sid = recent_sid
+            app.render()
+            self.assertEqual(app.review_btn['text'], '接續與回顧（1）')
+            app.sidebar_layout.pack_forget()
+            app.sidebar_layout.place(x=0, y=0, width=220, height=450)
+            self.root.update_idletasks()
+            self.assertGreater(app.sidebar_layout.canvas.bbox('all')[3], 450)
+            self.assert_reachable(app.sidebar_layout, app.backup_btn)
+            before = app.sidebar_layout.canvas.yview()
+            app.sidebar_layout._wheel(SimpleNamespace(widget=app.send_btn, delta=120))
+            self.assertEqual(app.sidebar_layout.canvas.yview(), before)
+            def hidden_window(*args):
+                window = AutonomousWindow(*args)
+                window.window.withdraw()
+                return window
+            with patch('assistant.autonomy_ui.AutonomousWindow', side_effect=hidden_window):
+                app.autonomous_goals(old_sid, gid)
+                app.autonomous_goals(old_sid, gid)
+            self.assertEqual(app.sid, recent_sid)
+            self.assertEqual(len(app.autonomous_windows), 1)
+            self.assertEqual(app.autonomous_windows[0].sid, old_sid)
+            self.assertEqual(app.autonomous_windows[0].selected_id(), gid)
+            self.assertEqual(autonomy.get_goal(store, old_sid, gid)['status'], 'pending')

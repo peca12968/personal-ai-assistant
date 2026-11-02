@@ -122,6 +122,9 @@ class Store:
                     status TEXT NOT NULL CHECK(status IN ('prepared','verified','uncertain')),
                     error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     verified_at TEXT, UNIQUE(goal_id,file_key));
+                CREATE TABLE IF NOT EXISTS goal_reviews (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
+                    fingerprint TEXT NOT NULL, hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:

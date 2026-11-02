@@ -34,6 +34,9 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    mode.add_argument('--review-goals', action='store_true', help='本機跨對話回顧自主目標，不呼叫模型或啟動工作')
+    parser.add_argument('--review-hidden', action='store_true', help='搭配 --review-goals，也列出暫時收起項目')
+    parser.add_argument('--review-offset', type=int, help='搭配 --review-goals，跳過指定數量，每頁100項')
     parser.add_argument('--deliver-files', action='store_true', help='搭配 --new-goal，要求在該目標本機成果資料夾交付Markdown、TXT或JSON')
     mode.add_argument('--rebuild-goal-files', help='核對／重建指定目標已保存文件；需 --session，不呼叫模型')
     parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付目標的成果與使用者補充作為歷史背景')
@@ -56,6 +59,10 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if (args.review_hidden or args.review_offset is not None) and not args.review_goals:
+        parser.error('回顧分頁選項只能搭配 --review-goals。')
+    if args.review_goals and (args.session or args.file or (args.review_offset is not None and args.review_offset < 0)):
+        parser.error('回顧涵蓋本機所有對話，不搭配 --session 或 --file；offset須非負數。')
     profile_change = args.set_companion is not None or args.reset_companion
     profile_mode = args.show_companion or profile_change
     if profile_change and (args.profile_revision is None or args.profile_revision < 0):
@@ -169,6 +176,15 @@ def main():
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
         print("Codex:", find_codex())
+        return
+    if args.review_goals:
+        from .goal_review import snapshot
+        try:
+            result = snapshot(Store(args.data_dir / 'assistant.sqlite3'), include_hidden=args.review_hidden,
+                              offset=args.review_offset or 0)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            parser.exit(1, '回顧未完成：' + str(exc) + '\n')
         return
     if profile_mode:
         from .companion_profile import get_profile, read_settings, reset_profile, save_profile

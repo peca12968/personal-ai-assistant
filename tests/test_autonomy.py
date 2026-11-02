@@ -178,6 +178,7 @@ class AutonomyTests(unittest.TestCase):
         restored = Store(target / 'assistant.sqlite3')
         self.assertEqual(a.get_goal(restored, self.sid, gid), result)
         with restored.connect() as db:
+            db.execute('DROP TABLE goal_reviews')
             db.execute('DROP TABLE autonomous_artifacts')
             db.execute('DROP TABLE autonomous_delivery')
             db.execute('DROP TABLE autonomous_handoffs')

@@ -33,6 +33,7 @@ TABLES = {
     'companion_profile': {'id', 'revision', 'settings_json', 'updated_at'},
     'autonomous_delivery': {'goal_id', 'enabled'},
     'autonomous_artifacts': {'id', 'goal_id', 'name', 'file_key', 'content', 'sha256', 'size_bytes', 'status', 'error', 'created_at', 'verified_at'},
+    'goal_reviews': {'goal_id', 'fingerprint', 'hidden_at'},
 }
 
 
@@ -61,12 +62,12 @@ def validate_database(path):
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
         if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
             raise ValueError('自主目標資料表不完整。')
-        if 'autonomous_handoffs' in actual_tables and 'autonomous_goals' not in actual_tables:
+        if actual_tables & {'autonomous_handoffs', 'goal_reviews'} and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
         delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
         if len(actual_tables & delivery_tables) == 1 or (delivery_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主文件資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile'} - delivery_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews'} - delivery_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -77,6 +78,10 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if 'goal_reviews' in actual_tables:
+            import re
+            if any(not isinstance(r[0], str) or not re.fullmatch('[0-9a-f]{64}', r[0]) for r in db.execute('SELECT fingerprint FROM goal_reviews')):
+                raise ValueError('回顧狀態指紋格式不符。')
         if delivery_tables <= actual_tables:
             from .artifacts import payload, MAX_FILES
             for row in db.execute('SELECT name,file_key,content,sha256,size_bytes,status FROM autonomous_artifacts'):

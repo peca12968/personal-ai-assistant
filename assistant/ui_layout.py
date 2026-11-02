@@ -12,7 +12,7 @@ def fit_window(window, width, height):
 
 
 class ScrollableForm(ttk.Frame):
-    def __init__(self, window):
+    def __init__(self, window, *, event_root=None):
         super().__init__(window)
         self.pack(fill='both', expand=True)
         self.canvas = tk.Canvas(self, highlightthickness=0, takefocus=False)
@@ -24,9 +24,10 @@ class ScrollableForm(ttk.Frame):
         self.item = self.canvas.create_window(0, 0, anchor='nw', window=self.body)
         self.body.bind('<Configure>', self._content_changed)
         self.canvas.bind('<Configure>', self._viewport_changed)
-        # Toplevel bindings affect this form only, never other assistant windows.
-        window.bind('<MouseWheel>', self._wheel, add='+')
-        window.bind('<FocusIn>', self._focus, add='+')
+        # Embedded forms bind at their toplevel; handlers restrict the widget scope.
+        target = event_root or window
+        target.bind('<MouseWheel>', self._wheel, add='+')
+        target.bind('<FocusIn>', self._focus, add='+')
 
     def _content_changed(self, event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox('all'))
@@ -41,6 +42,8 @@ class ScrollableForm(ttk.Frame):
         return label
 
     def _wheel(self, event):
+        if not str(event.widget).startswith(str(self) + '.'):
+            return
         if event.widget.winfo_class() in ('Text', 'Listbox', 'Treeview', 'TCombobox'):
             return  # Keep native scrolling / selection inside these controls.
         if self.body.winfo_height() > self.canvas.winfo_height() and event.delta:
