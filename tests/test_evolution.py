@@ -79,6 +79,67 @@ class EvolutionTests(unittest.TestCase):
     def reports(self):
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.root / 'data/evolution').glob('*/report.json')]
 
+    def install_acceptance_fixture(self, value='mixed'):
+        for name in ('assistant/acceptance.py', 'scripts/observe_acceptance.py'):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ev.ROOT / name).read_bytes())
+        (self.root / 'assistant/__init__.py').write_text('', encoding='utf-8')
+        (self.root / self.name).write_text(
+            'def conversation_style(question, history):\n    return {"length_hint": "' + value + '"}\n', encoding='utf-8')
+        self.command('add', '.')
+        self.command('commit', '-qm', 'acceptance fixture')
+        return {'version':1, 'cases':[{'id':'fix', 'kind':'communication', 'question':'不要簡短，詳細說明',
+                                     'history':[], 'expect':{'length_hint':'detailed'}}]}
+
+    def test_already_satisfied_cases_stop_without_calling_model(self):
+        suite = self.install_acceptance_fixture('detailed')
+        result = ev.improve('goal', [self.name], root=self.root, engine=self.engine(), acceptance=suite)
+        self.assertEqual(result['status'], 'no_change_needed')
+        self.assertEqual(result['acceptance']['status'], 'already_satisfied')
+        self.assertFalse(hasattr(self, 'prompt'))
+        self.assertEqual(ev.git(self.root, 'status', '--porcelain'), '')
+
+    def test_modified_acceptance_file_is_rejected(self):
+        suite = self.install_acceptance_fixture()
+        original = ev.run_checked
+        def run(command, *args, **kwargs):
+            original(command, *args, **kwargs)
+            if '--suite' in command:
+                Path(command[command.index('--suite') + 1]).write_text('{}', encoding='utf-8')
+        with patch.object(ev, 'run_checked', side_effect=run), self.assertRaisesRegex(ValueError, '驗收案例被改動'):
+            ev.improve('goal', [self.name], root=self.root, engine=self.engine(), acceptance=suite)
+        self.assertFalse(hasattr(self, 'prompt'))
+        self.assertEqual(ev.git(self.root, 'status', '--porcelain'), '')
+
+    def test_acceptance_failure_blocks_apply_despite_green_regressions(self):
+        suite = self.install_acceptance_fixture()
+        old = (self.root / self.name).read_bytes()
+        content = 'def conversation_style(question, history):\n    return {"length_hint": "concise"}\n'
+        with patch.object(ev, 'CHECKS', []), self.assertRaisesRegex(ValueError, '驗收未通過'):
+            ev.improve('goal', [self.name], root=self.root, engine=self.engine(content), acceptance=suite)
+        self.assertEqual((self.root / self.name).read_bytes(), old)
+        report = self.reports()[0]
+        self.assertEqual(report['status'], 'not_applied')
+        self.assertEqual(report['acceptance']['candidate_passed'], 0)
+
+    def test_acceptance_fix_uses_fresh_process_and_reaches_publication(self):
+        suite = self.install_acceptance_fixture()
+        content = 'def conversation_style(question, history):\n    return {"length_hint": "detailed"}\n'
+        original = ev.run_checked
+        def run(command, *args, **kwargs):
+            if str(command[1]).endswith('publish.py'):
+                raise ValueError('publication reached')
+            return original(command, *args, **kwargs)
+        with patch.object(ev, 'CHECKS', []), patch.object(ev, 'run_checked', side_effect=run):
+            with self.assertRaisesRegex(ValueError, 'publication reached'):
+                ev.improve('goal', [self.name], root=self.root, engine=self.engine(content), acceptance=suite)
+        report = self.reports()[0]
+        self.assertEqual(report['acceptance']['baseline_passed'], 0)
+        self.assertEqual(report['acceptance']['candidate_passed'], 1)
+        self.assertEqual(report['acceptance']['status'], 'verified_improvement')
+        self.assertEqual((self.root / self.name).read_text(), content)
+
     def test_rejects_escape_controls_duplicates_empty_and_syntax_errors(self):
         for name in ('../outside.py', 'assistant/evolution.py', 'tests/test_evolution.py',
                      'data/private.txt', 'assistant\\communication.py', 'C:/bad.py'):

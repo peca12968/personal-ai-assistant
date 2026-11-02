@@ -25,7 +25,8 @@ def improvement_context(root, question):
                 continue
             status = report.get('status')
             if status not in {'published', 'applied_unpublished', 'not_applied', 'preparing',
-                              'generating', 'testing', 'applying', 'publishing'}:
+                              'generating', 'testing', 'applying', 'publishing', 'baseline_testing',
+                              'acceptance_testing', 'no_change_needed'}:
                 continue
             row = {'id': report['id'], 'recorded_status': status, 'revision_verified': False}
             commit = report.get('commit', '')
@@ -48,6 +49,12 @@ def improvement_context(root, question):
                                    (root / name).resolve().is_relative_to(root) and
                                    hashlib.sha256((root / name).read_bytes()).hexdigest() == sha for name, sha in files.items()),
                                rollback_recorded=bool(report.get('rollback')))
+                    acceptance = report.get('acceptance', {})
+                    counts = [acceptance.get(key) for key in ('baseline_passed', 'candidate_passed', 'total')]
+                    if (acceptance.get('status') == 'verified_improvement' and
+                        all(type(value) is int for value in counts) and 0 <= counts[0] < counts[1] == counts[2] <= 40):
+                        row['acceptance_recorded'] = {'status': 'verified_improvement',
+                            'baseline_passed': counts[0], 'candidate_passed': counts[1], 'total': counts[2]}
             # No user-written goal, error, source contents or absolute path reaches chat.
             results.append(row)
         except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):

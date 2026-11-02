@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "cases": [
+    {"id":"negated_concise","kind":"communication","question":"不要簡短，請詳細說明","history":[],"expect":{"length_hint":"detailed"}},
+    {"id":"not_brief","kind":"communication","question":"Not brief, explain in detail.","history":[],"expect":{"length_hint":"detailed"}},
+    {"id":"negated_detail","kind":"communication","question":"不要詳細說明，兩句就好","history":[],"expect":{"length_hint":"concise"}},
+    {"id":"no_detail","kind":"communication","question":"不需要詳細說明，請簡短回答","history":[],"expect":{"length_hint":"concise"}},
+    {"id":"no_length","kind":"communication","question":"不用簡短","history":[],"expect":{"length_hint":"unspecified"}},
+    {"id":"positive_concise","kind":"communication","question":"兩句就好","history":[],"expect":{"length_hint":"concise"}},
+    {"id":"positive_detail","kind":"communication","question":"請詳細說明","history":[],"expect":{"length_hint":"detailed"}},
+    {"id":"mixed","kind":"communication","question":"簡短結論，再詳細說明","history":[],"expect":{"length_hint":"mixed"}},
+    {"id":"neutral","kind":"communication","question":"hello","history":[],"expect":{"length_hint":"unspecified"}}
+  ]
+}

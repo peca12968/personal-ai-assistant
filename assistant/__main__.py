@@ -28,6 +28,7 @@ def main():
     mode.add_argument('--improve', help='指定方向，自我修改限定程式、驗證並發布一輪')
     mode.add_argument('--rollback-improvement', help='回復仍為最新版本的自我改進紀錄 ID 並發布')
     parser.add_argument('--edit', action='append', help='搭配 --improve 指定可修改模組，可重複')
+    parser.add_argument('--acceptance', type=Path, help='搭配 --improve 指定 JSON 驗收案例，核對改前／改後')
     parser.add_argument('--group-column')
     parser.add_argument('--value-column')
     parser.add_argument('--output', type=Path)
@@ -42,6 +43,8 @@ def main():
         parser.error('自我改進／回復不能混用對話、文件或 CSV 工作參數。')
     if args.edit and not args.improve:
         parser.error('--edit 需搭配 --improve。')
+    if args.acceptance and not args.improve:
+        parser.error('--acceptance 需搭配 --improve。')
     if args.rollback_improvement:
         from .evolution import rollback
         try:
@@ -51,8 +54,10 @@ def main():
         return
     if args.improve:
         from .evolution import improve
+        from .acceptance import load_suite
         try:
-            result = improve(args.improve, args.edit, progress=lambda state: print(state, flush=True))
+            suite = load_suite(args.acceptance) if args.acceptance else None
+            result = improve(args.improve, args.edit, progress=lambda state: print(state, flush=True), acceptance=suite)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         except Exception as exc:
             parser.exit(1, '自我改進未完成：' + str(exc) + '\n')

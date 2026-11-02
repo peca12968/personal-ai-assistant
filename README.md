@@ -130,6 +130,18 @@ python -m assistant --rollback-improvement 20261102-180000-1234abcd
 
 6 個溝通案例可用下列指令收集真實回答，保存在本機並逐題依 rubric 評讀：
 
+自我改進也可提供「驗收例子」：桌面中輸入一句話並選擇預期辨識的回答長度，或匯入多案例 JSON。流程會先測原版本，再對候選版測完全相同的案例；必須全部符合預期，而且至少改善一個原先失敗的案例，才會套用。若原版已全部通過，會直接回報「目前已滿足案例」，不呼叫模型、不改碼。若沒提供例子，仍可使用原本的回歸測試流程，但不會宣稱本輪新需求已驗收。
+
+```powershell
+python -m assistant --improve "正確理解回答長度要求中的否定詞，保留原有辨識" --edit assistant/communication.py --acceptance evals/improvement/communication_negation.json
+```
+
+驗收檔是 `{"version":1,"cases":[...]}`，最多 40 題、200 KB。支援 `communication`（溝通提示欄位）、`followup`（接續問題所需的前文文字或 null）、`retrieval`（排序後的記憶 ID）；各案例必須對應本輪選定的模組，不接受 Python 表達式或任意命令。溝通範例見 [否定句驗收案例](evals/improvement/communication_negation.json)。輸入案例及預期會交給改碼模型，因此這些是已知需求驗收，不是獨立盲測；也不是模型回答品質分數。
+
+每輪的 `acceptance.json`、`baseline-observations.json`、`candidate-observations.json` 與比較結果保留於本機 `data/evolution/<ID>`。控制器固定預期、核對案例未被改動、在新程序收集實際輸出後自行評分；模型不能透過回傳 `passed=true` 自行判定成功。沒有通過的候選會保留供查看，但不套用。
+
+以下命令另行收集真實對話回答，不使用上述程式提示的符合數代替語意評讀：
+
 ```powershell
 python scripts/evaluate_communication.py --live --report data/evaluations/communication-new.json
 ```

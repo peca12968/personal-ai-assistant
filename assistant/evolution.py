@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from .engine import CodexEngine, EngineError, ROOT
+from .acceptance import compare, grade, strict_json, validate_suite
 
 # The model cannot edit this controller, publishing, storage, tests or credentials.
 EDITABLE = ('assistant/communication.py', 'assistant/context.py',
@@ -103,7 +104,7 @@ def unchanged(root, baseline, original):
         raise ValueError('驗證期間原始檔案已變動，停止套用。')
 
 
-def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progress=None):
+def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progress=None, acceptance=None):
     """One explicit goal -> one candidate -> checks -> apply -> private publication."""
     root = Path(root).resolve()
     if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 4000:
@@ -111,6 +112,7 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
     selected = list([EDITABLE[0], EDITABLE[3]] if selected is None else selected)
     if not selected or len(selected) != len(set(selected)) or any(name not in EDITABLE for name in selected):
         raise ValueError('只可選擇列出的溝通與理解模組。')
+    suite = validate_suite(acceptance, selected) if acceptance is not None else None
     state_dir = root / 'data' / 'evolution'
     state_dir.mkdir(parents=True, exist_ok=True)
     lock = state_dir / 'active.lock'
@@ -129,7 +131,8 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
         candidate = folder / 'candidate'
         candidate.mkdir(parents=True)
         report = {'id': run_id, 'goal': goal.strip(), 'base_commit': baseline,
-                  'selected': selected, 'status': 'preparing', 'checks': [], 'directory': str(folder)}
+                  'selected': selected, 'status': 'preparing', 'checks': [], 'directory': str(folder),
+                  'acceptance': {'status': 'pending' if suite else 'not_provided'}}
 
         def save(status):
             report['status'] = status
@@ -152,12 +155,44 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             target = candidate / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(original[name])
+        baseline_observations = None
+        suite_bytes = json.dumps(suite, ensure_ascii=False, indent=2).encode('utf-8') if suite else None
+        suite_path = folder / 'acceptance.json'
+        if suite:
+            suite_path.write_bytes(suite_bytes)
+            report['acceptance_sha256'] = digest(suite_bytes)
+
+        def observe(phase):
+            output = folder / (phase + '-observations.json')
+            run_checked([sys.executable, 'scripts/observe_acceptance.py', '--suite', str(suite_path),
+                         '--output', str(output)], candidate, folder / (phase + '-acceptance.log'), cancel, timeout=60)
+            if suite_path.read_bytes() != suite_bytes:
+                raise ValueError('驗收案例被改動，停止本輪。')
+            with output.open('rb') as stream:
+                raw = stream.read(2_000_001)
+            if len(raw) > 2_000_000:
+                raise ValueError('驗收觀察過大。')
+            result = strict_json(raw.decode('utf-8'))
+            grade(suite, result)  # Validate IDs, structure and types in the controller.
+            return result
+
+        if suite:
+            save('baseline_testing')
+            baseline_observations = observe('baseline')
+            for name, content in original.items():
+                if (candidate / name).is_symlink() or (candidate / name).read_bytes() != content:
+                    raise ValueError('改前測試更動原始碼，停止本輪。')
+            report['acceptance'] = {'status': 'baseline_measured', 'baseline': grade(suite, baseline_observations)}
+            if all(row['passed'] for row in report['acceptance']['baseline']):
+                report['acceptance'] = compare(suite, baseline_observations, baseline_observations)
+                save('no_change_needed')
+                return report
         source = {name: original[name].decode('utf-8') for name in selected}
         prompt = ('你正在修改自己的個人 AI 助理程式。完成一個明確的改善，保留公開函式與既有行為。'
                   '只改給定檔案，不執行工具，不存取網路或個人資料，不加入隱藏副作用或外部依賴。'
                   '回傳純 JSON，不要 Markdown：{"files":[{"path":"指定路徑","content":"完整新檔內容"}]}。'
                   '每個檔案最多 100000 UTF-8 bytes。無法達成時回傳空 files，不能假稱完成。\n' +
-                  json.dumps({'goal': goal.strip(), 'source': source}, ensure_ascii=False))
+                  json.dumps({'goal': goal.strip(), 'source': source, 'acceptance': suite}, ensure_ascii=False))
         save('generating')
         if cancel and cancel.is_set():
             raise EngineError('自我改進已停止，沒有套用變更。')
@@ -176,6 +211,13 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             run_checked([sys.executable, *command], candidate, folder / f'check-{index}.log', cancel)
             report['checks'].append({'command': list(command), 'passed': True})
             save('testing')
+        if suite:
+            save('acceptance_testing')
+            observations = observe('candidate')
+            report['acceptance'] = compare(suite, baseline_observations, observations)
+            save('acceptance_testing')
+            if report['acceptance']['status'] != 'verified_improvement':
+                raise ValueError('本輪驗收未通過：需全部案例符合預期，且至少修好一個原本失敗的案例。原程式未套用。')
         # Checks cannot silently alter source or protected validators.
         for name, old in original.items():
             path = candidate / name
