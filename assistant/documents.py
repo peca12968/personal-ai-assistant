@@ -66,6 +66,8 @@ def chunks(document, max_chars=1400, max_lines=30):
             flush()
             for offset in range(0, len(line), max_chars):
                 output.append({"start_line": number, "end_line": number,
+                               "start_char": offset + 1, "end_char": min(len(line), offset + max_chars),
+                               "line_chars": len(line),
                                "text": f"L{number}: " + line[offset:offset + max_chars], "partial_line": True})
         else:
             if buffer and (length + len(line) > max_chars or len(buffer) >= max_lines):
@@ -165,22 +167,57 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000, *, ref
             'requested_ranges_limited': requests_limited}
 
 
+def _covers(intervals, start, end):
+    if start < 1 or end < start:
+        return False
+    cursor = start
+    for low, high in sorted(intervals):
+        if low <= cursor <= high:
+            cursor = high + 1
+    return cursor > end
+
+
+def _character_ranges(excerpts, doc_id, line_number):
+    groups = {}
+    for row in excerpts:
+        if row['document_id'] != doc_id or not row['start_line'] <= line_number <= row['end_line']:
+            continue
+        if {'start_char', 'end_char', 'line_chars'} <= row.keys():
+            low, high, total = (row[k] for k in ('start_char', 'end_char', 'line_chars'))
+            if (row['start_line'] != row['end_line'] or
+                    any(type(n) is not int for n in (low, high, total)) or not 1 <= low <= high <= total):
+                continue
+        elif not row.get('partial_line', False):
+            prefix = f'L{line_number}: '
+            full = next((line[len(prefix):] for line in row.get('text', '').splitlines() if line.startswith(prefix)), None)
+            if full is None or not full:
+                continue
+            low, high, total = 1, len(full), len(full)
+        else:
+            continue  # Old partial excerpts have no attributable character offsets.
+        groups.setdefault((row.get('sha256'), total), []).append((low, high))
+    return groups.values()
+
+
 def check_citations(answer, excerpts):
     """Check only source/range existence, never claim semantic support."""
     checks = []
     for match in re.finditer(r"\[D\d+[^\]\r\n]{0,80}\]", answer):
         token = match.group()
+        characters = re.fullmatch(r"\[D(\d+):L(\d+):C(\d+)(?:-C(\d+))?\]", token)
         parsed = re.fullmatch(r"\[D(\d+):L(\d+)(?:-L(\d+))?\]", token)
         valid = False
-        if parsed:
+        if characters:
+            doc_id, line, start = (int(characters[n]) for n in (1, 2, 3))
+            end = int(characters[4] or characters[3])
+            valid = line >= 1 and any(_covers(ranges, start, end) for ranges in _character_ranges(excerpts, doc_id, line))
+        elif parsed:
             doc_id, start = int(parsed[1]), int(parsed[2])
             end = int(parsed[3] or parsed[2])
-            cursor = start
-            intervals = sorted((row["start_line"], row["end_line"]) for row in excerpts if row["document_id"] == doc_id)
-            if start >= 1 and end >= start:
-                for low, high in intervals:
-                    if low <= cursor <= high:
-                        cursor = high + 1
-                valid = cursor > end
+            groups = {}
+            for row in excerpts:
+                if row['document_id'] == doc_id and not row.get('partial_line', False):
+                    groups.setdefault(row.get('sha256'), []).append((row['start_line'], row['end_line']))
+            valid = any(_covers(intervals, start, end) for intervals in groups.values())
         checks.append({"citation": token, "range_valid": valid})
     return checks

@@ -76,10 +76,12 @@ def show_context(parent, store, message_id):
                                   for r in corrections.get('excerpts', [])) or '本次沒有選取早期更正。')))
     checks = store.answer_checks(message_id)
     citation_text = "\n".join(check["citation"] + ("：範圍存在" if check["range_valid"] else "：無法對照") for check in checks) or "沒有可檢查的文件引用。"
-    doc_text = ("僅檢查來源編號與行號，未驗證結論的語意或正確性。\n" + citation_text + "\n\n" +
+    doc_text = ("僅檢查來源編號、行號與字元範圍，未驗證結論的語意或正確性。\n" + citation_text + "\n\n" +
                 range_status_text(documents) + '\n\n' +
                 ("只提供部分文件片段，不能據此視為讀完整份文件。\n\n" if documents.get("coverage_limited") else "") +
                 "\n\n".join(f'D{row["document_id"]} · {row["name"]} · L{row["start_line"]}-L{row["end_line"]}' +
+                             (f' · C{row["start_char"]}-C{row["end_char"]}（該行共{row["line_chars"]}個Unicode碼位）'
+                              if {'start_char', 'end_char', 'line_chars'} <= row.keys() else '') +
                              ("（部分行內容）" if row["partial_line"] else "") + "\n" + row["text"]
                              for row in documents.get("excerpts", [])))
     sections.append(("文件來源", doc_text))

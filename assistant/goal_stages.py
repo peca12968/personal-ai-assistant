@@ -28,7 +28,7 @@ def activity(row):
     action, observation = json.loads(row['action_json']), json.loads(row['observation_json'])
     tool, args = action['tool'], action['args']
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
-    allowed = {'query', 'document_id', 'start_line', 'end_line', 'operation', 'values',
+    allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
                'date', 'start', 'end', 'days', 'calendar', 'excluded_dates',
                'old_document_id', 'new_document_id', 'offset', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
@@ -36,7 +36,8 @@ def activity(row):
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
               'all_changes_in_page', 'page_content_complete', 'line_text_equal',
               'decoded_text_equal', 'byte_hash_equal', 'plan_id', 'report_sha256',
-              'page_group_count', 'page_is_partial'}
+              'page_group_count', 'page_is_partial', 'line_number', 'start_char', 'end_char',
+              'total_chars', 'next_start_char', 'omitted_before', 'omitted_after', 'line_complete'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',
@@ -44,7 +45,8 @@ def activity(row):
     outcome = {k: v for k, v in observation.items() if k in fields}
     if 'excerpts' in observation:
         outcome['provided_ranges'] = [{k: v for k, v in excerpt.items()
-                                      if k in {'document_id', 'start_line', 'end_line', 'partial_line'}}
+                                      if k in {'document_id', 'start_line', 'end_line', 'partial_line',
+                                               'start_char', 'end_char', 'line_chars'}}
                                      for excerpt in observation['excerpts']]
     if 'memories' in observation:
         outcome['selected_memory_count'] = len(observation['memories'])
