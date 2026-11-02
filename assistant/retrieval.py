@@ -76,14 +76,23 @@ def rank_memories(query, rows, limit=8, *, alias_groups=()):
         elif row["kind"] == "preference":
             fallback.append(row)
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    # Reserve up to two general preferences without letting them fill all slots.
     fallback.sort(key=lambda row: row["id"], reverse=True)
-    reserve = min(2, max(0, limit - 1), len(fallback)) if ranked else min(2, limit, len(fallback))
-    candidates = [item[2] for item in ranked[:limit - reserve]] + fallback[:reserve]
-    selected, seen = [], set()
-    for row in candidates:
+
+    # Deduplicate after sorting but before allocating slots, retaining original rows.
+    seen = set()
+    unique_ranked, unique_fallback = [], []
+    for row in (item[2] for item in ranked):
         content_key = normalize(row["content"]).strip()
         if content_key not in seen:
-            selected.append(row)
+            unique_ranked.append(row)
             seen.add(content_key)
-    return selected
+    for row in fallback:
+        content_key = normalize(row["content"]).strip()
+        if content_key not in seen:
+            unique_fallback.append(row)
+            seen.add(content_key)
+
+    # Reserve up to two distinct general preferences, keeping relevance first.
+    reserve = (min(2, max(0, limit - 1), len(unique_fallback))
+               if unique_ranked else min(2, limit, len(unique_fallback)))
+    return unique_ranked[:limit - reserve] + unique_fallback[:reserve]
