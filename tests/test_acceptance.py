@@ -17,6 +17,21 @@ def example():
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_self_authored_quote_filter_keeps_fixed_cases(self):
+        from scripts.observe_acceptance import observe
+        suite = load_suite(ROOT / 'evals/improvement/communication_quoted_cues.json')
+        self.assertTrue(all(row['passed'] for row in grade(suite, observe(suite))))
+
+    def test_quote_filter_generalizes_to_new_words_delimiters_and_negation(self):
+        from assistant.communication import conversation_style
+        cases = [('說明「簡潔」的意思。', 'unspecified'), ('翻譯『in detail』。', 'unspecified'),
+                 ('「精簡」是什麼？請完整解釋。', 'detailed'), ('分析 ``be brief`` 這個片段。', 'unspecified'),
+                 ('讀取以下文字：\n~~~text\nstep-by-step\n~~~', 'unspecified'),
+                 ('請用「精簡」的方式回覆。', 'concise'), ('Don\'t be "concise"; explain in detail.', 'detailed')]
+        for question, expected in cases:
+            with self.subTest(question=question):
+                self.assertEqual(conversation_style(question, [])['length_hint'], expected)
+
     def test_self_improvement_acceptance_remains_a_regression(self):
         from scripts.observe_acceptance import observe
         suite = load_suite(ROOT / 'evals/improvement/communication_negation.json')
