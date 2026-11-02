@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--report',type=Path)
     args=parser.parse_args()
     if not args.live:
-        print('Three workflow interpretation cases available; use --live with a new local report.')
+        print('Six workflow interpretation cases available; use --live with a new local report.')
         return
     if not args.report or args.report.exists() or not args.report.resolve().is_relative_to((ROOT/'data/evaluations').resolve()):
         parser.error('Use a new --report path under data/evaluations.')
@@ -32,14 +32,20 @@ def main():
         ('no_match','結果是零，是否代表工作失敗，或原始 CSV 根本沒有資料？',
          '完成但沒有符合條件的資料；原始7筆全部排除，不能說原檔空白或工作失敗。'),
         ('combined','說明這個工作各步篩選後有幾筆，以及全部符合條件總額與列出前兩組總額。',
-         '來源7筆；paid後5筆、日期文字開頭後4筆、north後3筆。全部總額7，前兩組B7與A2共9。')]
+         '來源7筆；paid後5筆、日期文字開頭後4筆、north後3筆。全部總額7，前兩組B7與A2共9。'),
+        ('mean_top_weighted','這個工作全部符合條件的平均是多少？只列出的那組平均又是多少？可以把各組平均相加除以組數嗎？',
+         '全部符合條件3筆、總和9，平均3；列出的B只有1筆、平均9。不能以各組平均等權相加除以組數代替資料列平均，不把pending列計入。'),
+        ('mean_empty','平均是不是零？這代表計算失敗嗎？',
+         '來源與符合資料均為0筆，平均未定義/null，不是零；工作成功完成，不能將沒有資料視為計算失敗。'),
+        ('mean_exact_sort','平均都顯示0.0000，為什麼B排在A前面？是否排序錯了？',
+         '平均顯示四位，兩者都被捨入；排序依未捨入比值，B的0.00002大於A的0.00001。不是以顯示零排序，也不能說原始值都是零。')]
     engine=CodexEngine(ROOT/'data')
     report={'completed':False,'fingerprints':{name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
              ('assistant/workflows.py','assistant/tasks.py','assistant/engine.py','prompts/system.txt')},'results':[]}
     for cid,question,rubric in questions:
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);source=root/'input.csv'
-            source.write_text(suite['source'],encoding='utf-8',newline='')
+            source.write_text(cases[cid].get('source',suite['source']),encoding='utf-8',newline='')
             store=Store(root/'state.sqlite3');sid=store.new_session()
             plan=plan_workflow(store,sid,source,cases[cid]['spec'])
             result=execute_task(store,sid,plan['id'])

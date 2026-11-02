@@ -863,6 +863,259 @@
         "group_count": 3
       },
       "request": "依序篩選 state 完全等於 paid、date 文字開頭是 2026-10、region 完全等於 north；再依 team 加總 amount，由大到小取前二組。"
+    },
+    {
+      "id": "mean_top_weighted",
+      "source": "team,amount,state\nA,0,paid\nA,0,paid\nB,9,paid\nC,99,pending\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [
+          {
+            "column": "state",
+            "op": "eq",
+            "value": "paid"
+          }
+        ],
+        "sort": {
+          "by": "mean",
+          "direction": "desc"
+        },
+        "top_n": 1
+      },
+      "expected": {
+        "groups": [
+          [
+            "B",
+            1,
+            "9"
+          ]
+        ],
+        "total": "9",
+        "row_count": 3,
+        "group_count": 2
+      },
+      "request": "只保留 state 完全等於 paid，按 team 計算 amount 平均，按平均由大到小列前一組。"
+    },
+    {
+      "id": "mean_rounding",
+      "source": "team,amount\nA,1.23445\nB,1.23455\nC,-0.00001\nD,1\nD,0\nD,0\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [],
+        "sort": {
+          "by": "group",
+          "direction": "asc"
+        },
+        "top_n": null
+      },
+      "expected": {
+        "groups": [
+          [
+            "A",
+            1,
+            "1.23445"
+          ],
+          [
+            "B",
+            1,
+            "1.23455"
+          ],
+          [
+            "C",
+            1,
+            "-0.00001"
+          ],
+          [
+            "D",
+            3,
+            "1"
+          ]
+        ],
+        "total": "3.46899",
+        "row_count": 6,
+        "group_count": 4
+      },
+      "request": "按 team 計算 amount 平均，按組名升冪列全部，固定小數四位，恰好一半取偶數。"
+    },
+    {
+      "id": "mean_exact_sort",
+      "source": "team,amount\nA,0.00001\nZ,0.00002\nB,0.00002\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [],
+        "sort": {
+          "by": "mean",
+          "direction": "desc"
+        },
+        "top_n": null
+      },
+      "expected": {
+        "groups": [
+          [
+            "B",
+            1,
+            "0.00002"
+          ],
+          [
+            "Z",
+            1,
+            "0.00002"
+          ],
+          [
+            "A",
+            1,
+            "0.00001"
+          ]
+        ],
+        "total": "0.00005",
+        "row_count": 3,
+        "group_count": 3
+      },
+      "request": "按 team 計算 amount 平均，依平均降冪列全部分組。"
+    },
+    {
+      "id": "mean_empty",
+      "source": "team,amount\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [],
+        "sort": {
+          "by": "mean",
+          "direction": "desc"
+        },
+        "top_n": null
+      },
+      "expected": {
+        "groups": [],
+        "total": "0",
+        "row_count": 0,
+        "group_count": 0
+      }
+    },
+    {
+      "id": "mean_filtered_blank",
+      "source": "team,amount,state\nA,,pending\nB,0,paid\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [
+          {
+            "column": "state",
+            "op": "eq",
+            "value": "paid"
+          }
+        ],
+        "sort": {
+          "by": "mean",
+          "direction": "desc"
+        },
+        "top_n": null
+      },
+      "expected": {
+        "groups": [
+          [
+            "B",
+            1,
+            "0"
+          ]
+        ],
+        "total": "0",
+        "row_count": 1,
+        "group_count": 1
+      }
+    },
+    {
+      "id": "mean_negative",
+      "source": "team,amount,state\nA,-2,paid\nA,-4,paid\nB,-1,paid\nC,-1,paid\n",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [
+          {
+            "column": "state",
+            "op": "eq",
+            "value": "paid"
+          }
+        ],
+        "sort": {
+          "by": "mean",
+          "direction": "desc"
+        },
+        "top_n": 2
+      },
+      "expected": {
+        "groups": [
+          [
+            "B",
+            1,
+            "-1"
+          ],
+          [
+            "C",
+            1,
+            "-1"
+          ]
+        ],
+        "total": "-8",
+        "row_count": 4,
+        "group_count": 3
+      },
+      "request": "只保留 state 完全等於 paid，按 team 分組計算 amount 平均，列出平均最高的前兩組。"
+    },
+    {
+      "id": "supported_average",
+      "spec": {
+        "group_column": "team",
+        "value_column": "amount",
+        "filters": [],
+        "sort": {
+          "by": "group",
+          "direction": "asc"
+        },
+        "top_n": null
+      },
+      "expected": {
+        "groups": [
+          [
+            "A",
+            2,
+            "5"
+          ],
+          [
+            "B",
+            1,
+            "7"
+          ],
+          [
+            "C",
+            1,
+            "1"
+          ],
+          [
+            "D",
+            1,
+            "99"
+          ],
+          [
+            "E",
+            1,
+            "-2"
+          ],
+          [
+            "F",
+            1,
+            "0"
+          ]
+        ],
+        "total": "110",
+        "row_count": 7,
+        "group_count": 6
+      },
+      "request": "按 team 計算 amount 平均。"
     }
   ],
   "live_extra": [
@@ -876,11 +1129,6 @@
       "source": "team,net_amount,gross_amount\nA,2,3\n",
       "request": "按 team 分組加總金額。",
       "status": "needs_clarification"
-    },
-    {
-      "id": "unsupported_average",
-      "request": "按 team 計算 amount 平均。",
-      "status": "unsupported"
     },
     {
       "id": "unsupported_partial",
@@ -923,6 +1171,17 @@
         "row_count": 2,
         "group_count": 2
       }
+    },
+    {
+      "id": "unsupported_mean_precision",
+      "request": "按 team 計算 amount 平均，報告只能保留小數兩位，用一般四捨五入，不要其他位數。",
+      "status": "unsupported"
+    },
+    {
+      "id": "unsupported_weighted_mean",
+      "source": "team,amount,weight\nA,2,3\n",
+      "request": "按 team 用 weight 當每筆權重計算 amount 加權平均。",
+      "status": "unsupported"
     }
   ]
 }

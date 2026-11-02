@@ -120,12 +120,12 @@ def execute_task(store, sid, task_id, cancel=None, timeout=30):
     deadline = time.monotonic() + timeout
     try:
         plan = task['plan']
-        if (plan.get('version'), plan.get('operation')) not in {(1, 'csv_group_sum'), (2, 'csv_workflow')}:
+        if (plan.get('version'), plan.get('operation')) not in {(1, 'csv_group_sum'), (2, 'csv_workflow'), (3, 'csv_workflow')}:
             raise ValueError('不支援的任務計畫版本或操作。')
         document, headers, rows = load_csv(plan['source_path'], cancel, deadline)
         if document['sha256'] != plan['source_sha256'] or headers != plan['headers'] or len(rows) != plan['rows']:
             raise ValueError('來源已在預覽後改變，請建立並確認新計畫。')
-        if plan['version'] == 2:
+        if plan['version'] in (2, 3):
             from .workflows import calculate
             report = calculate(plan, document, headers, rows, cancel, deadline)
         else:
@@ -173,7 +173,7 @@ def export_task(store, sid, task_id, destination):
 
 
 def task_context(store, sid, question):
-    if not re.search(r'工作|任務|彙總|加總|報告|結果|完成|匯出|CSV|\b(?:task|sum|summary|result|report|export|finished|done)\b', question, re.I):
+    if not re.search(r'工作|任務|彙總|加總|平均|報告|結果|完成|匯出|CSV|\b(?:task|sum|mean|average|summary|result|report|export|finished|done)\b', question, re.I):
         return []
     summaries = []
     for row in store.tasks(sid)[:3]:
@@ -185,14 +185,21 @@ def task_context(store, sid, question):
             item['failure_guidance'] = guidance
         if task['status'] == 'succeeded' and task['result']:
             report = task['result']['report']
+            mean_fields = ('mean', 'mean_rounded', 'returned_mean', 'returned_mean_rounded', 'returned_row_count', 'mean_policy')
+            invalid_mean = task['plan'].get('version') == 3 and (
+                not all(key in report for key in mean_fields) or
+                report.get('verification', {}).get('mean_basis_matches') is not True or
+                report.get('mean_policy') != task['plan'].get('mean_policy'))
             if (hashlib.sha256(canonical(report)).hexdigest() != task['result']['report_sha256'] or
-                not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
+                invalid_mean or not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
                 item['status'] = 'unverified'
             else:
                 item.update({key: report[key] for key in ('row_count', 'group_count', 'total', 'group_column', 'value_column', 'source_sha256', 'verification')})
                 if report['operation'] == 'csv_workflow':
                     item.update({key: report[key] for key in ('workflow', 'filter_stages', 'input_row_count', 'excluded_row_count',
                                 'returned_group_count', 'selection_limited', 'returned_total')})
+                    if task['plan'].get('version') == 3:
+                        item.update({key: report[key] for key in mean_fields})
                 item['groups_preview'] = [{**group, 'group': group['group'][:200], 'label_truncated': len(group['group']) > 200} for group in report['groups'][:10]]
                 item['groups_truncated'] = len(report['groups']) > 10
                 item['report_sha256'] = task['result']['report_sha256']

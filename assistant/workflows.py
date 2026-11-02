@@ -2,7 +2,8 @@
 import json
 import time
 from collections import defaultdict
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+from fractions import Fraction
 from pathlib import Path
 
 from . import __version__
@@ -11,9 +12,10 @@ from .tasks import MAX_GROUPS, check_running, load_csv, number
 
 TEXT_OPS = {'eq', 'ne', 'contains', 'starts_with'}
 NUM_OPS = {'num_eq', 'num_ne', 'gt', 'gte', 'lt', 'lte'}
+MEAN_POLICY = {'places': 4, 'rounding': 'ROUND_HALF_EVEN', 'basis': 'sum/count'}
 
 
-def validate_spec(spec, headers):
+def validate_spec(spec, headers, *, allow_mean=True):
     if not isinstance(spec, dict) or set(spec) != {'group_column', 'value_column', 'filters', 'sort', 'top_n'}:
         raise ValueError('工作規格只能包含分組欄、加總欄、篩選、排序與前幾名。')
     if not isinstance(spec['group_column'], str) or spec['group_column'] not in headers or not isinstance(spec['value_column'], str) or spec['value_column'] not in headers:
@@ -30,8 +32,9 @@ def validate_spec(spec, headers):
         if rule['op'] in NUM_OPS:
             number(rule['value'], '篩選條件')
     order = spec['sort']
-    if not isinstance(order, dict) or set(order) != {'by', 'direction'} or order['by'] not in ('group', 'sum', 'count') or order['direction'] not in ('asc', 'desc'):
-        raise ValueError('只支援依組名、加總或筆數升冪／降冪排序。')
+    allowed_sort = ('group', 'sum', 'count', 'mean') if allow_mean else ('group', 'sum', 'count')
+    if not isinstance(order, dict) or set(order) != {'by', 'direction'} or order['by'] not in allowed_sort or order['direction'] not in ('asc', 'desc'):
+        raise ValueError('此版本只支援依組名、加總、筆數或已支援的平均升冪／降冪排序。')
     if spec['top_n'] is not None and (type(spec['top_n']) is not int or not 1 <= spec['top_n'] <= MAX_GROUPS):
         raise ValueError('前幾名需為 1–5000 的整數，或 null 表示全部。')
     return strict_json(json.dumps(spec, ensure_ascii=False))
@@ -51,8 +54,9 @@ def describe(spec):
     steps = ['核對 CSV 來源雜湊、欄位與筆數']
     for rule in spec['filters']:
         steps.append(f'篩選：{rule["column"]} {ops[rule["op"]]} {json.dumps(rule["value"], ensure_ascii=False)}')
-    steps.append(f'依「{spec["group_column"]}」分組，加總「{spec["value_column"]}」')
-    by = {'group':'組名', 'sum':'加總', 'count':'筆數'}[spec['sort']['by']]
+    steps.append(f'依「{spec["group_column"]}」分組，計算「{spec["value_column"]}」的加總、筆數與算術平均')
+    steps.append('平均以精確加總除以筆數，顯示小數四位，最接近值、恰好一半時取偶數；排序使用未捨入比值')
+    by = {'group':'組名', 'sum':'加總', 'count':'筆數', 'mean':'平均'}[spec['sort']['by']]
     steps.append('依' + by + ('升冪' if spec['sort']['direction'] == 'asc' else '降冪') + '排序，同值時組名字元升冪')
     steps.append('保留全部分組' if spec['top_n'] is None else f'選取前 {spec["top_n"]} 組，另保留所有符合條件的總額')
     steps.append('核對筆數、分組總和及來源版本，保存本機結果；匯出需另行操作')
@@ -64,12 +68,12 @@ def plan_workflow(store, sid, path, spec, *, expected_sha256=None, request='', c
     if expected_sha256 and document['sha256'] != expected_sha256:
         raise ValueError('來源在規劃期間改變，請重新規劃。')
     spec = validate_spec(spec, headers)
-    plan = {'version': 2, 'operation': 'csv_workflow', 'source_path': document['source_path'],
+    plan = {'version': 3, 'operation': 'csv_workflow', 'source_path': document['source_path'],
             'source_sha256': document['sha256'], 'source_name': document['name'],
             'group_column': spec['group_column'], 'value_column': spec['value_column'],
             'headers': headers, 'rows': len(rows), 'preview_rows': rows[:5], 'app_version': __version__,
-            'spec': spec, 'request': request, 'steps': describe(spec),
-            'rules': '條件依序 AND，文字比較區分大小寫且保留空白；數值使用精確十進位。被前面條件排除的列不再處理；保留列的無效數值會使工作失敗。組名保留原樣。排序同值依組名字元升冪；全部總額與前幾名總額分開。'}
+            'spec': spec, 'request': request, 'steps': describe(spec), 'mean_policy': dict(MEAN_POLICY),
+            'rules': '條件依序 AND，文字比較區分大小寫且保留空白；數值使用精確十進位。被前面條件排除的列不再處理；保留列的無效數值會使工作失敗。組名保留原樣。排序同值依組名字元升冪；全部總額與前幾名總額分開。平均為各自範圍內的加總除以資料筆數，不是各組平均再取平均；固定顯示四位小數，恰好一半時取偶數。沒有符合資料時平均為 null，不是零。'}
     return store.task(sid, store.create_task(sid, plan))
 
 
@@ -84,8 +88,24 @@ def matches(value, rule, index):
             'gte': actual >= target, 'lt': actual < target, 'lte': actual <= target}[op]
 
 
+def arithmetic_mean(total, count):
+    if not count:
+        return None, False
+    with localcontext() as context:
+        # Inputs are <=60 decimal characters and <=50000 rows. This precision
+        # covers the exact sum, scaling and division before four-place rounding.
+        context.prec = 140
+        value = (total / count).quantize(Decimal('0.0001'), rounding=ROUND_HALF_EVEN)
+        if value == 0:
+            value = abs(value)  # Do not display a negative zero.
+        return format(value, 'f'), value * count != total
+
+
 def calculate(plan, document, headers, rows, cancel, deadline):
-    spec = validate_spec(plan['spec'], headers)
+    with_mean = plan['version'] == 3
+    if with_mean and plan.get('mean_policy') != MEAN_POLICY:
+        raise ValueError('平均計算規則與計畫版本不符，請建立新計畫。')
+    spec = validate_spec(plan['spec'], headers, allow_mean=with_mean)
     if spec['group_column'] != plan['group_column'] or spec['value_column'] != plan['value_column']:
         raise ValueError('計畫欄位與工作規格不一致。')
     selected = list(enumerate(rows, 1))
@@ -117,20 +137,33 @@ def calculate(plan, document, headers, rows, cancel, deadline):
         if sum(count for count, _ in groups.values()) != len(selected) or sum((value for _, value in groups.values()), Decimal(0)) != total:
             raise ValueError('分組核對失敗。')
         output = [{'group': key, 'count': count, 'sum': format(value, 'f')} for key, (count, value) in sorted(groups.items())]
+        if with_mean:
+            for row in output:
+                row['mean'], row['mean_rounded'] = arithmetic_mean(Decimal(row['sum']), row['count'])
         order = spec['sort']
         # Stable sorting retains group-name ascending tie breaks for numeric sorts.
-        key = (lambda row: Decimal(row['sum'])) if order['by'] == 'sum' else (lambda row: row[order['by']])
+        if order['by'] == 'mean':
+            key = lambda row: Fraction(Decimal(row['sum'])) / row['count']
+        else:
+            key = (lambda row: Decimal(row['sum'])) if order['by'] == 'sum' else (lambda row: row[order['by']])
         output.sort(key=key, reverse=order['direction'] == 'desc')
         all_groups = len(output)
         output = output if spec['top_n'] is None else output[:spec['top_n']]
         shown_total = sum((Decimal(row['sum']) for row in output), Decimal(0))
-        return {'operation': 'csv_workflow', 'source_name': document['name'], 'source_sha256': document['sha256'],
+        report = {'operation': 'csv_workflow', 'source_name': document['name'], 'source_sha256': document['sha256'],
                 'group_column': spec['group_column'], 'value_column': spec['value_column'],
                 'workflow': spec, 'filter_stages': stages, 'input_row_count': len(rows),
                 'row_count': len(selected), 'excluded_row_count': len(rows) - len(selected),
                 'group_count': all_groups, 'returned_group_count': len(output), 'selection_limited': len(output) < all_groups,
                 'total': format(total, 'f'), 'returned_total': format(shown_total, 'f'), 'groups': output,
                 'verification': {'row_count_matches': True, 'group_total_matches': True, 'source_unchanged': True}}
+        if with_mean:
+            report['mean_policy'] = dict(MEAN_POLICY)
+            report['mean'], report['mean_rounded'] = arithmetic_mean(total, len(selected))
+            report['returned_row_count'] = sum(row['count'] for row in output)
+            report['returned_mean'], report['returned_mean_rounded'] = arithmetic_mean(shown_total, report['returned_row_count'])
+            report['verification']['mean_basis_matches'] = True
+        return report
 
 
 def propose_workflow(store, sid, path, request, engine, cancel=None):
@@ -138,8 +171,9 @@ def propose_workflow(store, sid, path, request, engine, cancel=None):
         raise ValueError('工作需求需為 1–4000 字。')
     document, headers, rows = load_csv(path, cancel)
     instructions = '''將需求轉成單一 CSV 工作規格，只回傳 JSON，不使用工具或產生程式碼。
-可做：依序最多六個 AND 篩選、單一欄分組、單一欄數值加總、依 group/sum/count 排序、前幾名。
-無法做：平均、多欄分組、跨檔合併、OR、日期解析或相對日期推算、修改來源、任意檔案或系統操作、上傳、寄信、排程、自動匯出。不要省略無法做到的部分後假裝整個需求可做。
+可做：依序最多六個 AND 篩選、單一欄分組、單一欄數值加總與算術平均、依 group/sum/count/mean 排序、前幾名。每組同時產生筆數、加總與平均，不需要 aggregation 等額外欄位。
+平均以加總除以筆數，固定顯示小數四位、恰好一半取偶數；排序比較未捨入的精確比值。沒有資料時平均為 null。整體平均依所有符合條件的資料筆數計算，不是各組平均的平均。
+無法做：其他捨入位數或捨入方式、加權平均（另指定權重欄）、中位數、多欄分組、跨檔合併、OR、日期解析或相對日期推算、修改來源、任意檔案或系統操作、上傳、寄信、排程、自動匯出。不要省略無法做到的部分後假裝整個需求可做。
 缺少會改變結果的欄位或條件需澄清，不猜欄名或數值。只使用提供的完整欄名。未指明分組欄且有多個合理選擇時必須問；有 net_amount/gross_amount 等多個合理加總欄也必須問清楚。
 文字比較區分大小寫且保留空白；eq/ne 是文字相等/不等，contains 是包含，starts_with 是開頭。
 filters 每個項目必須且只能有三個欄位：{"column":"完整欄名","op":"eq","value":"文字值"}。運算欄位名稱固定是 op，不可使用 operator 或其他名稱。

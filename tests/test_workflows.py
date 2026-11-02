@@ -6,11 +6,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from decimal import Decimal, localcontext
 
 from assistant.backup import create_backup, restore_backup
 from assistant.store import Store
 from assistant.tasks import TaskCancelled, execute_task, export_task, task_context
-from assistant.workflows import plan_workflow, propose_workflow, validate_spec
+from assistant.workflows import arithmetic_mean, plan_workflow, propose_workflow, validate_spec
 
 
 def spec():
@@ -120,7 +121,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_clarification_unsupported_and_malformed_model_output_create_no_task(self):
         for response in [{'status':'needs_clarification','question':'哪個金額欄？'},
-                         {'status':'unsupported','reason':'不支援平均'}]:
+                         {'status':'unsupported','reason':'不支援中位數'}]:
             self.assertEqual(propose_workflow(self.store,self.sid,self.source,'需求',Engine(response)),response)
         for response in [{'status':'ready','spec':{**spec(),'command':'upload'}},
                          {'status':'ready','spec':{**spec(),'filters':[{'column':'state','operator':'eq','value':'paid'}]}},
@@ -173,10 +174,82 @@ class WorkflowTests(unittest.TestCase):
         plan=run('--plan-workflow',str(self.source),'--workflow-spec',str(path))
         done=run('--run-task',plan['id'],'--session',plan['session_id'])
         self.assertEqual(done['result']['report']['returned_total'],'12')
+        self.assertEqual(plan['plan']['version'],3)
+        self.assertEqual(done['result']['report']['mean'],'3.2500')
+        self.assertEqual(done['result']['report']['returned_mean'],'4.0000')
         backup=create_backup(self.root/'cli/assistant.sqlite3')
         restore_backup(backup['path'],self.root/'restored')
         restored=Store(self.root/'restored/assistant.sqlite3')
         self.assertEqual(restored.task(plan['session_id'],plan['id'])['result'],done['result'])
+
+    def test_mean_uses_rows_not_mean_of_group_means_and_preserves_top_n_scope(self):
+        self.source.write_text('team,amount,state\nA,0,paid\nA,0,paid\nB,9,paid\nC,99,pending\n')
+        workflow = spec(); workflow['sort']['by'] = 'mean'; workflow['top_n'] = 1
+        done = self.execute(workflow); self.assertEqual(done['status'], 'succeeded', done['error'])
+        report = done['result']['report']
+        self.assertEqual((report['mean'], report['returned_mean']), ('3.0000', '9.0000'))
+        self.assertEqual((report['row_count'], report['returned_row_count']), (3, 1))
+        self.assertEqual(report['groups'], [{'group':'B', 'count':1, 'sum':'9', 'mean':'9.0000', 'mean_rounded':False}])
+        context = task_context(self.store, self.sid, '平均是多少？')[0]
+        self.assertEqual(context['mean'], '3.0000')
+        self.assertEqual(context['returned_mean'], '9.0000')
+        destination = self.root / 'mean.json'
+        export_task(self.store, self.sid, done['id'], destination)
+        self.assertEqual(json.loads(destination.read_text(encoding='utf-8')), report)
+
+    def test_mean_rounding_is_half_even_and_explicit(self):
+        for total, count, expected, rounded in [('1',3,'0.3333',True), ('2',3,'0.6667',True),
+                ('1.23445',1,'1.2344',True), ('1.23455',1,'1.2346',True),
+                ('-1.23445',1,'-1.2344',True), ('-0.00001',1,'0.0000',True),
+                ('0.3',3,'0.1000',False), ('0',0,None,False),
+                ('9'*60,1,'9'*60+'.0000',False)]:
+            with self.subTest(total=total, count=count), localcontext() as context:
+                context.prec = 6  # Caller precision cannot corrupt task statistics.
+                self.assertEqual(arithmetic_mean(Decimal(total),count), (expected,rounded))
+
+    def test_mean_sort_uses_exact_ratios_even_when_display_values_tie(self):
+        self.source.write_text('team,amount,state\nA,0.00001,paid\nZ,0.00002,paid\nB,0.00002,paid\n')
+        workflow = spec(); workflow['sort']['by'] = 'mean'; workflow['top_n'] = None
+        rows = self.execute(workflow)['result']['report']['groups']
+        self.assertEqual([r['group'] for r in rows], ['B','Z','A'])
+        self.assertEqual({r['mean'] for r in rows}, {'0.0000'})
+        workflow['sort']['direction'] = 'asc'
+        self.assertEqual([r['group'] for r in self.execute(workflow)['result']['report']['groups']], ['A','B','Z'])
+
+    def test_empty_mean_is_undefined_not_zero(self):
+        workflow = spec(); workflow['filters'][0]['value'] = 'absent'
+        report = self.execute(workflow)['result']['report']
+        self.assertIsNone(report['mean']); self.assertIsNone(report['returned_mean'])
+        self.assertEqual(report['returned_row_count'], 0)
+        self.assertEqual(report['groups'], [])
+        self.assertTrue(report['verification']['mean_basis_matches'])
+
+    def test_old_v2_plan_keeps_sum_only_report_and_cannot_request_mean_sort(self):
+        old = plan_workflow(self.store,self.sid,self.source,spec())['plan']
+        old['version'] = 2; old.pop('mean_policy')
+        old['steps'] = ['Legacy sum-only plan']; old['rules'] = 'Legacy sum rules'
+        tid = self.store.create_task(self.sid,old)
+        done = execute_task(self.store,self.sid,tid)
+        self.assertEqual(done['status'],'succeeded')
+        self.assertNotIn('mean',done['result']['report'])
+        self.assertTrue(all('mean' not in r for r in done['result']['report']['groups']))
+        self.assertNotIn('mean',task_context(self.store,self.sid,'平均結果')[0])
+        old['spec']['sort']['by'] = 'mean'
+        tid = self.store.create_task(self.sid,old)
+        self.assertEqual(execute_task(self.store,self.sid,tid)['status'],'failed')
+
+    def test_changed_mean_policy_and_missing_verification_cannot_claim_success(self):
+        plan = plan_workflow(self.store,self.sid,self.source,spec())['plan']
+        plan['mean_policy']['places'] = 2
+        tid = self.store.create_task(self.sid,plan)
+        self.assertEqual(execute_task(self.store,self.sid,tid)['status'],'failed')
+        done = self.execute()
+        result = done['result']; result['report']['verification'].pop('mean_basis_matches')
+        from assistant.tasks import canonical
+        result['report_sha256'] = hashlib.sha256(canonical(result['report'])).hexdigest()
+        with self.store.connect() as db:
+            db.execute('UPDATE task_runs SET result_json=? WHERE id=?', (json.dumps(result), done['id']))
+        self.assertEqual(task_context(self.store,self.sid,'平均結果')[0]['status'],'unverified')
 
 
 if __name__ == '__main__': unittest.main()

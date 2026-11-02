@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,19 @@ from assistant.engine import CodexEngine
 from assistant.store import Store
 from assistant.tasks import execute_task, export_task
 from assistant.workflows import plan_workflow, propose_workflow
+
+
+def expected_mean(total, count):
+    """Independent integer rounding oracle; no production Decimal division."""
+    if not count:
+        return None, False
+    exact = Fraction(Decimal(total)) / count
+    scaled = abs(exact) * 10000
+    integer, remainder = divmod(scaled.numerator, scaled.denominator)
+    if 2 * remainder > scaled.denominator or (2 * remainder == scaled.denominator and integer % 2):
+        integer += 1
+    text = ('-' if exact < 0 and integer else '') + f'{integer // 10000}.{integer % 10000:04d}'
+    return text, Fraction(Decimal(text)) != exact
 
 
 def artifact(store, sid, task, expected, source, root):
@@ -29,11 +43,18 @@ def artifact(store, sid, task, expected, source, root):
     passed = (actual == wanted and Decimal(report['total']) == Decimal(expected['total']) and
               report['row_count'] == expected['row_count'] and report['group_count'] == expected['group_count'] and
               report['returned_group_count'] == len(wanted) and
-              Decimal(report['returned_total']) == sum((row[2] for row in wanted),Decimal(0)) and
+              Fraction(Decimal(report['returned_total'])) == sum((Fraction(row[2]) for row in wanted),Fraction()) and
               report['selection_limited'] == (len(wanted) < expected['group_count']) and
               report['row_count'] + report['excluded_row_count'] == report['input_row_count'] and
               report['source_sha256'] == hashlib.sha256(original).hexdigest() and source.read_bytes() == original and
               hashlib.sha256(output.read_bytes()).hexdigest() == exported['sha256'] and exported['verified'])
+    passed = passed and (
+        (report['mean'], report['mean_rounded']) == expected_mean(expected['total'], expected['row_count']) and
+        report['returned_row_count'] == sum(row[1] for row in wanted) and
+        (report['returned_mean'], report['returned_mean_rounded']) == expected_mean(report['returned_total'], report['returned_row_count']) and
+        report['mean_policy'] == {'places':4, 'rounding':'ROUND_HALF_EVEN', 'basis':'sum/count'} and
+        report['verification']['mean_basis_matches'] is True and
+        all((row['mean'],row['mean_rounded']) == expected_mean(row['sum'],row['count']) for row in report['groups']))
     return {'passed':passed, 'report':report, 'export_sha256':exported['sha256']}
 
 
@@ -50,13 +71,13 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             source=root/'input.csv'
-            source.write_text(suite['source'],encoding='utf-8',newline='')
+            source.write_text(case.get('source',suite['source']),encoding='utf-8',newline='')
             store=Store(root/'state.sqlite3'); sid=store.new_session()
             task=plan_workflow(store,sid,source,case['spec'])
             result=artifact(store,sid,task,case['expected'],source,root)
         offline.append({'id':case['id'],**result})
     passed=sum(row['passed'] for row in offline)
-    print(f'Workflow artifacts: {passed}/{len(offline)}; actual CSV filters, sums, sorting and exported JSON.',flush=True)
+    print(f'Workflow artifacts: {passed}/{len(offline)}; actual CSV filters, sums, means, sorting and exported JSON.',flush=True)
     if passed != len(offline):
         print(json.dumps([row for row in offline if not row['passed']],ensure_ascii=False))
         sys.exit(1)

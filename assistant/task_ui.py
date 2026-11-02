@@ -23,7 +23,7 @@ class TaskWindow:
         self.window.title('工作工具 · CSV 計畫與驗證')
         self.window.geometry('920x800')
         self.window.minsize(820, 600)
-        ttk.Label(self.window, text='選取 CSV，手動指定欄位或用文字描述需求。文字規劃只將需求與欄名傳給模型；計算在本機，先看計畫再執行。',
+        ttk.Label(self.window, text='選取 CSV，手動分組加總，或用文字規劃篩選、加總與平均。文字規劃只將需求與欄名傳給模型；計算在本機，先看計畫再執行。',
                   padding=12, wraplength=850).pack(fill='x')
         inputs = ttk.Frame(self.window, padding=(12, 0))
         inputs.pack(fill='x')
