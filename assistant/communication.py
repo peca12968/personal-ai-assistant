@@ -8,10 +8,12 @@ def _has_positive_cue(pattern, text):
     negation = (
         r'(?:'
         r'(?:不要|不用|不需要|無需|无需|不必|別|别|不是|並非|并非|不)'
-        r'\s*(?:(?:再|太|過於|过于|很|那麼|那么|這麼|这么)\s*)?'
+        r'\s*(?:要\s*)?(?:(?:再|太|過於|过于|很|那麼|那么|這麼|这么)\s*)?'
         r'|\b(?:not|never|no|do\s+not|don[\x27\u2019]t)\s+'
-        r'(?:(?:need\s+to|have\s+to)\s+)?'
+        r'(?:(?:need\s+to|have\s+to|want(?:\s+to)?)\s+)?'
         r'(?:(?:be|give|provide|explain|answer|respond|keep\s+it)\s+)?'
+        r'(?:(?:me|it|this|that|them|these|those)\s+)?'
+        r'(?:(?:an?|the)\s+)?'
         r'(?:(?:very|too|so)\s+)?'
         r')$'
     )
@@ -92,11 +94,55 @@ def _length_request_text(text):
     return quotes.sub(quoted_text, text)
 
 
+def _current_length_request(text):
+    """Discard withdrawn instructions only for a direct style correction.
+
+    Match the start of the correction, never a later length word in a topic
+    correction. English objects are limited to pronouns and response nouns;
+    arbitrary topic phrases cannot bridge a verb and a style modifier.
+    Keep the entire replacement so combined short/long requests stay mixed.
+    """
+    markers = re.compile(
+        r'(?:最後\s*)?(?:更正|改為|改成)\s*[:：,，]?\s*'
+        r'|算了\s*[,，:：]?\s*'
+        r'|\b(?:actually|i\s+meant|instead)\b\s*[:,]?\s*',
+        re.I,
+    )
+    chinese_style = (
+        r'(?:請\s*)?(?:先\s*)?'
+        r'(?:(?:不要|不用|不需要|無需|无需|不必|別|别|不是|並非|并非|不)\s*(?:要\s*)?)?'
+        r'(?:改為\s*|改成\s*)?'
+        r'(?:簡短|精簡|簡潔|直接給答案|不要長篇|詳細說明|逐步解釋|完整解釋'
+        r'|(?:用)?[一二兩两三四五六七八九十\d]+句(?:話回答|就好|話?說明))'
+    )
+    english_object = (
+        r'(?:(?:it|this|that|them|these|those)'
+        r'|(?:(?:the|your|this|that)\s+)?(?:answer|response|explanation|summary))'
+    )
+    english_style = (
+        r'(?:please\s+)?'
+        r'(?:(?:do\s+not|don[\x27\u2019]t|never)\s+)?'
+        r'(?:'
+        r'be\s+(?:brief|concise)\b'
+        r'|keep\s+' + english_object + r'\s+(?:brief|concise)\b'
+        r'|(?:explain|answer|respond)(?:\s+' + english_object + r')?\s+'
+        r'(?:in\s+detail\b|step.by.step\b)'
+        r'|(?:give|provide)\s+(?:me\s+)?(?:a\s+)?(?:brief|concise)\b'
+        r')'
+    )
+    direct_style = re.compile(r'(?:' + chinese_style + r'|' + english_style + r')', re.I)
+    start = 0
+    for marker in markers.finditer(text):
+        if direct_style.match(text, marker.end()):
+            start = marker.end()
+    return text[start:]
+
+
 def conversation_style(question, history):
     """Preserve the user's words and mark uncertain signals as hints, not facts."""
     text = question.strip()
     normalized_text = unicodedata.normalize('NFKC', text)
-    request_text = _length_request_text(normalized_text)
+    request_text = _current_length_request(_length_request_text(normalized_text))
     concise = _has_positive_cue(
         r'簡短|精簡|簡潔|直接給答案|不要長篇|\bbrief\b|\bconcise\b'
         r'|[一二兩两三四五六七八九十\d]+句(?:話回答|就好)'
