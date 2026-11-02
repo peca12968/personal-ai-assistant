@@ -444,6 +444,94 @@ class FormGeometryTests(unittest.TestCase):
             self.assertIn('before_sha256',view.target_preview.get('1.0','end'))
             view.close()
 
+    def test_reminder_settings_reachable_and_stale_editor_rejected(self):
+        from assistant.reminder_ui import ReminderWindow
+        from assistant import reminders
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');changed=[]
+            view=ReminderWindow(self.root,store,lambda:changed.append(True));layout=self.allocate(view)
+            other=ReminderWindow(self.root,store);other.window.withdraw()
+            self.assertFalse(view.enabled.get())
+            self.assert_reachable(layout,view.save_button);self.assert_reachable(layout,view.reload_button)
+            view.enabled.set(True);view.time.delete(0,'end');view.time.insert(0,'20:30')
+            view.save_button.invoke()
+            self.assertEqual(changed,[True])
+            self.assertEqual(reminders.settings(store)['daily_time'],'20:30')
+            with patch('assistant.reminder_ui.messagebox.showerror') as error:other.save_button.invoke()
+            error.assert_called_once();self.assertTrue(reminders.settings(store)['enabled'])
+            other.reload_button.invoke();other.enabled.set(False);other.save_button.invoke()
+            self.assertFalse(reminders.settings(store)['enabled'])
+
+    def test_app_reminder_timer_banner_snooze_review_and_close_keep_chat_intact(self):
+        import threading
+        from datetime import datetime,timedelta,timezone
+        from assistant.gui import App
+        from assistant import reminders
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');old=store.new_session()
+            gid=autonomy.create_goal(store,old,'查看季度報表')
+            autonomy.update(store,gid,'needs_input',question='要哪個月份？')
+            sid=store.new_session();app=App(self.root,store,None);app.sid=sid
+            app.input.insert('1.0','還沒送出的聊天')
+            reminders.save_settings(store,enabled=True,daily_time='19:00',expected_revision=0)
+            now=datetime(2026,11,3,19,0,tzinfo=timezone(timedelta(hours=8)))
+            with patch('assistant.reminders._now',return_value=now):
+                app.busy=True;app.check_reminders();self.assertIsNone(app.reminder_notice)
+                app.busy=False
+                self.root.after_cancel(app.reminder_timer)
+                app.reminder_timer=self.root.after(0,app.poll_reminders)
+                self.root.update()
+                self.assertIsNotNone(app.reminder_timer)
+                self.assertIn(app.reminder_timer,self.root.tk.call('after','info'))
+                self.assertIn('先保存必要補充',app.reminder_text.get('1.0','end'))
+                self.assertTrue(app.reminder_frame.grid_info())
+                app.reminder_snooze.invoke()
+                self.assertFalse(app.reminder_frame.grid_info())
+                self.assertIsNone(app.reminder_notice)
+            with patch('assistant.reminders._now',return_value=now+timedelta(minutes=15)):
+                app.check_reminders()
+                self.assertIsNotNone(app.reminder_notice)
+                with patch.object(app,'review_goals') as review:app.reminder_open.invoke()
+                review.assert_called_once()
+                self.assertIsNone(app.reminder_notice)
+            self.assertEqual(app.sid,sid)
+            self.assertEqual(app.input.get('1.0','end').strip(),'還沒送出的聊天')
+            self.assertEqual(store.messages(sid),[])
+            self.assertEqual(autonomy.get_goal(store,old,gid)['status'],'needs_input')
+            handle=app.reminder_timer
+            fake=SimpleNamespace(cancel=threading.Event(),busy=True)
+            app.memory_draft_windows.append(fake);app.close()
+            self.assertIsNone(app.reminder_timer)
+            self.assertNotIn(handle,self.root.tk.call('after','info'))
+            self.assertTrue(app.closing)
+            fake.busy=False
+
+    def test_long_reminder_content_has_bounded_height_and_chat_controls_fit_small_viewport(self):
+        from assistant.gui import App
+        with tempfile.TemporaryDirectory() as tmp:
+            app=App(self.root,Store(Path(tmp)/'state.sqlite3'),None)
+            app.reminder_text.configure(state='normal')
+            app.reminder_text.insert('1.0','很長的專案名稱與下一步說明'*200)
+            app.reminder_text.configure(state='disabled')
+            # Explicitly allocate hidden child viewports: a withdrawn root does
+            # not reliably allocate its grid. No desktop window is shown.
+            app.reminder_frame.grid_forget();app.reminder_frame.place(x=0,y=0,width=840)
+            self.root.update_idletasks()
+            banner_height=app.reminder_frame.winfo_reqheight()
+            self.assertLess(banner_height,160)
+            body=app.input.master.master;body.grid_forget()
+            available=600-79-39-banner_height
+            body.place(x=0,y=79,width=840,height=available)
+            self.root.update_idletasks()
+            for widget in (app.input,app.send_btn,app.stop_btn):
+                top=0;ancestor=widget
+                while ancestor is not body:
+                    top+=ancestor.winfo_y();ancestor=ancestor.master
+                self.assertGreaterEqual(top,0)
+                self.assertLessEqual(top+widget.winfo_height(),available)
+                self.assertGreater(widget.winfo_height(),10)
+            self.assertEqual(str(app.reminder_text['state']),'disabled')
+
     def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
         import threading
         from assistant.gui import App

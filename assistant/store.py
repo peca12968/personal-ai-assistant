@@ -142,6 +142,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS goal_reviews (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     fingerprint TEXT NOT NULL, hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS review_reminders (
+                    id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL CHECK(revision>=1),
+                    enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), daily_time TEXT NOT NULL,
+                    last_day TEXT, snooze_until INTEGER, notice_token TEXT);
                 CREATE TABLE IF NOT EXISTS autonomous_csv_sources (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id), config_json TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS autonomous_csv_plans (

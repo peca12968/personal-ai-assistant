@@ -37,6 +37,7 @@ TABLES = {
     'autonomous_delivery': {'goal_id', 'enabled'},
     'autonomous_artifacts': {'id', 'goal_id', 'name', 'file_key', 'content', 'sha256', 'size_bytes', 'status', 'error', 'created_at', 'verified_at'},
     'goal_reviews': {'goal_id', 'fingerprint', 'hidden_at'},
+    'review_reminders': {'id','revision','enabled','daily_time','last_day','snooze_until','notice_token'},
     'autonomous_csv_sources': {'goal_id', 'config_json'},
     'autonomous_csv_plans': {'id', 'goal_id', 'spec_json', 'mean_policy_json', 'status', 'report_json', 'report_sha256', 'error', 'exports_json', 'created_at'},
     'autonomous_continuous_runs': {'id', 'goal_id', 'max_steps', 'max_seconds', 'start_step', 'end_step', 'reason', 'started_at', 'stopped_at'},
@@ -82,7 +83,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - memory_tables - {'memory_replacements'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - memory_tables - {'memory_replacements', 'review_reminders'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -115,6 +116,9 @@ def validate_database(path):
                     raise ValueError('自主文件內容與紀錄不符。')
             if db.execute('SELECT 1 FROM autonomous_artifacts GROUP BY goal_id HAVING COUNT(*)>? LIMIT 1', (MAX_FILES,)).fetchone():
                 raise ValueError('自主文件數量超過上限。')
+        if 'review_reminders' in actual_tables:
+            from .reminders import read
+            read(db)
         if 'companion_profile' in actual_tables:
             from .companion_profile import validate
             from .acceptance import strict_json

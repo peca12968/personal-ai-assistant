@@ -19,6 +19,9 @@ class App:
         self.busy = False
         self.autonomous_windows = []
         self.memory_draft_windows = []
+        self.closing = False
+        self.reminder_notice = None
+        self.reminder_timer = None
         self.last_answer = None
         root.title("個人 AI 助理")
         from .engine import ROOT
@@ -70,6 +73,7 @@ class App:
         menu = tk.Menu(memory_menu, tearoff=False)
         menu.add_command(label='管理長期記憶', command=self.memories)
         menu.add_command(label='夥伴設定', command=self.companion_settings)
+        menu.add_command(label='主動回顧提醒', command=self.reminder_settings)
         memory_menu.configure(menu=menu)
         memory_menu.pack(fill='x', pady=4)
         ttk.Button(sidebar, text="從本對話整理記憶", command=self.draft_memories).pack(fill="x", pady=4)
@@ -115,12 +119,26 @@ class App:
         self.retry_btn = ttk.Button(actions, text='重試最後一題', command=self.retry_answer)
         self.retry_btn.pack(side='right', padx=6)
         self.status = tk.StringVar(value="就緒 · 記憶與對話只存本機，不納入 GitHub 程式更新")
-        tk.Label(root, textvariable=self.status, bg=BG, fg=MUTED, anchor="w", padx=24, pady=10).grid(row=2, column=0, sticky="ew")
+        tk.Label(root, textvariable=self.status, bg=BG, fg=MUTED, anchor="w", padx=24, pady=10).grid(row=3, column=0, sticky="ew")
+        self.reminder_frame = tk.Frame(root, bg=PANEL, padx=18, pady=8)
+        self.reminder_frame.grid(row=2, column=0, sticky='ew')
+        reminder_content = tk.Frame(self.reminder_frame, bg=PANEL);reminder_content.pack(fill='x')
+        self.reminder_text = tk.Text(reminder_content, bg=PANEL, fg=FG, wrap='word', height=4, width=40,
+                                    state='disabled', relief='flat', font=('Microsoft JhengHei UI',10))
+        reminder_scroll = ttk.Scrollbar(reminder_content, command=self.reminder_text.yview)
+        self.reminder_text.configure(yscrollcommand=reminder_scroll.set)
+        reminder_scroll.pack(side='right',fill='y');self.reminder_text.pack(fill='x',expand=True)
+        reminder_controls = tk.Frame(self.reminder_frame, bg=PANEL);reminder_controls.pack(fill='x', pady=(4,0))
+        self.reminder_open = ttk.Button(reminder_controls, text='查看全部', command=self.open_reminder);self.reminder_open.pack(side='left')
+        self.reminder_snooze = ttk.Button(reminder_controls, text='15分鐘後提醒', command=lambda: self.reminder_action(True));self.reminder_snooze.pack(side='left', padx=6)
+        self.reminder_dismiss = ttk.Button(reminder_controls, text='今日關閉', command=lambda: self.reminder_action(False));self.reminder_dismiss.pack(side='left')
+        self.reminder_frame.grid_remove()
         sessions = store.sessions()
         self.sid = sessions[0]["id"] if sessions else store.new_session()
         self.refresh_sessions()
         self.render()
         root.after(100, self.poll)
+        self.reminder_timer = root.after(1000, self.poll_reminders)
         root.protocol("WM_DELETE_WINDOW", self.close)
 
     def self_improve(self):
@@ -157,6 +175,52 @@ class App:
     def review_goals(self):
         from .goal_review_ui import GoalReviewWindow
         GoalReviewWindow(self.root, self.store, self.autonomous_goals, self.refresh_review_count)
+
+    def reminder_settings(self):
+        from .reminder_ui import ReminderWindow
+        return ReminderWindow(self.root, self.store, self.check_reminders)
+
+    def check_reminders(self):
+        from . import reminders
+        if self.closing:
+            return
+        try:
+            busy = self.busy or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows)
+            self.reminder_notice = reminders.check(self.store, busy=busy)
+            if self.reminder_notice:
+                content = reminders.describe(self.reminder_notice)
+                if content != self.reminder_text.get('1.0','end-1c'):
+                    self.reminder_text.configure(state='normal')
+                    self.reminder_text.delete('1.0','end');self.reminder_text.insert('1.0',content)
+                    self.reminder_text.configure(state='disabled')
+                self.reminder_frame.grid()
+            else:
+                self.reminder_frame.grid_remove()
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self.reminder_notice = None
+            self.reminder_frame.grid_remove()
+            self.status.set('回顧提醒暫時無法檢查：' + str(exc))
+
+    def poll_reminders(self):
+        self.reminder_timer = None
+        if self.closing:
+            return
+        self.check_reminders()
+        self.reminder_timer = self.root.after(30000, self.poll_reminders)
+
+    def reminder_action(self, snooze):
+        from . import reminders
+        if not self.reminder_notice:
+            return
+        try:
+            reminders.respond(self.store, self.reminder_notice['token'], snooze=snooze)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self.status.set(str(exc))
+        self.check_reminders()
+
+    def open_reminder(self):
+        self.review_goals()
+        self.reminder_action(False)
 
     def refresh_sessions(self):
         self.session_rows = self.store.sessions()
@@ -352,6 +416,10 @@ class App:
             self.status.set("對話已匯出：" + path)
 
     def close(self):
+        self.closing = True
+        if self.reminder_timer is not None:
+            self.root.after_cancel(self.reminder_timer)
+            self.reminder_timer = None
         self.cancel.set()
         for window in self.autonomous_windows + self.memory_draft_windows:
             window.cancel.set()
