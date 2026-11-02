@@ -11,7 +11,10 @@ def main():
     parser.add_argument("--session", help="延續指定對話 ID")
     parser.add_argument("--doctor", action="store_true", help="檢查環境")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
+    parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if args.file and not args.ask:
+        parser.error("--file 需搭配 --ask；桌面版請使用「參考文件」。")
     if args.doctor:
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
@@ -21,6 +24,8 @@ def main():
     engine = CodexEngine(args.data_dir)
     if args.ask:
         sid = args.session or store.new_session()
+        for path in args.file:
+            store.attach_document(sid, path)
         result = Assistant(store, engine).ask(sid, args.ask)
         print(result["content"])
         print("\nSession:", sid)

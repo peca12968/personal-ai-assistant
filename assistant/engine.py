@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from .context import followup_query, make_context, select_excerpts
+from .documents import check_citations, retrieve_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,8 +111,10 @@ class Assistant:
                     memories.append(row)
                     seen.add(row["id"])
         older = self.store.earlier_user_messages(sid, history[0]["id"]) if history else []
-        return make_context(question, history, memories, self.store.session_brief(sid),
-                            select_excerpts(question, older))
+        context = make_context(question, history, memories, self.store.session_brief(sid), select_excerpts(question, older))
+        documents = self.store.documents(sid, include_content=True)
+        context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
+        return context
 
     def ask(self, sid, question, cancel=None):
         question = question.strip()
@@ -120,6 +123,10 @@ class Assistant:
         context = self.prepare_context(sid, question)
         self.store.add_message(sid, "user", question)
         answer = self.engine.answer(render_prompt(context), cancel)
-        mid = self.store.add_answer(sid, answer, context)
+        checks = check_citations(answer, context["documents"]["excerpts"])
+        if any(not check["range_valid"] for check in checks):
+            answer += "\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。"
+        mid = self.store.add_answer(sid, answer, context, checks)
         return {"id": mid, "content": answer, "memory_ids": [m["id"] for m in context["memories"]],
-                "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]]}
+                "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]],
+                "document_count": len(context["documents"]["catalog"]), "citation_checks": checks}

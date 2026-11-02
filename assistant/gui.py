@@ -45,6 +45,7 @@ class App:
         self.session_list.pack(fill="both", expand=True, pady=10)
         self.session_list.bind("<<ListboxSelect>>", self.select_session)
         ttk.Button(sidebar, text="對話目標與限制", command=self.edit_brief).pack(fill="x", pady=4)
+        ttk.Button(sidebar, text="參考文件", command=self.manage_documents).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="管理長期記憶", command=self.memories).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
@@ -78,7 +79,7 @@ class App:
         self.input.bind("<Control-Return>", lambda event: self.send())
         actions = tk.Frame(main, bg=BG, pady=10)
         actions.grid(row=3, column=0, sticky="ew")
-        tk.Label(actions, text="Ctrl + Enter 傳送  ·  對話與選用記憶會傳給 Codex", bg=BG, fg=MUTED).pack(side="left")
+        tk.Label(actions, text="Ctrl + Enter 傳送  ·  參考內容會傳給 Codex", bg=BG, fg=MUTED).pack(side="left")
         self.send_btn = ttk.Button(actions, text="傳送", command=self.send)
         self.send_btn.pack(side="right")
         self.stop_btn = ttk.Button(actions, text="停止", command=self.cancel.set, state="disabled")
@@ -175,7 +176,7 @@ class App:
                     self.last_answer = value["id"]
                     self.append("assistant", value["content"])
                     ids = ", ".join(map(str, value["memory_ids"])) or "無"
-                    self.status.set("回答已存本機 · 參考記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則')
+                    self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
                 else:
                     self.append("note", value)
                     self.status.set("本次未完成；可重新提問")
@@ -203,6 +204,10 @@ class App:
     def edit_brief(self):
         from .context_ui import BriefWindow
         BriefWindow(self.root, self.store, self.sid)
+
+    def manage_documents(self):
+        from .document_ui import DocumentWindow
+        DocumentWindow(self.root, self.store, self.sid)
 
     def inspect_context(self):
         from .context_ui import show_context

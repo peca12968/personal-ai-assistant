@@ -13,7 +13,7 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 ```
 
 桌面版支援對話紀錄、停止回答、長期記憶新增／編輯／停用／到期日／刪除、對話目標與限制、回答參考快照、回答評分與更正、JSON 匯出。Ctrl+Enter 傳送。
-目前是建議模式：能分析與提供解法，不能實際操作其他檔案、瀏覽即時網頁或代替你執行系統工作。
+目前是建議模式：能分析明確選取的文字文件與提供解法，不能修改原檔、瀏覽即時網頁或代替你執行系統工作。
 
 ## 記憶與隱私
 
@@ -37,6 +37,20 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 
 對話推理程序使用 `project_doc_max_bytes=0` 避免將這個專案的開發指引混入一般回答；仍維持唯讀與停用工具。設定依據：[OpenAI 官方設定參考](https://learn.chatgpt.com/docs/config-file/config-reference)。開發工作本身仍遵守專案 AGENTS.md。
 
+## 分析參考文件
+
+點「參考文件」加入目前對話需要的檔案，再提問。支援 `.txt`、`.md`、`.csv`、`.tsv`、`.log`、`.json`、`.yaml`、`.yml`、`.toml` 與文字程式檔（`.py`、`.js`、`.ts`、`.html`、`.css`）。需為 UTF-8 或含 BOM 的 UTF-16；目前不解析 PDF、Word、圖片或整個資料夾。
+
+每段對話最多 8 個文件、每檔 2 MiB、合計 8 MiB。程式只讀取你選定的檔案，將匯入副本保存在本機資料庫；原檔變更後需按「重新匯入選取文件」。移除參考只影響未來提問，原檔及過往回答快照仍保留。
+
+每次提問依詞彙選取最多 8 個片段、合計最多 14000 字；盡量先提供每個文件的一個片段，再分配剩餘空間。長文件可能只提供部分內容，不能把沒找到的資訊當作不存在。除了前述對話與記憶，文件名稱、內容指紋、行數及選出的片段也會傳給 Codex，原始絕對路徑不會加入文件上下文。
+
+回答可用 `[D1:L2-L4]` 標示來源。「查看本次參考 → 文件來源」顯示當時片段及行號檢查結果；行號存在不代表結論正確，長行也可能只提供其中一段。模型未提供引用時，系統不會自動補造來源。文件內容作為資料，不會授權程式執行其中的命令。
+
+```powershell
+python -m assistant --ask "比對這兩份設定的差異" --file "F:\Notes\app.txt" --file "F:\Notes\proxy.txt"
+```
+
 ## 更新到 GitHub 私人庫
 
 雙擊 `Publish.cmd`，或執行：
@@ -54,12 +68,15 @@ python scripts/publish.py --message "改善問題理解與測試"
 python -m unittest discover -s tests -v
 python scripts/evaluate.py
 python scripts/evaluate_context.py
+python scripts/evaluate_documents.py
+python scripts/evaluate_documents.py --live
 python scripts/evaluate.py --live
 python scripts/evaluate.py --live --suite memory --limit 3
 python scripts/evaluate_context.py --live --strategy current --ids followup_project long_goal long_constraint long_correction
 ```
 
 離線測試驗證程式行為與 30 個檢索案例。這些是針對已知詞彙設計的開發回歸集，不是獨立測試集或整體理解分數。`--live` 會使用 Codex 帳號額度，將實際回答存入 `data/evaluations`，需依案例 rubric 人工評讀，不把「有回答」算成「答對」。`--suite memory` 會實際經過記憶檢索與有效性篩選，驗證更正、到期與矛盾情境。GitHub Actions 只跑離線測試，不使用登入憑證。
+v0.4 另含 10 題上下文與 20 題文件證據選取回歸；20 題真實文件回答的評讀結果與限制見 [文件評估](docs/DOCUMENT-EVALUATION.md)。
 長期規劃見 [ROADMAP](docs/ROADMAP.md)，進度見 [PROGRESS](docs/PROGRESS.md)。
 
 引擎整合依據：[OpenAI 官方非互動模式文件](https://learn.chatgpt.com/docs/non-interactive-mode)。

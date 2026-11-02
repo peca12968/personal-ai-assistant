@@ -59,6 +59,15 @@ def show_context(parent, store, message_id):
         ("早期摘錄", "\n\n".join(f'使用者訊息 #{r["message_id"]}\n{r["content"]}' for r in context["earlier_user_excerpts"]) or "本次沒有早期摘錄。"),
         ("最近對話", "\n\n".join(f'{"你" if r["role"] == "user" else "助理"} · #{r["message_id"]}\n{r["content"]}' for r in context["recent_conversation"]) or "本次沒有前文。"),
     ]
+    documents = context.get("documents", {})
+    checks = store.answer_checks(message_id)
+    citation_text = "\n".join(check["citation"] + ("：範圍存在" if check["range_valid"] else "：無法對照") for check in checks) or "沒有可檢查的文件引用。"
+    doc_text = ("僅檢查來源編號與行號，未驗證結論的語意或正確性。\n" + citation_text + "\n\n" +
+                ("只提供部分文件片段，不能據此視為讀完整份文件。\n\n" if documents.get("coverage_limited") else "") +
+                "\n\n".join(f'D{row["document_id"]} · {row["name"]} · L{row["start_line"]}-L{row["end_line"]}' +
+                             ("（部分行內容）" if row["partial_line"] else "") + "\n" + row["text"]
+                             for row in documents.get("excerpts", [])))
+    sections.append(("文件來源", doc_text))
     for title, content in sections:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)

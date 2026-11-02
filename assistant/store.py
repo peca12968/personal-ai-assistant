@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .retrieval import rank_memories, terms
+from .documents import MAX_DOCUMENTS, MAX_SESSION_BYTES, read_document
 
 
 def validate_memory(content, kind, expires_on):
@@ -53,6 +54,13 @@ class Store:
                     objective TEXT NOT NULL DEFAULT '', constraints_text TEXT NOT NULL DEFAULT '',
                     decisions TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS answer_contexts (
+                    message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    name TEXT NOT NULL, source_path TEXT NOT NULL, path_key TEXT NOT NULL,
+                    content TEXT NOT NULL, sha256 TEXT NOT NULL, encoding TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, path_key));
+                CREATE TABLE IF NOT EXISTS answer_checks (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
@@ -137,18 +145,50 @@ class Store:
                 constraints_text=excluded.constraints_text, decisions=excluded.decisions, updated_at=CURRENT_TIMESTAMP""",
                 (sid, *values))
 
-    def add_answer(self, sid, answer, context):
+    def add_answer(self, sid, answer, context, checks=None):
         with self.connect() as db:
             mid = db.execute("INSERT INTO messages(session_id, role, content) VALUES (?, 'assistant', ?)",
                              (sid, answer)).lastrowid
             db.execute("INSERT INTO answer_contexts(message_id, payload) VALUES (?, ?)",
                        (mid, json.dumps(context, ensure_ascii=False)))
+            if checks is not None:
+                db.execute("INSERT INTO answer_checks(message_id, payload) VALUES (?, ?)",
+                           (mid, json.dumps(checks, ensure_ascii=False)))
             return mid
 
     def answer_context(self, message_id):
         with self.connect() as db:
             row = db.execute("SELECT payload FROM answer_contexts WHERE message_id=?", (message_id,)).fetchone()
             return json.loads(row["payload"]) if row else None
+
+    def answer_checks(self, message_id):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM answer_checks WHERE message_id=?", (message_id,)).fetchone()
+            return json.loads(row["payload"]) if row else []
+
+    def attach_document(self, sid, path):
+        document = read_document(path)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            size = db.execute("SELECT COALESCE(SUM(size_bytes),0), COUNT(*) FROM documents WHERE session_id=? AND path_key<>?",
+                              (sid, document["path_key"])).fetchone()
+            if size[1] >= MAX_DOCUMENTS or size[0] + document["size_bytes"] > MAX_SESSION_BYTES:
+                raise ValueError("每段對話最多 8 個文件、合計 8 MiB；請先移除不需要的參考文件。")
+            db.execute("""INSERT INTO documents(session_id, name, source_path, path_key, content, sha256, encoding, size_bytes)
+                VALUES (:session_id, :name, :source_path, :path_key, :content, :sha256, :encoding, :size_bytes)
+                ON CONFLICT(session_id, path_key) DO UPDATE SET name=excluded.name, source_path=excluded.source_path,
+                content=excluded.content, sha256=excluded.sha256, encoding=excluded.encoding,
+                size_bytes=excluded.size_bytes, imported_at=CURRENT_TIMESTAMP""", {"session_id": sid, **document})
+            return db.execute("SELECT id FROM documents WHERE session_id=? AND path_key=?", (sid, document["path_key"])).fetchone()[0]
+
+    def documents(self, sid, include_content=False):
+        columns = "*" if include_content else "id, name, source_path, sha256, encoding, size_bytes, imported_at"
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(f"SELECT {columns} FROM documents WHERE session_id=? ORDER BY id", (sid,))]
+
+    def detach_document(self, sid, document_id):
+        with self.connect() as db:
+            db.execute("DELETE FROM documents WHERE session_id=? AND id=?", (sid, document_id))
 
     def remember(self, content, kind="fact", expires_on=None, active=True):
         content = validate_memory(content, kind, expires_on)
