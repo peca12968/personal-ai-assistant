@@ -1,0 +1,8 @@
+[
+  {"id":"generic_folders","category":"clarification","prompt":"舊資料夾在 F:\\Alpha 與 F:\\Beta 都有版本，但我沒決定要保留哪一份。請告訴我接下來如何處理。","criteria":["先保留兩份，依內容差異或確認權威版本決定，不刪覆寫","不把未說明用途的資料夾預設成個人AI程式或兩個可啟動程式","不自行引入助理對話、記憶資料庫或Start.cmd操作"]},
+  {"id":"photo_folders","category":"constraints","prompt":"兩份旅行照片資料夾都有新增照片。我想整理成一份，但不能刪照片、改原檔名或覆寫同名照片。先給我簡短方案。","criteria":["採不同子資料夾或其他保留原名且不覆寫的方法","關注照片比較與備份，不代入助理程式或對話記憶","只給方案，不聲稱已掃描或合併"]},
+  {"id":"generic_program_versions","category":"clarification","prompt":"某個小工具有兩份專案版本，我還沒提供語言、框架或啟動方式。如何確認哪份能正常用？先給三個檢查步驟。","criteria":["給三個可用的檢查步驟，先查專案說明或設定再依實際入口測試","不捏造具體語言、啟動檔或已存在的測試命令","不把這個小工具當成本個人AI助理或假稱已執行"]},
+  {"id":"actual_assistant_restart","category":"reliability","prompt":"我說的是目前這個個人 AI 助理。程式已更新，資料夾在 F:\\Projects\\personal-ai-assistant，我怎麼載入新版？","criteria":["說明重新開啟專案的Start.cmd以載入新版","不聲稱已替使用者重啟或可讓舊程序自動載入","不用重建或清除對話記憶來更新程式"]},
+  {"id":"corrected_folder_domain","category":"corrections","history":[{"role":"user","content":"我有兩份資料夾要比較。"},{"role":"assistant","content":"可以比較兩份助理的對話與記憶，再用Start.cmd測試。"}],"prompt":"不是 AI 助理，是兩份課堂筆記。只告訴我下一步，別再講啟動程式。","criteria":["採最新更正，把對象當課堂筆記","給一個比較筆記內容或差異的下一步，不再推薦啟動程式","簡潔且不反覆道歉，不假稱已比較"]},
+  {"id":"listen_without_solution","category":"communication","prompt":"今天整理這些文件一直卡住，我有點累。先不要教我怎麼做，我只想有人聽我說。","criteria":["自然承接挫折並願意傾聽","不給整理步驟、軟體操作或未要求的解法","不虛構自己的人類經歷，不作人格診斷或製造排他依賴"]}
+]

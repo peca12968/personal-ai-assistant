@@ -62,10 +62,12 @@ def mechanical_check(case, answer):
     return {}
 
 
-def fingerprint():
+def fingerprint(suite_path=None):
     source = b''.join(path.name.encode() + path.read_bytes() for path in sorted((ROOT / 'assistant').glob('*.py')))
-    return {'suite_sha256': sha(SUITE.read_bytes()),
-            'prompt_sha256': sha((ROOT / 'prompts/system.txt').read_bytes()), 'source_sha256': sha(source)}
+    return {'suite_sha256': sha((suite_path or SUITE).read_bytes()),
+            'prompt_sha256': sha((ROOT / 'prompts/system.txt').read_bytes()),
+            'communication_prompt_sha256': sha((ROOT / 'prompts/communication.txt').read_bytes()),
+            'source_sha256': sha(source)}
 
 
 def load_report(path, signature, ids, resume):
@@ -97,12 +99,13 @@ def save_report(path, report):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--live', action='store_true', help='呼叫真實 Codex；使用帳號額度')
+    parser.add_argument('--suite', type=Path, default=SUITE, help='指定另一組同格式的固定案例')
     parser.add_argument('--ids', nargs='+')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     try:
-        cases = validate_cases(json.loads(SUITE.read_text(encoding='utf-8')))
+        cases = validate_cases(json.loads(args.suite.read_text(encoding='utf-8')))
         if args.ids:
             if set(args.ids) - {case['id'] for case in cases}:
                 raise ValueError('有未知案例編號。')
@@ -120,7 +123,7 @@ def main():
             return
         if not args.report:
             raise ValueError('--live 需指定 --report，建議使用 data/evaluations 下的新路徑。')
-        signature = fingerprint()
+        signature = fingerprint(args.suite)
         report = load_report(args.report, signature, [case['id'] for case in cases], args.resume)
         save_report(args.report, report)
         engine = CodexEngine(ROOT / 'data')
@@ -128,7 +131,7 @@ def main():
         for case in cases:
             if case['id'] in finished:
                 continue
-            if fingerprint() != signature:
+            if fingerprint(args.suite) != signature:
                 raise ValueError('評估期間程式、提示或案例已改變，已停止以免混用版本。')
             with tempfile.TemporaryDirectory() as tmp:
                 store = Store(Path(tmp) / 'state.sqlite3')
@@ -136,6 +139,8 @@ def main():
                 app = Assistant(store, engine)
                 context = app.prepare_context(sid, case['prompt'])
                 answer = app.ask(sid, case['prompt'])
+                if fingerprint(args.suite) != signature:
+                    raise ValueError('回答期間程式、提示或案例已改變；本題未加入報告，請使用新版本另建評估。')
                 report['results'].append({'id': case['id'], 'category': case['category'],
                     'prompt': case['prompt'], 'criteria': case['criteria'],
                     'context': context, 'request_sha256': sha(render_prompt(context).encode('utf-8')),

@@ -67,3 +67,23 @@ v0.6 首次收集 30 題真實答案，依原先三項標準逐題評讀結果�
 v0.6.1 已完整執行修正版 31 題，開發代理逐題閱讀答案與三項標準，31 題均符合本輪標準。報告為 `data/evaluations/understanding-v61.json`，每題保留評讀理由與評讀者類型。這是單次開發案例結果，不代表使用者驗收或一般任務成功率。
 
 同一個 `missing_document` 問題的新版回答，改為要求貼上條文或轉成 TXT／Markdown，並保留頁碼標記；新增的 `unsupported_pdf` 也明示無直接 PDF 解析與 OCR，且不把行號當頁碼。這提供了特定能力說明問題的修正證據，未證明整體模型推理能力改變。
+
+
+## 2026-11-03：完整基準與產品情境誤套修正
+
+v0.17 先收集目前完整三十六題真實回答，開發代理逐題閱讀原有三項標準，三十六題均符合本輪標準；報告 `data/evaluations/understanding-v017-full.json` 保留每題理由與 development_agent 類型，human_grade 仍空白。這是本次單次基準，不是舊版31題的同條件比較，也不是使用者或獨立驗收。
+
+閱讀 `ambiguous_move` 時另發現原三項標準未涵蓋的問題：雖保留兩份資料並避免覆寫，卻將未說明用途的資料夾帶入助理程式、對話記憶與 Start.cmd 情境。保留原標準通過結果並另記觀察，不追溯改分。新固定補充集 `evals/communication_context.json` 六題包括一般資料夾、照片、未指定程式、確實的助理重啟、用途更正與只想傾聽。
+
+補充集改前六題實際回答中五題通過、一般資料夾一題未符合全部標準。將助理專屬功能與啟動說明限於已確認談論本助理的情境後，以完全相同的六題重新收集並逐題評讀：原失敗轉為通過，五個原通過維持。原始檔案為 `communication-context-v017-before.json` 與 `communication-context-v018-after.json`，其 suite 指紋與選取相同，使用既有 compare 核對。遠端模型取樣與開發評讀差異未受控制，不能從單次6題推論一般能力提升。
+
+補充集使用相同評估器，可指定：
+
+```powershell
+python scripts/evaluate_understanding.py --suite evals/communication_context.json
+python scripts/evaluate_understanding.py --live --suite evals/communication_context.json --report data/evaluations/communication-new-run.json
+```
+
+第一條僅驗證案例及上下文可建立，不代表語意品質通過。發布、GitHub CI 與自我改進回歸均納入此離線命令。完整36題真實基準是在提示修正前收集；本輪修正後只對固定補充6題重新取得真實答案，不把兩者混算為新版42題全數通過。
+
+本輪也修正評估完整性：render_prompt 同時讀取 system.txt 與 communication.txt，原指紋只有前者。新報告另保存 communication_prompt_sha256，恢復執行時必須完全匹配；每題生成後再次檢查，避免最後一題生成途中改版仍被寫入舊版本報告。兩個故障注入／檔案修改測試確認舊答案不被覆寫，變更後的答案不被記在舊指紋下。舊報告仍可閱讀，但不接受缺少新指紋的報告接續新版執行。

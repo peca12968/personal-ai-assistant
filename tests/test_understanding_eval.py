@@ -1,12 +1,15 @@
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from assistant.engine import Assistant
 from assistant.store import Store
-from scripts.evaluate_understanding import SUITE, load_report, mechanical_check, prepare_case, save_report, validate_cases
+from scripts.evaluate_understanding import SUITE, fingerprint, load_report, mechanical_check, prepare_case, save_report, validate_cases
 from scripts.review_understanding import apply_reviews, compare, summarize
+from scripts.evaluate_understanding import main as evaluate_main
 
 
 class UnderstandingEvaluationTests(unittest.TestCase):
@@ -67,6 +70,54 @@ class UnderstandingEvaluationTests(unittest.TestCase):
         save_report(path, report)
         with self.assertRaises(ValueError):
             load_report(path, {}, ['one'], True)
+
+    def test_changed_communication_prompt_prevents_mixing_resumed_answers(self):
+        (self.root / 'assistant').mkdir()
+        (self.root / 'assistant/engine.py').write_text('original source', encoding='utf-8')
+        (self.root / 'prompts').mkdir()
+        (self.root / 'prompts/system.txt').write_text('system', encoding='utf-8')
+        communication = self.root / 'prompts/communication.txt'
+        communication.write_text('只聽，不急著給解法。', encoding='utf-8')
+        path = self.root / 'report.json'
+        with patch('scripts.evaluate_understanding.ROOT', self.root):
+            original = fingerprint()
+            report = load_report(path, original, ['one', 'two'], False)
+            report['results'].append({'id': 'one', 'answer': '原回答'})
+            save_report(path, report)
+            before = path.read_bytes()
+            communication.write_text('改成直接給步驟。', encoding='utf-8')
+            changed = fingerprint()
+            self.assertEqual(original['prompt_sha256'], changed['prompt_sha256'])
+            self.assertNotEqual(original['communication_prompt_sha256'], changed['communication_prompt_sha256'])
+            with self.assertRaises(ValueError):
+                load_report(path, changed, ['one', 'two'], True)
+            self.assertEqual(path.read_bytes(), before)
+    def test_last_answer_is_not_saved_if_prompt_changes_during_generation(self):
+        (self.root / 'assistant').mkdir()
+        (self.root / 'prompts').mkdir()
+        (self.root / 'prompts/system.txt').write_text('system', encoding='utf-8')
+        communication = self.root / 'prompts/communication.txt'
+        communication.write_text('before', encoding='utf-8')
+        suite = self.root / 'custom.json'
+        suite.write_text(json.dumps([{'id': 'last', 'category': 'reliability', 'prompt': 'question',
+                                     'criteria': ['criterion']}]), encoding='utf-8')
+        report = self.root / 'run.json'
+        def generate(*args):
+            communication.write_text('after', encoding='utf-8')
+            return {'content': 'must not be recorded under old fingerprint'}
+        with patch('scripts.evaluate_understanding.ROOT', self.root), \
+             patch('scripts.evaluate_understanding.CodexEngine'), \
+             patch('scripts.evaluate_understanding.Assistant') as app, \
+             patch('sys.argv', ['evaluate', '--live', '--suite', str(suite), '--report', str(report)]), \
+             patch('sys.stderr', new_callable=io.StringIO):
+            app.return_value.prepare_context.return_value = {'current_request': 'question'}
+            app.return_value.ask.side_effect = generate
+            with self.assertRaises(SystemExit) as raised:
+                evaluate_main()
+            self.assertEqual(raised.exception.code, 1)
+        saved = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual(saved['case_ids'], ['last'])
+        self.assertEqual(saved['results'], [])
 
     def test_format_check_does_not_imply_semantic_grade(self):
         case = {'check': 'three_bullets'}
