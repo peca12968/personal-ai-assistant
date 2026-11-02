@@ -18,6 +18,7 @@ from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import artifacts
 from . import autonomy_csv
+from . import date_tools
 from . import goal_conversation
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
@@ -152,6 +153,9 @@ def validate_action(value):
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'date_math':
+        date_tools.validate(args)
+        return value
     if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
         raise ValueError('工具或參數不在允許範圍。')
     if name in ('search', 'recall'):
@@ -213,6 +217,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None)
         return {'memories': store.retrieve(args['query'], limit=4)}
     if name == 'calculate':
         return calculate(args)
+    if name == 'date_math':
+        return date_tools.calculate(args)
     if name == 'ask':
         return {'question': args['question']}
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
@@ -283,7 +289,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                        'conversation_context': goal['conversation_context'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + COMPANION_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
