@@ -60,8 +60,8 @@ class AutonomousWindow:
         self.listing.column('objective', width=600)
         self.listing.pack(fill='x', padx=12)
         self.listing.bind('<<TreeviewSelect>>', self.select)
-        self.layout.wrapped_label(body, text='延續已交付的工作：先選取成果，在上方填寫下一階段目標，再按下方按鈕。所選成果與當時補充會作為歷史背景傳給模型，不代表成果已驗收；來源以目前參考文件重新核對。', padding=12).pack(fill='x')
-        self.follow = ttk.Button(body, text='帶入所選成果，建立上方的新目標', command=self.next_stage, state='disabled')
+        self.layout.wrapped_label(body, text='延續工作：先選取已交付成果，或已有步驟且已停止的工作，再填寫下一階段目標。將帶入成果或有限進度摘要、問題與當時補充；可接續已滿32步的工作。新階段不會自行開始，來源與需要的引用會重新核對。', padding=12).pack(fill='x')
+        self.follow = ttk.Button(body, text='帶入所選成果／進度，建立上方的新目標', command=self.next_stage, state='disabled')
         self.follow.pack(anchor='w', padx=12, pady=4)
         self.previous = ttk.Button(body, text='查看上一階段', command=self.previous_stage, state='disabled')
         self.previous.pack(anchor='w', padx=12, pady=4)
@@ -202,7 +202,7 @@ class AutonomousWindow:
         self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
         self.guidance.configure(state='normal' if not self.busy and goal['status'] in ('pending','paused','failed','needs_input') else 'disabled')
-        self.follow.configure(state='normal' if not self.busy and goal['status'] == 'report_ready' else 'disabled')
+        self.follow.configure(state='normal' if not self.busy and autonomy.goal_stages.eligible(goal['status'], len(goal['steps'])) else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
         self.files.configure(state='normal' if goal['artifacts'] else 'disabled')
         self.rebuild.configure(state='normal' if goal['artifacts'] and not self.busy else 'disabled')
@@ -239,6 +239,16 @@ class AutonomousWindow:
                       '歷史成果（未代表已驗收）：', previous['report'],
                       '當時的問題與補充紀錄：', previous['user_notes'] or '無',
                       '上一階段與本階段的文件版本：' + ('相同，引用仍需重新讀取' if previous['sources_match_current'] else '不同，需重新核對')]
+            if 'checkpoint' in previous:
+                saved = previous['checkpoint']
+                lines += [f"上一階段尚未交付，保留{saved['step_count']}步的有限進度：", saved['notice'],
+                          '當時未回答的問題：' + (saved['question'] or '無'), saved['omissions']]
+                for item in saved['activity']:
+                    purpose = item['purpose'].get('value', item['purpose'].get('json_preview', ''))
+                    lines += [f"歷史步驟 {item['sequence']} · {item['tool']} · {purpose}",
+                              '有限參數：' + json.dumps(item['request'], ensure_ascii=False),
+                              '歷史結果摘要：' + json.dumps(item['observation_metadata'], ensure_ascii=False)]
+                lines += ['舊文件與CSV計畫僅在上一階段保留；可按「查看上一階段」檢查。']
         for step in goal['steps']:
             observation = dict(step['observation'])
             profile = observation.pop('companion_profile', None)

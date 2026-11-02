@@ -46,7 +46,7 @@ def main():
     parser.add_argument('--review-offset', type=int, help='搭配 --review-goals，跳過指定數量，每頁100項')
     parser.add_argument('--deliver-files', action='store_true', help='搭配 --new-goal，要求在該目標本機成果資料夾交付Markdown、TXT或JSON')
     mode.add_argument('--rebuild-goal-files', help='核對／重建指定目標已保存文件；需 --session，不呼叫模型')
-    parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付目標的成果與使用者補充作為歷史背景')
+    parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付成果，或已有步驟且已停止目標的有限進度及使用者補充；不自動開始')
     mode.add_argument('--run-goal', help='開始／接續自主目標 ID；需 --session')
     parser.add_argument('--continuous-steps', type=int, help='搭配 --run-goal，持續執行新增最多1到32步；預設30分鐘，累計仍最多32步')
     parser.add_argument('--continuous-minutes', type=int, help='搭配 --continuous-steps，時間上限1到120分鐘')

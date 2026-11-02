@@ -13,7 +13,7 @@ def next_action(status, sources_match, step_count):
     if not sources_match:
         return 'new_goal', '參考文件已變更，請按目前文件另建目標，不能直接接續。'
     if step_count >= MAX_STEPS:
-        return 'new_goal', '已達此目標32步上限；查看紀錄後另建目標。'
+        return 'new_goal', '已達此目標32步上限；查看紀錄後，可帶入所選進度建立下一階段。'
     if status == 'needs_input':
         return 'reply', '先保存必要補充，再開始／接續。'
     if status == 'running':

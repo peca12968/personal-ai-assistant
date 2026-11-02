@@ -31,7 +31,7 @@ def eligibility(value):
     if not value['sources_match']:
         return False, '參考文件已改變，請以目前文件另建目標。'
     if value['step_count'] >= MAX_STEPS:
-        return False, '此目標已達32步上限，請整理目前紀錄另建目標。'
+        return False, '此目標已達32步上限，請選取此目標並帶入進度建立下一階段。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 

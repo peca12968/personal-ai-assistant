@@ -136,6 +136,10 @@ def validate_database(path):
             JOIN autonomous_goals parent ON parent.id=h.parent_goal_id
             WHERE child.session_id != parent.session_id OR child.id=parent.id LIMIT 1''').fetchone():
             raise ValueError('自主階段來源不屬於同一對話。')
+        if 'autonomous_handoffs' in actual_tables:
+            from .goal_stages import read
+            for (gid,) in db.execute('SELECT goal_id FROM autonomous_handoffs'):
+                read(db, gid)
         if 'memory_sequence' in actual_tables:
             counters = db.execute('SELECT id,last_id FROM memory_sequence').fetchall()
             largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]

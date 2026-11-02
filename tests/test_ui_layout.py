@@ -217,6 +217,32 @@ class FormGeometryTests(unittest.TestCase):
             view.previous_stage()
             self.assertEqual(view.selected_id(), gid)
 
+    def test_stopped_goal_checkpoint_entry_preserves_drafts_and_does_not_start(self):
+        from test_autonomy import ScriptedEngine, action
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '先計算')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('calculate', operation='sum', values=['3', '4'])), max_steps=1)
+            view = AutonomousWindow(self.root, store, sid, None)
+            layout = self.allocate(view)
+            view.refresh(gid)
+            self.assertEqual(str(view.follow['state']), 'normal')
+            self.assert_reachable(layout, view.follow)
+            view.objective.insert('1.0', '接續彙整結果')
+            draft = view.objective.get('1.0', 'end')
+            view.next_stage()
+            child = view.selected_id()
+            self.assertNotEqual(child, gid)
+            self.assertEqual(view.objective.get('1.0', 'end'), draft)
+            self.assertFalse(view.busy)
+            self.assertIn('上一階段尚未交付', view.output.get('1.0', 'end'))
+            self.assertIn('歷史步驟 1', view.output.get('1.0', 'end'))
+            self.assertEqual(autonomy.get_goal(store, sid, child)['steps'], [])
+            self.assertEqual(str(view.follow['state']), 'disabled')
+            view.previous_stage()
+            self.assertEqual(view.selected_id(), gid)
+
     def test_continuous_controls_start_selected_goal_save_reason_and_stop(self):
         self.addCleanup(patch.stopall)
         patch('assistant.autonomy_ui.messagebox.showerror', side_effect=AssertionError('unexpected dialog')).start()
