@@ -89,6 +89,8 @@ class AutonomousWindow:
             goal = autonomy.get_goal(self.store, self.sid, self.selected_id())
         except ValueError:
             return
+        self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
+        self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if goal['question']:
@@ -98,6 +100,7 @@ class AutonomousWindow:
                       json.dumps(step['observation'], ensure_ascii=False, indent=2)]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result']]
+            lines += ['此目標已交付成果；後續工作請保存新目標。']
         self.output.configure(state='normal')
         self.output.delete('1.0', 'end')
         self.output.insert('1.0', '\n\n'.join(lines))

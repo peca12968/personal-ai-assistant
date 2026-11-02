@@ -9,6 +9,7 @@ from assistant.feedback_ui import FeedbackWindow
 from assistant.evolution_ui import EvolutionWindow
 from assistant.autonomy_ui import AutonomousWindow
 from assistant.store import Store
+from assistant import autonomy
 
 
 class FormGeometryTests(unittest.TestCase):
@@ -88,3 +89,14 @@ class FormGeometryTests(unittest.TestCase):
             self.assertIn('整理比較報告', view.output.get('1.0', 'end'))
             self.assertEqual(len(view.listing.get_children()), 1)
             self.assertFalse(view.busy)
+            self.assertEqual(str(view.reply['state']), 'disabled')
+            gid = view.selected_id()
+            autonomy.update(store, gid, 'needs_input', question='日期？')
+            view.refresh(gid)
+            self.assertEqual(str(view.start['state']), 'disabled')
+            self.assertEqual(str(view.reply['state']), 'normal')
+            autonomy.update(store, gid, 'report_ready', result='已保存的成果')
+            view.refresh(gid)
+            self.assertEqual(str(view.start['state']), 'disabled')
+            self.assertEqual(str(view.reply['state']), 'disabled')
+            self.assertIn('後續工作請保存新目標', view.output.get('1.0', 'end'))
