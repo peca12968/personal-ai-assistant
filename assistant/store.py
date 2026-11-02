@@ -70,6 +70,11 @@ class Store:
                     memory_id INTEGER NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
                     expires_on TEXT, reused INTEGER NOT NULL CHECK(reused IN (0,1)),
                     accepted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(draft_id,item_index));
+                CREATE TABLE IF NOT EXISTS memory_replacements (
+                    draft_id TEXT NOT NULL, item_index INTEGER NOT NULL,
+                    before_json TEXT NOT NULL, before_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(draft_id,item_index),
+                    FOREIGN KEY(draft_id,item_index) REFERENCES memory_acceptances(draft_id,item_index));
                 CREATE TABLE IF NOT EXISTS feedback (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id),
                     rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),

@@ -18,6 +18,8 @@ class MemoryDraftWindow:
         self.cancel=threading.Event()
         self.events=queue.Queue()
         self.current=None
+        self.replace_target=None
+        self.target_choices=[None]
         self.window=tk.Toplevel(parent)
         self.window.title('從本對話整理記憶')
         fit_window(self.window,900,800)
@@ -49,6 +51,14 @@ class MemoryDraftWindow:
         self.kind=ttk.Combobox(controls,values=list(LABELS),state='readonly',width=8);self.kind.set('事實');self.kind.pack(side='left')
         ttk.Label(controls,text='到期日（YYYY-MM-DD，可留白）：').pack(side='left',padx=8)
         self.expires=ttk.Entry(controls,width=12);self.expires.pack(side='left')
+        ttk.Label(body,text='保存方式（更新既有記憶時保留原編號與啟用狀態）：').pack(anchor='w',padx=12)
+        self.target=ttk.Combobox(body,state='disabled',values=['新增一筆（相同內容可沿用）'])
+        self.target.current(0);self.target.pack(fill='x',padx=12)
+        self.target.bind('<<ComboboxSelected>>',self.target_changed)
+        self.reload_targets_button=ttk.Button(body,text='重新載入記憶清單',command=self.reload_targets)
+        self.reload_targets_button.pack(anchor='w',padx=12,pady=4)
+        self.target_preview=tk.Text(body,height=4,wrap='word',state='disabled')
+        self.target_preview.pack(fill='x',padx=12)
         self.save=ttk.Button(body,text='將這一項保存為長期記憶',command=self.accept,state='disabled')
         self.save.pack(anchor='w',padx=12,pady=6)
         self.notice=tk.StringVar(value='先整理，再逐項選擇；未保存的項目不會加入回答。')
@@ -74,6 +84,8 @@ class MemoryDraftWindow:
             state=f"已保存 #{accepted[index]['memory_id']}" if index in accepted else '待核對'
             self.items.insert('','end',iid=str(index),values=(state,item['content']))
         self.save.configure(state='disabled')
+        self.target.configure(state='disabled')
+        self.replace_target=None
         self.retry.configure(state='normal' if not self.busy and self.current['status']!='ready' else 'disabled')
         self.notice.set(self.current['error'] or ('沒有找到適合保存的穩定資訊。' if self.current['status']=='ready' and not self.current['items'] else '選取草稿查看原話、編輯後保存。'))
 
@@ -95,6 +107,49 @@ class MemoryDraftWindow:
         if receipt:details += ['此項已有保存紀錄；後續編輯、停用或刪除請到長期記憶。此處不代表記憶現在仍存在或啟用。']
         self.evidence.configure(state='normal');self.evidence.delete('1.0','end');self.evidence.insert('1.0','\n\n'.join(details));self.evidence.configure(state='disabled')
         self.save.configure(state='normal' if not self.busy and receipt is None else 'disabled')
+        self.target.configure(state='disabled' if self.busy or receipt else 'readonly')
+        if receipt is None:
+            self.reload_targets(preserve=False)
+        else:
+            self.target_preview.configure(state='normal');self.target_preview.delete('1.0','end')
+            self.target_preview.insert('1.0','已保存的歷史收據：\n'+json.dumps(receipt,ensure_ascii=False,indent=2))
+            self.target_preview.configure(state='disabled')
+
+    def reload_targets(self, *, preserve=True):
+        if self.busy or not self.items.selection():return
+        index=int(self.items.selection()[0])
+        if any(r['item_index']==index for r in self.current['acceptances']):return
+        selected=self.target.current()
+        previous=self.target_choices[selected] if preserve and 0<=selected<len(self.target_choices) else None
+        rows=self.store.memories()
+        self.target_choices=[None]+[r['id'] for r in rows]
+        self.target['values']=['新增一筆（相同內容可沿用）']+[f"更新 #{r['id']} · {r['content'][:70]}" for r in rows]
+        self.target.current(self.target_choices.index(previous) if previous in self.target_choices else 0)
+        self.target_changed()
+
+    def target_changed(self,event=None):
+        had_target=self.replace_target is not None
+        self.replace_target=None
+        self.target_preview.configure(state='normal');self.target_preview.delete('1.0','end')
+        index=self.target.current()
+        mid=self.target_choices[index] if 0<=index<len(self.target_choices) else None
+        try:
+            if mid is None:
+                if had_target:self.expires.delete(0,'end')
+                self.save.configure(text='將這一項保存為長期記憶')
+                self.target_preview.insert('1.0','新增模式：不會改動其他記憶。若新資訊取代舊資訊，請明確選擇要更新的編號。')
+            else:
+                self.replace_target=drafts.memory_target(self.store,mid)
+                row=self.replace_target['memory']
+                self.target_preview.insert('1.0',f"更新前 #{mid} · {'啟用' if row['active'] else '停用，更新後仍停用'} · 到期：{row['expires_on'] or '不限'}\n"+row['content'])
+                self.expires.delete(0,'end');self.expires.insert(0,row['expires_on'] or '')
+                self.save.configure(text=f'更新選取記憶 #{mid}')
+            selected=self.items.selection()
+            accepted=selected and any(r['item_index']==int(selected[0]) for r in self.current['acceptances'])
+            self.save.configure(state='normal' if selected and not accepted and not self.busy else 'disabled')
+        except ValueError as exc:
+            self.target_preview.insert('1.0',str(exc));self.save.configure(state='disabled')
+        self.target_preview.configure(state='disabled')
 
     def show_source(self):
         if not self.current:return
@@ -113,7 +168,7 @@ class MemoryDraftWindow:
 
     def run(self,did):
         self.busy=True;self.cancel.clear()
-        for widget in (self.start,self.retry,self.save):widget.configure(state='disabled')
+        for widget in (self.start,self.retry,self.save,self.target,self.reload_targets_button):widget.configure(state='disabled')
         self.stop.configure(state='normal');self.notice.set('正在整理草稿；尚未新增任何長期記憶。')
         def worker():
             try:
@@ -125,17 +180,20 @@ class MemoryDraftWindow:
     def accept(self):
         if self.busy or not self.current or not self.items.selection():return
         try:
+            if self.target.current()>0 and self.replace_target is None:
+                raise ValueError('請重新載入要更新的記憶。')
+            replacement={'memory_id':self.replace_target['memory']['id'],'fingerprint':self.replace_target['fingerprint']} if self.replace_target else None
             receipt=drafts.accept(self.store,self.sid,self.current['id'],int(self.items.selection()[0]),self.current['proposals_sha256'],
-                content=self.content.get('1.0','end').strip(),kind=LABELS[self.kind.get()],expires_on=self.expires.get().strip() or None)
+                content=self.content.get('1.0','end').strip(),kind=LABELS[self.kind.get()],expires_on=self.expires.get().strip() or None,replace=replacement)
             self.refresh(self.current['id'])
-            self.notice.set(f"已保存為記憶 #{receipt['memory_id']}"+('（相同內容已存在，沿用原編號）。' if receipt['reused'] else '；下次相關提問可選用。'))
+            self.notice.set((f"已更新記憶 #{receipt['memory_id']}，保留原啟用狀態與更新前快照。" if receipt['replacement'] else f"已保存為記憶 #{receipt['memory_id']}"+('（相同內容已存在，沿用原編號）。' if receipt['reused'] else '；可到長期記憶查看與管理。')))
         except (ValueError,RuntimeError) as exc:messagebox.showerror('無法保存',str(exc),parent=self.window)
 
     def poll(self):
         try:
             while True:
                 did,error=self.events.get_nowait();self.busy=False
-                self.start.configure(state='normal');self.stop.configure(state='disabled');self.refresh(did)
+                self.start.configure(state='normal');self.reload_targets_button.configure(state='normal');self.stop.configure(state='disabled');self.refresh(did)
                 if error:self.notice.set('整理未完成：'+error)
         except queue.Empty:pass
         self.poll_timer=self.window.after(150,self.poll)

@@ -401,6 +401,49 @@ class FormGeometryTests(unittest.TestCase):
             view.close()
             self.assertFalse(view.window.winfo_exists())
 
+    def test_memory_draft_selected_update_rejects_stale_view_and_preserves_disabled_state(self):
+        import json
+        from assistant.memory_draft_ui import MemoryDraftWindow
+        from assistant import memory_drafts as d
+        from test_autonomy import ScriptedEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');sid=store.new_session()
+            old=store.remember('星橋專案位於D槽。')
+            with store.connect() as db:
+                db.execute("UPDATE memories SET active=0,expires_on='2030-01-01' WHERE id=?",(old,))
+            mid=store.add_message(sid,'user','星橋專案位於F槽。')
+            did=d.create(store,sid)
+            d.generate(store,sid,did,ScriptedEngine(json.dumps({'items':[{'kind':'fact','content':'星橋專案位於F槽。',
+                'sources':[{'key':'M'+str(mid),'quote':'星橋專案位於F槽。'}]}]},ensure_ascii=False)))
+            view=MemoryDraftWindow(self.root,store,sid,None);layout=self.allocate(view)
+            view.refresh(did);view.items.selection_set('0');view.select_item()
+            self.assertEqual(view.target.current(),0)
+            self.assert_reachable(layout,view.target);self.assert_reachable(layout,view.reload_targets_button)
+            view.target.current(view.target_choices.index(old));view.target_changed()
+            self.assertIn('更新後仍停用',view.target_preview.get('1.0','end'))
+            self.assertEqual(view.expires.get(),'2030-01-01')
+            view.target.current(0);view.target_changed()
+            self.assertEqual(view.expires.get(),'')
+            view.target.current(view.target_choices.index(old));view.target_changed()
+            with store.connect() as db:db.execute("UPDATE memories SET content='別的視窗已改成E槽。' WHERE id=?",(old,))
+            with patch('assistant.memory_draft_ui.messagebox.showerror') as error:
+                view.save.invoke()
+            error.assert_called_once()
+            self.assertEqual(d.get(store,sid,did)['acceptances'],[])
+            self.assertIn('E槽',d.memory_target(store,old)['memory']['content'])
+            view.reload_targets_button.invoke()
+            self.assertIn('E槽',view.target_preview.get('1.0','end'))
+            view.save.invoke()
+            row=d.memory_target(store,old)['memory']
+            self.assertEqual((row['content'],row['active'],row['expires_on']),('星橋專案位於F槽。',0,'2030-01-01'))
+            self.assertEqual(len(store.memories()),1)
+            receipt=d.get(store,sid,did)['acceptances'][0]
+            self.assertIn('E槽',receipt['replacement']['before']['content'])
+            view.items.selection_set('0');view.select_item()
+            self.assertEqual(str(view.save['state']),'disabled')
+            self.assertIn('before_sha256',view.target_preview.get('1.0','end'))
+            view.close()
+
     def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
         import threading
         from assistant.gui import App

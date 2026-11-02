@@ -166,6 +166,7 @@ class MemoryDraftTests(unittest.TestCase):
         with restored.connect() as db:db.execute("UPDATE memory_drafts SET proposals_json='{}'")
         with self.assertRaises(ValueError):validate_database(restored.path)
         with restored.connect() as db:
+            db.execute('DROP TABLE memory_replacements')
             db.execute('DROP TABLE memory_acceptances');db.execute('DROP TABLE memory_drafts')
         validate_database(restored.path);restored=Store(restored.path)
         self.assertEqual(d.drafts(restored,self.sid),[])

@@ -63,6 +63,38 @@ def _row(db, sql, values):
     return dict(zip([c[0] for c in cursor.description], row)) if row is not None else None
 
 
+def memory_target(store, mid):
+    if type(mid) is not int or mid < 1:
+        raise ValueError('請選擇有效的記憶編號。')
+    with store.connect() as db:
+        row = _row(db,'SELECT * FROM memories WHERE id=?',(mid,))
+    if row is None:
+        raise ValueError('這筆記憶已不存在，請重新選取。')
+    return {'memory':row,'fingerprint':conversation.digest(row)}
+
+
+def _replacement(db, did, receipt):
+    # v0.28 backups have acceptance receipts but no replacement table.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_replacements' AND type='table'").fetchone() is None:
+        return None
+    row = db.execute('SELECT before_json,before_sha256 FROM memory_replacements WHERE draft_id=? AND item_index=?',
+                     (did,receipt['item_index'])).fetchone()
+    if row is None:
+        return None
+    before = strict_json(row[0])
+    if (not isinstance(before,dict) or set(before) != {'id','content','kind','created_at','expires_on','active','updated_at'} or
+            type(before['id']) is not int or before['id'] != receipt['memory_id'] or
+            type(before['active']) is not int or before['active'] not in (0,1) or receipt['reused'] != 0 or
+            not isinstance(before['content'],str) or not isinstance(before['kind'],str) or
+            (before['expires_on'] is not None and not isinstance(before['expires_on'],str)) or
+            any(not isinstance(before[k],str) or len(before[k]) > 50 for k in ('created_at','updated_at'))):
+        raise ValueError('記憶更新前快照格式不符。')
+    validate_memory(before['content'],before['kind'],before['expires_on'])
+    if conversation.digest(before) != row[1]:
+        raise ValueError('記憶更新前快照指紋不符。')
+    return {'before':before,'before_sha256':row[1]}
+
+
 def read(db, sid, did):
     row = _row(db, 'SELECT * FROM memory_drafts WHERE id=? AND session_id=?', (did,sid))
     if row is None:
@@ -83,6 +115,7 @@ def read(db, sid, did):
         if not 0 <= receipt['item_index'] < len(row['items']) or receipt['memory_id'] < 1:
             raise ValueError('記憶保存紀錄不符。')
         validate_memory(receipt['content'],receipt['kind'],receipt['expires_on'])
+        receipt['replacement'] = _replacement(db,did,receipt)
         row['acceptances'].append(receipt)
     return row
 
@@ -145,11 +178,14 @@ def generate(store, sid, did, engine, *, cancel=None):
     return get(store,sid,did)
 
 
-def accept(store, sid, did, index, expected_sha256, *, content, kind, expires_on=None):
+def accept(store, sid, did, index, expected_sha256, *, content, kind, expires_on=None, replace=None):
     if not isinstance(content,str) or not isinstance(kind,str) or (expires_on is not None and not isinstance(expires_on,str)):
         raise ValueError('記憶內容、類型或到期日格式不符。')
     content = validate_memory(content,kind,expires_on)
     expires_on = expires_on or None
+    if replace is not None and (not isinstance(replace,dict) or set(replace) != {'memory_id','fingerprint'} or
+            type(replace['memory_id']) is not int or replace['memory_id'] < 1 or not isinstance(replace['fingerprint'],str)):
+        raise ValueError('更新記憶需要明確編號與讀取時的指紋。')
     with lease(store,did), store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         draft = read(db,sid,did)
@@ -159,18 +195,32 @@ def accept(store, sid, did, index, expected_sha256, *, content, kind, expires_on
             raise ValueError('請選擇有效的記憶草稿。')
         existing = next((r for r in draft['acceptances'] if r['item_index']==index),None)
         if existing:
-            if (existing['content'],existing['kind'],existing['expires_on']) != (content,kind,expires_on):
+            old_target = existing['replacement']['before']['id'] if existing['replacement'] else None
+            if ((existing['content'],existing['kind'],existing['expires_on']) != (content,kind,expires_on) or
+                    old_target != (replace['memory_id'] if replace else None)):
                 raise ValueError('這項草稿已保存；修改請到長期記憶，不會重複新增。')
             return existing  # Even a deleted memory cannot be resurrected by replay.
-        row = db.execute('SELECT id FROM memories WHERE content=? AND kind=? AND expires_on IS ? AND active=1 ORDER BY id LIMIT 1',
-            (content,kind,expires_on)).fetchone()
-        mid = row[0] if row else allocate_memory_id(db)
-        if row is None:
-            db.execute('INSERT INTO memories(id,content,kind,expires_on,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)',
-                (mid,content,kind,expires_on))
+        before = None
+        if replace:
+            before = _row(db,'SELECT * FROM memories WHERE id=?',(replace['memory_id'],))
+            if before is None or conversation.digest(before) != replace['fingerprint']:
+                raise ValueError('所選記憶已變更或刪除，請重新載入並核對；未更新任何記憶。')
+            mid, reused = before['id'], 0
+            db.execute('UPDATE memories SET content=?,kind=?,expires_on=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                       (content,kind,expires_on,mid))  # Preserve ID, creation time and active state.
+        else:
+            row = db.execute('SELECT id FROM memories WHERE content=? AND kind=? AND expires_on IS ? AND active=1 ORDER BY id LIMIT 1',
+                (content,kind,expires_on)).fetchone()
+            mid, reused = (row[0],1) if row else (allocate_memory_id(db),0)
+            if row is None:
+                db.execute('INSERT INTO memories(id,content,kind,expires_on,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)',
+                    (mid,content,kind,expires_on))
         db.execute('INSERT INTO memory_acceptances(draft_id,item_index,memory_id,content,kind,expires_on,reused) VALUES(?,?,?,?,?,?,?)',
-            (did,index,mid,content,kind,expires_on,int(row is not None)))
-        return _row(db,'SELECT * FROM memory_acceptances WHERE draft_id=? AND item_index=?',(did,index))
+            (did,index,mid,content,kind,expires_on,reused))
+        if before is not None:
+            db.execute('INSERT INTO memory_replacements(draft_id,item_index,before_json,before_sha256) VALUES(?,?,?,?)',
+                       (did,index,json.dumps(before,ensure_ascii=False),conversation.digest(before)))
+        return next(r for r in read(db,sid,did)['acceptances'] if r['item_index']==index)
 
 
 def provenance(store, mid):

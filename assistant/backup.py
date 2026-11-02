@@ -21,6 +21,7 @@ TABLES = {
     'memory_sequence': {'id', 'last_id'},
     'memory_drafts': {'id','session_id','status','context_json','context_sha256','proposals_json','proposals_sha256','error','attempts','created_at'},
     'memory_acceptances': {'draft_id','item_index','memory_id','content','kind','expires_on','reused','accepted_at'},
+    'memory_replacements': {'draft_id','item_index','before_json','before_sha256'},
     'feedback': {'message_id', 'rating', 'correction', 'updated_at'},
     'session_briefs': {'session_id', 'objective', 'constraints_text', 'decisions', 'updated_at'},
     'answer_contexts': {'message_id', 'payload'},
@@ -79,7 +80,9 @@ def validate_database(path):
         memory_tables = {'memory_drafts','memory_acceptances'}
         if len(actual_tables & memory_tables) == 1:
             raise ValueError('記憶草稿資料表不完整。')
-        if not set(TABLES) - memory_tables - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
+            raise ValueError('記憶更新來源資料表不完整。')
+        if not set(TABLES) - memory_tables - {'memory_replacements'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
