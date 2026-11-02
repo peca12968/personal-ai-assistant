@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .evolution import EDITABLE, improve
 from .acceptance import load_suite
+from .ui_layout import ScrollableForm, fit_window
 
 
 class EvolutionWindow:
@@ -14,21 +15,23 @@ class EvolutionWindow:
         self.source_check = source_check
         self.window = tk.Toplevel(parent)
         self.window.title('自我改進 · 程式與溝通')
-        self.window.geometry('800x780')
+        fit_window(self.window, 800, 780)
+        self.layout = ScrollableForm(self.window)
+        body = self.layout.body
         self.events = queue.Queue()
         self.cancel = threading.Event()
         self.busy = False
-        ttk.Label(self.window, text='描述一個具體改善方向，例如：更準確理解簡短回答與更正。',
+        self.layout.wrapped_label(body, text='描述一個具體改善方向，例如：更準確理解簡短回答與更正。',
                   wraplength=700).pack(anchor='w', padx=16, pady=12)
-        self.goal = tk.Text(self.window, height=5, wrap='word')
+        self.goal = tk.Text(body, height=5, wrap='word')
         self.goal.pack(fill='x', padx=16)
         self.targets = {}
         for name in EDITABLE:
             value = tk.BooleanVar(value=name in (EDITABLE[0], EDITABLE[3]))
             self.targets[name] = value
-            ttk.Checkbutton(self.window, text=name, variable=value).pack(anchor='w', padx=16)
+            ttk.Checkbutton(body, text=name, variable=value).pack(anchor='w', padx=16)
         self.imported_suite = None
-        frame = ttk.LabelFrame(self.window, text='驗收例子（選填；未提供時僅驗證既有功能）', padding=8)
+        frame = ttk.LabelFrame(body, text='驗收例子（選填；未提供時僅驗證既有功能）', padding=8)
         frame.pack(fill='x', padx=16, pady=8)
         ttk.Label(frame, text='輸入一句話，指定溝通模組應如何辨識：').pack(anchor='w')
         self.example = ttk.Entry(frame)
@@ -42,19 +45,19 @@ class EvolutionWindow:
         ttk.Button(row, text='匯入多案例 JSON', command=self.import_cases).pack(side='left', padx=8)
         ttk.Button(row, text='清除匯入', command=self.clear_cases).pack(side='left')
         self.case_notice = tk.StringVar(value='例子會與改善方向一併傳給模型；請使用不含私人資料的例子。')
-        ttk.Label(frame, textvariable=self.case_notice, wraplength=720).pack(anchor='w', pady=4)
-        ttk.Label(self.window, wraplength=700, text=(
+        self.layout.wrapped_label(frame, textvariable=self.case_notice, wraplength=720).pack(anchor='w', pady=4)
+        self.layout.wrapped_label(body, wraplength=700, text=(
             '每次按下開始，只執行一輪：AI 改碼 → 副本測試 → 套用 → 私人 GitHub。'
             '測試會以目前帳號執行候選 Python 程式；副本是版本隔離，不是作業系統沙箱。'
             '發布成功後重新開啟助理，讓所有變更生效。')).pack(fill='x', padx=16, pady=10)
-        buttons = ttk.Frame(self.window)
+        buttons = ttk.Frame(body)
         buttons.pack(fill='x', padx=16)
         self.start = ttk.Button(buttons, text='開始改進並發布', command=self.begin)
         self.start.pack(side='left')
         self.stop = ttk.Button(buttons, text='停止（套用前）', command=self.cancel.set, state='disabled')
         self.stop.pack(side='left', padx=8)
-        self.output = tk.Text(self.window, wrap='word', state='disabled')
-        self.output.pack(fill='both', expand=True, padx=16, pady=12)
+        self.output = tk.Text(body, height=8, wrap='word', state='disabled')
+        self.output.pack(fill='x', padx=16, pady=12)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.window.after(150, self.poll)
         if initial_draft:
@@ -70,7 +73,11 @@ class EvolutionWindow:
     def show_cases(self):
         window = tk.Toplevel(self.window)
         window.title('完整驗收案例 · 開始後會傳給模型')
+        fit_window(window, 800, 600)
         text = tk.Text(window, wrap='word', width=90, height=24)
+        scrollbar = ttk.Scrollbar(window, orient='vertical', command=text.yview)
+        scrollbar.pack(side='right', fill='y')
+        text.configure(yscrollcommand=scrollbar.set)
         text.pack(fill='both', expand=True)
         text.insert('1.0', json.dumps(self.imported_suite, ensure_ascii=False, indent=2) if self.imported_suite else '未匯入案例；單一例子請查看主視窗。')
         text.configure(state='disabled')

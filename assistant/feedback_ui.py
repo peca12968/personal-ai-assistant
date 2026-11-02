@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 
 from .feedback_improvement import check_source, example_from_source, feedback_source, make_draft, make_followup_draft
 from .acceptance import strict_json, validate_suite
+from .ui_layout import ScrollableForm, fit_window
 
 
 class FeedbackWindow:
@@ -12,19 +13,21 @@ class FeedbackWindow:
         self.store, self.source = store, None
         self.window = tk.Toplevel(parent)
         self.window.title('回饋與改進例子')
-        self.window.geometry('880x900')
-        ttk.Label(self.window, text='選取回饋，核對問題與前文，再指定回答長度或接續前文的期望。此處不會自動改碼。',
+        fit_window(self.window, 880, 900)
+        self.layout = ScrollableForm(self.window)
+        body = self.layout.body
+        self.layout.wrapped_label(body, text='選取回饋，核對問題與前文，再指定回答長度或接續前文的期望。此處不會自動改碼。',
                   wraplength=800, padding=10).pack(fill='x')
-        self.listing = ttk.Treeview(self.window, columns=('id', 'rating', 'correction'), show='headings', height=5)
+        self.listing = ttk.Treeview(body, columns=('id', 'rating', 'correction'), show='headings', height=5)
         for key, label, width in [('id', '回答編號', 90), ('rating', '評價', 100), ('correction', '更正', 600)]:
             self.listing.heading(key, text=label)
             self.listing.column(key, width=width, stretch=key == 'correction')
         self.listing.pack(fill='x', padx=12)
         self.listing.bind('<<TreeviewSelect>>', self.select)
-        ttk.Button(self.window, text='重新整理', command=self.refresh).pack(anchor='e', padx=12)
-        self.preview = tk.Text(self.window, height=6, wrap='word', state='disabled')
-        self.preview.pack(fill='both', expand=True, padx=12)
-        form = ttk.Frame(self.window, padding=12)
+        ttk.Button(body, text='重新整理', command=self.refresh).pack(anchor='e', padx=12)
+        self.preview = tk.Text(body, height=6, wrap='word', state='disabled')
+        self.preview.pack(fill='x', padx=12)
+        form = ttk.Frame(body, padding=12)
         form.pack(fill='x')
         self.fields = {}
         for key, label, height in [('question', '可編輯的驗收問題', 2),
@@ -58,7 +61,7 @@ class FeedbackWindow:
         self.loaded_history = None
         self.turn_indices = []
         self.notice = tk.StringVar(value='驗證程式的長度提示或前文檢索，不直接評分整篇回答。請明確選擇期望；不會由現有錯誤推算正確答案。')
-        ttk.Label(self.window, textvariable=self.notice, wraplength=820, padding=12).pack(fill='x')
+        self.layout.wrapped_label(body, textvariable=self.notice, wraplength=820, padding=12).pack(fill='x')
         self.refresh()
 
     def change_kind(self, event=None):
