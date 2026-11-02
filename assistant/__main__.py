@@ -34,6 +34,7 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    parser.add_argument('--from-chat', action='store_true', help='搭配 --new-goal，固定帶入同對話的有限近期討論、更早更正及已保存目標')
     parser.add_argument('--csv-document', type=int, help='搭配 --new-goal，選取此對話已匯入CSV編號，允許開始後自主規劃及執行分析')
     mode.add_argument('--export-goal-csv', help='匯出已完成自主CSV計畫ID；需 --csv-goal、--session、--output')
     parser.add_argument('--csv-goal', help='搭配 --export-goal-csv 指定所屬目標ID')
@@ -62,6 +63,8 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if args.from_chat and args.new_goal is None:
+        parser.error('--from-chat只能搭配 --new-goal。')
     if args.csv_document is not None and args.new_goal is None:
         parser.error('--csv-document只能搭配 --new-goal。')
     if args.csv_goal is not None and args.export_goal_csv is None:
@@ -223,7 +226,7 @@ def main():
         try:
             store = Store(args.data_dir / 'assistant.sqlite3')
             if args.new_goal is not None:
-                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document)
+                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document, from_chat=args.from_chat)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),

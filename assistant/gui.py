@@ -61,6 +61,8 @@ class App:
             selectbackground="#315766", highlightthickness=0, height=5, font=("Microsoft JhengHei UI", 10))
         self.session_list.pack(fill="both", expand=True, pady=10)
         self.session_list.bind("<<ListboxSelect>>", self.select_session)
+        self.chat_goal_btn = ttk.Button(sidebar, text='帶入對話建立目標', command=self.goal_from_chat)
+        self.chat_goal_btn.pack(fill='x', pady=4)
         ttk.Button(sidebar, text="對話目標與限制", command=self.edit_brief).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="參考文件", command=self.manage_documents).pack(fill="x", pady=4)
         memory_menu = ttk.Menubutton(sidebar, text='記憶與夥伴設定')
@@ -122,6 +124,16 @@ class App:
     def self_improve(self):
         from .evolution_ui import EvolutionWindow
         EvolutionWindow(self.root)
+
+    def goal_from_chat(self):
+        if self.busy:
+            return
+        from .autonomy_ui import AutonomousWindow
+        draft = self.input.get('1.0', 'end').strip() or '依照本對話已確認的需求，完成可處理的工作並提供可核對的成果。'
+        # A new draft must not overwrite another goal window's unsaved objective.
+        view = AutonomousWindow(self.root, self.store, self.sid, self.assistant.engine,
+                                from_chat=True, initial_objective=draft)
+        self.autonomous_windows.append(view)
 
     def autonomous_goals(self, sid=None, gid=None):
         from .autonomy_ui import AutonomousWindow
@@ -207,7 +219,7 @@ class App:
     def set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn, self.retry_btn):
+        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn, self.retry_btn, self.chat_goal_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
 

@@ -18,6 +18,7 @@ from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import artifacts
 from . import autonomy_csv
+from . import goal_conversation
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 MAX_STEPS = 32
@@ -65,10 +66,12 @@ def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
 
 
-def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None):
+def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False):
     objective = text(objective, 4000)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
+    if type(from_chat) is not bool:
+        raise ValueError('帶入對話選項需為布林值。')
     gid = uuid.uuid4().hex
     sources = signature(store.documents(sid))
     with lease(store, parent_id) if parent_id is not None else nullcontext():
@@ -81,6 +84,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
                 db.execute('INSERT INTO autonomous_delivery(goal_id,enabled) VALUES(?,1)', (gid,))
             if csv_document_id is not None:
                 autonomy_csv.configure(db, sid, gid, csv_document_id)
+            if from_chat:
+                goal_conversation.save(db, sid, gid)
             if previous is not None:
                 db.execute('INSERT INTO autonomous_handoffs(goal_id,parent_goal_id,context_json) VALUES(?,?,?)',
                            (gid, parent_id, json.dumps(previous, ensure_ascii=False)))
@@ -103,6 +108,7 @@ def get_goal(store, sid, gid):
         result['artifacts'] = artifacts.inventory(db, gid)
         result['csv_source'] = autonomy_csv.source(db, gid)
         result['csv_plans'] = autonomy_csv.inventory(db, gid)
+        result['conversation_context'] = goal_conversation.read(db, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
             result['previous_stage']['sources_match_current'] = result['previous_stage']['sources'] == result['sources']
@@ -260,8 +266,10 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                            'previous_stage': goal['previous_stage'],
                            'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
                            'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
+                           'conversation_context': goal['conversation_context'],
                            'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
                 raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE +
+                    ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                     ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
                 if cancel.is_set():
                     update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')

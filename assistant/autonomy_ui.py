@@ -9,12 +9,13 @@ from tkinter import messagebox, ttk
 
 from . import autonomy
 from . import artifacts
+from .goal_conversation import describe as describe_conversation
 from .ui_layout import ScrollableForm, fit_window
 from .companion_profile import describe as describe_profile
 
 
 class AutonomousWindow:
-    def __init__(self, parent, store, sid, engine):
+    def __init__(self, parent, store, sid, engine, *, from_chat=False, initial_objective=''):
         self.store, self.sid, self.engine = store, sid, engine
         self.busy = False
         self.active_goal = None
@@ -33,6 +34,12 @@ class AutonomousWindow:
                                   padding=12).pack(fill='x')
         self.objective = tk.Text(body, height=3, wrap='word')
         self.objective.pack(fill='x', padx=12)
+        if initial_objective:
+            self.objective.insert('1.0', initial_objective)
+        self.from_chat = tk.BooleanVar(value=from_chat)
+        self.chat_option = ttk.Checkbutton(body, text='新目標帶入本對話背景（近期討論、較早更正與已保存目標）', variable=self.from_chat)
+        self.chat_option.pack(anchor='w', padx=12, pady=6)
+        self.layout.wrapped_label(body, text='勾選後，保存目標時會固定當時的背景；可在下方查看，再開始。背景會交給模型，不會自動更新，也不增加檔案或CSV權限。', padding=12).pack(fill='x')
         self.file_delivery = tk.BooleanVar(value=False)
         self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機Markdown／TXT／JSON，不覆寫既有內容）', variable=self.file_delivery)
         self.file_option.pack(anchor='w', padx=12, pady=6)
@@ -121,7 +128,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get())
             self.refresh(gid)
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
@@ -130,7 +137,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get())
             self.refresh(gid)
             self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
         except Exception as exc:
@@ -157,7 +164,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -200,6 +207,8 @@ class AutonomousWindow:
             lines += ['需要你的補充：' + goal['question']]
         if goal['notes']:
             lines += ['本階段的問題與補充紀錄：', goal['notes']]
+        if goal['conversation_context'] is not None:
+            lines += [describe_conversation(goal['conversation_context'])]
         previous = goal['previous_stage']
         if previous:
             lines += ['沿用的上一階段：' + previous['parent_goal_id'], '原目標：' + previous['objective'],
@@ -245,7 +254,7 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -268,7 +277,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload):
+                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))

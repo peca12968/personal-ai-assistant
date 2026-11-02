@@ -261,3 +261,41 @@ class FormGeometryTests(unittest.TestCase):
             view.refresh(gid)
             self.assertEqual(str(view.csv_results['state']), 'normal')
             self.assert_reachable(layout, view.csv_results)
+
+    def test_chat_handoff_draft_preserves_input_and_other_unsaved_goal(self):
+        from assistant.gui import App
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            store.add_message(sid, 'user', '更正：選乙，生效日11月1日')
+            app = App(self.root, store, None)
+            app.input.insert('1.0', '沿用已確認方案計算費用')
+            existing = AutonomousWindow(self.root, store, sid, None, initial_objective='原本未保存的草稿')
+            existing.window.withdraw()
+            app.autonomous_windows.append(existing)
+            app.set_busy(True)
+            app.goal_from_chat()
+            self.assertEqual(len(app.autonomous_windows), 1)
+            app.set_busy(False)
+            def hidden_window(*args, **kwargs):
+                view = AutonomousWindow(*args, **kwargs)
+                view.window.withdraw()
+                return view
+            with patch('assistant.autonomy_ui.AutonomousWindow', side_effect=hidden_window):
+                app.goal_from_chat()
+            view = app.autonomous_windows[-1]
+            layout = self.allocate(view)
+            self.assert_reachable(layout, view.chat_option)
+            self.assertTrue(view.from_chat.get())
+            self.assertEqual(view.objective.get('1.0', 'end').strip(), '沿用已確認方案計算費用')
+            self.assertEqual(app.input.get('1.0', 'end').strip(), '沿用已確認方案計算費用')
+            self.assertEqual(existing.objective.get('1.0', 'end').strip(), '原本未保存的草稿')
+            self.assertEqual(autonomy.goals(store, sid), [])
+            view.new_goal()
+            goal = autonomy.get_goal(store, sid, view.selected_id())
+            self.assertEqual(goal['status'], 'pending')
+            self.assertEqual(len(goal['conversation_context']['messages']), 1)
+            self.assertFalse(goal['file_delivery'])
+            self.assertIsNone(goal['csv_source'])
+            self.assertIn('選乙', view.output.get('1.0', 'end'))
+            self.assertEqual(len(store.messages(sid)), 1)

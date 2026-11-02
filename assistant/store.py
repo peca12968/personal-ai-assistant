@@ -133,6 +133,9 @@ class Store:
                     status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),
                     report_json TEXT, report_sha256 TEXT, error TEXT NOT NULL DEFAULT '',
                     exports_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS autonomous_conversations (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
+                    context_json TEXT NOT NULL, context_sha256 TEXT NOT NULL);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
