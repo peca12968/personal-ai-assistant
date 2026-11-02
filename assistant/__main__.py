@@ -60,6 +60,7 @@ def main():
     mode.add_argument('--rollback-improvement', help='回復仍為最新版本的自我改進紀錄 ID 並發布')
     parser.add_argument('--edit', action='append', help='搭配 --improve 指定可修改模組，可重複')
     parser.add_argument('--acceptance', type=Path, help='搭配 --improve 指定 JSON 驗收案例，核對改前／改後')
+    parser.add_argument('--holdout', type=Path, help='搭配 --improve 與 --acceptance 的保留案例，不加入提案模型提示')
     parser.add_argument('--group-column')
     parser.add_argument('--value-column')
     parser.add_argument('--output', type=Path)
@@ -124,6 +125,8 @@ def main():
         parser.error('--edit 需搭配 --improve。')
     if args.acceptance and not args.improve:
         parser.error('--acceptance 需搭配 --improve。')
+    if args.holdout and (not args.improve or not args.acceptance):
+        parser.error('--holdout需搭配 --improve 與 --acceptance。')
     if args.rollback_improvement:
         from .evolution import rollback
         try:
@@ -136,7 +139,8 @@ def main():
         from .acceptance import load_suite
         try:
             suite = load_suite(args.acceptance) if args.acceptance else None
-            result = improve(args.improve, args.edit, progress=lambda state: print(state, flush=True), acceptance=suite)
+            withheld = load_suite(args.holdout) if args.holdout else None
+            result = improve(args.improve, args.edit, progress=lambda state: print(state, flush=True), acceptance=suite, holdout=withheld)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         except Exception as exc:
             parser.exit(1, '自我改進未完成：' + str(exc) + '\n')

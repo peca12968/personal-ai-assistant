@@ -106,7 +106,7 @@ def unchanged(root, baseline, original):
         raise ValueError('驗證期間原始檔案已變動，停止套用。')
 
 
-def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progress=None, acceptance=None):
+def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progress=None, acceptance=None, holdout=None):
     """One explicit goal -> one candidate -> checks -> apply -> private publication."""
     root = Path(root).resolve()
     if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 4000:
@@ -115,6 +115,15 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
     if not selected or len(selected) != len(set(selected)) or any(name not in EDITABLE for name in selected):
         raise ValueError('只可選擇列出的溝通與理解模組。')
     suite = validate_suite(acceptance, selected) if acceptance is not None else None
+    withheld = validate_suite(holdout) if holdout is not None else None
+    if withheld is not None:
+        if suite is None:
+            raise ValueError('保留驗收需搭配提供給模型的驗收案例。')
+        def inputs(case):
+            return json.dumps({key:value for key,value in case.items() if key not in ('id','expect')},sort_keys=True,ensure_ascii=False)
+        provided = {inputs(case) for case in suite['cases']}
+        if any(inputs(case) in provided for case in withheld['cases']):
+            raise ValueError('保留案例不可重複本輪提供給模型的輸入。')
     state_dir = root / 'data' / 'evolution'
     state_dir.mkdir(parents=True, exist_ok=True)
     lock = state_dir / 'active.lock'
@@ -134,7 +143,8 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
         candidate.mkdir(parents=True)
         report = {'id': run_id, 'goal': goal.strip(), 'base_commit': baseline,
                   'selected': selected, 'status': 'preparing', 'checks': [], 'directory': str(folder),
-                  'acceptance': {'status': 'pending' if suite else 'not_provided'}}
+                  'acceptance': {'status': 'pending' if suite else 'not_provided'},
+                  'holdout': {'status': 'pending' if withheld else 'not_provided'}}
 
         def save(status):
             report['status'] = status
@@ -158,37 +168,61 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(original[name])
         baseline_observations = None
+        withheld_baseline = None
         suite_bytes = json.dumps(suite, ensure_ascii=False, indent=2).encode('utf-8') if suite else None
         suite_path = folder / 'acceptance.json'
         if suite:
             suite_path.write_bytes(suite_bytes)
             report['acceptance_sha256'] = digest(suite_bytes)
+        withheld_bytes = json.dumps(withheld,ensure_ascii=False,indent=2).encode('utf-8') if withheld else None
+        withheld_path = folder / 'holdout.json'
+        if withheld:
+            withheld_path.write_bytes(withheld_bytes)
+            report['holdout_sha256'] = digest(withheld_bytes)
 
-        def observe(phase):
+        def unchanged_suites():
+            for path, frozen in ((suite_path,suite_bytes),(withheld_path,withheld_bytes)):
+                if frozen is not None and (path.is_symlink() or path.read_bytes() != frozen):
+                    raise ValueError('驗收案例被改動，停止本輪。')
+
+        def observe(phase, *, held_out=False):
+            unchanged_suites()
+            observed_suite = withheld if held_out else suite
+            observed_path = withheld_path if held_out else suite_path
             output = folder / (phase + '-observations.json')
-            run_checked([sys.executable, 'scripts/observe_acceptance.py', '--suite', str(suite_path),
+            run_checked([sys.executable, 'scripts/observe_acceptance.py', '--suite', str(observed_path),
                          '--output', str(output)], candidate, folder / (phase + '-acceptance.log'), cancel, timeout=60)
-            if suite_path.read_bytes() != suite_bytes:
-                raise ValueError('驗收案例被改動，停止本輪。')
+            unchanged_suites()
             with output.open('rb') as stream:
                 raw = stream.read(2_000_001)
             if len(raw) > 2_000_000:
                 raise ValueError('驗收觀察過大。')
             result = strict_json(raw.decode('utf-8'))
-            grade(suite, result)  # Validate IDs, structure and types in the controller.
+            grade(observed_suite, result)  # Host validates IDs, structure and types.
             return result
 
         if suite:
             save('baseline_testing')
             baseline_observations = observe('baseline')
+            if withheld:
+                save('holdout_baseline_testing')
+                withheld_baseline = observe('baseline-holdout',held_out=True)
+                report['holdout'] = {'status':'baseline_measured','baseline':grade(withheld,withheld_baseline)}
             for name, content in original.items():
                 if (candidate / name).is_symlink() or (candidate / name).read_bytes() != content:
                     raise ValueError('改前測試更動原始碼，停止本輪。')
             report['acceptance'] = {'status': 'baseline_measured', 'baseline': grade(suite, baseline_observations)}
             if all(row['passed'] for row in report['acceptance']['baseline']):
                 report['acceptance'] = compare(suite, baseline_observations, baseline_observations)
+                if withheld:
+                    passed = all(row['passed'] for row in report['holdout']['baseline'])
+                    report['holdout']['status'] = 'baseline_passed' if passed else 'baseline_failed'
+                    if not passed:
+                        save('needs_reproduction')
+                        return report
                 save('no_change_needed')
                 return report
+        unchanged_suites()
         source = {name: original[name].decode('utf-8') for name in selected}
         prompt = ('你正在修改自己的個人 AI 助理程式。完成一個明確的改善，保留公開函式與既有行為。'
                   '只改給定檔案，不執行工具，不存取網路或個人資料，不加入隱藏副作用或外部依賴。'
@@ -220,6 +254,16 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             save('acceptance_testing')
             if report['acceptance']['status'] != 'verified_improvement':
                 raise ValueError('本輪驗收未通過：需全部案例符合預期，且至少修好一個原本失敗的案例。原程式未套用。')
+        if withheld:
+            save('holdout_testing')
+            withheld_observations = observe('candidate-holdout',held_out=True)
+            comparison = compare(withheld,withheld_baseline,withheld_observations)
+            comparison['status'] = 'passed' if comparison['candidate_passed'] == comparison['total'] else 'failed'
+            report['holdout'] = comparison
+            save('holdout_testing')
+            if comparison['status'] != 'passed':
+                raise ValueError('保留驗收未通過，原程式未套用；失敗案例不會自動提供給提案模型。')
+        unchanged_suites()
         # Checks cannot silently alter source or protected validators.
         for name, old in original.items():
             path = candidate / name

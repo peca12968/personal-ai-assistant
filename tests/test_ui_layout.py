@@ -111,6 +111,31 @@ class FormGeometryTests(unittest.TestCase):
         self.assertEqual(view.imported_suite, draft['acceptance'])
         self.assertFalse(view.busy)
 
+    def test_holdout_import_controls_and_started_run_use_frozen_separate_cases(self):
+        import json
+        draft={'goal':'修正風格','selected':['assistant/communication.py'],
+               'acceptance':{'version':1,'cases':[{'id':'provided','kind':'communication','question':'公開例子','history':[],'expect':{'length_hint':'detailed'}}]}}
+        held={'version':1,'cases':[{'id':'held','kind':'communication','question':'保留例子','history':[],'expect':{'length_hint':'concise'}}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'holdout.json';path.write_text(json.dumps(held),encoding='utf-8')
+            view=EvolutionWindow(self.root,initial_draft=draft);layout=self.allocate(view)
+            for widget in (view.holdout_import,view.holdout_clear,view.holdout_show,view.start):self.assert_reachable(layout,widget)
+            with patch('assistant.evolution_ui.filedialog.askopenfilename',return_value=str(path)):view.holdout_import.invoke()
+            self.assertEqual(view.holdout_suite,held)
+            queued=[]
+            with patch('assistant.evolution_ui.threading.Thread',side_effect=lambda target,**kwargs:SimpleNamespace(start=lambda:queued.append(target))):view.begin()
+            self.assertTrue(view.busy)
+            view.clear_holdout();self.assertIsNotNone(view.holdout_suite)
+            view.holdout_suite['cases'][0]['expect']['length_hint']='detailed'
+            with patch('assistant.evolution_ui.improve',return_value={'status':'no_change_needed'}) as improve:queued[0]()
+            self.assertEqual(improve.call_args.kwargs['acceptance'],draft['acceptance'])
+            self.assertEqual(improve.call_args.kwargs['holdout'],held)
+            view.poll();self.assertFalse(view.busy)
+            view.holdout_clear.invoke();self.assertIsNone(view.holdout_suite)
+            view.clear_cases();view.holdout_suite=held
+            with patch('assistant.evolution_ui.messagebox.showerror') as error:view.begin()
+            error.assert_called_once();self.assertFalse(view.busy)
+
     def test_autonomous_goal_entry_and_saved_state_reachable(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / 'state.sqlite3')

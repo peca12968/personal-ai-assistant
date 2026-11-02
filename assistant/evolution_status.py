@@ -26,7 +26,8 @@ def improvement_context(root, question):
             status = report.get('status')
             if status not in {'published', 'applied_unpublished', 'not_applied', 'preparing',
                               'generating', 'testing', 'applying', 'publishing', 'baseline_testing',
-                              'acceptance_testing', 'no_change_needed'}:
+                              'acceptance_testing', 'no_change_needed', 'holdout_baseline_testing',
+                              'holdout_testing', 'needs_reproduction'}:
                 continue
             row = {'id': report['id'], 'recorded_status': status, 'revision_verified': False}
             commit = report.get('commit', '')
@@ -55,6 +56,12 @@ def improvement_context(root, question):
                         all(type(value) is int for value in counts) and 0 <= counts[0] < counts[1] == counts[2] <= 40):
                         row['acceptance_recorded'] = {'status': 'verified_improvement',
                             'baseline_passed': counts[0], 'candidate_passed': counts[1], 'total': counts[2]}
+                    holdout = report.get('holdout', {})
+                    counts = [holdout.get(key) for key in ('baseline_passed','candidate_passed','total')]
+                    if (holdout.get('status') == 'passed' and all(type(value) is int for value in counts)
+                            and 0 <= counts[0] <= counts[1] == counts[2] <= 40 and counts[2] > 0):
+                        row['holdout_recorded'] = {'status':'passed','baseline_passed':counts[0],
+                            'candidate_passed':counts[1],'total':counts[2], 'included_in_proposal_prompt':False}
             # No user-written goal, error, source contents or absolute path reaches chat.
             results.append(row)
         except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
