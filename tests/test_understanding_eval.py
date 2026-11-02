@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from assistant.engine import Assistant
 from assistant.store import Store
+from assistant.companion_profile import DEFAULTS
 from scripts.evaluate_understanding import SUITE, fingerprint, load_report, mechanical_check, prepare_case, save_report, validate_cases
 from scripts.review_understanding import apply_reviews, compare, summarize
 from scripts.evaluate_understanding import main as evaluate_main
@@ -30,6 +31,25 @@ class UnderstandingEvaluationTests(unittest.TestCase):
             validate_cases(self.cases + [self.cases[0]])
         with self.assertRaises(ValueError):
             validate_cases([{'id': 'bad', 'category': 'context', 'prompt': 'test', 'criteria': []}])
+
+    def test_companion_fixture_updates_and_resets_real_persisted_preferences(self):
+        case = {'id': 'profile', 'category': 'communication', 'prompt': '目前稱呼', 'criteria': ['目前設定正確'],
+                'prior_companion_profile': {**DEFAULTS, 'assistant_name': '原名字'},
+                'companion_profile': {**DEFAULTS, 'assistant_name': '新名字'},
+                'history': [{'role': 'assistant', 'content': '我是原名字。'}]}
+        validate_cases([case])
+        store = Store(self.root / 'profile.sqlite3')
+        sid = prepare_case(store, case)
+        context = Assistant(store, None).prepare_context(sid, case['prompt'])
+        self.assertEqual(context['companion_profile']['settings']['assistant_name'], '新名字')
+        self.assertEqual(context['companion_profile']['revision'], 2)
+        self.assertEqual(context['recent_conversation'][0]['content'], '我是原名字。')
+        reset = {key: value for key, value in case.items() if key != 'companion_profile'}
+        reset['reset_companion_profile'] = True
+        sid = prepare_case(store, reset)
+        self.assertEqual(Assistant(store, None).prepare_context(sid, reset['prompt'])['companion_profile']['settings'], DEFAULTS)
+        with self.assertRaises(ValueError):
+            validate_cases([{**case, 'reset_companion_profile': True}])
 
     def test_long_context_scenarios_actually_exercise_older_excerpts_and_truncation(self):
         for id in ('long_constraint', 'long_correction', 'omitted_middle'):

@@ -10,6 +10,8 @@ from assistant.evolution_ui import EvolutionWindow
 from assistant.autonomy_ui import AutonomousWindow
 from assistant.store import Store
 from assistant import autonomy
+from assistant.companion_ui import CompanionWindow
+from assistant.companion_profile import get_profile
 
 
 class FormGeometryTests(unittest.TestCase):
@@ -112,3 +114,20 @@ class FormGeometryTests(unittest.TestCase):
             self.assertIn('已保存的成果', view.output.get('1.0', 'end'))
             view.previous_stage()
             self.assertEqual(view.selected_id(), gid)
+
+    def test_companion_form_saves_reloads_and_resets_reachable_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            view = CompanionWindow(self.root, store)
+            layout = self.allocate(view)
+            self.assert_reachable(layout, view.save_button)
+            self.assert_reachable(layout, view.reset_button)
+            view.fields['assistant_name'].delete(0, 'end')
+            view.fields['assistant_name'].insert(0, '小禾')
+            view.save()
+            self.assertEqual(get_profile(store)['settings']['assistant_name'], '小禾')
+            view.reload()
+            self.assertEqual(view.revision, 1)
+            view.reset()
+            self.assertEqual(view.revision, 2)
+            self.assertEqual(view.fields['assistant_name'].get(), '個人 AI 助理')

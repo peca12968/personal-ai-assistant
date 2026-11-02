@@ -20,6 +20,7 @@ from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
 from . import answer_runs
 from .autonomy_status import goal_context
+from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_PROMPT_BYTES = 2 * 1024 * 1024
@@ -72,6 +73,7 @@ def find_codex():
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
+    instructions += '\n' + COMPANION_GUIDANCE
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
@@ -210,6 +212,7 @@ class Assistant:
         context['task_runs'] = task_context(self.store, sid, question)
         context['autonomous_goals'] = goal_context(self.store, sid)
         context['communication'] = conversation_style(question, history)
+        context['companion_profile'] = get_profile(self.store)
         context['self_improvement'] = improvement_context(ROOT, question)
         context['answer_attempts'] = answer_runs.context_status(self.store, sid)
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)

@@ -2,6 +2,7 @@ import tkinter as tk
 import json
 from tkinter import messagebox, ttk
 from .document_ranges import range_status_text
+from .companion_profile import describe as describe_profile
 
 
 class BriefWindow:
@@ -65,6 +66,8 @@ def show_context(parent, store, message_id):
         ("最近對話", "\n\n".join(f'{"你" if r["role"] == "user" else "助理"} · #{r["message_id"]}\n{r["content"]}' for r in context["recent_conversation"]) or "本次沒有前文。"),
     ]
     documents = context.get("documents", {})
+    if not local:
+        sections.append(('夥伴設定', describe_profile(context.get('companion_profile'))))
     corrections = context.get('earlier_user_corrections', {})
     sections.append(('早期更正', '依明確開頭選取的原文，不是自動確認的事實或長期記憶。\n\n' +
                      ('更早的更正未全部提供。\n\n' if corrections.get('selection_limited') else '') +

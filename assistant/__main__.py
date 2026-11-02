@@ -18,6 +18,10 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--ask", help="單次提問")
     mode.add_argument('--retry-answer', action='store_true', help='重試指定對話最後一題，需 --session；不重複新增問題')
+    mode.add_argument('--show-companion', action='store_true', help='查看本機夥伴設定，不呼叫模型')
+    mode.add_argument('--set-companion', type=Path, help='從UTF-8 JSON儲存夥伴設定；需 --profile-revision')
+    mode.add_argument('--reset-companion', action='store_true', help='恢復預設並儲存；需 --profile-revision')
+    parser.add_argument('--profile-revision', type=int, help='設定讀取時的revision，避免覆寫其他視窗的更新')
     mode.add_argument("--backup", action="store_true", help="建立目前資料的本機備份")
     mode.add_argument("--inspect-backup", type=Path, help="檢查備份完整性與內容筆數")
     mode.add_argument("--restore", type=Path, help="還原備份到 --data-dir 指定的新資料夾")
@@ -50,6 +54,14 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    profile_change = args.set_companion is not None or args.reset_companion
+    profile_mode = args.show_companion or profile_change
+    if profile_change and (args.profile_revision is None or args.profile_revision < 0):
+        parser.error('儲存／重設夥伴設定需要 --profile-revision，請先用 --show-companion 查看。')
+    if args.profile_revision is not None and not profile_change:
+        parser.error('--profile-revision 只能搭配儲存／重設夥伴設定。')
+    if profile_mode and (args.session or args.file):
+        parser.error('夥伴設定套用整份資料庫，不搭配 --session 或 --file。')
     autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal))
     if autonomous and not args.session:
         parser.error('自主目標需要 --session 指定對話。')
@@ -153,6 +165,20 @@ def main():
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
         print("Codex:", find_codex())
+        return
+    if profile_mode:
+        from .companion_profile import get_profile, read_settings, reset_profile, save_profile
+        try:
+            store = Store(args.data_dir / 'assistant.sqlite3')
+            if args.set_companion:
+                result = save_profile(store, read_settings(args.set_companion), expected_revision=args.profile_revision)
+            elif args.reset_companion:
+                result = reset_profile(store, expected_revision=args.profile_revision)
+            else:
+                result = get_profile(store)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            parser.exit(1, '夥伴設定未完成：' + str(exc) + '\n')
         return
     if autonomous:
         from .autonomy import create_goal, get_goal, reply, run_goal

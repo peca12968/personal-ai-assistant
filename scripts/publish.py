@@ -41,6 +41,7 @@ def main():
     run(sys.executable, "scripts/evaluate_search.py")
     run(sys.executable, "scripts/evaluate_understanding.py")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_context.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/companion_profile.json")
     run(sys.executable, "scripts/evaluate_tasks.py")
     run(sys.executable, "scripts/evaluate_workflows.py")
     run(sys.executable, "scripts/evaluate_memory_commands.py")

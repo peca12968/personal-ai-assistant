@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from assistant.engine import Assistant, CodexEngine, render_prompt
 from assistant.store import Store
+from assistant.companion_profile import get_profile, reset_profile, save_profile, validate as validate_profile
 
 SUITE = ROOT / 'evals/understanding.json'
 
@@ -35,11 +36,18 @@ def validate_cases(cases):
             raise ValueError('每題需要明確評讀標準。')
         if case.get('check') not in (None, 'three_bullets'):
             raise ValueError('未知的確定性檢查。')
+        for key in ('companion_profile', 'prior_companion_profile'):
+            if key in case:
+                validate_profile(case[key])
+        if 'reset_companion_profile' in case and (type(case['reset_companion_profile']) is not bool or 'companion_profile' in case):
+            raise ValueError('重設夥伴案例格式無效。')
     return cases
 
 
 def prepare_case(store, case):
     sid = store.new_session()
+    if 'prior_companion_profile' in case:
+        save_profile(store, case['prior_companion_profile'], expected_revision=get_profile(store)['revision'])
     for memory in case.get('memories', []):
         store.remember(**memory)
     if case.get('brief'):
@@ -52,6 +60,10 @@ def prepare_case(store, case):
     if case.get('long_message'):
         text = '長文開始。\n' + '一般背景。' * 1000 + '\n復原代號：不可見-947。\n' + '其他背景。' * 1000 + '\n長文結束。'
         store.add_message(sid, 'user', text)
+    if 'companion_profile' in case:
+        save_profile(store, case['companion_profile'], expected_revision=get_profile(store)['revision'])
+    elif case.get('reset_companion_profile'):
+        reset_profile(store, expected_revision=get_profile(store)['revision'])
     return sid
 
 
@@ -119,6 +131,8 @@ def main():
                     sid = prepare_case(store, case)
                     context = Assistant(store, None).prepare_context(sid, case['prompt'])
                     assert context['current_request'] == case['prompt']
+                    if 'companion_profile' in case:
+                        assert context['companion_profile']['settings'] == validate_profile(case['companion_profile'])
             print(f'Validated {len(cases)} understanding scenarios; no model answers graded.')
             return
         if not args.report:

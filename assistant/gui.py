@@ -54,7 +54,12 @@ class App:
         self.session_list.bind("<<ListboxSelect>>", self.select_session)
         ttk.Button(sidebar, text="對話目標與限制", command=self.edit_brief).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="參考文件", command=self.manage_documents).pack(fill="x", pady=4)
-        ttk.Button(sidebar, text="管理長期記憶", command=self.memories).pack(fill="x", pady=4)
+        memory_menu = ttk.Menubutton(sidebar, text='記憶與夥伴設定')
+        menu = tk.Menu(memory_menu, tearoff=False)
+        menu.add_command(label='管理長期記憶', command=self.memories)
+        menu.add_command(label='夥伴設定', command=self.companion_settings)
+        memory_menu.configure(menu=menu)
+        memory_menu.pack(fill='x', pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="本機備份與還原", command=self.backups).pack(fill="x", pady=4)
@@ -265,6 +270,10 @@ class App:
     def memories(self):
         from .memory_ui import MemoryWindow
         MemoryWindow(self.root, self.store)
+
+    def companion_settings(self):
+        from .companion_ui import CompanionWindow
+        CompanionWindow(self.root, self.store)
 
     def edit_brief(self):
         from .context_ui import BriefWindow

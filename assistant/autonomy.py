@@ -16,6 +16,7 @@ from .answer_runs import lease
 from .document_ranges import select_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
+from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 MAX_STEPS = 32
 LABELS = {'pending': '待開始', 'running': '自主工作中', 'paused': '已暫停',
@@ -197,6 +198,7 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
         if signature(documents) != goal['sources']:
             update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
             return get_goal(store, sid, gid)
+        profile = get_profile(store)
         update(store, gid, 'running')
         catalog = [{**source, 'line_count': len(document['content'].splitlines())}
                    for source, document in zip(goal['sources'], documents)]
@@ -213,10 +215,12 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                     update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
                     break
                 payload = {'objective': goal['objective'], 'user_notes': goal['notes'],
-                           'documents': catalog, 'steps': goal['steps'],
+                           'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
+                               if key != 'companion_profile'}} for step in goal['steps']],
+                           'companion_profile': profile,
                            'previous_stage': goal['previous_stage'],
                            'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-                raw = engine.answer(INSTRUCTIONS + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
+                raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
                 if cancel.is_set():
                     update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')
                     break
@@ -231,6 +235,7 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                 except (ValueError, TypeError, KeyError) as exc:
                     action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                     observation = {'error': str(exc)[:500]}
+                observation['companion_profile'] = profile
                 status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] == 'finish' else 'running'
                 with store.connect() as db:
                     db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',

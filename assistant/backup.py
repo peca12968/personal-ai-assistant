@@ -30,6 +30,7 @@ TABLES = {
     'autonomous_goals': {'id', 'session_id', 'objective', 'status', 'sources_json', 'notes', 'question', 'result', 'notice', 'created_at', 'updated_at'},
     'autonomous_steps': {'id', 'goal_id', 'sequence', 'action_json', 'observation_json', 'created_at'},
     'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
+    'companion_profile': {'id', 'revision', 'settings_json', 'updated_at'},
 }
 
 
@@ -60,7 +61,7 @@ def validate_database(path):
             raise ValueError('自主目標資料表不完整。')
         if 'autonomous_handoffs' in actual_tables and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs'} <= actual_tables <= set(TABLES):
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile'} <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -71,6 +72,14 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if 'companion_profile' in actual_tables:
+            from .companion_profile import validate
+            from .acceptance import strict_json
+            profiles = db.execute('SELECT id,revision,settings_json FROM companion_profile').fetchall()
+            if len(profiles) > 1 or any(row[0] != 1 or type(row[1]) is not int or row[1] < 1 for row in profiles):
+                raise ValueError('夥伴設定版本不完整。')
+            for row in profiles:
+                validate(strict_json(row[2]))
         if 'autonomous_handoffs' in actual_tables and db.execute('''SELECT 1 FROM autonomous_handoffs h
             JOIN autonomous_goals child ON child.id=h.goal_id
             JOIN autonomous_goals parent ON parent.id=h.parent_goal_id

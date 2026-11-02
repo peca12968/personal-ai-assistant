@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 
 from . import autonomy
 from .ui_layout import ScrollableForm, fit_window
+from .companion_profile import describe as describe_profile
 
 
 class AutonomousWindow:
@@ -126,8 +127,12 @@ class AutonomousWindow:
                       '當時的問題與補充紀錄：', previous['user_notes'] or '無',
                       '上一階段與本階段的文件版本：' + ('相同，引用仍需重新讀取' if previous['sources_match_current'] else '不同，需重新核對')]
         for step in goal['steps']:
+            observation = dict(step['observation'])
+            profile = observation.pop('companion_profile', None)
             lines += [f"步驟 {step['sequence']} · {step['action']['tool']} · {step['action']['note']}",
-                      json.dumps(step['observation'], ensure_ascii=False, indent=2)]
+                      json.dumps(observation, ensure_ascii=False, indent=2)]
+            if profile:
+                lines += ['此步使用的夥伴設定：\n' + describe_profile(profile)]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result']]
             lines += ['此目標已交付成果；後續工作請保存新目標。']
