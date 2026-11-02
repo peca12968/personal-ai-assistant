@@ -103,6 +103,7 @@ python scripts/evaluate.py
 python scripts/evaluate_context.py
 python scripts/evaluate_documents.py
 python scripts/evaluate_search.py
+python scripts/evaluate_understanding.py
 python scripts/evaluate_search.py --live --ids port_compare policy_conflict late_recovery --report data/evaluations/search-live.json
 python scripts/evaluate_documents.py --live
 python scripts/evaluate.py --live
@@ -112,6 +113,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 
 離線測試驗證程式行為與 30 個檢索案例。這些是針對已知詞彙設計的開發回歸集，不是獨立測試集或整體理解分數。`--live` 會使用 Codex 帳號額度，將實際回答存入 `data/evaluations`，需依案例 rubric 人工評讀，不把「有回答」算成「答對」。`--suite memory` 會實際經過記憶檢索與有效性篩選，驗證更正、到期與矛盾情境。GitHub Actions 只跑離線測試，不使用登入憑證。
 目前另含 10 題上下文、20 題文件證據選取及 10 題資料夾搜尋回歸；20 題真實文件回答的評讀結果與限制見 [文件評估](docs/DOCUMENT-EVALUATION.md)。搜尋案例以排序結果選取文件後才測問答；三個真實案例的結果見開發進度，同樣需要實際閱讀答案，不能只看檢索命中。
+另有 31 題需求理解評估，涵蓋限制、更正、澄清、多輪脈絡與事實可靠性。預設只驗證案例；真實回答需另外執行並逐題評讀，支援版本指紋、接續與固定案例比較，詳見 [需求理解評估流程](docs/UNDERSTANDING-EVALUATION.md)。
 長期規劃見 [ROADMAP](docs/ROADMAP.md)，進度見 [PROGRESS](docs/PROGRESS.md)。
 
 引擎整合依據：[OpenAI 官方非互動模式文件](https://learn.chatgpt.com/docs/non-interactive-mode)。

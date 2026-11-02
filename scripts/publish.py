@@ -35,6 +35,7 @@ def main():
     run(sys.executable, "scripts/evaluate_context.py")
     run(sys.executable, "scripts/evaluate_documents.py")
     run(sys.executable, "scripts/evaluate_search.py")
+    run(sys.executable, "scripts/evaluate_understanding.py")
     if run("gh", "repo", "view", REPO, "--json", "visibility", "--jq", ".visibility", capture=True) != "PRIVATE":
         raise RuntimeError("Upload stopped: destination must be PRIVATE.")
     remote = run("git", "remote", "get-url", "--push", "origin", capture=True)

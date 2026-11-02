@@ -11,5 +11,6 @@ Private repository: `peca12968/personal-ai-assistant`.
 - Record material progress and evidence in `docs/PROGRESS.md`.
 - Publish completed updates using `python scripts/publish.py --message "description"`; verify the private destination and remote head. User has authorized updates to this private repository.
 - Do not equate offline retrieval tests with model reasoning improvement. Live evaluation requires real responses and rubric review.
+- Validate understanding scenarios with `python scripts/evaluate_understanding.py`. Live runs use explicit report paths and fingerprints; wait for collection to finish before writing reviews with `scripts/review_understanding.py`. Keep agent reviews distinct from user or independent acceptance.
 - Default engine is advice-only. Any future tool execution must have explicit scope and observable results.
 - Read `docs/ROADMAP.md` before continuing the long-term goal. No automatic model-weight training is implemented.
