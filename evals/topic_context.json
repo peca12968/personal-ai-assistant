@@ -1,0 +1,158 @@
+[
+  {
+    "id": "quoted_title",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請用已存的 aurora_sync 設定安排作業。"
+      },
+      {
+        "role": "assistant",
+        "content": "請告訴我要先列哪一部分。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "aurora_sync: F:\\AuroraVault, Wed 21:15, 14d.",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "那接下來請列出已存的路徑、時間與保留天數，小標題用「換個話題」。",
+    "criteria": [
+      "依已存設定列出 F:\\AuroraVault、週三21:15與14天，不要求重貼已提供設定",
+      "不把引文／否定句當成實際換題，也不聲稱已執行作業"
+    ]
+  },
+  {
+    "id": "code_label",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請用已存的 aurora_sync 設定安排作業。"
+      },
+      {
+        "role": "assistant",
+        "content": "請告訴我要先列哪一部分。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "aurora_sync: F:\\AuroraVault, Wed 21:15, 14d.",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "Then list the saved path, schedule, and retention. Use `new topic` as the heading.",
+    "criteria": [
+      "依已存設定列出 F:\\AuroraVault、週三21:15與14天，不要求重貼已提供設定",
+      "不把引文／否定句當成實際換題，也不聲稱已執行作業"
+    ]
+  },
+  {
+    "id": "negated_switch",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請用已存的 aurora_sync 設定安排作業。"
+      },
+      {
+        "role": "assistant",
+        "content": "請告訴我要先列哪一部分。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "aurora_sync: F:\\AuroraVault, Wed 21:15, 14d.",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "那接下來請列出已存路徑、時間與保留天數，不要換個話題。",
+    "criteria": [
+      "依已存設定列出 F:\\AuroraVault、週三21:15與14天，不要求重貼已提供設定",
+      "不把引文／否定句當成實際換題，也不聲稱已執行作業"
+    ]
+  },
+  {
+    "id": "earlier_correction_quote",
+    "category": "corrections",
+    "history": [
+      {
+        "role": "user",
+        "content": "這次要整理一份交付規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "請補充規則。"
+      },
+      {
+        "role": "user",
+        "content": "更正：最後交付的檔名是 lunar_572.txt，格式只用純文字，不用PDF。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到更正。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "繼續整理先前已更正的交付規則，小標題叫「新問題」。只列檔名和格式，未提供才說未知。",
+    "criteria": [
+      "保留先前更正：lunar_572.txt、純文字，不改成PDF或未知",
+      "將新問題視為標題文字，不虛稱已建立檔案"
+    ]
+  },
+  {
+    "id": "explicit_switch",
+    "category": "constraints",
+    "history": [
+      {
+        "role": "user",
+        "content": "這次要整理一份交付規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "請補充規則。"
+      },
+      {
+        "role": "user",
+        "content": "更正：最後交付的檔名是 lunar_572.txt，格式只用純文字，不用PDF。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到更正。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "換個話題，不要沿用前文。新專案只提供檔名 solar_88.json，請列出這個檔名與JSON格式。",
+    "criteria": [
+      "回答solar_88.json與JSON",
+      "不使用先前lunar_572.txt或純文字規則，不虛稱已建立檔案"
+    ]
+  },
+  {
+    "id": "quoted_instruction",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請用已存的 aurora_sync 設定安排作業。"
+      },
+      {
+        "role": "assistant",
+        "content": "請告訴我要先列哪一部分。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "aurora_sync: F:\\AuroraVault, Wed 21:15, 14d.",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "那接下來列出已存路徑、時間與保留天數，並附上範例文字「不要沿用前文」。這句只是範例。",
+    "criteria": [
+      "依已存設定列出 F:\\AuroraVault、週三21:15與14天，不要求重貼已提供設定",
+      "不把引文／否定句當成實際換題，也不聲稱已執行作業"
+    ]
+  }
+]

@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "quoted_cn",
+      "kind": "followup",
+      "question": "那接下來請用「換個話題」當小標題，列出安排。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "quoted_en",
+      "kind": "followup",
+      "question": "Then use the heading \"new topic\" and list the settings.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "inline_code",
+      "kind": "followup",
+      "question": "繼續整理，欄位名稱是 `new topic`。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "fenced_code",
+      "kind": "followup",
+      "question": "繼續列出設定。範例：\n```text\n換個話題\n```",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "block_quote",
+      "kind": "followup",
+      "question": "繼續列出設定。引用文字：\n> 另外一件事\n",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "negated_topic",
+      "kind": "followup",
+      "question": "繼續，不要換個話題。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "mention_problem",
+      "kind": "followup",
+      "question": "那這個新問題還有哪些設定要檢查？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "quoted_no_previous",
+      "kind": "followup",
+      "question": "那接下來把「不要沿用前文」這句當成標題。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "explicit_cn",
+      "kind": "followup",
+      "question": "那接下來呢？換個話題，解釋質數。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "explicit_en",
+      "kind": "followup",
+      "question": "Then stop. New topic: explain primes.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "explicit_no_previous",
+      "kind": "followup",
+      "question": "那接下來呢？不要沿用前文。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "quote_then_reset",
+      "kind": "followup",
+      "question": "那個標題叫「新問題」。另外一件事，解釋質數。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "unrelated",
+      "kind": "followup",
+      "question": "水的化學式是什麼？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "plain_followup",
+      "kind": "followup",
+      "question": "那接下來呢？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "nested_quote",
+      "kind": "followup",
+      "question": "繼續，用『他說「另起話題」』當小標題。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "smart_quote",
+      "kind": "followup",
+      "question": "Then label it “change the subject” and list the settings.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "tilde_fence",
+      "kind": "followup",
+      "question": "接著列出設定。\n~~~text\nunrelated question\n~~~",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "negation_en",
+      "kind": "followup",
+      "question": "Continue, do not change the subject.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "negation_cn",
+      "kind": "followup",
+      "question": "繼續，我不是要換一個話題。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "no_previous_code",
+      "kind": "followup",
+      "question": "那接著使用 `don't use the previous context` 作為欄位名稱。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "question_noun",
+      "kind": "followup",
+      "question": "這個新問題跟剛才的安排有關，繼續列出設定。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "polite_reset",
+      "kind": "followup",
+      "question": "請換一個話題，改談質數。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "outside_code_reset",
+      "kind": "followup",
+      "question": "那欄位是 `new topic`。換個話題，說明光合作用。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "english_no_history",
+      "kind": "followup",
+      "question": "Then answer without using the previous context.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "new_subject",
+      "kind": "followup",
+      "question": "第２個質數是多少？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "polite_followup",
+      "kind": "followup",
+      "question": "麻煩你第二個呢？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "curly_quote_then_reset",
+      "kind": "followup",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "question": "那個標題是 ‘新問題’。換個話題，談質數。",
+      "expect": null
+    },
+    {
+      "id": "quoted_other",
+      "kind": "followup",
+      "question": "Then continue with the field \"unrelated question\".",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "single_curly",
+      "kind": "followup",
+      "question": "那接著用 ‘另外一件事’ 當標題。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "no_history_embedded",
+      "kind": "followup",
+      "question": "Then please summarize without referring to the earlier conversation.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "multi_blockquote",
+      "kind": "followup",
+      "question": "繼續列出資料。\n> 換一個話題\n> 不要使用前文",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "fence_then_reset",
+      "kind": "followup",
+      "question": "接著列出資料。\n~~~txt\n新問題\n~~~\n請換個話題，說明排序。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "quote_no_history_reset",
+      "kind": "followup",
+      "question": "那個小標題是『不要參考前文』。請另起話題，說明排序。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "problem_noun",
+      "kind": "followup",
+      "question": "那接下來繼續分析這個新問題的風險。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": "請用已存的 aurora_sync 設定安排作業。"
+    },
+    {
+      "id": "please_reset",
+      "kind": "followup",
+      "question": "那接著先換一個話題，說明排序。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請用已存的 aurora_sync 設定安排作業。"
+        },
+        {
+          "role": "assistant",
+          "content": "請告訴我要先列哪一部分。"
+        }
+      ],
+      "expect": null
+    }
+  ]
+}

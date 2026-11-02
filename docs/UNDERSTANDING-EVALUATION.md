@@ -103,3 +103,21 @@ python scripts/evaluate_understanding.py --live --suite evals/product_help.json 
 ```
 
 第一條只核對案例與上下文可建立，已加入發布、CI及自我改碼的保護檢查；不呼叫模型，也不判定答案正確。第二條收集實際回答，完整收集後再使用review_understanding.py逐題評讀。產品流程變更時需一併核對提示中的按鈕名稱、保存時機、前置選項及能力範圍；文字更新不代表已替使用者執行操作。
+
+
+## 2026-11-03：引文、否定與真正換題的脈絡界線
+
+v0.42新增 `evals/topic_context.json` 六個固定合成情境：引文標題、inline code、否定換題、較早明確更正、真正換題及引用不沿用前文指令。改前直接搜尋關鍵字，導致五題未取得已保存的資料而回答未知或要求重貼；真正換題的一題原本通過。這是上下文選取缺陷，不把模型根據欠缺輸入回答未知算成捏造。
+
+透過既有自我改碼流程提出兩版context.py：第一版提供案例14/14但保留案例11/12，未套用。將首輪26例與另查出的彎引號重現轉為第二輪已知27例，另用八例保留驗收；第二版分別27/27、8/8，通過保護檢查後由控制器發布。保留驗收只是不加入該輪提案提示，不能稱為OS隔離或從未見過；現全部35例已納入私人程式庫作為已知回歸，不能再作未見測試宣稱。
+
+維護端將回答回饋接上同一context_reset入口後，以相同六題收集實際改後回答。開發評讀由1/6改善為6/6，五個失敗改善、一個原通過保留；逐項符合已存設定、先前更正與真正換題要求。兩份報告使用相同案例指紋／選取，每題記錄程式及提示指紋，完整收集後才評讀。這是單次已知案例對照，仍受模型取樣與開發評讀影響，並非獨立人類驗收或通用能力分數。
+
+原始資料、實際答案、兩輪提案與評讀只在忽略的 `data/evaluations/topic-context-v042` 與 `data/evolution`；human_grade空白。35例回歸由單元測試涵蓋，六題離線建立檢查接入發布、CI與自我改碼，但離線結果不表示模型答案正確。
+
+```powershell
+python scripts/evaluate_understanding.py --suite evals/topic_context.json
+python scripts/evaluate_understanding.py --live --suite evals/topic_context.json --report data/evaluations/topic-context-new.json
+```
+
+context_reset仍是有界文字提示，沒有通用語意解析。換題只影響前文接續查找與較早摘錄／更正／回饋選取，不刪除原始訊息或清空近期歷史，也不禁止當前問題直接查到相關記憶。

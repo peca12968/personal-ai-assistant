@@ -1,5 +1,5 @@
 """Bounded, attributable user feedback for subsequent answers in the same session."""
-from .context import TOPIC_CHANGE, NO_PREVIOUS
+from .context import context_reset
 
 MAX_ITEMS = 3
 LIMITS = {'correction': 1000, 'answer_excerpt': 1200}
@@ -38,7 +38,7 @@ def capture(db, sid):
 
 
 def for_chat(store, sid, question):
-    if TOPIC_CHANGE.search(question) or NO_PREVIOUS.search(question):
+    if context_reset(question):
         return {'items': [], 'selection_limited': False}
     with store.connect() as db:
         return capture(db, sid)
