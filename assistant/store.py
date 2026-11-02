@@ -166,8 +166,10 @@ class Store:
             row = db.execute("SELECT payload FROM answer_checks WHERE message_id=?", (message_id,)).fetchone()
             return json.loads(row["payload"]) if row else []
 
-    def attach_document(self, sid, path):
-        document = read_document(path)
+    def attach_document(self, sid, path, *, scope=None, expected_sha256=None):
+        document = read_document(path, scope=scope)
+        if expected_sha256 is not None and document['sha256'] != expected_sha256:
+            raise ValueError('文件已在搜尋後變更，請重新搜尋並確認預覽。')
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             size = db.execute("SELECT COALESCE(SUM(size_bytes),0), COUNT(*) FROM documents WHERE session_id=? AND path_key<>?",

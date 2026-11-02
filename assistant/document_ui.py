@@ -27,6 +27,7 @@ class DocumentWindow:
         controls = ttk.Frame(self.window, padding=12)
         controls.pack(fill="x")
         ttk.Button(controls, text="加入文件", command=self.add).pack(side="left", padx=(0, 8))
+        ttk.Button(controls, text="搜尋資料夾", command=self.search_folder).pack(side="left", padx=(0, 8))
         ttk.Button(controls, text="重新匯入選取文件", command=self.reload).pack(side="left", padx=(0, 8))
         ttk.Button(controls, text="移除選取參考", command=self.remove).pack(side="left")
         self.detail = tk.Text(self.window, height=7, wrap="word", padx=12, pady=8, state="disabled", font=("Microsoft JhengHei UI", 10))
@@ -73,6 +74,10 @@ class DocumentWindow:
                     filetypes=[("文字與程式", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
         if paths:
             self.import_paths(paths)
+
+    def search_folder(self):
+        from .search_ui import SearchWindow
+        SearchWindow(self.window, self.store, self.sid, self.refresh)
 
     def reload(self):
         row = self.selected()

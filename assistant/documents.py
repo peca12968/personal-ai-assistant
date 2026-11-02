@@ -15,20 +15,27 @@ EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".yaml", ".
 STOP = {"the", "is", "a", "an", "of", "in", "to", "and", "what", "this", "請問", "我的", "什麼", "文件", "這份", "整理", "哪些"}
 
 
-def read_document(path):
+def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES):
+    if scope is not None:
+        from .scope import check_path
+        check_path(path, scope)
     path = Path(path).expanduser().resolve(strict=True)
     if path.suffix.lower() not in EXTENSIONS:
         raise ValueError("目前支援文字與程式檔；PDF、Word 請先另存為 UTF-8 文字。")
     info = path.stat()
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("請選擇一般檔案。")
-    if info.st_size > MAX_FILE_BYTES:
+    max_bytes = min(max_bytes, MAX_FILE_BYTES)
+    if info.st_size > max_bytes:
         raise ValueError("每個文件最多 2 MiB。")
     with path.open("rb") as stream:
+        if scope is not None:
+            from .scope import verify_open_file
+            verify_open_file(stream, scope)
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("請選擇一般檔案。")
-        raw = stream.read(MAX_FILE_BYTES + 1)
-    if len(raw) > MAX_FILE_BYTES:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         raise ValueError("每個文件最多 2 MiB。")
     encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
     try:

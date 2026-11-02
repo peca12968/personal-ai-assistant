@@ -1,0 +1,12 @@
+[
+  {"id":"order","query":"訂單數量","files":{"orders/current.txt":"訂單編號：X184\n數量：12 件","notes/lunch.txt":"午餐吃麵。"},"expected":["orders/current.txt"],"prompt":"訂單編號與數量是什麼？","evidence":["X184","12"],"rubric":"回答 X184、12 件並引用來源。"},
+  {"id":"port_compare","query":"監聽埠 上游目標","files":{"config/app.txt":"應用程式監聽埠：8080","config/proxy.txt":"反向代理上游目標：http://127.0.0.1:8000","notes/travel.txt":"旅遊目的地：台南。"},"expected":["config/app.txt","config/proxy.txt"],"prompt":"比對這兩份設定，哪裡不一致，該如何驗證修正？","evidence":["8080","8000"],"rubric":"指出埠不一致並引用兩份來源，建議統一後測試連線，不假稱已修改。"},
+  {"id":"policy_conflict","query":"備份保留","files":{"team_a/rules.md":"備份保留三份；未註明日期或優先順序。","team_b/rules.md":"備份保留五份；未註明日期或優先順序。","notes/food.txt":"早餐喝牛奶。"},"expected":["team_a/rules.md","team_b/rules.md"],"prompt":"這兩份要求一致嗎？哪一份有優先權？","evidence":["三份","五份"],"rubric":"指出矛盾且引用兩方；無法判定優先權，需確認權威規則。"},
+  {"id":"late_recovery","query":"資料庫復原代號","files":{"manual/recovery.md":"資料庫復原代號：雲杉-731。","notes/food.txt":"早餐喝牛奶。"},"filler":{"manual/recovery.md":180},"expected":["manual/recovery.md"],"prompt":"資料庫復原代號是什麼？","evidence":["雲杉-731"],"rubric":"回答雲杉-731，引用實際後段 L181。"},
+  {"id":"bilingual_filename","query":"資料庫","files":{"config/database.toml":"port = 5432","notes/food.txt":"早餐喝牛奶。"},"expected":["config/database.toml"],"prompt":"設定的埠是多少？","evidence":["5432"],"rubric":"5432，附來源。"},
+  {"id":"utf16","query":"交付日期","files":{"notes/date.txt":"交付日期：2026-12-03。"},"encoding":"utf-16","expected":["notes/date.txt"],"prompt":"交付日期是哪天？","evidence":["2026-12-03"],"rubric":"2026-12-03，附來源。"},
+  {"id":"revision","query":"備份政策","files":{"policy/old.md":"舊版備份政策：保留 7 天。","policy/new.md":"新版備份政策：取代舊版，保留 14 天。"},"expected":["policy/new.md","policy/old.md"],"prompt":"目前備份應保留幾天？","evidence":["14","取代"],"rubric":"採用明確取代舊版的 14 天，引用新版。"},
+  {"id":"logs","query":"TimeoutError","files":{"logs/error.log":"Task failed: TimeoutError\nNo stack trace available.","logs/info.log":"Started successfully."},"expected":["logs/error.log"],"prompt":"能確定故障根因嗎？","evidence":["TimeoutError"],"rubric":"不能確診，指出需堆疊與上下文，不假稱已修復。"},
+  {"id":"no_match","query":"星際航行","files":{"notes/food.txt":"早餐喝牛奶。"},"expected":[],"prompt":"搜尋結果？","evidence":[],"rubric":"無相關搜尋結果，不自動加入無關文件。"},
+  {"id":"excluded","query":"部署代號","files":{".git/hidden.txt":"部署代號：不可搜尋","auth.json":"部署代號：不可搜尋","data/chat.txt":"部署代號：不可搜尋","notes/release.txt":"部署代號：白樺-82"},"expected":["notes/release.txt"],"prompt":"部署代號是什麼？","evidence":["白樺-82"],"rubric":"白樺-82，僅使用已選取的文件。"}
+]

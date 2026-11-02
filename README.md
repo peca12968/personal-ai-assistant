@@ -39,7 +39,7 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 
 ## 分析參考文件
 
-點「參考文件」加入目前對話需要的檔案，再提問。支援 `.txt`、`.md`、`.csv`、`.tsv`、`.log`、`.json`、`.yaml`、`.yml`、`.toml` 與文字程式檔（`.py`、`.js`、`.ts`、`.html`、`.css`）。需為 UTF-8 或含 BOM 的 UTF-16；目前不解析 PDF、Word、圖片或整個資料夾。
+點「參考文件」加入目前對話需要的檔案，再提問。支援 `.txt`、`.md`、`.csv`、`.tsv`、`.log`、`.json`、`.yaml`、`.yml`、`.toml` 與文字程式檔（`.py`、`.js`、`.ts`、`.html`、`.css`）。需為 UTF-8 或含 BOM 的 UTF-16；目前不解析 PDF、Word 或圖片。資料夾可先以以下搜尋功能找出文件，再選取加入。
 
 每段對話最多 8 個文件、每檔 2 MiB、合計 8 MiB。程式只讀取你選定的檔案，將匯入副本保存在本機資料庫；原檔變更後需按「重新匯入選取文件」。移除參考只影響未來提問，原檔及過往回答快照仍保留。
 
@@ -50,6 +50,22 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 ```powershell
 python -m assistant --ask "比對這兩份設定的差異" --file "F:\Notes\app.txt" --file "F:\Notes\proxy.txt"
 ```
+
+## 搜尋指定資料夾
+
+「參考文件 → 搜尋資料夾」可以選定一個唯讀範圍，輸入關鍵字後查看相對路徑與原文行號。結果可複選後加入目前對話，再回到聊天區提問。搜尋本身不呼叫模型、不上傳檔案、不建立持久索引，也不授權助理自動搜尋其他位置。搜尋後原檔若變更，匯入會停止並要求重新搜尋，避免預覽與匯入內容不一致。
+
+命令列可直接查找而不啟動推理引擎：
+
+```powershell
+python -m assistant --search-folder "F:\Notes" --query "備份保留"
+```
+
+以詞彙比對內容與檔名，沿用有限的中英文詞對應，並非完整語意搜尋。每個文件顯示一個最佳片段；搜尋上限為 500 個文字檔、32 MiB 讀取預算、5000 個目錄項目、12 層子目錄、50 個結果及 15 秒處理時間。限制到達、無法讀取與排除數量會明示；停止後可能保留部分結果。時間／停止檢查發生在檔案處理之間，不能中斷作業系統中已阻塞的檔案 I/O。
+
+預設跳過以點開頭的隱藏項目、`node_modules`、`venv`、`env`、`__pycache__`、`dist`、`build`、`data`、`backups`，以及 `auth.json`、`credentials.json`、`config.local.json` 與常見套件鎖檔。不讀符號連結、接合點、其他重新解析點或硬連結；不解析 `.gitignore`。排除規則不是完整的秘密內容偵測，請選定適當範圍並查看預覽。
+
+Windows 讀檔前會核對已開啟控制代碼的實際路徑，檢查實作依據 [Microsoft GetFinalPathNameByHandleW 文件](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)。不支援實際路徑查詢時拒絕讀取。搜尋沒有改變既有每段對話 8 檔／8 MiB 的匯入上限；找不到結果不代表文件或資訊不存在。
 
 ## 本機備份與還原
 
@@ -86,6 +102,8 @@ python -m unittest discover -s tests -v
 python scripts/evaluate.py
 python scripts/evaluate_context.py
 python scripts/evaluate_documents.py
+python scripts/evaluate_search.py
+python scripts/evaluate_search.py --live --ids port_compare policy_conflict late_recovery --report data/evaluations/search-live.json
 python scripts/evaluate_documents.py --live
 python scripts/evaluate.py --live
 python scripts/evaluate.py --live --suite memory --limit 3
@@ -93,7 +111,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 ```
 
 離線測試驗證程式行為與 30 個檢索案例。這些是針對已知詞彙設計的開發回歸集，不是獨立測試集或整體理解分數。`--live` 會使用 Codex 帳號額度，將實際回答存入 `data/evaluations`，需依案例 rubric 人工評讀，不把「有回答」算成「答對」。`--suite memory` 會實際經過記憶檢索與有效性篩選，驗證更正、到期與矛盾情境。GitHub Actions 只跑離線測試，不使用登入憑證。
-v0.4 另含 10 題上下文與 20 題文件證據選取回歸；20 題真實文件回答的評讀結果與限制見 [文件評估](docs/DOCUMENT-EVALUATION.md)。
+目前另含 10 題上下文、20 題文件證據選取及 10 題資料夾搜尋回歸；20 題真實文件回答的評讀結果與限制見 [文件評估](docs/DOCUMENT-EVALUATION.md)。搜尋案例以排序結果選取文件後才測問答；三個真實案例的結果見開發進度，同樣需要實際閱讀答案，不能只看檢索命中。
 長期規劃見 [ROADMAP](docs/ROADMAP.md)，進度見 [PROGRESS](docs/PROGRESS.md)。
 
 引擎整合依據：[OpenAI 官方非互動模式文件](https://learn.chatgpt.com/docs/non-interactive-mode)。
