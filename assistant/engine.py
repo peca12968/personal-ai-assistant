@@ -20,6 +20,7 @@ from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
 from . import answer_feedback
 from . import answer_runs
+from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from .autonomy_status import goal_context
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
@@ -76,6 +77,7 @@ def render_prompt(context):
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     instructions += '\n' + COMPANION_GUIDANCE
     instructions += '\n' + answer_feedback.GUIDANCE
+    instructions += '\n' + MEMORY_ALIAS_GUIDANCE
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 

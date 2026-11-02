@@ -19,6 +19,7 @@ from . import goal_stages
 from . import artifacts
 from . import autonomy_csv
 from . import date_tools
+from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
@@ -289,7 +290,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                        'conversation_context': goal['conversation_context'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + COMPANION_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

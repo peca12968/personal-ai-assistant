@@ -44,11 +44,26 @@ def terms(text):
     return tokens
 
 
-def rank_memories(query, rows, limit=8):
+def alias_terms(text, groups):
+    text = normalize(text)
+    found = set()
+    for index, group in enumerate(groups):
+        for alias in group:
+            alias = normalize(alias)
+            # Chinese names can occur within a sentence; Latin words must be whole.
+            left = r'(?<![a-z0-9_])' if alias[0].isascii() else ''
+            right = r'(?![a-z0-9_])' if alias[-1].isascii() else ''
+            if re.search(left + re.escape(alias) + right, text):
+                found.add('@user_alias:' + str(index))
+                break
+    return found
+
+
+def rank_memories(query, rows, limit=8, *, alias_groups=()):
     if limit <= 0:
         return []
-    query_terms = terms(query)
-    indexed = [(row, terms(row["content"])) for row in rows]
+    query_terms = terms(query) | alias_terms(query, alias_groups)
+    indexed = [(row, terms(row["content"]) | alias_terms(row['content'], alias_groups)) for row in rows]
     frequencies = Counter(token for _, tokens in indexed for token in tokens)
     ranked, fallback = [], []
     for row, tokens in indexed:

@@ -58,6 +58,9 @@ class Store:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS memory_sequence (
                     id INTEGER PRIMARY KEY CHECK(id=1), last_id INTEGER NOT NULL CHECK(last_id>=0));
+                CREATE TABLE IF NOT EXISTS memory_aliases (
+                    id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL CHECK(revision>=1),
+                    groups_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS memory_drafts (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed','cancelled')),
@@ -401,10 +404,23 @@ class Store:
             db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
 
     def retrieve(self, query, limit=8, today=None):
+        from . import memory_aliases
+        from .retrieval import alias_terms
         today = today or date.today().isoformat()
-        rows = [row for row in self.memories() if row["active"] and
+        with self.connect() as db:
+            db.execute('BEGIN')  # One read snapshot for vocabulary and memory contents.
+            aliases = memory_aliases.read(db)
+            memories = [dict(r) for r in db.execute('SELECT * FROM memories ORDER BY id DESC')]
+        rows = [row for row in memories if row["active"] and
                 (not row["expires_on"] or row["expires_on"] >= today)]
-        return rank_memories(query, rows, limit)
+        selected = rank_memories(query, rows, limit, alias_groups=aliases['groups'])
+        query_aliases = alias_terms(query, aliases['groups'])
+        for row in selected:
+            shared = query_aliases & alias_terms(row['content'], aliases['groups'])
+            if shared:
+                row['retrieval_aliases'] = {'source': 'user_saved_search_aliases', 'revision': aliases['revision'],
+                    'groups': [group for i, group in enumerate(aliases['groups']) if '@user_alias:' + str(i) in shared]}
+        return selected
 
     def rate(self, message_id, rating, correction=""):
         if rating not in (-1, 1):

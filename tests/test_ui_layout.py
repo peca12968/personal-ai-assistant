@@ -64,6 +64,51 @@ class FormGeometryTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(layout.canvas.bbox('all')[3], initial_height)
 
+    def test_memory_alias_settings_preview_stale_reload_and_entry_preserve_drafts(self):
+        from assistant.memory_ui import MemoryWindow
+        from assistant.memory_alias_ui import MemoryAliasesWindow
+        from assistant import memory_aliases
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            store.remember('星橋素材放在F槽。')
+            with patch('assistant.memory_alias_ui.MemoryAliasesWindow') as opened:
+                memories = MemoryWindow(self.root, store)
+                memories.window.withdraw()
+                memories.content.insert('1.0', '尚未保存的記憶草稿')
+                memories.alias_button.invoke()
+                opened.assert_called_once_with(memories.window, store)
+                self.assertEqual(memories.content.get('1.0', 'end').strip(), '尚未保存的記憶草稿')
+            view = MemoryAliasesWindow(self.root, store)
+            layout = self.allocate(view)
+            for widget in (view.editor, view.save_button, view.reload_button, view.query_entry, view.preview_button):
+                self.assert_reachable(layout, widget)
+            view.editor.insert('1.0', '星橋 | StarBridge')
+            view.save()
+            self.assertEqual(memory_aliases.get(store)['groups'], [['星橋', 'StarBridge']])
+            view.query.set('StarBridge')
+            view.preview()
+            self.assertIn('星橋素材放在F槽', view.result.get('1.0', 'end'))
+            view.editor.delete('1.0', 'end')
+            view.editor.insert('1.0', '星橋 | 小星')
+            memory_aliases.save(store, [['星橋', 'NewStar']], expected_revision=1)
+            with patch('assistant.memory_alias_ui.messagebox.showerror') as errors:
+                view.save()
+                errors.assert_called_once()
+            self.assertEqual(view.editor.get('1.0', 'end').strip(), '星橋 | 小星')
+            view.reload()
+            self.assertEqual(view.editor.get('1.0', 'end').strip(), '星橋 | 小星')
+            self.assertIn('NewStar', view.saved.get('1.0', 'end'))
+            self.assertNotIn('星橋素材放在F槽', view.result.get('1.0', 'end'))
+            view.save()
+            self.assertEqual(memory_aliases.get(store)['groups'], [['星橋', '小星']])
+            view.query.set('StarBridge')
+            view.preview()
+            self.assertIn('沒有選用記憶', view.result.get('1.0', 'end'))
+            view.editor.delete('1.0', 'end')
+            view.save()
+            self.assertEqual(memory_aliases.get(store)['groups'], [])
+            self.assertEqual(memories.content.get('1.0', 'end').strip(), '尚未保存的記憶草稿')
+
     def test_wheel_preserves_inner_editors_and_scrolls_outer_form_only(self):
         view = FeedbackWindow(self.root, SimpleNamespace(feedback_summary=lambda: []))
         layout = self.allocate(view)

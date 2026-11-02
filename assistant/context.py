@@ -141,6 +141,8 @@ def make_context(question, history, memories, brief=None, excerpts=None):
         memory_context.append({"id": row["id"], "kind": row["kind"], "content": content,
                                "updated_at": row.get("updated_at"), "expires_on": row.get("expires_on"),
                                "truncated": truncated})
+        if 'retrieval_aliases' in row:
+            memory_context[-1]['retrieval_aliases'] = row['retrieval_aliases']
     return {"session_brief": brief or {}, "earlier_user_excerpts": excerpts or [],
             "memories": memory_context, "recent_conversation": history_context,
             "current_request": question}

@@ -14,8 +14,12 @@ class MemoryWindow:
         self.window.minsize(740, 530)
         self.window.columnconfigure(0, weight=1)
         self.window.rowconfigure(1, weight=1)
-        ttk.Label(self.window, text="更正現有資訊請直接編輯；停用或過期的記憶不會加入新回答。",
-                  padding=12).grid(row=0, column=0, sticky="w")
+        header = ttk.Frame(self.window, padding=12)
+        header.grid(row=0, column=0, sticky='ew')
+        ttk.Label(header, text="更正現有資訊請直接編輯；停用或過期的記憶不會加入新回答。", wraplength=540).pack(side='left')
+        from .memory_alias_ui import MemoryAliasesWindow
+        self.alias_button = ttk.Button(header, text='記憶搜尋稱呼', command=lambda: MemoryAliasesWindow(self.window, self.store))
+        self.alias_button.pack(side='right', padx=(8, 0))
         table = ttk.Frame(self.window, padding=(12, 0))
         table.grid(row=1, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)

@@ -22,6 +22,9 @@ def main():
     mode.add_argument('--set-companion', type=Path, help='從UTF-8 JSON儲存夥伴設定；需 --profile-revision')
     mode.add_argument('--reset-companion', action='store_true', help='恢復預設並儲存；需 --profile-revision')
     parser.add_argument('--profile-revision', type=int, help='設定讀取時的revision，避免覆寫其他視窗的更新')
+    mode.add_argument('--show-memory-aliases', action='store_true', help='查看本機記憶搜尋稱呼，不呼叫模型')
+    mode.add_argument('--set-memory-aliases', type=Path, help='從JSON儲存記憶搜尋稱呼；需 --aliases-revision，空清單可撤回')
+    parser.add_argument('--aliases-revision', type=int, help='從 --show-memory-aliases 取得的revision')
     mode.add_argument("--backup", action="store_true", help="建立目前資料的本機備份")
     mode.add_argument("--inspect-backup", type=Path, help="檢查備份完整性與內容筆數")
     mode.add_argument("--restore", type=Path, help="還原備份到 --data-dir 指定的新資料夾")
@@ -70,6 +73,14 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    alias_change = args.set_memory_aliases is not None
+    alias_mode = args.show_memory_aliases or alias_change
+    if alias_change and (args.aliases_revision is None or args.aliases_revision < 0):
+        parser.error('儲存搜尋稱呼需要 --aliases-revision，請先用 --show-memory-aliases 查看。')
+    if args.aliases_revision is not None and not alias_change:
+        parser.error('--aliases-revision 只能搭配 --set-memory-aliases。')
+    if alias_mode and (args.session or args.file):
+        parser.error('搜尋稱呼套用此資料庫，不搭配 --session 或 --file。')
     if args.from_chat and args.new_goal is None:
         parser.error('--from-chat只能搭配 --new-goal。')
     if args.csv_document is not None and args.new_goal is None:
@@ -227,6 +238,16 @@ def main():
             print(json.dumps(result, ensure_ascii=False, indent=2))
         except (ValueError, OSError, sqlite3.Error) as exc:
             parser.exit(1, '回顧未完成：' + str(exc) + '\n')
+        return
+    if alias_mode:
+        from . import memory_aliases
+        try:
+            store = Store(args.data_dir / 'assistant.sqlite3')
+            result = (memory_aliases.save(store, memory_aliases.read_file(args.set_memory_aliases),
+                      expected_revision=args.aliases_revision) if alias_change else memory_aliases.get(store))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            parser.exit(1, '搜尋稱呼未更新：' + str(exc) + '\n')
         return
     if profile_mode:
         from .companion_profile import get_profile, read_settings, reset_profile, save_profile
