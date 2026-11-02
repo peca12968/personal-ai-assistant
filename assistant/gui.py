@@ -235,16 +235,8 @@ class App:
         show_context(self.root, self.store, self.last_answer)
 
     def feedback_report(self):
-        rows = self.store.feedback_summary()
-        window = tk.Toplevel(self.root)
-        window.title("回饋紀錄")
-        text = tk.Text(window, wrap="word", padx=16, pady=16, font=("Microsoft JhengHei UI", 11))
-        text.pack(fill="both", expand=True)
-        good = sum(r["rating"] == 1 for r in rows)
-        text.insert("end", f"有幫助：{good}　需要改進：{len(rows) - good}\n\n")
-        for row in rows:
-            text.insert("end", f'回答 #{row["message_id"]} · {row["updated_at"]}\n更正：{row["correction"] or "無"}\n原回答：{row["answer"]}\n\n')
-        text.configure(state="disabled")
+        from .feedback_ui import FeedbackWindow
+        FeedbackWindow(self.root, self.store)
 
     def export(self):
         path = filedialog.asksaveasfilename(defaultextension=".json", initialdir=self.store.path.parent,

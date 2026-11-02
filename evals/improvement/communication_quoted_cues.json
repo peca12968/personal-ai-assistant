@@ -1,0 +1,14 @@
+{"version":1,"cases":[
+  {"id":"quoted_zh_term","kind":"communication","question":"解釋「簡短」與「精簡」兩個詞的差異。","history":[],"expect":{"length_hint":"unspecified"}},
+  {"id":"quoted_translation","kind":"communication","question":"把 \"be brief\" 翻譯成中文。","history":[],"expect":{"length_hint":"unspecified"}},
+  {"id":"inline_code","kind":"communication","question":"分析 `step-by-step` 這個字串的字元。","history":[],"expect":{"length_hint":"unspecified"}},
+  {"id":"fenced_code","kind":"communication","question":"解釋這段程式：\n```python\nprint('be brief')\n```","history":[],"expect":{"length_hint":"unspecified"}},
+  {"id":"outside_concise","kind":"communication","question":"說明「詳細說明」這四個字的意思，請簡短回答。","history":[],"expect":{"length_hint":"concise"}},
+  {"id":"outside_detailed","kind":"communication","question":"「簡短」這個詞如何使用？請逐步解釋。","history":[],"expect":{"length_hint":"detailed"}},
+  {"id":"quoted_actual_request","kind":"communication","question":"請用「簡短」的方式回答這個問題。","history":[],"expect":{"length_hint":"concise"}},
+  {"id":"quoted_actual_detail","kind":"communication","question":"請給我「詳細說明」。","history":[],"expect":{"length_hint":"detailed"}},
+  {"id":"blockquote_data","kind":"communication","question":"> 請詳細說明\n\n這行引文是什麼意思？請簡短回答。","history":[],"expect":{"length_hint":"concise"}},
+  {"id":"ordinary_negation","kind":"communication","question":"don't be brief; explain in detail.","history":[],"expect":{"length_hint":"detailed"}},
+  {"id":"ordinary_sentence_count","kind":"communication","question":"請用兩句說明資料庫。","history":[],"expect":{"length_hint":"concise"}},
+  {"id":"quoted_english_sentence","kind":"communication","question":"What does \"in two sentences\" mean?","history":[],"expect":{"length_hint":"unspecified"}}
+]}

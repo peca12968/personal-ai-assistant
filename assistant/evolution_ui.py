@@ -10,7 +10,8 @@ from .acceptance import load_suite
 
 
 class EvolutionWindow:
-    def __init__(self, parent):
+    def __init__(self, parent, initial_draft=None, source_check=None):
+        self.source_check = source_check
         self.window = tk.Toplevel(parent)
         self.window.title('自我改進 · 程式與溝通')
         self.window.geometry('800x780')
@@ -56,6 +57,23 @@ class EvolutionWindow:
         self.output.pack(fill='both', expand=True, padx=16, pady=12)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.window.after(150, self.poll)
+        if initial_draft:
+            self.goal.insert('1.0', initial_draft['goal'])
+            for name, value in self.targets.items():
+                value.set(name in initial_draft['selected'])
+            from .acceptance import validate_suite
+            self.imported_suite = validate_suite(initial_draft['acceptance'], initial_draft['selected'])
+            self.example.configure(state='disabled')
+            self.case_notice.set('已帶入你指定的回饋案例；預期值由你選定。可查看完整案例，再決定是否開始。')
+        ttk.Button(frame, text='查看完整驗收案例', command=self.show_cases).pack(anchor='w')
+
+    def show_cases(self):
+        window = tk.Toplevel(self.window)
+        window.title('完整驗收案例 · 開始後會傳給模型')
+        text = tk.Text(window, wrap='word', width=90, height=24)
+        text.pack(fill='both', expand=True)
+        text.insert('1.0', json.dumps(self.imported_suite, ensure_ascii=False, indent=2) if self.imported_suite else '未匯入案例；單一例子請查看主視窗。')
+        text.configure(state='disabled')
 
     def import_cases(self):
         if self.busy:
@@ -86,6 +104,12 @@ class EvolutionWindow:
 
     def begin(self):
         if self.busy:
+            return
+        try:
+            if self.source_check:
+                self.source_check()
+        except ValueError as exc:
+            messagebox.showerror('回饋已變更', str(exc), parent=self.window)
             return
         goal = self.goal.get('1.0', 'end').strip()
         selected = [name for name, value in self.targets.items() if value.get()]
