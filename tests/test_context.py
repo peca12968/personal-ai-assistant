@@ -29,6 +29,27 @@ class ContextTests(unittest.TestCase):
         history += [{'role': 'user', 'content': '第２個呢？'}] * 6
         self.assertEqual(followup_query('  請問第２個呢？  ', history), '\n'.join(['第２個呢？'] * 4))
 
+    def test_feedback_self_authored_followups_and_additional_boundaries(self):
+        path = Path(__file__).resolve().parents[1] / 'evals/improvement/followup_feedback_requests.json'
+        suite = json.loads(path.read_text(encoding='utf-8'))
+        validate_suite(suite)
+        for case in suite['cases']:
+            with self.subTest(case=case['id']):
+                self.assertEqual(followup_query(case['question'],case['history']),case['expect'])
+        history = [{'role':'user','content':'請根據已存的 backup 設定說明路徑與時間。'},
+                   {'role':'assistant','content':'可以依設定整理。'}]
+        for question, inherit in [
+                ('能否把前面的內容改成表格呢？',True),
+                ('可不可以將剛剛的回答轉成清單？',True),
+                ('Would you format the above response as bullet points?',True),
+                ('Can you turn the last explanation into a list?',True),
+                ('可以把新收到的報價整理成表格嗎？',False),
+                ('請把「上面的回答」翻譯成英文。',False),
+                ('那接下來呢？不要沿用前文。',False),
+                ('Could you explain how tables work?',False)]:
+            with self.subTest(question=question):
+                self.assertEqual(followup_query(question,history), history[0]['content'] if inherit else None)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

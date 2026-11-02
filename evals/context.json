@@ -16,5 +16,7 @@
   {"id":"format_short","history":["請整理我的 backup 設定。"],"prompt":"請用表格整理。","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
   {"id":"polite_english","history":["請整理我的 backup 設定。"],"prompt":"Please make it shorter.","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
   {"id":"ordinal_new_subject","history":["請整理我的 backup 設定。"],"prompt":"請問第二個質數是多少？","memory":"備份目的地是橘樹-482。","must_exclude":["橘樹-482"]},
-  {"id":"polite_new_topic","history":["請整理我的 backup 設定。"],"prompt":"請換個話題，談音樂。","memory":"備份目的地是橘樹-482。","must_exclude":["橘樹-482"]}
+  {"id":"polite_new_topic","history":["請整理我的 backup 設定。"],"prompt":"請換個話題，談音樂。","memory":"備份目的地是橘樹-482。","must_exclude":["橘樹-482"]},
+  {"id":"feedback_polite_reference","history":["請整理我的 backup 設定。"],"prompt":"可以把剛才的內容整理成清單嗎？","memory":"備份目的地是海鷗-596。","must_include":["海鷗-596"]},
+  {"id":"feedback_english_reference","history":["請整理我的 backup 設定。"],"prompt":"Could you put the previous answer in a table?","memory":"備份目的地是海鷗-596。","must_include":["海鷗-596"]}
 ]
