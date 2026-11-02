@@ -34,6 +34,8 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    parser.add_argument('--deliver-files', action='store_true', help='搭配 --new-goal，要求在該目標本機成果資料夾交付Markdown、TXT或JSON')
+    mode.add_argument('--rebuild-goal-files', help='核對／重建指定目標已保存文件；需 --session，不呼叫模型')
     parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付目標的成果與使用者補充作為歷史背景')
     mode.add_argument('--run-goal', help='開始／接續自主目標 ID；需 --session')
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
@@ -62,11 +64,13 @@ def main():
         parser.error('--profile-revision 只能搭配儲存／重設夥伴設定。')
     if profile_mode and (args.session or args.file):
         parser.error('夥伴設定套用整份資料庫，不搭配 --session 或 --file。')
-    autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal))
+    autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal, args.rebuild_goal_files))
     if autonomous and not args.session:
         parser.error('自主目標需要 --session 指定對話。')
     if args.from_goal is not None and args.new_goal is None:
         parser.error('--from-goal 只能搭配 --new-goal。')
+    if args.deliver_files and args.new_goal is None:
+        parser.error('--deliver-files 只能搭配 --new-goal。')
     if (args.reply_goal is not None) != (args.goal_reply is not None):
         parser.error('--reply-goal 與 --goal-reply 需一起使用。')
     if args.goal_steps is not None and (args.run_goal is None or not 1 <= args.goal_steps <= 12):
@@ -185,7 +189,7 @@ def main():
         try:
             store = Store(args.data_dir / 'assistant.sqlite3')
             if args.new_goal is not None:
-                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal)
+                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),
@@ -193,6 +197,9 @@ def main():
             elif args.reply_goal is not None:
                 reply(store, args.session, args.reply_goal, args.goal_reply)
                 result = get_goal(store, args.session, args.reply_goal)
+            elif args.rebuild_goal_files is not None:
+                from .artifacts import rebuild
+                result = rebuild(store, args.session, args.rebuild_goal_files)
             else:
                 result = get_goal(store, args.session, args.goal_status)
             print(json.dumps(result, ensure_ascii=False, indent=2))

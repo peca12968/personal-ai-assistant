@@ -9,7 +9,7 @@ from assistant.feedback_ui import FeedbackWindow
 from assistant.evolution_ui import EvolutionWindow
 from assistant.autonomy_ui import AutonomousWindow
 from assistant.store import Store
-from assistant import autonomy
+from assistant import autonomy, artifacts
 from assistant.companion_ui import CompanionWindow
 from assistant.companion_profile import get_profile
 
@@ -131,3 +131,28 @@ class FormGeometryTests(unittest.TestCase):
             view.reset()
             self.assertEqual(view.revision, 2)
             self.assertEqual(view.fields['assistant_name'].get(), '個人 AI 助理')
+
+    def test_autonomous_file_mode_and_saved_artifact_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'state.sqlite3')
+            sid = store.new_session()
+            view = AutonomousWindow(self.root, store, sid, None)
+            layout = self.allocate(view)
+            self.assert_reachable(layout, view.file_option)
+            view.file_delivery.set(True)
+            view.objective.insert('1.0', '交付一份整理文件')
+            view.new_goal()
+            gid = view.selected_id()
+            self.assertTrue(autonomy.get_goal(store, sid, gid)['file_delivery'])
+            self.assertEqual(str(view.rebuild['state']), 'disabled')
+            artifacts.write(store, gid, 'notes.md', '# 已整理內容')
+            view.refresh(gid)
+            self.assertEqual(str(view.files['state']), 'normal')
+            self.assertEqual(str(view.rebuild['state']), 'normal')
+            self.assertIn('notes.md', view.output.get('1.0', 'end'))
+            self.assertIn('狀態不是即時檔案檢查', view.output.get('1.0', 'end'))
+            self.assert_reachable(layout, view.rebuild)
+            view.busy = True
+            view.select()
+            self.assertEqual(str(view.rebuild['state']), 'disabled')
+            view.busy = False

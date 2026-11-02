@@ -1,5 +1,6 @@
 .venv/
 data/
+**/autonomy-artifacts/
 __pycache__/
 *.py[cod]
 .env

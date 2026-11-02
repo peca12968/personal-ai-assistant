@@ -31,6 +31,8 @@ TABLES = {
     'autonomous_steps': {'id', 'goal_id', 'sequence', 'action_json', 'observation_json', 'created_at'},
     'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
     'companion_profile': {'id', 'revision', 'settings_json', 'updated_at'},
+    'autonomous_delivery': {'goal_id', 'enabled'},
+    'autonomous_artifacts': {'id', 'goal_id', 'name', 'file_key', 'content', 'sha256', 'size_bytes', 'status', 'error', 'created_at', 'verified_at'},
 }
 
 
@@ -61,7 +63,10 @@ def validate_database(path):
             raise ValueError('自主目標資料表不完整。')
         if 'autonomous_handoffs' in actual_tables and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile'} <= actual_tables <= set(TABLES):
+        delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
+        if len(actual_tables & delivery_tables) == 1 or (delivery_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
+            raise ValueError('自主文件資料表不完整。')
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile'} - delivery_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -72,6 +77,14 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if delivery_tables <= actual_tables:
+            from .artifacts import payload, MAX_FILES
+            for row in db.execute('SELECT name,file_key,content,sha256,size_bytes,status FROM autonomous_artifacts'):
+                data = payload(row[0], row[2])
+                if row[1] != row[0].casefold() or hashlib.sha256(data).hexdigest() != row[3] or len(data) != row[4] or row[5] not in {'prepared','verified','uncertain'}:
+                    raise ValueError('自主文件內容與紀錄不符。')
+            if db.execute('SELECT 1 FROM autonomous_artifacts GROUP BY goal_id HAVING COUNT(*)>? LIMIT 1', (MAX_FILES,)).fetchone():
+                raise ValueError('自主文件數量超過上限。')
         if 'companion_profile' in actual_tables:
             from .companion_profile import validate
             from .acceptance import strict_json

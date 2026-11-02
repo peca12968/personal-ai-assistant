@@ -1,11 +1,13 @@
 """User-visible goals, bounded autonomous work, and resumable progress."""
 import json
+import os
 import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from . import autonomy
+from . import artifacts
 from .ui_layout import ScrollableForm, fit_window
 from .companion_profile import describe as describe_profile
 
@@ -28,6 +30,9 @@ class AutonomousWindow:
                                   padding=12).pack(fill='x')
         self.objective = tk.Text(body, height=3, wrap='word')
         self.objective.pack(fill='x', padx=12)
+        self.file_delivery = tk.BooleanVar(value=False)
+        self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機Markdown／TXT／JSON，不覆寫既有內容）', variable=self.file_delivery)
+        self.file_option.pack(anchor='w', padx=12, pady=6)
         self.create = ttk.Button(body, text='保存新目標（使用目前參考文件）', command=self.new_goal)
         self.create.pack(anchor='w', padx=12, pady=8)
         self.listing = ttk.Treeview(body, columns=('status', 'objective'), show='headings', height=5)
@@ -42,6 +47,10 @@ class AutonomousWindow:
         self.follow.pack(anchor='w', padx=12, pady=4)
         self.previous = ttk.Button(body, text='查看上一階段', command=self.previous_stage, state='disabled')
         self.previous.pack(anchor='w', padx=12, pady=4)
+        self.files = ttk.Button(body, text='開啟成果資料夾', command=self.open_files, state='disabled')
+        self.files.pack(anchor='w', padx=12, pady=4)
+        self.rebuild = ttk.Button(body, text='核對／重建已保存文件', command=self.rebuild_files, state='disabled')
+        self.rebuild.pack(anchor='w', padx=12, pady=4)
         controls = ttk.Frame(body, padding=12)
         controls.pack(fill='x')
         ttk.Label(controls, text='本輪最多步數：').pack(side='left')
@@ -85,7 +94,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'))
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get())
             self.refresh(gid)
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
@@ -94,7 +103,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get())
             self.refresh(gid)
             self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
         except Exception as exc:
@@ -105,6 +114,33 @@ class AutonomousWindow:
         if goal['previous_stage']:
             self.refresh(goal['previous_stage']['parent_goal_id'])
 
+    def open_files(self):
+        try:
+            os.startfile(artifacts.directory(self.store, self.selected_id()))
+        except (ValueError, OSError) as exc:
+            messagebox.showinfo('尚無可開啟的成果資料夾', str(exc), parent=self.window)
+
+    def rebuild_files(self):
+        if self.busy:
+            return
+        try:
+            gid = self.selected_id()
+        except ValueError:
+            return
+        self.busy, self.active_goal = True, gid
+        self.cancel.clear()
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
+            button.configure(state='disabled')
+        self.stop.configure(state='normal')
+        self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
+        def work():
+            try:
+                result = artifacts.rebuild(self.store, self.sid, gid, self.cancel)
+                self.events.put(('files_done', result))
+            except Exception as exc:
+                self.events.put(('error', str(exc)))
+        threading.Thread(target=work, daemon=False).start()
+
     def select(self, event=None):
         try:
             goal = autonomy.get_goal(self.store, self.sid, self.selected_id())
@@ -114,8 +150,19 @@ class AutonomousWindow:
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
         self.follow.configure(state='normal' if not self.busy and goal['status'] == 'report_ready' else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
+        self.files.configure(state='normal' if goal['artifacts'] else 'disabled')
+        self.rebuild.configure(state='normal' if goal['artifacts'] and not self.busy else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
+        lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
+        if goal['file_delivery']:
+            lines += ['成果位置：' + str(self.store.path.resolve().parent / 'autonomy-artifacts' / goal['id'])]
+        if goal['artifacts']:
+            labels = {'prepared': '已保存內容，尚未核對檔案', 'verified': '曾核對一致', 'uncertain': '待處理'}
+            lines += ['已保存文件（可能包含未交付草稿；狀態不是即時檔案檢查）：']
+            for item in goal['artifacts']:
+                lines += [f"{item['name']} · {item['size_bytes']} bytes · {labels.get(item['recorded_status'], item['recorded_status'])} · 最近核對：{item['verified_at'] or '無'}" +
+                          ('\n' + item['error'] if item['error'] else '')]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
         if goal['notes']:
@@ -164,7 +211,7 @@ class AutonomousWindow:
         self.busy = True
         self.active_goal = gid
         self.cancel.clear()
-        for button in (self.start, self.create, self.reply, self.follow):
+        for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -186,10 +233,10 @@ class AutonomousWindow:
                     self.refresh(self.active_goal)
                 else:
                     self.busy = False
-                    for button in (self.start, self.create, self.reply, self.follow):
+                    for button in (self.start, self.create, self.reply, self.follow, self.rebuild, self.file_option):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
-                    self.notice.set(value if kind == 'error' else autonomy.LABELS.get(value['status'], value['status']))
+                    self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))
                     self.refresh(self.active_goal)
                     self.active_goal = None
         except queue.Empty:

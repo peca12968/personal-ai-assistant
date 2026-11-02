@@ -16,6 +16,7 @@ from .answer_runs import lease
 from .document_ranges import select_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
+from . import artifacts
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 MAX_STEPS = 32
@@ -30,6 +31,7 @@ previous_stage若存在，是使用者明確選取的上一階段歷史背景；
 sources_match_current為false表示文件清單或版本已不同，舊成果只作背景。即使為true，也要重新讀取本階段需要的來源與計算。
 上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
+只有file_delivery=true的目標可用write_artifact及deliver，在此目標管理的成果資料夾建立文件；不能指定其他路徑或覆寫既有內容。
 不能修改原檔、瀏覽網路、發訊息、執行程式或自行改碼。不要假稱已執行不具備的動作。
 若目標需要其他能力，用ask簡短說明需要什麼；資料足夠時自行前進，不反覆要求確認。
 finish代表交付可供確認的成果，不代表使用者已驗收或現實任務全部完成。
@@ -44,6 +46,9 @@ recall: {"query":"相關偏好或事實"}，查找目前有效的長期記憶。
 calculate: {"operation":"sum|difference|product|quotient","values":["12.5","3"]}，精確四則運算。
 ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
+write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
+deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
+artifacts只是已保存檔案的歷史紀錄，不保證檔案現在未被改動；deliver會重新核對。未被列入deliver的文件仍是草稿，不能冒稱都已交付。不能聲稱上傳或將本機路徑冒充下載網址。
 difference與quotient恰好兩個數；sum與product一至50個數。數字用十進位字串。
 不要不停查詢同一資料；有依據完成成果後使用finish。'''
 
@@ -58,8 +63,10 @@ def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
 
 
-def create_goal(store, sid, objective, *, parent_id=None):
+def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False):
     objective = text(objective, 4000)
+    if type(file_delivery) is not bool:
+        raise ValueError('交付文件選項需為布林值。')
     gid = uuid.uuid4().hex
     sources = signature(store.documents(sid))
     with lease(store, parent_id) if parent_id is not None else nullcontext():
@@ -68,6 +75,8 @@ def create_goal(store, sid, objective, *, parent_id=None):
             previous = goal_stages.capture(db, sid, parent_id) if parent_id is not None else None
             db.execute('INSERT INTO autonomous_goals(id,session_id,objective,status,sources_json) VALUES(?,?,?,?,?)',
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
+            if file_delivery:
+                db.execute('INSERT INTO autonomous_delivery(goal_id,enabled) VALUES(?,1)', (gid,))
             if previous is not None:
                 db.execute('INSERT INTO autonomous_handoffs(goal_id,parent_goal_id,context_json) VALUES(?,?,?)',
                            (gid, parent_id, json.dumps(previous, ensure_ascii=False)))
@@ -86,6 +95,8 @@ def get_goal(store, sid, gid):
             raise ValueError('找不到此對話的自主目標。')
         result = dict(row)
         result['sources'] = json.loads(result.pop('sources_json'))
+        result['file_delivery'] = artifacts.enabled(db, gid)
+        result['artifacts'] = artifacts.inventory(db, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
             result['previous_stage']['sources_match_current'] = result['previous_stage']['sources'] == result['sources']
@@ -122,7 +133,8 @@ def validate_action(value):
     value['note'] = text(value['note'], 400)
     fields = {'search': {'query'}, 'read': {'document_id', 'start_line', 'end_line'},
               'recall': {'query'}, 'calculate': {'operation', 'values'},
-              'ask': {'question'}, 'finish': {'report'}}
+              'ask': {'question'}, 'finish': {'report'},
+              'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'}}
     name, args = value['tool'], value['args']
     if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
         raise ValueError('工具或參數不在允許範圍。')
@@ -131,8 +143,12 @@ def validate_action(value):
     elif name == 'read':
         if any(type(args[k]) is not int or not 1 <= args[k] < 10**12 for k in args):
             raise ValueError('來源編號與行號須為正整數。')
-    elif name in ('ask', 'finish'):
+    elif name in ('ask', 'finish', 'deliver'):
         text(args['question' if name == 'ask' else 'report'], 800 if name == 'ask' else 12000)
+        if name == 'deliver':
+            artifacts.validate_names(args['filenames'])
+    elif name == 'write_artifact':
+        artifacts.payload(args['filename'], args['content'])
     return value
 
 
@@ -163,7 +179,7 @@ def calculate(args):
     return {'exact': str(result), 'decimal': str(decimal), 'rounded': Fraction(decimal) != result}
 
 
-def execute(store, documents, action, steps):
+def execute(store, documents, action, steps, *, gid=None):
     name, args = action['tool'], action['args']
     if name == 'search':
         return retrieve_documents(args['query'], documents, max_excerpts=4, max_chars=8000, reference_query='')
@@ -178,10 +194,20 @@ def execute(store, documents, action, steps):
     if name == 'ask':
         return {'question': args['question']}
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
-    checks = check_citations(args['report'], excerpts)
+    checks = check_citations(args['content'] if name == 'write_artifact' else args['report'], excerpts)
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
+    with store.connect() as db:
+        file_delivery = artifacts.enabled(db, gid) if gid else False
+    if name in ('write_artifact', 'deliver') and not file_delivery:
+        raise ValueError('此目標未啟用交付文件，不能建立文件或交付檔案。')
+    if name == 'finish' and file_delivery:
+        raise ValueError('此目標要求交付文件；請先write_artifact，再用deliver列出已保存檔名。')
+    if name == 'write_artifact':
+        return {'artifact': artifacts.write(store, gid, args['filename'], args['content']), 'citation_checks': checks}
+    receipts = artifacts.deliver(store, gid, args['filenames']) if name == 'deliver' else []
     return {'report': args['report'], 'citation_checks': checks,
+            'artifacts': receipts,
             'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。'}
 
 
@@ -219,6 +245,7 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                                if key != 'companion_profile'}} for step in goal['steps']],
                            'companion_profile': profile,
                            'previous_stage': goal['previous_stage'],
+                           'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
                            'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
                 raw = engine.answer(INSTRUCTIONS + '\n' + COMPANION_GUIDANCE + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
                 if cancel.is_set():
@@ -231,17 +258,21 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
                     if len(raw) > 20000:
                         raise ValueError('動作輸出過長。')
                     action = validate_action(strict_json(raw))
-                    observation = execute(store, documents, action, goal['steps'])
+                    observation = execute(store, documents, action, goal['steps'], gid=gid)
                 except (ValueError, TypeError, KeyError) as exc:
                     action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                     observation = {'error': str(exc)[:500]}
                 observation['companion_profile'] = profile
-                status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] == 'finish' else 'running'
+                status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'
+                if cancel.is_set():
+                    status = 'paused'  # Preserve an already executed file action, but do not continue.
                 with store.connect() as db:
                     db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
                         (gid, len(goal['steps']) + 1, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
-                    db.execute('UPDATE autonomous_goals SET status=?,question=?,result=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                               (status, observation.get('question', ''), observation.get('report', ''), gid))
+                    db.execute('UPDATE autonomous_goals SET status=?,question=?,result=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                               (status, observation.get('question', '') if status == 'needs_input' else '',
+                                observation.get('report', '') if status == 'report_ready' else '',
+                                '已停止；此次已執行的動作及文件紀錄保留。' if status == 'paused' else '', gid))
                 progress({'step': len(goal['steps']) + 1, 'tool': action['tool'], 'note': action['note']})
                 if status != 'running':
                     break

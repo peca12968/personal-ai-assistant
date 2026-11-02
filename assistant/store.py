@@ -113,6 +113,15 @@ class Store:
                 CREATE TABLE IF NOT EXISTS companion_profile (
                     id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL CHECK(revision>=1),
                     settings_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS autonomous_delivery (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id), enabled INTEGER NOT NULL CHECK(enabled=1));
+                CREATE TABLE IF NOT EXISTS autonomous_artifacts (
+                    id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_delivery(goal_id),
+                    name TEXT NOT NULL, file_key TEXT NOT NULL, content TEXT NOT NULL,
+                    sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('prepared','verified','uncertain')),
+                    error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    verified_at TEXT, UNIQUE(goal_id,file_key));
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
