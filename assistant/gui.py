@@ -18,6 +18,7 @@ class App:
         self.cancel = threading.Event()
         self.busy = False
         self.autonomous_windows = []
+        self.memory_draft_windows = []
         self.last_answer = None
         root.title("個人 AI 助理")
         from .engine import ROOT
@@ -71,6 +72,7 @@ class App:
         menu.add_command(label='夥伴設定', command=self.companion_settings)
         memory_menu.configure(menu=menu)
         memory_menu.pack(fill='x', pady=4)
+        ttk.Button(sidebar, text="從本對話整理記憶", command=self.draft_memories).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
         self.backup_btn = ttk.Button(sidebar, text="本機備份與還原", command=self.backups)
@@ -310,6 +312,10 @@ class App:
         from .memory_ui import MemoryWindow
         MemoryWindow(self.root, self.store)
 
+    def draft_memories(self):
+        from .memory_draft_ui import MemoryDraftWindow
+        self.memory_draft_windows.append(MemoryDraftWindow(self.root,self.store,self.sid,self.assistant.engine))
+
     def companion_settings(self):
         from .companion_ui import CompanionWindow
         CompanionWindow(self.root, self.store)
@@ -347,9 +353,9 @@ class App:
 
     def close(self):
         self.cancel.set()
-        for window in self.autonomous_windows:
+        for window in self.autonomous_windows + self.memory_draft_windows:
             window.cancel.set()
-        if self.busy or any(window.busy for window in self.autonomous_windows):
+        if self.busy or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows):
             self.status.set("正在停止推理引擎…")
             self.root.after(200, self.close)
         else:

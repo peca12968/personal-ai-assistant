@@ -58,6 +58,18 @@ class Store:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS memory_sequence (
                     id INTEGER PRIMARY KEY CHECK(id=1), last_id INTEGER NOT NULL CHECK(last_id>=0));
+                CREATE TABLE IF NOT EXISTS memory_drafts (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed','cancelled')),
+                    context_json TEXT NOT NULL, context_sha256 TEXT NOT NULL,
+                    proposals_json TEXT NOT NULL, proposals_sha256 TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS memory_acceptances (
+                    draft_id TEXT NOT NULL REFERENCES memory_drafts(id), item_index INTEGER NOT NULL,
+                    memory_id INTEGER NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
+                    expires_on TEXT, reused INTEGER NOT NULL CHECK(reused IN (0,1)),
+                    accepted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(draft_id,item_index));
                 CREATE TABLE IF NOT EXISTS feedback (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id),
                     rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),

@@ -371,3 +371,48 @@ class FormGeometryTests(unittest.TestCase):
             self.assertIsNone(goal['csv_source'])
             self.assertIn('選乙', view.output.get('1.0', 'end'))
             self.assertEqual(len(store.messages(sid)), 1)
+
+
+    def test_memory_draft_generation_edit_save_and_sources_are_reachable(self):
+        import json
+        from assistant.memory_draft_ui import MemoryDraftWindow
+        from assistant import memory_drafts
+        from test_autonomy import ScriptedEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');sid=store.new_session()
+            mid=store.add_message(sid,'user','星橋專案位於F槽。')
+            reply=json.dumps({'items':[{'kind':'fact','content':'星橋專案位於F槽。',
+                'sources':[{'key':'M'+str(mid),'quote':'星橋專案位於F槽'}]}]},ensure_ascii=False)
+            view=MemoryDraftWindow(self.root,store,sid,ScriptedEngine(reply))
+            layout=self.allocate(view)
+            self.assert_reachable(layout,view.start);self.assert_reachable(layout,view.save)
+            with patch('assistant.memory_draft_ui.threading.Thread',side_effect=lambda target,**kwargs:SimpleNamespace(start=target)):
+                view.start.invoke()
+            view.poll()
+            self.assertEqual(store.memories(),[])
+            view.items.selection_set('0');view.select_item()
+            self.assertIn('星橋專案位於F槽',view.evidence.get('1.0','end'))
+            view.content.delete('1.0','end');view.content.insert('1.0','星橋專案放F槽，已核對。')
+            view.save.invoke()
+            self.assertEqual(store.memories()[0]['content'],'星橋專案放F槽，已核對。')
+            self.assertEqual(len(memory_drafts.provenance(store,store.memories()[0]['id'])),1)
+            view.items.selection_set('0');view.select_item()
+            self.assertEqual(str(view.save['state']),'disabled')
+            view.close()
+            self.assertFalse(view.window.winfo_exists())
+
+    def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
+        import threading
+        from assistant.gui import App
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3')
+            app=App(self.root,store,None);sid=app.sid
+            fake=SimpleNamespace(cancel=threading.Event(),busy=True)
+            with patch('assistant.memory_draft_ui.MemoryDraftWindow',return_value=fake) as constructor:
+                app.draft_memories()
+            self.assertEqual(constructor.call_args.args[2],sid)
+            self.assertEqual(app.sid,sid)
+            app.close()
+            self.assertTrue(fake.cancel.is_set())
+            self.assertTrue(self.root.winfo_exists())
+            fake.busy=False

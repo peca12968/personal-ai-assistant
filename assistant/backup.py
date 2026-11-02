@@ -19,6 +19,8 @@ TABLES = {
     'messages': {'id', 'session_id', 'role', 'content', 'created_at'},
     'memories': {'id', 'content', 'kind', 'created_at', 'active', 'expires_on', 'updated_at'},
     'memory_sequence': {'id', 'last_id'},
+    'memory_drafts': {'id','session_id','status','context_json','context_sha256','proposals_json','proposals_sha256','error','attempts','created_at'},
+    'memory_acceptances': {'draft_id','item_index','memory_id','content','kind','expires_on','reused','accepted_at'},
     'feedback': {'message_id', 'rating', 'correction', 'updated_at'},
     'session_briefs': {'session_id', 'objective', 'constraints_text', 'decisions', 'updated_at'},
     'answer_contexts': {'message_id', 'payload'},
@@ -74,7 +76,10 @@ def validate_database(path):
         csv_tables = {'autonomous_csv_sources', 'autonomous_csv_plans'}
         if len(actual_tables & csv_tables) == 1 or (csv_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主CSV資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        memory_tables = {'memory_drafts','memory_acceptances'}
+        if len(actual_tables & memory_tables) == 1:
+            raise ValueError('記憶草稿資料表不完整。')
+        if not set(TABLES) - memory_tables - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -85,6 +90,9 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if memory_tables <= actual_tables:
+            from .memory_drafts import validate_saved
+            validate_saved(db)
         if 'autonomous_conversations' in actual_tables:
             from .goal_conversation import read
             for (gid,) in db.execute('SELECT goal_id FROM autonomous_conversations'):

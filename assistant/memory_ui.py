@@ -51,6 +51,7 @@ class MemoryWindow:
         ttk.Button(buttons, text="新增", command=self.new).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="儲存", command=self.save).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="刪除選取記憶", command=self.delete).pack(side="left")
+        ttk.Button(buttons, text="查看整理來源", command=self.provenance).pack(side="left", padx=8)
         self.notice = tk.StringVar(value="選取上方記憶可編輯；到期日當日仍有效。選用記憶會隨問題傳給 Codex。")
         ttk.Label(self.window, textvariable=self.notice, padding=12, wraplength=710).grid(row=3, column=0, sticky="ew")
         self.refresh()
@@ -114,3 +115,19 @@ class MemoryWindow:
         self.new()
         self.refresh()
         self.notice.set("記憶已刪除，未來回答不再選取；既有對話與匯出內容仍保留。")
+
+    def provenance(self):
+        if self.selected_id is None:
+            return
+        import json
+        from .memory_drafts import provenance
+        from .ui_layout import fit_window
+        value = provenance(self.store, self.selected_id)
+        window = tk.Toplevel(self.window)
+        window.title('記憶保存時的整理來源')
+        fit_window(window, 800, 600)
+        text = tk.Text(window, wrap='word')
+        text.pack(fill='both', expand=True)
+        text.insert('1.0', '以下是當時接受的草稿與原話；記憶後續編輯不會回寫歷史來源。\n\n' +
+            (json.dumps(value, ensure_ascii=False, indent=2) if value else '此記憶沒有從對話整理的來源紀錄；可能由手動或記憶指令新增。'))
+        text.configure(state='disabled')
