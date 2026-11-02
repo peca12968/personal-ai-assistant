@@ -128,8 +128,6 @@ python -m assistant --rollback-improvement 20261102-180000-1234abcd
 
 詢問是否曾自改程式時，聊天會讀取最多三筆相關流程摘要，先核對本機 Git 提交與檔案雜湊；摘要不包含原始改善目標、錯誤日誌、程式內容或絕對路徑。這能證明歷史改版，不能證明遠端現在的狀態、目前開著的程式已重載，或模型整體變聰明。發布時另外核對選定檔案清單與測試過的內容雜湊，避免同路徑的新改動被混入。
 
-6 個溝通案例可用下列指令收集真實回答，保存在本機並逐題依 rubric 評讀：
-
 自我改進也可提供「驗收例子」：桌面中輸入一句話並選擇預期辨識的回答長度，或匯入多案例 JSON。流程會先測原版本，再對候選版測完全相同的案例；必須全部符合預期，而且至少改善一個原先失敗的案例，才會套用。若原版已全部通過，會直接回報「目前已滿足案例」，不呼叫模型、不改碼。若沒提供例子，仍可使用原本的回歸測試流程，但不會宣稱本輪新需求已驗收。
 
 ```powershell
@@ -140,7 +138,7 @@ python -m assistant --improve "正確理解回答長度要求中的否定詞，�
 
 每輪的 `acceptance.json`、`baseline-observations.json`、`candidate-observations.json` 與比較結果保留於本機 `data/evolution/<ID>`。控制器固定預期、核對案例未被改動、在新程序收集實際輸出後自行評分；模型不能透過回傳 `passed=true` 自行判定成功。沒有通過的候選會保留供查看，但不套用。
 
-以下命令另行收集真實對話回答，不使用上述程式提示的符合數代替語意評讀：
+以下命令另行收集 9 個真實對話案例的回答，保存在本機並逐題依 rubric 評讀，不使用上述程式提示的符合數代替語意評讀：
 
 ```powershell
 python scripts/evaluate_communication.py --live --report data/evaluations/communication-new.json

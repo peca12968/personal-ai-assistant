@@ -17,6 +17,20 @@ def example():
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_self_improvement_acceptance_remains_a_regression(self):
+        from scripts.observe_acceptance import observe
+        suite = load_suite(ROOT / 'evals/improvement/communication_negation.json')
+        self.assertTrue(all(row['passed'] for row in grade(suite, observe(suite))))
+
+    def test_adjacent_negation_generalizes_beyond_supplied_sentences(self):
+        from assistant.communication import conversation_style
+        cases = {'別太簡短，請逐步解釋': 'detailed',
+                 "don't be brief; explain in detail.": 'detailed',
+                 '無需完整解釋，兩句就好': 'concise'}
+        for question, expected in cases.items():
+            with self.subTest(question=question):
+                self.assertEqual(conversation_style(question, [])['length_hint'], expected)
+
     def test_schema_rejects_ambiguous_or_executable_contracts(self):
         for raw in ('{"version":1,"version":2}', '{"value":NaN}'):
             with self.assertRaises(ValueError):
