@@ -64,6 +64,93 @@ class FormGeometryTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(layout.canvas.bbox('all')[3], initial_height)
 
+    def test_memory_edit_merges_two_windows_without_reverting_newer_fact(self):
+        from assistant.memory_ui import MemoryWindow
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            mid = store.remember('專案在C槽。')
+            first = MemoryWindow(self.root, store)
+            stale = MemoryWindow(self.root, Store(store.path))
+            for view in (first, stale):
+                view.window.withdraw()
+                view.listing.selection_set(str(mid));view.select()
+            first.content.delete('1.0', 'end');first.content.insert('1.0', '專案已搬到F槽。')
+            first.save()
+            stale.kind.set('偏好');stale.save()
+            self.assertEqual(store.memories()[0]['content'], '專案已搬到F槽。')
+            self.assertEqual(store.memories()[0]['kind'], 'preference')
+            self.assertIn('已保留其他地方較新的內容', stale.notice.get())
+            self.assertEqual(stale.content.get('1.0', 'end').strip(), '專案已搬到F槽。')
+            stale.content.insert('end', '尚未保存')
+            stale.select()  # Repeated selection events must preserve the draft.
+            self.assertIn('尚未保存', stale.content.get('1.0', 'end'))
+
+    def test_memory_conflict_review_preserves_draft_and_requires_separate_save(self):
+        from assistant.memory_ui import MemoryWindow
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            mid = store.remember('專案在C槽。')
+            view = MemoryWindow(self.root, store);view.window.withdraw()
+            view.listing.selection_set(str(mid));view.select()
+            store.edit_memory(mid, '專案在F槽。', active=False)
+            view.content.delete('1.0', 'end');view.content.insert('1.0', '專案在G槽。')
+            view.kind.set('經驗');view.save()
+            self.assertEqual(store.memories()[0]['content'], '專案在F槽。')
+            self.assertEqual(view.content.get('1.0', 'end').strip(), '專案在G槽。')
+            review = view.merge_view
+            layout = self.allocate(review)
+            self.assert_reachable(layout, review.apply_button)
+            self.assertEqual(set(review.choices), {'content'})
+            preview = review.previews[0].get('1.0', 'end')
+            for text in ('專案在C槽。', '專案在F槽。', '專案在G槽。'):
+                self.assertIn(text, preview)
+            review.choices['content'].set('draft');review.apply()
+            self.assertEqual(store.memories()[0]['content'], '專案在F槽。')
+            self.assertFalse(view.active.get())
+            self.assertEqual(view.kind.get(), '經驗')
+            view.save()
+            self.assertEqual(store.memories()[0]['content'], '專案在G槽。')
+            self.assertEqual(store.memories()[0]['active'], 0)
+
+    def test_memory_review_cannot_overwrite_new_typing_or_a_second_external_change(self):
+        from assistant.memory_ui import MemoryWindow
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            mid = store.remember('專案在C槽。')
+            view = MemoryWindow(self.root, store);view.window.withdraw()
+            view.listing.selection_set(str(mid));view.select()
+            view.content.delete('1.0', 'end');view.content.insert('1.0', '專案在G槽。')
+            store.edit_memory(mid, '專案在F槽。')
+            view.review();old = view.merge_view;old.window.withdraw()
+            view.content.insert('end', '另加限制。')
+            with patch('assistant.memory_merge_ui.messagebox.showerror') as error:
+                old.apply();error.assert_called_once()
+            self.assertIn('另加限制', view.content.get('1.0', 'end'))
+            view.review();review=view.merge_view;review.window.withdraw()
+            review.choices['content'].set('draft');review.apply()
+            store.edit_memory(mid, '專案又搬到H槽。')
+            view.save();view.merge_view.window.withdraw()
+            self.assertEqual(store.memories()[0]['content'], '專案又搬到H槽。')
+            self.assertIn('另加限制', view.content.get('1.0', 'end'))
+
+    def test_memory_stale_delete_and_deleted_save_preserve_unsaved_draft(self):
+        from assistant.memory_ui import MemoryWindow
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            mid = store.remember('舊資訊')
+            view = MemoryWindow(self.root, store);view.window.withdraw()
+            view.listing.selection_set(str(mid));view.select()
+            view.content.insert('end', '我的草稿')
+            store.edit_memory(mid, '剛更正的資訊')
+            with patch('assistant.memory_ui.messagebox.showerror') as error:
+                view.delete();error.assert_called_once()
+            self.assertEqual(store.memories()[0]['content'], '剛更正的資訊')
+            store.forget(mid)
+            with patch('assistant.memory_ui.messagebox.showerror') as error:
+                view.save();error.assert_called_once()
+            self.assertEqual(store.memories(), [])
+            self.assertIn('我的草稿', view.content.get('1.0', 'end'))
+
     def test_memory_alias_settings_preview_stale_reload_and_entry_preserve_drafts(self):
         from assistant.memory_ui import MemoryWindow
         from assistant.memory_alias_ui import MemoryAliasesWindow

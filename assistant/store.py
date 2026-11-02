@@ -379,14 +379,28 @@ class Store:
                 (mid, content, kind, expires_on or None, int(bool(active))))
             return mid
 
-    def edit_memory(self, memory_id, content, kind="fact", expires_on=None, active=True):
+    def edit_memory(self, memory_id, content, kind="fact", expires_on=None, active=True, *, expected=None):
         content = validate_memory(content, kind, expires_on)
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT * FROM memories WHERE id=?', (memory_id,)).fetchone()
+            if current is None:
+                raise ValueError('這筆記憶已不存在；草稿未儲存，也未重新新增。')
+            draft = dict(content=content, kind=kind, expires_on=expires_on or None, active=int(bool(active)))
+            preserved = []
+            if expected is not None:
+                from .memory_edits import compare, MemoryConflict
+                comparison = compare(expected, dict(current), draft)
+                if comparison['conflicts']:
+                    raise MemoryConflict(expected, current, draft, comparison)
+                draft, preserved = comparison['merged'], comparison['preserved_fields']
             result = db.execute("""UPDATE memories SET content=?, kind=?, expires_on=?, active=?,
                 updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                (content, kind, expires_on or None, int(bool(active)), memory_id))
+                (draft['content'], draft['kind'], draft['expires_on'], draft['active'], memory_id))
             if result.rowcount != 1:
                 raise ValueError("這筆記憶已不存在，請重新整理。")
+            return {'memory': dict(db.execute('SELECT * FROM memories WHERE id=?', (memory_id,)).fetchone()),
+                    'preserved_fields': preserved}
 
     def set_memory_active(self, memory_id, active):
         with self.connect() as db:
@@ -399,8 +413,15 @@ class Store:
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT * FROM memories ORDER BY id DESC")]
 
-    def forget(self, memory_id):
+    def forget(self, memory_id, *, expected=None):
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if expected is not None:
+                from .memory_edits import validate_original
+                validate_original(expected, memory_id)
+                current = db.execute('SELECT * FROM memories WHERE id=?', (memory_id,)).fetchone()
+                if current is None or dict(current) != expected:
+                    raise ValueError('記憶已變更或刪除，未刪除任何資料；請先核對最新記憶。')
             db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
 
     def retrieve(self, query, limit=8, today=None):

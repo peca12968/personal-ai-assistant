@@ -1,6 +1,8 @@
 import tkinter as tk
 from datetime import date
 from tkinter import messagebox, ttk
+from . import memory_edits
+from .memory_merge_ui import MemoryMergeWindow
 
 LABELS = {"偏好": "preference", "事實": "fact", "經驗": "lesson"}
 
@@ -8,6 +10,7 @@ LABELS = {"偏好": "preference", "事實": "fact", "經驗": "lesson"}
 class MemoryWindow:
     def __init__(self, parent, store):
         self.store, self.selected_id = store, None
+        self.original = None
         self.window = tk.Toplevel(parent)
         self.window.title("長期記憶")
         self.window.geometry("900x610")
@@ -53,8 +56,12 @@ class MemoryWindow:
         buttons = ttk.Frame(editor)
         buttons.grid(row=4, column=0, columnspan=4, sticky="w")
         ttk.Button(buttons, text="新增", command=self.new).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="儲存", command=self.save).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="刪除選取記憶", command=self.delete).pack(side="left")
+        self.save_button = ttk.Button(buttons, text="儲存", command=self.save)
+        self.save_button.pack(side="left", padx=(0, 8))
+        self.review_button = ttk.Button(buttons, text='核對最新記憶', command=self.review)
+        self.review_button.pack(side='left', padx=(0, 8))
+        self.delete_button = ttk.Button(buttons, text="刪除選取記憶", command=self.delete)
+        self.delete_button.pack(side="left")
         ttk.Button(buttons, text="查看整理來源", command=self.provenance).pack(side="left", padx=8)
         self.notice = tk.StringVar(value="選取上方記憶可編輯；到期日當日仍有效。選用記憶會隨問題傳給 Codex。")
         ttk.Label(self.window, textvariable=self.notice, padding=12, wraplength=710).grid(row=3, column=0, sticky="ew")
@@ -73,6 +80,7 @@ class MemoryWindow:
 
     def new(self):
         self.selected_id = None
+        self.original = None
         self.listing.selection_remove(*self.listing.selection())
         self.kind.set("事實")
         self.expires.set("")
@@ -81,28 +89,60 @@ class MemoryWindow:
         self.content.delete("1.0", "end")
         self.content.focus_set()
 
-    def select(self, event=None):
+    def select(self, event=None, *, force=False):
         selection = self.listing.selection()
         if not selection:
             return
         row = self.rows[selection[0]]
+        if not force and self.selected_id == row['id']:
+            return  # Repeated queued selection events must not erase an unsaved draft.
         self.selected_id = row["id"]
+        self.original = dict(row)
+        self.load_draft(row)
+        self.title.set(f'編輯記憶 #{row["id"]}')
+
+    def load_draft(self, row):
         self.kind.set(next(key for key, value in LABELS.items() if value == row["kind"]))
         self.expires.set(row["expires_on"] or "")
         self.active.set(bool(row["active"]))
-        self.title.set(f'編輯記憶 #{row["id"]}')
         self.content.delete("1.0", "end")
         self.content.insert("1.0", row["content"])
+
+    def draft(self):
+        return {'content': self.content.get('1.0', 'end').strip(), 'kind': LABELS[self.kind.get()],
+                'expires_on': self.expires.get().strip() or None, 'active': int(self.active.get())}
+
+    def apply_review(self, original, current, draft, merged):
+        if self.selected_id != current['id'] or self.original != original or self.draft() != draft:
+            raise ValueError('原視窗已改選記憶或修改草稿，核對結果未套用；請重新核對。')
+        self.original = dict(current)
+        self.load_draft(merged)
+        self.notice.set('核對結果已放入草稿，尚未儲存；按儲存時會再檢查是否有新的修改。')
+
+    def review(self):
+        if self.selected_id is None:
+            return
+        current = next((row for row in self.store.memories() if row['id'] == self.selected_id), None)
+        if current is None:
+            messagebox.showerror('無法核對', '這筆記憶已刪除；你的草稿仍保留，沒有重新新增。', parent=self.window)
+            return
+        self.merge_view = MemoryMergeWindow(self.window, self.original, current, self.draft(), self.apply_review)
 
     def save(self):
         content = self.content.get("1.0", "end").strip()
         kind = LABELS[self.kind.get()]
         expires = self.expires.get().strip() or None
+        preserved = []
         try:
             if self.selected_id is None:
                 self.selected_id = self.store.remember(content, kind, expires, active=self.active.get())
             else:
-                self.store.edit_memory(self.selected_id, content, kind, expires, self.active.get())
+                receipt = self.store.edit_memory(self.selected_id, content, kind, expires, self.active.get(), expected=self.original)
+                preserved = receipt['preserved_fields']
+        except memory_edits.MemoryConflict as exc:
+            self.notice.set(str(exc))
+            self.merge_view = MemoryMergeWindow(self.window, exc.original, exc.current, exc.draft, self.apply_review)
+            return
         except ValueError as exc:
             messagebox.showerror("無法儲存", str(exc), parent=self.window)
             return
@@ -110,12 +150,17 @@ class MemoryWindow:
         self.refresh()
         self.listing.selection_set(key)
         self.listing.see(key)
-        self.notice.set("已儲存。變更會在下次提問時生效；不會改寫既有回答。")
+        self.select(force=True)
+        self.notice.set('已儲存。' + ('已保留其他地方較新的' + '、'.join(memory_edits.LABELS[k] for k in preserved) + '。' if preserved else '') + '變更會在下次提問時生效；不會改寫既有回答。')
 
     def delete(self):
         if self.selected_id is None:
             return
-        self.store.forget(self.selected_id)
+        try:
+            self.store.forget(self.selected_id, expected=self.original)
+        except ValueError as exc:
+            messagebox.showerror('未刪除記憶', str(exc), parent=self.window)
+            return
         self.new()
         self.refresh()
         self.notice.set("記憶已刪除，未來回答不再選取；既有對話與匯出內容仍保留。")
