@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import __version__
 from .documents import read_document
+from .task_failures import failure_guidance
 
 MAX_ROWS = 50000
 MAX_GROUPS = 5000
@@ -179,6 +180,9 @@ def task_context(store, sid, question):
         task = store.task(sid, row['id'])
         item = {'task_id': task['id'], 'status': task['status'], 'source_name': task['plan']['source_name'],
                 'operation': task['plan']['operation'], 'finished_at': task['finished_at']}
+        guidance = failure_guidance(task)
+        if guidance:
+            item['failure_guidance'] = guidance
         if task['status'] == 'succeeded' and task['result']:
             report = task['result']['report']
             if (hashlib.sha256(canonical(report)).hexdigest() != task['result']['report_sha256'] or

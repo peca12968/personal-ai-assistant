@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -17,10 +18,14 @@ from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_PROMPT_BYTES = 2 * 1024 * 1024
+MAX_ANSWER_BYTES = 2 * 1024 * 1024
 
 
 class EngineError(RuntimeError):
-    pass
+    def __init__(self, message, code='engine_error'):
+        super().__init__(message)
+        self.code = code
 
 
 def find_codex():
@@ -46,6 +51,8 @@ def build_prompt(question, history, memories, brief=None, excerpts=None):
 
 class CodexEngine:
     def __init__(self, data_dir: Path, timeout=240):
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError('引擎逾時需為有限的正秒數。')
         # CLI -C and output paths must remain valid after Popen changes cwd.
         self.workdir = Path(data_dir).resolve() / "engine-workspace"
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -68,38 +75,85 @@ class CodexEngine:
         if process.poll() is not None:
             return
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
-        else:
-            process.kill()
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Still try to terminate the exact process we created.
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
 
     def answer(self, prompt, cancel: threading.Event | None = None):
+        deadline = time.monotonic() + self.timeout
+
+        def check_running():
+            if cancel and cancel.is_set():
+                raise EngineError('已停止這次回答。', 'cancelled')
+            if time.monotonic() >= deadline:
+                raise EngineError('回答逾時（含啟動與傳送問題），請稍後重試或縮短內容。', 'timeout')
+
+        check_running()
+        if not isinstance(prompt, str):
+            raise EngineError('推理輸入必須是文字。', 'invalid_input')
+        try:
+            payload = prompt.encode('utf-8')
+        except UnicodeError:
+            raise EngineError('推理輸入包含無效文字。', 'invalid_input') from None
+        if len(payload) > MAX_PROMPT_BYTES:
+            raise EngineError('本次參考內容超過 2 MiB，請減少文件或縮短內容。', 'input_too_large')
+        try:
+            return self._answer(payload, check_running)
+        except OSError:
+            raise EngineError('無法讀寫本機推理暫存資料，請檢查磁碟空間與存取權限。', 'local_io') from None
+
+    def _answer(self, payload, check_running):
         with tempfile.TemporaryDirectory(prefix="answer-", dir=self.workdir) as tmp:
             output = Path(tmp) / "answer.txt"
-            # Write stdout/stderr to temporary files to prevent pipe-buffer deadlocks.
-            with (Path(tmp) / "stdout.log").open("wb") as stdout, (Path(tmp) / "stderr.log").open("wb") as stderr:
-                process = subprocess.Popen(self.command(output), stdin=subprocess.PIPE,
-                    stdout=stdout, stderr=stderr, cwd=self.workdir,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            # A seekable stdin file avoids a blocked parent-side pipe write when the
+            # child never reads. All temporary prompt/output files close before cleanup.
+            with tempfile.TemporaryFile(dir=tmp) as source, (Path(tmp) / "stdout.log").open("wb") as stdout, (Path(tmp) / "stderr.log").open("wb") as stderr:
+                source.write(payload)
+                source.seek(0)
+                check_running()
+                command = self.command(output)
+                check_running()
                 try:
-                    process.stdin.write(prompt.encode("utf-8"))
-                    process.stdin.close()
-                    deadline = time.monotonic() + self.timeout
+                    process = subprocess.Popen(command, stdin=source,
+                        stdout=stdout, stderr=stderr, cwd=self.workdir,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                except OSError:
+                    raise EngineError('無法啟動推理引擎，請確認 Codex CLI 仍可執行，或執行 --doctor 檢查。', 'launch_failed') from None
+                try:
                     while process.poll() is None:
-                        if cancel and cancel.is_set():
-                            raise EngineError("已停止這次回答。")
-                        if time.monotonic() >= deadline:
-                            raise EngineError("回答逾時，請縮短問題後重試。")
+                        check_running()
                         time.sleep(0.15)
+                    check_running()  # Cancellation/timeout also wins over a just-finished output.
                     if process.returncode != 0:
-                        raise EngineError("Codex 未完成回答。請執行 codex login status 確認登入，並檢查網路或使用額度。")
-                    if not output.exists() or not output.read_text(encoding="utf-8").strip():
-                        raise EngineError("推理引擎未傳回答案，請重試。")
-                    return output.read_text(encoding="utf-8").strip()
+                        raise EngineError(f'推理引擎提前結束（退出碼 {process.returncode}），沒有保存答案。請檢查登入、網路或使用額度；目前無法確認具體原因。', 'process_failed')
+                    if not output.exists():
+                        raise EngineError('推理引擎未傳回答案，請重試。', 'empty_response')
+                    with output.open('rb') as result:
+                        raw = result.read(MAX_ANSWER_BYTES + 1)
+                    if len(raw) > MAX_ANSWER_BYTES:
+                        raise EngineError('引擎回覆超過 2 MiB，未保存為完成答案；請縮小需求。', 'output_too_large')
+                    try:
+                        answer = raw.decode('utf-8').strip()
+                    except UnicodeError:
+                        raise EngineError('引擎回覆不是有效 UTF-8 文字，未保存答案。', 'invalid_response') from None
+                    if not answer:
+                        raise EngineError('推理引擎傳回空白答案，請重試。', 'empty_response')
+                    check_running()
+                    return answer
                 finally:
-                    self.stop(process)
-                    process.wait(timeout=10)
+                    try:
+                        self.stop(process)
+                        process.wait(timeout=10)
+                    except (OSError, subprocess.TimeoutExpired):
+                        raise EngineError('已要求停止引擎，但尚無法確認程序結束；本次不標記完成。', 'cleanup_unconfirmed') from None
 
 
 class Assistant:
@@ -126,6 +180,8 @@ class Assistant:
         return context
 
     def ask(self, sid, question, cancel=None):
+        if cancel and cancel.is_set():
+            raise EngineError('已停止這次回答。', 'cancelled')
         question = question.strip()
         if not question or len(question) > 16000:
             raise ValueError("問題需為 1–16000 字。")

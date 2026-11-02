@@ -5,7 +5,7 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
-from .engine import Assistant, CodexEngine, ROOT, find_codex
+from .engine import Assistant, CodexEngine, EngineError, ROOT, find_codex
 from .store import Store
 
 
@@ -138,10 +138,13 @@ def main():
     store = Store(args.data_dir / "assistant.sqlite3")
     engine = CodexEngine(args.data_dir)
     if args.ask:
-        sid = args.session or store.new_session()
-        for path in args.file:
-            store.attach_document(sid, path)
-        result = Assistant(store, engine).ask(sid, args.ask)
+        try:
+            sid = args.session or store.new_session()
+            for path in args.file:
+                store.attach_document(sid, path)
+            result = Assistant(store, engine).ask(sid, args.ask)
+        except (EngineError, ValueError, OSError, sqlite3.Error) as exc:
+            parser.exit(1, '回答未完成：' + str(exc) + '\n')
         print(result["content"])
         print("\nSession:", sid)
     else:
