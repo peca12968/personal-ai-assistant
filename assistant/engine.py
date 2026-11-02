@@ -12,6 +12,7 @@ from pathlib import Path
 from .context import followup_query, make_context, select_excerpts
 from .documents import check_citations, retrieve_documents
 from .tasks import task_context
+from .communication import conversation_style
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,6 +34,7 @@ def find_codex():
 
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
+    instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
@@ -116,6 +118,7 @@ class Assistant:
         documents = self.store.documents(sid, include_content=True)
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
         context['task_runs'] = task_context(self.store, sid, question)
+        context['communication'] = conversation_style(question, history)
         return context
 
     def ask(self, sid, question, cancel=None):

@@ -25,6 +25,9 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--export-task', help='匯出已完成報告；需 --session 與 --output')
+    mode.add_argument('--improve', help='指定方向，自我修改限定程式、驗證並發布一輪')
+    mode.add_argument('--rollback-improvement', help='回復仍為最新版本的自我改進紀錄 ID 並發布')
+    parser.add_argument('--edit', action='append', help='搭配 --improve 指定可修改模組，可重複')
     parser.add_argument('--group-column')
     parser.add_argument('--value-column')
     parser.add_argument('--output', type=Path)
@@ -34,6 +37,26 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if (args.improve or args.rollback_improvement) and any((args.file, args.session, args.output,
+                                                         args.group_column, args.value_column, args.query)):
+        parser.error('自我改進／回復不能混用對話、文件或 CSV 工作參數。')
+    if args.edit and not args.improve:
+        parser.error('--edit 需搭配 --improve。')
+    if args.rollback_improvement:
+        from .evolution import rollback
+        try:
+            print(json.dumps(rollback(args.rollback_improvement), ensure_ascii=False, indent=2))
+        except Exception as exc:
+            parser.exit(1, '版本回復未完成：' + str(exc) + '\n')
+        return
+    if args.improve:
+        from .evolution import improve
+        try:
+            result = improve(args.improve, args.edit, progress=lambda state: print(state, flush=True))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except Exception as exc:
+            parser.exit(1, '自我改進未完成：' + str(exc) + '\n')
+        return
     if args.file and not args.ask:
         parser.error("--file 需搭配 --ask；桌面版請使用「參考文件」。")
     if bool(args.search_folder) != bool(args.query):

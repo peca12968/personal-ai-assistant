@@ -29,6 +29,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--message", default="Update personal assistant with verified changes")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument('--expected-head', help='Self-improvement base commit; reject concurrent revisions')
+    parser.add_argument('--expected-file', action='append', help='Exact allowed changed file for a self-improvement release')
     args = parser.parse_args()
     run(sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v")
     run(sys.executable, "scripts/evaluate.py")
@@ -37,6 +39,15 @@ def main():
     run(sys.executable, "scripts/evaluate_search.py")
     run(sys.executable, "scripts/evaluate_understanding.py")
     run(sys.executable, "scripts/evaluate_tasks.py")
+    if args.expected_head:
+        if run('git', 'rev-parse', 'HEAD', capture=True) != args.expected_head:
+            raise RuntimeError('Upload stopped: base commit changed during validation.')
+        if not args.expected_file:
+            raise RuntimeError('Upload stopped: expected files are required.')
+        changed = set(filter(None, run('git', 'diff', 'HEAD', '--name-only', '-z', capture=True).split('\0')))
+        untracked = set(filter(None, run('git', 'ls-files', '--others', '--exclude-standard', '-z', capture=True).split('\0')))
+        if not changed or changed | untracked != set(args.expected_file):
+            raise RuntimeError('Upload stopped: changes differ from the verified self-improvement files.')
     if run("gh", "repo", "view", REPO, "--json", "visibility", "--jq", ".visibility", capture=True) != "PRIVATE":
         raise RuntimeError("Upload stopped: destination must be PRIVATE.")
     remote = run("git", "remote", "get-url", "--push", "origin", capture=True)

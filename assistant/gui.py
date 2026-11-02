@@ -34,6 +34,7 @@ class App:
         tk.Label(header, text="個人 AI 助理", bg=BG, fg=FG,
                  font=("Microsoft JhengHei UI", 22, "bold")).pack(side="left")
         ttk.Button(header, text="工作工具", command=self.work_tools).pack(side='right', padx=(12, 0))
+        ttk.Button(header, text='自我改進', command=self.self_improve).pack(side='right', padx=(8, 0))
         tk.Label(header, text="聊天建議  ·  本機記憶", bg=BG, fg=ACCENT,
                  font=("Microsoft JhengHei UI", 11)).pack(side="right")
         body = tk.Frame(root, bg=BG, padx=18)
@@ -97,6 +98,10 @@ class App:
         self.render()
         root.after(100, self.poll)
         root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def self_improve(self):
+        from .evolution_ui import EvolutionWindow
+        EvolutionWindow(self.root)
 
     def refresh_sessions(self):
         self.session_rows = self.store.sessions()
