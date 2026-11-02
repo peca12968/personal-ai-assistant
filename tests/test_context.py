@@ -6,6 +6,7 @@ from pathlib import Path
 from assistant.context import clip, followup_query, make_context, select_excerpts
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
+from assistant.acceptance import validate_suite
 
 
 class CaptureEngine:
@@ -15,6 +16,19 @@ class CaptureEngine:
 
 
 class ContextTests(unittest.TestCase):
+    def test_short_followup_acceptance_and_topic_boundaries(self):
+        path = Path(__file__).resolve().parents[1] / 'evals/improvement/followup_short_requests.json'
+        suite = json.loads(path.read_text(encoding='utf-8'))
+        validate_suite(suite)
+        for case in suite['cases']:
+            with self.subTest(case=case['id']):
+                self.assertEqual(followup_query(case['question'], case['history']), case['expect'])
+
+    def test_followup_preserves_original_text_and_four_user_limit(self):
+        history = [{'role': 'user', 'content': '舊的 backup 內容'}]
+        history += [{'role': 'user', 'content': '第２個呢？'}] * 6
+        self.assertEqual(followup_query('  請問第２個呢？  ', history), '\n'.join(['第２個呢？'] * 4))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

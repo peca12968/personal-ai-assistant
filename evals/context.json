@@ -8,5 +8,13 @@
   {"id":"long_goal","history":["目標是建立不依賴套件的青竹-146 工具。"],"filler_pairs":12,"prompt":"請回顧我們最初的目標。","must_include":["青竹-146"]},
   {"id":"long_constraint","history":["開始規劃搬遷。","限制：不能刪除名為赤松-378 的資料夾。"],"filler_pairs":12,"prompt":"目前有哪些不能違反的限制？","must_include":["赤松-378"]},
   {"id":"long_correction","history":["目標是整理文件。","更正：輸出格式必須採用白鷺-491 規格。"],"filler_pairs":12,"prompt":"現在採用哪個輸出格式？","must_include":["白鷺-491"]},
-  {"id":"long_topic_recall","history":["開始討論規劃。","資料庫代號是海棠-653。"],"filler_pairs":12,"prompt":"之前提到的 database 代號是什麼？","must_include":["海棠-653"]}
+  {"id":"long_topic_recall","history":["開始討論規劃。","資料庫代號是海棠-653。"],"filler_pairs":12,"prompt":"之前提到的 database 代號是什麼？","must_include":["海棠-653"]},
+  {"id":"ordinal_followup","history":["請整理我的 backup 設定。"],"prompt":"第二個呢？","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"ordinal_polite","history":["請整理我的 backup 設定。"],"prompt":"請問第二個呢？","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"format_reference","history":["請整理我的 backup 設定。"],"prompt":"請把上面的回答改成表格。","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"format_polite","history":["請整理我的 backup 設定。"],"prompt":"麻煩換成表格。","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"format_short","history":["請整理我的 backup 設定。"],"prompt":"請用表格整理。","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"polite_english","history":["請整理我的 backup 設定。"],"prompt":"Please make it shorter.","memory":"備份目的地是橘樹-482。","must_include":["橘樹-482"]},
+  {"id":"ordinal_new_subject","history":["請整理我的 backup 設定。"],"prompt":"請問第二個質數是多少？","memory":"備份目的地是橘樹-482。","must_exclude":["橘樹-482"]},
+  {"id":"polite_new_topic","history":["請整理我的 backup 設定。"],"prompt":"請換個話題，談音樂。","memory":"備份目的地是橘樹-482。","must_exclude":["橘樹-482"]}
 ]

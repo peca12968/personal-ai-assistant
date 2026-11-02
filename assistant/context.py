@@ -1,5 +1,6 @@
 """Bounded, attributable conversation context; no generated facts or hidden summaries."""
 import re
+import unicodedata
 
 from .retrieval import terms
 
@@ -8,6 +9,24 @@ FOLLOWUP = re.compile(
     r"^(?:那(?:接|它|這|要|怎|第)|接下來|接著|繼續|第二步|第三步|它|這個|這樣|上述|剛才|之前|改成|改用|換成|再給|再說|"
     r"what about\b|how about\b|then\b|continue\b|next\b|and\b|it\b|that\b|make it\b|change it\b|same\b)", re.I)
 IMPORTANT = re.compile(r"目標|限制|必須|不能|不要|更正|改為|改用|改成|決定|取消|預算|期限|\b(?:goal|must|never|instead|decision|budget|deadline)\b", re.I)
+
+# Only complete, bounded short requests qualify here. An ordinal inside a new
+# subject (e.g. 第二個質數) is not evidence that the old topic should be retrieved.
+POLITE = re.compile(r"^(?:請問|請|麻煩(?:你)?|please\b)\s*", re.I)
+SHORT_FOLLOWUP = re.compile(
+    r"(?:"
+    r"(?:選(?:擇)?\s*)?第\s*(?:[一二三四五六七八九十百]+|[0-9]{1,3})\s*(?:個|項|種)"
+    r"(?:呢|怎麼做|如何做|怎麼選)?"
+    r"|(?:把|將)(?:上面|上述|剛才|前面|剛剛)(?:的)?(?:回答|內容|說明)?"
+    r"(?:改成|整理成|轉成)(?:表格|清單|條列)"
+    r"|(?:用|以)(?:表格|條列|清單)(?:整理|呈現|回答|說明)"
+    r")[。.!！?？\s]*", re.I)
+
+
+def is_followup(question):
+    text = unicodedata.normalize("NFKC", question).strip()
+    text = POLITE.sub("", text, count=1)
+    return bool(FOLLOWUP.search(text) or SHORT_FOLLOWUP.fullmatch(text))
 
 
 def clip(text, limit):
@@ -25,7 +44,7 @@ def clip(text, limit):
 
 def followup_query(question, history):
     """Use only preceding user turns, and only for recognizable continuations."""
-    if TOPIC_CHANGE.search(question) or not FOLLOWUP.search(question.strip()):
+    if TOPIC_CHANGE.search(question) or not is_followup(question):
         return None
     earlier = []
     for row in reversed(history):
@@ -33,7 +52,7 @@ def followup_query(question, history):
             continue
         text = row["content"]
         earlier.append(clip(text, 1000)[0])
-        if TOPIC_CHANGE.search(text) or not FOLLOWUP.search(text.strip()) or len(earlier) == 4:
+        if TOPIC_CHANGE.search(text) or not is_followup(text) or len(earlier) == 4:
             break
     return "\n".join(reversed(earlier)) if earlier else None
 
