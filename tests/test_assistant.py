@@ -98,6 +98,23 @@ class StoreTests(unittest.TestCase):
 
 
 class EngineProcessTests(unittest.TestCase):
+    def test_relative_data_directory_works_after_child_changes_directory(self):
+        import sys
+        root = Path(__file__).resolve().parents[1]
+        (root / 'data').mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root / 'data') as tmp:
+            relative = Path(tmp).relative_to(Path.cwd())
+            engine = CodexEngine(relative, timeout=5)
+            fake = Path(tmp) / 'fake_cli.py'
+            fake.write_text("import os,sys\nfrom pathlib import Path\n"
+                "os.chdir(sys.argv[sys.argv.index('-C')+1])\n"
+                "text=sys.stdin.read()\n"
+                "Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('received '+text,encoding='utf-8')\n", encoding='utf-8')
+            original = engine.command
+            with patch('assistant.engine.find_codex', return_value='codex'), patch.object(engine, 'command',
+                    side_effect=lambda output: [sys.executable, str(fake), *original(output)[1:]]):
+                self.assertEqual(engine.answer('relative-path test'), 'received relative-path test')
+
     def test_command_has_no_shell_interpolation_or_write_permissions(self):
         with tempfile.TemporaryDirectory() as tmp, patch("assistant.engine.find_codex", return_value="codex"):
             command = CodexEngine(Path(tmp)).command(Path(tmp) / "output")

@@ -46,7 +46,8 @@ def build_prompt(question, history, memories, brief=None, excerpts=None):
 
 class CodexEngine:
     def __init__(self, data_dir: Path, timeout=240):
-        self.workdir = Path(data_dir) / "engine-workspace"
+        # CLI -C and output paths must remain valid after Popen changes cwd.
+        self.workdir = Path(data_dir).resolve() / "engine-workspace"
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
 
