@@ -48,11 +48,33 @@ SHORT_FOLLOWUP = re.compile(
     r"|(?:用|以)(?:表格|條列|清單)(?:整理|呈現|回答|說明)"
     r")[。.!！?？\s]*", re.I)
 
+# Modal wording alone does not imply continuity. Require an explicit reference
+# and a complete transformation request, so quoted phrases and new objects do
+# not become retrieval anchors merely because they contain formatting verbs.
+REFERENCE_FOLLOWUP = re.compile(
+    r"(?:"
+    r"(?:可以|能不能|可不可以|能否|是否可以|能)?\s*"
+    r"(?:把|將)(?:上面|上述|剛才|前面|剛剛)(?:的)?(?:回答|內容|說明)?"
+    r"(?:改成|整理成|轉成)(?:表格|清單|條列)(?:嗎|呢)?"
+    r"|(?:(?:can|could|would)\s+you\s+)?"
+    r"(?:put|turn|convert|format)\s+(?:the\s+)?"
+    r"(?:previous|preceding|above|last)\s+(?:answer|response|explanation|content)\s+"
+    r"(?:in(?:to)?|as)\s+(?:a\s+)?(?:table|list|bullet\s+points)"
+    r")[。.!！?？\s]*", re.I)
+NO_PREVIOUS = re.compile(
+    r"(?:不要|不用|不必|別)(?:再)?\s*(?:沿用|使用|參考|接續|延續)\s*"
+    r"(?:前文|上文|之前|先前|剛才|上述|前面)"
+    r"|\b(?:do not|don't|without)\s+(?:use|using|reuse|reusing|refer to|referring to)\s+"
+    r"(?:the\s+)?(?:previous|prior|earlier|above)\s+(?:context|conversation|messages?|answers?)\b", re.I)
+
 
 def is_followup(question):
     text = unicodedata.normalize("NFKC", question).strip()
+    if TOPIC_CHANGE.search(text) or NO_PREVIOUS.search(text):
+        return False
     text = POLITE.sub("", text, count=1)
-    return bool(FOLLOWUP.search(text) or SHORT_FOLLOWUP.fullmatch(text))
+    return bool(FOLLOWUP.search(text) or SHORT_FOLLOWUP.fullmatch(text)
+                or REFERENCE_FOLLOWUP.fullmatch(text))
 
 
 def clip(text, limit):
