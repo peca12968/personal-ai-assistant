@@ -86,40 +86,49 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
+def basic_report(plan, document, headers, rows, cancel, deadline):
+    group_index, value_index = headers.index(plan['group_column']), headers.index(plan['value_column'])
+    with localcontext() as context:
+        context.prec = 140
+        grouped = defaultdict(lambda: [0, Decimal(0)])
+        values = []
+        for index, row in enumerate(rows, 1):
+            check_running(cancel, deadline)
+            value = number(row[value_index], index)
+            values.append(value)
+            group = grouped[row[group_index]]
+            group[0] += 1
+            group[1] += value
+            if len(grouped) > MAX_GROUPS:
+                raise ValueError('分組超過 5000 組，請縮小輸入。')
+        # Cross-check partition coverage and totals against the parsed input.
+        total = sum(values, Decimal(0))
+        if sum(item[0] for item in grouped.values()) != len(rows) or sum((item[1] for item in grouped.values()), Decimal(0)) != total:
+            raise ValueError('分組結果與來源總和不一致。')
+        output = [{'group': key, 'count': count, 'sum': format(value, 'f')} for key, (count, value) in sorted(grouped.items())]
+        report = {'operation': plan['operation'], 'source_name': plan['source_name'], 'source_sha256': document['sha256'],
+                  'group_column': plan['group_column'], 'value_column': plan['value_column'],
+                  'row_count': len(rows), 'group_count': len(output), 'total': format(total, 'f'), 'groups': output,
+                  'verification': {'row_count_matches': True, 'group_total_matches': True, 'source_unchanged': True}}
+    return report
+
+
 def execute_task(store, sid, task_id, cancel=None, timeout=30):
     task = store.task(sid, task_id)
     store.claim_task(sid, task_id)
     deadline = time.monotonic() + timeout
     try:
         plan = task['plan']
-        if plan.get('version') != 1 or plan.get('operation') != 'csv_group_sum':
+        if (plan.get('version'), plan.get('operation')) not in {(1, 'csv_group_sum'), (2, 'csv_workflow')}:
             raise ValueError('不支援的任務計畫版本或操作。')
         document, headers, rows = load_csv(plan['source_path'], cancel, deadline)
         if document['sha256'] != plan['source_sha256'] or headers != plan['headers'] or len(rows) != plan['rows']:
             raise ValueError('來源已在預覽後改變，請建立並確認新計畫。')
-        group_index, value_index = headers.index(plan['group_column']), headers.index(plan['value_column'])
-        with localcontext() as context:
-            context.prec = 140
-            grouped = defaultdict(lambda: [0, Decimal(0)])
-            values = []
-            for index, row in enumerate(rows, 1):
-                check_running(cancel, deadline)
-                value = number(row[value_index], index)
-                values.append(value)
-                group = grouped[row[group_index]]
-                group[0] += 1
-                group[1] += value
-                if len(grouped) > MAX_GROUPS:
-                    raise ValueError('分組超過 5000 組，請縮小輸入。')
-            # Cross-check partition coverage and totals against the parsed input.
-            total = sum(values, Decimal(0))
-            if sum(item[0] for item in grouped.values()) != len(rows) or sum((item[1] for item in grouped.values()), Decimal(0)) != total:
-                raise ValueError('分組結果與來源總和不一致。')
-            output = [{'group': key, 'count': count, 'sum': format(value, 'f')} for key, (count, value) in sorted(grouped.items())]
-            report = {'operation': plan['operation'], 'source_name': plan['source_name'], 'source_sha256': document['sha256'],
-                      'group_column': plan['group_column'], 'value_column': plan['value_column'],
-                      'row_count': len(rows), 'group_count': len(output), 'total': format(total, 'f'), 'groups': output,
-                      'verification': {'row_count_matches': True, 'group_total_matches': True, 'source_unchanged': True}}
+        if plan['version'] == 2:
+            from .workflows import calculate
+            report = calculate(plan, document, headers, rows, cancel, deadline)
+        else:
+            report = basic_report(plan, document, headers, rows, cancel, deadline)
         check_running(cancel, deadline)
         if read_document(plan['source_path'])['sha256'] != plan['source_sha256']:
             raise ValueError('來源在執行期間改變，結果未標記完成。')
@@ -177,6 +186,9 @@ def task_context(store, sid, question):
                 item['status'] = 'unverified'
             else:
                 item.update({key: report[key] for key in ('row_count', 'group_count', 'total', 'group_column', 'value_column', 'source_sha256', 'verification')})
+                if report['operation'] == 'csv_workflow':
+                    item.update({key: report[key] for key in ('workflow', 'filter_stages', 'input_row_count', 'excluded_row_count',
+                                'returned_group_count', 'selection_limited', 'returned_total')})
                 item['groups_preview'] = [{**group, 'group': group['group'][:200], 'label_truncated': len(group['group']) > 200} for group in report['groups'][:10]]
                 item['groups_truncated'] = len(report['groups']) > 10
                 item['report_sha256'] = task['result']['report_sha256']

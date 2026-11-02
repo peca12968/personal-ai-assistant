@@ -22,6 +22,10 @@ def main():
     mode.add_argument("--restore", type=Path, help="還原備份到 --data-dir 指定的新資料夾")
     mode.add_argument("--search-folder", type=Path, help="在指定資料夾本機唯讀搜尋，不呼叫模型")
     mode.add_argument('--plan-csv', type=Path, help='建立 CSV 分組加總計畫，尚不執行')
+    mode.add_argument('--plan-workflow', type=Path, help='依 --workflow-spec 建立 CSV 多步計畫')
+    mode.add_argument('--propose-csv', type=Path, help='依 --request 請模型規劃 CSV，尚不執行')
+    parser.add_argument('--workflow-spec', type=Path)
+    parser.add_argument('--request', help='搭配 --propose-csv 的工作需求')
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--export-task', help='匯出已完成報告；需 --session 與 --output')
@@ -38,6 +42,10 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if bool(args.plan_workflow) != bool(args.workflow_spec):
+        parser.error('--plan-workflow 與 --workflow-spec 需一起使用。')
+    if bool(args.propose_csv) != bool(args.request):
+        parser.error('--propose-csv 與 --request 需一起使用。')
     if (args.improve or args.rollback_improvement) and any((args.file, args.session, args.output,
                                                          args.group_column, args.value_column, args.query)):
         parser.error('自我改進／回復不能混用對話、文件或 CSV 工作參數。')
@@ -70,11 +78,11 @@ def main():
         parser.error('欄位參數僅搭配 --plan-csv。')
     if args.output and not args.export_task:
         parser.error('--output 僅搭配 --export-task。')
-    if args.plan_csv or args.run_task or args.task_status or args.export_task:
+    if args.plan_csv or args.plan_workflow or args.propose_csv or args.run_task or args.task_status or args.export_task:
         from .tasks import execute_task, export_task, plan_csv
         if args.plan_csv and (not args.group_column or not args.value_column):
             parser.error('建立計畫需 --group-column 與 --value-column。')
-        if not args.plan_csv and not args.session:
+        if not (args.plan_csv or args.plan_workflow or args.propose_csv) and not args.session:
             parser.error('操作既有任務需 --session。')
         if args.export_task and not args.output:
             parser.error('匯出需 --output 指定新 JSON 檔案。')
@@ -83,6 +91,13 @@ def main():
             sid = args.session or store.new_session('CSV 工作')
             if args.plan_csv:
                 result = plan_csv(store, sid, args.plan_csv, args.group_column, args.value_column)
+            elif args.plan_workflow:
+                from .workflows import plan_workflow, read_spec
+                result = plan_workflow(store, sid, args.plan_workflow, read_spec(args.workflow_spec))
+            elif args.propose_csv:
+                from .workflows import propose_workflow
+                result = propose_workflow(store, sid, args.propose_csv, args.request, CodexEngine(args.data_dir))
+                result['session_id'] = sid
             elif args.run_task:
                 result = execute_task(store, sid, args.run_task)
             elif args.export_task:
@@ -92,7 +107,7 @@ def main():
             print(json.dumps(result, ensure_ascii=False, indent=2))
             if args.run_task and result['status'] != 'succeeded':
                 parser.exit(1)
-        except (ValueError, OSError, sqlite3.Error) as exc:
+        except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
             parser.exit(1, '工作未完成：' + str(exc) + '\n')
         return
     if args.search_folder:

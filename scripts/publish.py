@@ -41,6 +41,7 @@ def main():
     run(sys.executable, "scripts/evaluate_search.py")
     run(sys.executable, "scripts/evaluate_understanding.py")
     run(sys.executable, "scripts/evaluate_tasks.py")
+    run(sys.executable, "scripts/evaluate_workflows.py")
     if args.expected_head:
         if run('git', 'rev-parse', 'HEAD', capture=True) != args.expected_head:
             raise RuntimeError('Upload stopped: base commit changed during validation.')

@@ -13,7 +13,7 @@ python -m assistant --ask "幫我把學習 Python 拆成四週計畫"
 ```
 
 桌面版支援對話紀錄、停止回答、長期記憶新增／編輯／停用／到期日／刪除、對話目標與限制、回答參考快照、回答評分與更正、JSON 匯出。Ctrl+Enter 傳送。
-聊天目前是建議模式：能分析明確選取的文字文件與提供解法；另可由你在「工作工具」選擇並執行 CSV 分組加總。聊天不會自動執行命令，不能修改原檔、瀏覽即時網頁或代替你執行任意系統工作。
+聊天目前是建議模式：能分析明確選取的文字文件與提供解法；另可由你在「工作工具」規劃並執行 CSV 篩選、分組加總與排序。聊天不會自動執行命令，不能修改原檔、瀏覽即時網頁或代替你執行任意系統工作。
 
 ## 記憶與隱私
 
@@ -67,7 +67,7 @@ python -m assistant --search-folder "F:\Notes" --query "備份保留"
 
 Windows 讀檔前會核對已開啟控制代碼的實際路徑，檢查實作依據 [Microsoft GetFinalPathNameByHandleW 文件](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)。不支援實際路徑查詢時拒絕讀取。搜尋沒有改變既有每段對話 8 檔／8 MiB 的匯入上限；找不到結果不代表文件或資訊不存在。
 
-## 實際工作工具：CSV 分組加總
+## 實際工作工具：CSV 計畫與驗證
 
 在主視窗右上角點「工作工具」，選取 CSV、分組欄與數值欄，再點「建立計畫」。先核對來源路徑、內容指紋、前五筆預覽與處理規則，再按「執行選取計畫」。計畫保存不代表已執行；只有來源、筆數與分組總和核對成功才標記完成。執行及計算完全在本機，不呼叫模型。
 
@@ -85,6 +85,25 @@ python -m assistant --export-task 任務ID --session 對話ID --output "F:\Notes
 ```
 
 第一個命令回傳任務 ID 與 `session_id`；後續使用這兩個值。CLI 的輸出為 UTF-8。可以加上 `--data-dir` 使用其他本機資料目錄，所有步驟必須使用同一目錄。
+
+也可在選取 CSV 後填「工作需求」，按「用文字規劃」。例如：「只保留 state 完全等於 paid，依 team 加總 amount，按總額由大到小列前兩組。」模型只收到需求與欄位名稱，不收到資料列、原始檔路徑或整份 CSV。產生的計畫會連同原始需求、每步條件與規則顯示；請核對後再按「執行選取計畫」。規劃本身不執行，資料不清楚時會詢問，超出能力時會說明限制。
+
+多步計畫支援最多六個依序全部成立（AND）的條件，再單欄分組、單欄加總、依組名／加總／筆數升降冪排序，以及前 1–5000 組或全部。文字條件為完全相等、不相等、包含、開頭；數值條件為等於、不等於、大於、大於等於、小於、小於等於。文字大小寫與空白都保留；數值同樣只接受普通十進位。條件依序執行，先前已被排除的列不再檢查後面欄位；仍要處理的列有不合法數值就整體失敗，不能默默當零。日期開頭篩選只是字串比對，不代表日期解析。
+
+同加總或同筆數時，按組名的字元順序升冪，並非中文筆畫或自然數字排序。報告明確區分來源筆數、符合筆數、排除筆數，保存每個條件的中間筆數；`total` 是所有符合條件的總額，`returned_total` 才是前幾組總額，兩者可不同。如果未列出的組有負值，前幾組總額甚至可大於全部總額。`group_count` 是所有符合分組，`returned_group_count` 是報告所列分組；`selection_limited=true` 表示只選了前幾組。
+
+```powershell
+python -m assistant --propose-csv "F:\Notes\orders.csv" --request "依 team 加總 amount，按總額降冪列前兩組"
+python -m assistant --plan-workflow "F:\Notes\orders.csv" --workflow-spec "F:\Notes\workflow.json"
+```
+
+第一個命令呼叫模型規劃；第二個直接讀取下列形式的 JSON，不需模型。後續仍用 `--run-task`、`--task-status`、`--export-task`，不會自動匯出。JSON 規格上限 32 KB，欄名需與 CSV 一致，篩選值最多 1000 字；前幾組以 `top_n:null` 表示全部。
+
+```json
+{"group_column":"team","value_column":"amount","filters":[{"column":"state","op":"eq","value":"paid"}],"sort":{"by":"sum","direction":"desc"},"top_n":2}
+```
+
+篩選 `op` 可為 `eq`、`ne`、`contains`、`starts_with`（文字）或 `num_eq`、`num_ne`、`gt`、`gte`、`lt`、`lte`（數值）；`value` 一律是字串。排序 `by` 可為 `group`、`sum`、`count`，`direction` 為 `asc` 或 `desc`。不接受任意程式碼、命令、其他來源路徑或額外操作。現階段沒有平均、OR、多欄分組、跨檔合併、日期解析或相對日期、寄信、上傳、排程和自動匯出；模型不能省略不支援部分後假稱整個需求可做。即使規格格式正確，也仍需核對是否符合你的原意。
 
 工作紀錄與完整結果保存在本機資料庫，備份會包含它們；外部匯出檔不會隨備份搬移，可從還原的工作重新匯出。保留最近 20 筆匯出紀錄。工作題目提問時，最多提供目前對話最近三筆工作摘要、每筆最多十組與總和給 Codex，絕對來源／匯出路徑不加入該摘要；分組名稱過長會標示省略。可在「查看本次參考 → 工作結果」檢視送出的快照。曾匯出驗證不代表檔案現在仍存在或未變更。
 
@@ -165,6 +184,9 @@ python scripts/evaluate_documents.py
 python scripts/evaluate_search.py
 python scripts/evaluate_understanding.py
 python scripts/evaluate_tasks.py
+python scripts/evaluate_workflows.py
+python scripts/evaluate_workflows.py --live --report data/evaluations/workflows-new.json
+python scripts/evaluate_workflow_answers.py --live --report data/evaluations/workflow-answers-new.json
 python scripts/evaluate_search.py --live --ids port_compare policy_conflict late_recovery --report data/evaluations/search-live.json
 python scripts/evaluate_documents.py --live
 python scripts/evaluate.py --live
