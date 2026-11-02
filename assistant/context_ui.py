@@ -75,6 +75,8 @@ def show_context(parent, store, message_id):
     sections.append(('溝通提示', '這些是可能誤判的輔助提示，不能取代完整原文。\n\n' +
                      json.dumps(context.get('communication', {}), ensure_ascii=False, indent=2)))
     sections.append(('改版紀錄', json.dumps(context.get('self_improvement', []), ensure_ascii=False, indent=2)))
+    sections.append(('回答流程', '這是提問前的本機流程狀態快照，不是雲端即時狀態。\n\n' +
+                     json.dumps({'answer_attempts': context.get('answer_attempts', []), 'retry_of': context.get('retry_of')}, ensure_ascii=False, indent=2)))
     sections.append(('工作結果', '以下是提問時已保存的工作狀態快照，並非聊天模型新執行的操作。\n\n' +
                      (json.dumps(context.get('task_runs'), ensure_ascii=False, indent=2) if context.get('task_runs') else '本次未提供工作紀錄。')))
     if local:

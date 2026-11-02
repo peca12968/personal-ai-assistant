@@ -70,6 +70,17 @@ class Store:
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS local_memory_messages (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE);
+                CREATE TABLE IF NOT EXISTS answer_runs (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    user_message_id INTEGER NOT NULL REFERENCES messages(id),
+                    answer_message_id INTEGER REFERENCES messages(id),
+                    status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','cancelled','interrupted')),
+                    error_code TEXT NOT NULL DEFAULT '', context_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT,
+                    CHECK((status='succeeded' AND answer_message_id IS NOT NULL) OR
+                          (status<>'succeeded' AND answer_message_id IS NULL)));
+                CREATE UNIQUE INDEX IF NOT EXISTS one_running_answer_per_session
+                    ON answer_runs(session_id) WHERE status='running';
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     name TEXT NOT NULL, source_path TEXT NOT NULL, path_key TEXT NOT NULL,
@@ -185,21 +196,21 @@ class Store:
                 db.execute("UPDATE sessions SET title=? WHERE id=? AND title='新對話'", (content[:50], sid))
             return cur.lastrowid
 
-    def messages(self, sid, limit=30, exclude_local=False):
+    def messages(self, sid, limit=30, exclude_local=False, exclude_message_id=None):
         local_filter = ' AND id NOT IN (SELECT message_id FROM local_memory_messages)' if exclude_local else ''
         with self.connect() as db:
             return [dict(r) for r in db.execute(
-                "SELECT * FROM (SELECT * FROM messages WHERE session_id=?" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
-                (sid, limit))]
+                "SELECT * FROM (SELECT * FROM messages WHERE session_id=? AND id<>?" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
+                (sid, exclude_message_id or -1, limit))]
 
-    def earlier_user_messages(self, sid, before_id, limit=200, exclude_local=False):
+    def earlier_user_messages(self, sid, before_id, limit=200, exclude_local=False, exclude_message_id=None):
         local_filter = ' AND id NOT IN (SELECT message_id FROM local_memory_messages)' if exclude_local else ''
         with self.connect() as db:
             rows = [dict(row) for row in db.execute("""SELECT * FROM (SELECT * FROM messages
-                WHERE session_id=? AND role='user' AND id<?""" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
-                (sid, before_id, limit))]
-            first = db.execute("SELECT * FROM messages WHERE session_id=? AND role='user' AND id<?" + local_filter + " ORDER BY id LIMIT 1",
-                               (sid, before_id)).fetchone()
+                WHERE session_id=? AND role='user' AND id<? AND id<>?""" + local_filter + " ORDER BY id DESC LIMIT ?) ORDER BY id",
+                (sid, before_id, exclude_message_id or -1, limit))]
+            first = db.execute("SELECT * FROM messages WHERE session_id=? AND role='user' AND id<? AND id<>?" + local_filter + " ORDER BY id LIMIT 1",
+                               (sid, before_id, exclude_message_id or -1)).fetchone()
             if first and (not rows or rows[0]["id"] != first["id"]):
                 rows.insert(0, dict(first))
             return rows
@@ -327,4 +338,11 @@ class Store:
 
     def export_session(self, sid, path):
         rows = self.messages(sid, limit=100000)
+        from .answer_runs import runs
+        attempts = {}
+        for run in runs(self, sid):
+            attempts.setdefault(run['user_message_id'], []).append(run)
+        for row in rows:
+            if row['id'] in attempts:
+                row['answer_attempts'] = attempts[row['id']]
         Path(path).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")

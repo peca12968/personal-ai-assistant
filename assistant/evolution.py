@@ -25,7 +25,7 @@ EDITABLE = ('assistant/communication.py', 'assistant/context.py',
 CHECKS = [('-m', 'unittest', 'discover', '-s', 'tests', '-v')] + [
     ('scripts/' + name + '.py',) for name in
     ('evaluate', 'evaluate_context', 'evaluate_documents', 'evaluate_search',
-     'evaluate_understanding', 'evaluate_tasks', 'evaluate_workflows', 'evaluate_memory_commands')]
+     'evaluate_understanding', 'evaluate_tasks', 'evaluate_workflows', 'evaluate_memory_commands', 'evaluate_answer_runs')]
 
 
 def git(root, *args):

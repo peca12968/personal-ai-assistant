@@ -23,6 +23,7 @@ TABLES = {
     'session_briefs': {'session_id', 'objective', 'constraints_text', 'decisions', 'updated_at'},
     'answer_contexts': {'message_id', 'payload'},
     'local_memory_messages': {'message_id'},
+    'answer_runs': {'id', 'session_id', 'user_message_id', 'answer_message_id', 'status', 'error_code', 'context_json', 'started_at', 'finished_at'},
     'documents': {'id', 'session_id', 'name', 'source_path', 'path_key', 'content', 'sha256', 'encoding', 'size_bytes', 'imported_at'},
     'answer_checks': {'message_id', 'payload'},
     'task_runs': {'id', 'session_id', 'status', 'plan_json', 'result_json', 'error', 'created_at', 'finished_at'},
@@ -52,7 +53,7 @@ def validate_database(path):
         if any(kind not in {'table', 'index'} or (sql and 'VIRTUAL TABLE' in sql.upper()) for kind, _, sql in objects):
             raise ValueError('備份含不支援的資料庫物件。')
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages'} <= actual_tables <= set(TABLES):
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs'} <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:

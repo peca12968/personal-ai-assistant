@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description="個人 AI 助理")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--ask", help="單次提問")
+    mode.add_argument('--retry-answer', action='store_true', help='重試指定對話最後一題，需 --session；不重複新增問題')
     mode.add_argument("--backup", action="store_true", help="建立目前資料的本機備份")
     mode.add_argument("--inspect-backup", type=Path, help="檢查備份完整性與內容筆數")
     mode.add_argument("--restore", type=Path, help="還原備份到 --data-dir 指定的新資料夾")
@@ -42,6 +43,8 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     args = parser.parse_args()
+    if args.retry_answer and (not args.session or args.file):
+        parser.error('--retry-answer 需要 --session，不能同時匯入文件；會使用目前已保存的參考資料。')
     if bool(args.plan_workflow) != bool(args.workflow_spec):
         parser.error('--plan-workflow 與 --workflow-spec 需一起使用。')
     if bool(args.propose_csv) != bool(args.request):
@@ -137,12 +140,13 @@ def main():
         return
     store = Store(args.data_dir / "assistant.sqlite3")
     engine = CodexEngine(args.data_dir)
-    if args.ask:
+    if args.ask or args.retry_answer:
         try:
             sid = args.session or store.new_session()
             for path in args.file:
                 store.attach_document(sid, path)
-            result = Assistant(store, engine).ask(sid, args.ask)
+            app = Assistant(store, engine)
+            result = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
         except (EngineError, ValueError, OSError, sqlite3.Error) as exc:
             parser.exit(1, '回答未完成：' + str(exc) + '\n')
         print(result["content"])

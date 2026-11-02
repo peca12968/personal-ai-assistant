@@ -1,4 +1,5 @@
 import queue
+import sqlite3
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -90,6 +91,8 @@ class App:
         self.send_btn.pack(side="right")
         self.stop_btn = ttk.Button(actions, text="停止", command=self.cancel.set, state="disabled")
         self.stop_btn.pack(side="right", padx=6)
+        self.retry_btn = ttk.Button(actions, text='重試最後一題', command=self.retry_answer)
+        self.retry_btn.pack(side='right', padx=6)
         self.status = tk.StringVar(value="就緒 · 記憶與對話只存本機，不納入 GitHub 程式更新")
         tk.Label(root, textvariable=self.status, bg=BG, fg=MUTED, anchor="w", padx=24, pady=10).grid(row=2, column=0, sticky="ew")
         sessions = store.sessions()
@@ -120,17 +123,34 @@ class App:
         self.chat.see("end")
 
     def render(self):
+        from .answer_runs import recover, runs, ERROR_LABELS
+        recovery_notice = ''
+        try:
+            recover(self.store, self.sid)
+        except (OSError, sqlite3.Error, ValueError):
+            recovery_notice = '目前無法核對本機回答流程的工作鎖；沒有將進行中紀錄改成中斷。'
+        attempts = {}
+        for run in reversed(runs(self.store, self.sid)):
+            attempts[run['user_message_id']] = run
         self.chat.configure(state="normal")
         self.chat.delete("1.0", "end")
         self.chat.configure(state="disabled")
+        if recovery_notice:
+            self.append('note', recovery_notice)
         rows = self.store.messages(self.sid, 500)
         self.last_answer = None
         if not rows:
             self.append("note", "告訴我你想完成什麼。\n我可以協助釐清需求、規劃步驟、分析問題與檢查解法。\n\n你可以在「管理長期記憶」保存偏好，並對回答留下更正。")
         for row in rows:
             self.append(row["role"], row["content"])
+            attempt = attempts.get(row['id'])
+            if attempt and attempt['status'] != 'succeeded':
+                self.append('note', '回答狀態：' + ('本機流程尚未保存完成狀態。' if attempt['status'] == 'running' else
+                    ERROR_LABELS.get(attempt['error_code'], ERROR_LABELS['unexpected_error'])))
             if row["role"] == "assistant":
                 self.last_answer = row["id"]
+        if rows and rows[-1]['role'] != 'assistant':
+            self.last_answer = None
 
     def new_session(self):
         if self.busy:
@@ -148,9 +168,29 @@ class App:
     def set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn):
+        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn, self.retry_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
+
+    def retry_answer(self):
+        if self.busy:
+            return
+        from .answer_runs import retry_target
+        try:
+            retry_target(self.store, self.sid)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            messagebox.showinfo('無法重試', str(exc), parent=self.root)
+            return
+        self.cancel.clear()
+        self.set_busy(True)
+        self.status.set('重試最後一題，使用目前有效的記憶與文件；不重複新增問題。')
+        sid = self.sid
+        def work():
+            try:
+                self.events.put(('answer', self.assistant.retry(sid, self.cancel)))
+            except Exception as exc:
+                self.events.put(('error', str(exc)))
+        threading.Thread(target=work, daemon=True).start()
 
     def send(self):
         if self.busy:
@@ -172,7 +212,7 @@ class App:
             try:
                 self.events.put(("answer", self.assistant.ask(sid, question, self.cancel)))
             except Exception as exc:
-                self.events.put(("error", str(exc)))
+                self.events.put(("error", {'message': str(exc), 'question': question}))
         threading.Thread(target=work, daemon=True).start()
         return "break"
 
@@ -182,15 +222,20 @@ class App:
                 kind, value = self.events.get_nowait()
                 self.set_busy(False)
                 self.refresh_sessions()
+                self.render()
                 if kind == "answer":
                     self.last_answer = value["id"]
-                    self.append("assistant", value["content"])
                     ids = ", ".join(map(str, value["memory_ids"])) or "無"
                     if value.get('response_mode') == 'local_memory':
                         self.status.set('本機記憶操作已回覆 · 未呼叫模型 · 可查看本次操作紀錄')
                     else:
                         self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
                 else:
+                    if isinstance(value, dict):
+                        latest = self.store.messages(self.sid, 1)
+                        if (not latest or latest[0]['role'] != 'user' or latest[0]['content'] != value['question']) and not self.input.get('1.0', 'end').strip():
+                            self.input.insert('1.0', value['question'])
+                        value = value['message']
                     self.append("note", value)
                     self.status.set("本次未完成；可重新提問")
         except queue.Empty:

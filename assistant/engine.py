@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .context import followup_query, make_context, select_excerpts
@@ -16,6 +17,7 @@ from .tasks import task_context
 from .communication import conversation_style
 from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
+from . import answer_runs
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_PROMPT_BYTES = 2 * 1024 * 1024
@@ -160,8 +162,8 @@ class Assistant:
     def __init__(self, store, engine):
         self.store, self.engine = store, engine
 
-    def prepare_context(self, sid, question):
-        history = self.store.messages(sid, 16, exclude_local=True)
+    def prepare_context(self, sid, question, exclude_message_id=None):
+        history = self.store.messages(sid, 16, exclude_local=True, exclude_message_id=exclude_message_id)
         memories = self.store.retrieve(question)
         followup = followup_query(question, history)
         if followup:
@@ -170,31 +172,52 @@ class Assistant:
                 if row["id"] not in seen:
                     memories.append(row)
                     seen.add(row["id"])
-        older = self.store.earlier_user_messages(sid, history[0]["id"], exclude_local=True) if history else []
+        older = self.store.earlier_user_messages(sid, history[0]["id"], exclude_local=True, exclude_message_id=exclude_message_id) if history else []
         context = make_context(question, history, memories, self.store.session_brief(sid), select_excerpts(question, older))
         documents = self.store.documents(sid, include_content=True)
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
         context['task_runs'] = task_context(self.store, sid, question)
         context['communication'] = conversation_style(question, history)
         context['self_improvement'] = improvement_context(ROOT, question)
+        context['answer_attempts'] = answer_runs.context_status(self.store, sid)
+        context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
         return context
 
     def ask(self, sid, question, cancel=None):
+        return self._ask(sid, question, cancel)
+
+    def retry(self, sid, cancel=None):
+        target = answer_runs.retry_target(self.store, sid)
+        return self._ask(sid, target['question'], cancel, retry=target)
+
+    def _ask(self, sid, question, cancel=None, retry=None):
         if cancel and cancel.is_set():
             raise EngineError('已停止這次回答。', 'cancelled')
         question = question.strip()
         if not question or len(question) > 16000:
             raise ValueError("問題需為 1–16000 字。")
         command = parse_command(question)
-        if command is not None:
+        if command is not None and retry is None:
             return handle_command(self.store, sid, question, command, cancel)
-        context = self.prepare_context(sid, question)
-        self.store.add_message(sid, "user", question)
-        answer = self.engine.answer(render_prompt(context), cancel)
-        checks = check_citations(answer, context["documents"]["excerpts"])
-        if any(not check["range_valid"] for check in checks):
-            answer += "\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。"
-        mid = self.store.add_answer(sid, answer, context, checks)
+        answer_runs.recover(self.store, sid)
+        context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
+        if retry:
+            context['retry_of'] = {'run_id': retry['id'], 'previous_status': retry['status'], 'uses_current_references': True}
+        run_id = uuid.uuid4().hex
+        with answer_runs.lease(self.store, run_id):
+            uid = answer_runs.begin(self.store, sid, run_id, question, context, retry)
+            try:
+                answer = self.engine.answer(render_prompt(context), cancel)
+                if cancel and cancel.is_set():
+                    raise EngineError('已停止這次回答。', 'cancelled')
+                checks = check_citations(answer, context['documents']['excerpts'])
+                if any(not check['range_valid'] for check in checks):
+                    answer += '\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
+                mid = answer_runs.finish(self.store, run_id, answer, context, checks)
+            except Exception as exc:
+                answer_runs.fail(self.store, run_id, getattr(exc, 'code', 'unexpected_error'))
+                raise
         return {"id": mid, "content": answer, "memory_ids": [m["id"] for m in context["memories"]],
                 "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]],
-                "document_count": len(context["documents"]["catalog"]), "citation_checks": checks}
+                "document_count": len(context["documents"]["catalog"]), "citation_checks": checks,
+                'run_id': run_id, 'user_message_id': uid}
