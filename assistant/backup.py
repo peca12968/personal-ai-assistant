@@ -29,6 +29,7 @@ TABLES = {
     'task_runs': {'id', 'session_id', 'status', 'plan_json', 'result_json', 'error', 'created_at', 'finished_at'},
     'autonomous_goals': {'id', 'session_id', 'objective', 'status', 'sources_json', 'notes', 'question', 'result', 'notice', 'created_at', 'updated_at'},
     'autonomous_steps': {'id', 'goal_id', 'sequence', 'action_json', 'observation_json', 'created_at'},
+    'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
 }
 
 
@@ -57,7 +58,9 @@ def validate_database(path):
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
         if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
             raise ValueError('自主目標資料表不完整。')
-        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps'} <= actual_tables <= set(TABLES):
+        if 'autonomous_handoffs' in actual_tables and 'autonomous_goals' not in actual_tables:
+            raise ValueError('自主階段資料表不完整。')
+        if not set(TABLES) - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs'} <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -68,6 +71,11 @@ def validate_database(path):
             raise ValueError('資料庫完整性檢查未通過。')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if 'autonomous_handoffs' in actual_tables and db.execute('''SELECT 1 FROM autonomous_handoffs h
+            JOIN autonomous_goals child ON child.id=h.goal_id
+            JOIN autonomous_goals parent ON parent.id=h.parent_goal_id
+            WHERE child.session_id != parent.session_id OR child.id=parent.id LIMIT 1''').fetchone():
+            raise ValueError('自主階段來源不屬於同一對話。')
         if 'memory_sequence' in actual_tables:
             counters = db.execute('SELECT id,last_id FROM memory_sequence').fetchall()
             largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]

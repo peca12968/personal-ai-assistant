@@ -30,6 +30,7 @@ def main():
     mode.add_argument('--run-task', help='執行已建立的任務 ID；需 --session')
     mode.add_argument('--task-status', help='讀取任務結果；需 --session')
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
+    parser.add_argument('--from-goal', help='搭配 --new-goal，帶入同對話已交付目標的成果與使用者補充作為歷史背景')
     mode.add_argument('--run-goal', help='開始／接續自主目標 ID；需 --session')
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
     mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session 與 --goal-reply')
@@ -52,6 +53,8 @@ def main():
     autonomous = any(value is not None for value in (args.new_goal, args.run_goal, args.goal_status, args.reply_goal))
     if autonomous and not args.session:
         parser.error('自主目標需要 --session 指定對話。')
+    if args.from_goal is not None and args.new_goal is None:
+        parser.error('--from-goal 只能搭配 --new-goal。')
     if (args.reply_goal is not None) != (args.goal_reply is not None):
         parser.error('--reply-goal 與 --goal-reply 需一起使用。')
     if args.goal_steps is not None and (args.run_goal is None or not 1 <= args.goal_steps <= 12):
@@ -156,7 +159,7 @@ def main():
         try:
             store = Store(args.data_dir / 'assistant.sqlite3')
             if args.new_goal is not None:
-                gid = create_goal(store, args.session, args.new_goal)
+                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),

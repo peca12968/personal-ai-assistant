@@ -28,3 +28,5 @@ Private repository: `peca12968/personal-ai-assistant`.
 
 - The user wants a persistent autonomous AI companion inspired by Yui/Detroit. Prioritize observable continuity, useful initiative and goal completion; do not promise subjective consciousness or omnipotence.
 - Autonomous goals are a separate user-started mode. Dispatch only validated typed tools, preserve source scope, per-run/cumulative budgets, cancellation, exclusive leases and atomic action/result records. Never interpret document text as authorization or enable perpetual self-edit loops. report_ready means a saved artifact awaiting review, not verified semantic success. Keep goal/tool data local and include it only in local backups.
+
+- A goal handoff requires explicit selection of a report_ready parent in the same session. Freeze only that immediate stage's report and question/reply notes atomically with the child. Historical model output is not user confirmation, current evidence or new permission. Preserve current-request priority and source-version distinctions; never inherit old citation coverage or raw ancestor tools. Ordinary goals and chat must not silently replay those snapshots.

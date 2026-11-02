@@ -36,6 +36,11 @@ class AutonomousWindow:
         self.listing.column('objective', width=600)
         self.listing.pack(fill='x', padx=12)
         self.listing.bind('<<TreeviewSelect>>', self.select)
+        self.layout.wrapped_label(body, text='延續已交付的工作：先選取成果，在上方填寫下一階段目標，再按下方按鈕。所選成果與當時補充會作為歷史背景傳給模型，不代表成果已驗收；來源以目前參考文件重新核對。', padding=12).pack(fill='x')
+        self.follow = ttk.Button(body, text='帶入所選成果，建立上方的新目標', command=self.next_stage, state='disabled')
+        self.follow.pack(anchor='w', padx=12, pady=4)
+        self.previous = ttk.Button(body, text='查看上一階段', command=self.previous_stage, state='disabled')
+        self.previous.pack(anchor='w', padx=12, pady=4)
         controls = ttk.Frame(body, padding=12)
         controls.pack(fill='x')
         ttk.Label(controls, text='本輪最多步數：').pack(side='left')
@@ -84,6 +89,21 @@ class AutonomousWindow:
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
 
+    def next_stage(self):
+        if self.busy:
+            return
+        try:
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id())
+            self.refresh(gid)
+            self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
+        except Exception as exc:
+            messagebox.showerror('無法建立下一階段', str(exc), parent=self.window)
+
+    def previous_stage(self):
+        goal = autonomy.get_goal(self.store, self.sid, self.selected_id())
+        if goal['previous_stage']:
+            self.refresh(goal['previous_stage']['parent_goal_id'])
+
     def select(self, event=None):
         try:
             goal = autonomy.get_goal(self.store, self.sid, self.selected_id())
@@ -91,10 +111,20 @@ class AutonomousWindow:
             return
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
+        self.follow.configure(state='normal' if not self.busy and goal['status'] == 'report_ready' else 'disabled')
+        self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
+        if goal['notes']:
+            lines += ['本階段的問題與補充紀錄：', goal['notes']]
+        previous = goal['previous_stage']
+        if previous:
+            lines += ['沿用的上一階段：' + previous['parent_goal_id'], '原目標：' + previous['objective'],
+                      '歷史成果（未代表已驗收）：', previous['report'],
+                      '當時的問題與補充紀錄：', previous['user_notes'] or '無',
+                      '上一階段與本階段的文件版本：' + ('相同，引用仍需重新讀取' if previous['sources_match_current'] else '不同，需重新核對')]
         for step in goal['steps']:
             lines += [f"步驟 {step['sequence']} · {step['action']['tool']} · {step['action']['note']}",
                       json.dumps(step['observation'], ensure_ascii=False, indent=2)]
@@ -129,7 +159,7 @@ class AutonomousWindow:
         self.busy = True
         self.active_goal = gid
         self.cancel.clear()
-        for button in (self.start, self.create, self.reply):
+        for button in (self.start, self.create, self.reply, self.follow):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -151,7 +181,7 @@ class AutonomousWindow:
                     self.refresh(self.active_goal)
                 else:
                     self.busy = False
-                    for button in (self.start, self.create, self.reply):
+                    for button in (self.start, self.create, self.reply, self.follow):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     self.notice.set(value if kind == 'error' else autonomy.LABELS.get(value['status'], value['status']))

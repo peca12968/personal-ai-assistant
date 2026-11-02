@@ -105,6 +105,11 @@ class Store:
                     id INTEGER PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
                     sequence INTEGER NOT NULL, action_json TEXT NOT NULL, observation_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(goal_id,sequence));
+                CREATE TABLE IF NOT EXISTS autonomous_handoffs (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
+                    parent_goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
+                    context_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CHECK(goal_id != parent_goal_id));
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
