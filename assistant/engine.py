@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+from .context import followup_query, make_context, select_excerpts
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -27,16 +29,13 @@ def find_codex():
     raise EngineError("找不到 Codex CLI。請先安裝 Codex 並執行 codex login。")
 
 
-def build_prompt(question, history, memories):
+def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
-    # Structured data avoids interpolating user text into shell commands.
-    context = {"memories": [{"id": m["id"], "kind": m["kind"], "content": m["content"],
-                             "updated_at": m.get("updated_at"), "expires_on": m.get("expires_on")}
-                            for m in memories],
-               "recent_conversation": [{"role": m["role"], "content": m["content"][:6000]}
-                                       for m in history[-16:]],
-               "current_request": question}
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
+
+
+def build_prompt(question, history, memories, brief=None, excerpts=None):
+    return render_prompt(make_context(question, history, memories, brief, excerpts))
 
 
 class CodexEngine:
@@ -49,6 +48,7 @@ class CodexEngine:
         cmd = [find_codex(), "exec", "--ignore-user-config", "--ephemeral",
                "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
                "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+               "-c", "project_doc_max_bytes=0",
                "-C", str(self.workdir), "--output-last-message", str(output)]
         # This assistant produces advice only; tools belong in a later, scoped execution mode.
         for feature in ("shell_tool", "unified_exec", "apps", "plugins", "multi_agent",
@@ -99,13 +99,27 @@ class Assistant:
     def __init__(self, store, engine):
         self.store, self.engine = store, engine
 
+    def prepare_context(self, sid, question):
+        history = self.store.messages(sid, 16)
+        memories = self.store.retrieve(question)
+        followup = followup_query(question, history)
+        if followup:
+            seen = {row["id"] for row in memories}
+            for row in self.store.retrieve(followup):
+                if row["id"] not in seen:
+                    memories.append(row)
+                    seen.add(row["id"])
+        older = self.store.earlier_user_messages(sid, history[0]["id"]) if history else []
+        return make_context(question, history, memories, self.store.session_brief(sid),
+                            select_excerpts(question, older))
+
     def ask(self, sid, question, cancel=None):
         question = question.strip()
         if not question or len(question) > 16000:
             raise ValueError("問題需為 1–16000 字。")
-        history = self.store.messages(sid, 16)
-        memories = self.store.retrieve(question)
+        context = self.prepare_context(sid, question)
         self.store.add_message(sid, "user", question)
-        answer = self.engine.answer(build_prompt(question, history, memories), cancel)
-        mid = self.store.add_message(sid, "assistant", answer)
-        return {"id": mid, "content": answer, "memory_ids": [m["id"] for m in memories]}
+        answer = self.engine.answer(render_prompt(context), cancel)
+        mid = self.store.add_answer(sid, answer, context)
+        return {"id": mid, "content": answer, "memory_ids": [m["id"] for m in context["memories"]],
+                "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]]}

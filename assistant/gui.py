@@ -41,9 +41,10 @@ class App:
         self.new_btn.pack(fill="x", pady=(0, 14))
         tk.Label(sidebar, text="對話紀錄", bg=PANEL, fg=MUTED).pack(anchor="w")
         self.session_list = tk.Listbox(sidebar, bg=PANEL, fg=FG, bd=0,
-            selectbackground="#315766", highlightthickness=0, font=("Microsoft JhengHei UI", 10))
+            selectbackground="#315766", highlightthickness=0, height=5, font=("Microsoft JhengHei UI", 10))
         self.session_list.pack(fill="both", expand=True, pady=10)
         self.session_list.bind("<<ListboxSelect>>", self.select_session)
+        ttk.Button(sidebar, text="對話目標與限制", command=self.edit_brief).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="管理長期記憶", command=self.memories).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
@@ -69,6 +70,8 @@ class App:
         self.good_btn.pack(side="left")
         self.bad_btn = ttk.Button(feedback, text="需要改進／更正", command=lambda: self.rate(-1))
         self.bad_btn.pack(side="left", padx=6)
+        self.context_btn = ttk.Button(feedback, text="查看本次參考", command=self.inspect_context)
+        self.context_btn.pack(side="left")
         self.input = tk.Text(main, height=4, bg=PANEL, fg=FG, insertbackground=FG,
             wrap="word", relief="flat", padx=12, pady=10, font=("Microsoft JhengHei UI", 11))
         self.input.grid(row=2, column=0, sticky="ew")
@@ -134,7 +137,7 @@ class App:
     def set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn):
+        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
 
@@ -172,7 +175,7 @@ class App:
                     self.last_answer = value["id"]
                     self.append("assistant", value["content"])
                     ids = ", ".join(map(str, value["memory_ids"])) or "無"
-                    self.status.set("回答已存本機 · 本次參考記憶：" + ids)
+                    self.status.set("回答已存本機 · 參考記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則')
                 else:
                     self.append("note", value)
                     self.status.set("本次未完成；可重新提問")
@@ -196,6 +199,14 @@ class App:
     def memories(self):
         from .memory_ui import MemoryWindow
         MemoryWindow(self.root, self.store)
+
+    def edit_brief(self):
+        from .context_ui import BriefWindow
+        BriefWindow(self.root, self.store, self.sid)
+
+    def inspect_context(self):
+        from .context_ui import show_context
+        show_context(self.root, self.store, self.last_answer)
 
     def feedback_report(self):
         rows = self.store.feedback_summary()

@@ -48,6 +48,12 @@ class Store:
                     rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
                     correction TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS session_briefs (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+                    objective TEXT NOT NULL DEFAULT '', constraints_text TEXT NOT NULL DEFAULT '',
+                    decisions TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS answer_contexts (
+                    message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
@@ -103,6 +109,46 @@ class Store:
             return [dict(r) for r in db.execute(
                 "SELECT * FROM (SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?) ORDER BY id",
                 (sid, limit))]
+
+    def earlier_user_messages(self, sid, before_id, limit=200):
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute("""SELECT * FROM (SELECT * FROM messages
+                WHERE session_id=? AND role='user' AND id<? ORDER BY id DESC LIMIT ?) ORDER BY id""",
+                (sid, before_id, limit))]
+            first = db.execute("SELECT * FROM messages WHERE session_id=? AND role='user' AND id<? ORDER BY id LIMIT 1",
+                               (sid, before_id)).fetchone()
+            if first and (not rows or rows[0]["id"] != first["id"]):
+                rows.insert(0, dict(first))
+            return rows
+
+    def session_brief(self, sid):
+        with self.connect() as db:
+            row = db.execute("SELECT objective, constraints_text, decisions, updated_at FROM session_briefs WHERE session_id=?",
+                             (sid,)).fetchone()
+            return dict(row) if row else {}
+
+    def save_session_brief(self, sid, objective, constraints_text, decisions):
+        values = [value.strip() for value in (objective, constraints_text, decisions)]
+        if any(len(value) > 2000 for value in values):
+            raise ValueError("每個欄位最多 2000 字。")
+        with self.connect() as db:
+            db.execute("""INSERT INTO session_briefs(session_id, objective, constraints_text, decisions)
+                VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET objective=excluded.objective,
+                constraints_text=excluded.constraints_text, decisions=excluded.decisions, updated_at=CURRENT_TIMESTAMP""",
+                (sid, *values))
+
+    def add_answer(self, sid, answer, context):
+        with self.connect() as db:
+            mid = db.execute("INSERT INTO messages(session_id, role, content) VALUES (?, 'assistant', ?)",
+                             (sid, answer)).lastrowid
+            db.execute("INSERT INTO answer_contexts(message_id, payload) VALUES (?, ?)",
+                       (mid, json.dumps(context, ensure_ascii=False)))
+            return mid
+
+    def answer_context(self, message_id):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM answer_contexts WHERE message_id=?", (message_id,)).fetchone()
+            return json.loads(row["payload"]) if row else None
 
     def remember(self, content, kind="fact", expires_on=None, active=True):
         content = validate_memory(content, kind, expires_on)
