@@ -204,7 +204,8 @@ class Assistant:
         corrections = self.store.earlier_correction_messages(sid, history[0]['id'], exclude_message_id) if history else []
         context['earlier_user_corrections'] = correction_context(question, corrections)
         documents = self.store.documents(sid, include_content=True)
-        context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents)
+        context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents,
+                                                  reference_query=question)
         context['task_runs'] = task_context(self.store, sid, question)
         context['communication'] = conversation_style(question, history)
         context['self_improvement'] = improvement_context(ROOT, question)

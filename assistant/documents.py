@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 
 from .retrieval import terms
+from .document_ranges import select_ranges
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSION_BYTES = 8 * 1024 * 1024
@@ -75,8 +76,11 @@ def chunks(document, max_chars=1400, max_lines=30):
     return output
 
 
-def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
+def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000, *, reference_query=None):
     query_terms = terms(query) - STOP
+    selected, requests, requests_limited = select_ranges(
+        query if reference_query is None else reference_query, documents, max_excerpts, max_chars)
+    requested_docs = {row['document_id'] for row in selected}
     all_ranked, per_document, catalog = [], [], []
     pieces_by_id, lines_by_id = {}, {}
     for document in documents:
@@ -93,15 +97,21 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
                    "sha256": document["sha256"], "matched_query": score > 0}
             ranked.append((score, -index, document["id"], row))
         ranked.sort(key=lambda item: item[:3], reverse=True)
-        if ranked:
+        if document['id'] in requested_docs:
+            all_ranked.extend(ranked)
+        elif ranked:
             per_document.append(ranked[0])
             all_ranked.extend(ranked[1:])
     # Include each selected file before allocating more excerpts to a single file.
     candidates = sorted(per_document, key=lambda item: item[:3], reverse=True) + sorted(all_ranked, key=lambda item: item[:3], reverse=True)
-    selected, used, selected_keys = [], 0, set()
+    used, selected_keys = sum(len(row['text']) for row in selected), set()
     for _, negative_index, document_id, row in candidates:
         if len(selected) >= max_excerpts:
             break
+        if any(other['document_id'] == document_id and not other['partial_line'] and
+               other['start_line'] <= row['start_line'] and other['end_line'] >= row['end_line']
+               for other in selected):
+            continue
         if used + len(row["text"]) <= max_chars:
             selected.append(row)
             selected_keys.add((document_id, -negative_index))
@@ -113,7 +123,7 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
     for _ in range(2):
         for direction in (1, -1):
             for index, row in enumerate(selected):
-                if row['partial_line'] or (index, direction) in blocked:
+                if row['partial_line'] or row.get('requested_range') or (index, direction) in blocked:
                     continue
                 line_number = row['end_line'] + 1 if direction == 1 else row['start_line'] - 1
                 lines = lines_by_id[row['document_id']]
@@ -151,7 +161,8 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
         for start, end in complete_ranges.get(did, []))
         for did, pieces in pieces_by_id.items() for index, piece in enumerate(pieces))
     return {"catalog": catalog, "excerpts": selected,
-            "coverage_limited": limited}
+            "coverage_limited": limited, 'requested_ranges': requests,
+            'requested_ranges_limited': requests_limited}
 
 
 def check_citations(answer, excerpts):

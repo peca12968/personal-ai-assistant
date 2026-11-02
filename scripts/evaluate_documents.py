@@ -53,6 +53,8 @@ def main():
             passed = passed and all(text not in selected_text for text in case.get('absent_evidence', []))
             if 'coverage_limited' in case:
                 passed = passed and context['documents']['coverage_limited'] == case['coverage_limited']
+            if 'range_statuses' in case:
+                passed = passed and [r['status'] for r in context['documents']['requested_ranges']] == case['range_statuses']
             if case["id"] == "partial_coverage":
                 passed = passed and context["documents"]["coverage_limited"]
             result = {"id": case["id"], "evidence_present": passed, "rubric": case["rubric"]}

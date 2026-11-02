@@ -32,7 +32,7 @@ class DocumentWindow:
         ttk.Button(controls, text="移除選取參考", command=self.remove).pack(side="left")
         self.detail = tk.Text(self.window, height=7, wrap="word", padx=12, pady=8, state="disabled", font=("Microsoft JhengHei UI", 10))
         self.detail.pack(fill="x", padx=12)
-        self.notice = tk.StringVar(value="每段對話最多 8 個文件，單檔最多 2 MiB、合計 8 MiB。支援 UTF-8 與含 BOM 的 UTF-16。")
+        self.notice = tk.StringVar(value="每段對話最多 8 個文件，單檔最多 2 MiB、合計 8 MiB。可在提問指定範圍，例如「查看 D1 第33到35行」；請使用列表中的實際來源編號。")
         ttk.Label(self.window, textvariable=self.notice, wraplength=730, padding=12).pack(fill="x")
         self.refresh()
 
