@@ -10,6 +10,32 @@ FOLLOWUP = re.compile(
     r"what about\b|how about\b|then\b|continue\b|next\b|and\b|it\b|that\b|make it\b|change it\b|same\b)", re.I)
 IMPORTANT = re.compile(r"目標|限制|必須|不能|不要|更正|改為|改用|改成|決定|取消|預算|期限|\b(?:goal|must|never|instead|decision|budget|deadline)\b", re.I)
 
+MAX_EARLIER_CORRECTIONS = 6
+CORRECTION_PREFIX = re.compile(
+    r"^(?:(?:請)?(?:更正|修正|補充更正)\s*:|correction\s*:|"
+    r"不是(?:這個|那個|這樣)\s*[,。]\s*(?:我是指|我要的是)|"
+    r"我(?:剛才|剛剛|先前)說錯了\s*[,。:])", re.I)
+
+
+def is_explicit_correction(text):
+    """A bounded prefix hint for retaining raw user text, not a semantic verdict."""
+    prefix = unicodedata.normalize('NFKC', text[:160]).lstrip()
+    return bool(CORRECTION_PREFIX.search(prefix))
+
+
+def correction_context(question, rows):
+    # Keep this separate from relevance-ranked excerpts so unrelated old rows
+    # cannot displace an explicit correction. Preserve uncertainty and ordering.
+    if TOPIC_CHANGE.search(question):
+        return {'excerpts': [], 'selection_limited': False}
+    chosen = sorted(rows, key=lambda row: row['id'])[-MAX_EARLIER_CORRECTIONS:]
+    excerpts = []
+    for row in chosen:
+        content, truncated = clip(row['content'], 1000)
+        excerpts.append({'message_id': row['id'], 'role': 'user',
+                         'content': content, 'truncated': truncated})
+    return {'excerpts': excerpts, 'selection_limited': len(rows) > MAX_EARLIER_CORRECTIONS}
+
 # Only complete, bounded short requests qualify here. An ordinal inside a new
 # subject (e.g. 第二個質數) is not evidence that the old topic should be retrieved.
 POLITE = re.compile(r"^(?:請問|請|麻煩(?:你)?|please\b)\s*", re.I)

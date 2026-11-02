@@ -64,6 +64,12 @@ def show_context(parent, store, message_id):
         ("最近對話", "\n\n".join(f'{"你" if r["role"] == "user" else "助理"} · #{r["message_id"]}\n{r["content"]}' for r in context["recent_conversation"]) or "本次沒有前文。"),
     ]
     documents = context.get("documents", {})
+    corrections = context.get('earlier_user_corrections', {})
+    sections.append(('早期更正', '依明確開頭選取的原文，不是自動確認的事實或長期記憶。\n\n' +
+                     ('更早的更正未全部提供。\n\n' if corrections.get('selection_limited') else '') +
+                     ('\n\n'.join(f'使用者訊息 #{r["message_id"]}' +
+                                  ('（中段省略）' if r.get('truncated') else '') + '\n' + r['content']
+                                  for r in corrections.get('excerpts', [])) or '本次沒有選取早期更正。')))
     checks = store.answer_checks(message_id)
     citation_text = "\n".join(check["citation"] + ("：範圍存在" if check["range_valid"] else "：無法對照") for check in checks) or "沒有可檢查的文件引用。"
     doc_text = ("僅檢查來源編號與行號，未驗證結論的語意或正確性。\n" + citation_text + "\n\n" +

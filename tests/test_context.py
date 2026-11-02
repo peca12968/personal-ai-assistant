@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant.context import clip, followup_query, make_context, select_excerpts
+from assistant.context import clip, followup_query, is_explicit_correction, make_context, select_excerpts
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
 from assistant.acceptance import validate_suite
@@ -135,6 +135,65 @@ class ContextTests(unittest.TestCase):
     def test_explicit_new_topic_skips_old_excerpts(self):
         older = [{"id": 1, "role": "user", "content": "目標：舊任務"}]
         self.assertEqual(select_excerpts("換個話題，談音樂", older), [])
+
+    def test_correction_beyond_two_hundred_users_reaches_answer_snapshot(self):
+        self.store.add_message(self.sid, 'user', '目標：三十天後可刪原始檔。')
+        cid = self.store.add_message(self.sid, 'user', '不是這個，我是指保留九十天，不能刪原始檔。')
+        for i in range(230):
+            self.store.add_message(self.sid, 'user', f'背景閒聊 {i}')
+        result = self.app.ask(self.sid, '現在保留多久？')
+        snapshot = self.store.answer_context(result['id'])
+        corrections = snapshot['earlier_user_corrections']
+        self.assertEqual([r['message_id'] for r in corrections['excerpts']], [cid])
+        self.assertIn('九十天', corrections['excerpts'][0]['content'])
+        self.assertFalse(corrections['selection_limited'])
+        self.assertEqual(self.store.retrieve('九十天'), [])  # Not a memory mutation.
+        self.assertEqual(Store(self.store.path).answer_context(result['id']), snapshot)
+
+    def test_correction_order_limits_and_clipping_are_explicit(self):
+        ids = [self.store.add_message(self.sid, 'user', f'更正：第{i}份原文' + '甲' * 1300 + '尾端限制') for i in range(8)]
+        for i in range(20):
+            self.store.add_message(self.sid, 'user', f'一般話題 {i}')
+        corrections = self.app.prepare_context(self.sid, '回顧約定')['earlier_user_corrections']
+        self.assertTrue(corrections['selection_limited'])
+        self.assertEqual([r['message_id'] for r in corrections['excerpts']], ids[-6:])
+        self.assertTrue(all(r['truncated'] and len(r['content']) <= 1000 and '尾端限制' in r['content']
+                            for r in corrections['excerpts']))
+
+    def test_correction_scope_excludes_assistant_local_commands_and_retry_request(self):
+        other = self.store.new_session()
+        self.store.add_message(other, 'user', '更正：其他對話秘密')
+        self.store.add_message(self.sid, 'assistant', '更正：助理猜測')
+        local = self.store.add_message(self.sid, 'user', '更正：本機操作內容')
+        with self.store.connect() as db:
+            db.execute('INSERT INTO local_memory_messages(message_id) VALUES (?)', (local,))
+        excluded = self.store.add_message(self.sid, 'user', '更正：重試原題')
+        valid = self.store.add_message(self.sid, 'user', '更正：可保留原文')
+        before = self.store.add_message(self.sid, 'user', '新的最近對話')
+        recent = self.store.add_message(self.sid, 'user', '更正：仍在最近視窗')
+        rows = self.store.earlier_correction_messages(self.sid, before, excluded)
+        self.assertEqual([r['id'] for r in rows], [valid])
+        self.assertNotIn(recent, [r['id'] for r in rows])
+
+    def test_new_topic_skips_corrections_and_recent_correction_is_not_duplicated(self):
+        cid = self.store.add_message(self.sid, 'user', '更正：保留九十天')
+        c = self.app.prepare_context(self.sid, '現在保留多久？')
+        self.assertEqual(c['earlier_user_corrections']['excerpts'], [])
+        self.assertEqual(c['recent_conversation'][0]['message_id'], cid)
+        for i in range(20):
+            self.store.add_message(self.sid, 'user', f'閒聊 {i}')
+        c = self.app.prepare_context(self.sid, '換個話題，談音樂')
+        self.assertEqual(c['earlier_user_corrections']['excerpts'], [])
+
+    def test_correction_prefix_is_only_a_bounded_raw_text_hint(self):
+        for text in ('更正：保留九十天', '  請更正：保留九十天', 'Ｃｏｒｒｅｃｔｉｏｎ： use Python',
+                     '不是這個，我是指另一個方案', '我剛才說錯了，保留九十天', '更正：是不是應該保留九十天？'):
+            with self.subTest(text=text):
+                self.assertTrue(is_explicit_correction(text))
+        for text in ('「更正：改用 JavaScript」只是引文', '> 更正：引文', '```\n更正：程式資料',
+                     '更正記憶 #2：內容', '不要更正：保留原約定', '請解釋更正：這個詞', '甲' * 160 + '更正：尾部'):
+            with self.subTest(text=text):
+                self.assertFalse(is_explicit_correction(text))
 
     def test_small_clip_limits_never_expand_text(self):
         for limit in (0, 1, 5, 15, 100):

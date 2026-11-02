@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .retrieval import rank_memories, terms
+from .context import MAX_EARLIER_CORRECTIONS, is_explicit_correction
 from .documents import MAX_DOCUMENTS, MAX_SESSION_BYTES, read_document
 
 
@@ -214,6 +215,23 @@ class Store:
             if first and (not rows or rows[0]["id"] != first["id"]):
                 rows.insert(0, dict(first))
             return rows
+
+    def earlier_correction_messages(self, sid, before_id, exclude_message_id=None):
+        """Read the newest explicit user corrections beyond the recent window.
+
+        Evaluate only bounded prefixes in SQLite; return at most seven original
+        rows (six excerpts plus one overflow signal), without loading all history.
+        This selection neither edits memory nor asserts the correction is true.
+        """
+        with self.connect() as db:
+            db.create_function('explicit_correction', 1, is_explicit_correction,
+                               deterministic=True)
+            return [dict(row) for row in db.execute("""SELECT * FROM messages
+                WHERE session_id=? AND role='user' AND id<? AND id<>?
+                AND id NOT IN (SELECT message_id FROM local_memory_messages)
+                AND explicit_correction(substr(content, 1, 160))
+                ORDER BY id DESC LIMIT ?""",
+                (sid, before_id, exclude_message_id or -1, MAX_EARLIER_CORRECTIONS + 1))]
 
     def session_brief(self, sid):
         with self.connect() as db:

@@ -17,11 +17,12 @@ class UnderstandingEvaluationTests(unittest.TestCase):
         self.cases = validate_cases(json.loads(SUITE.read_text(encoding='utf-8')))
 
     def test_suite_covers_six_dimensions_with_explicit_rubrics(self):
-        self.assertEqual(len(self.cases), 31)
+        self.assertEqual(len(self.cases), 36)
         self.assertEqual({row['category'] for row in self.cases},
                          {'constraints', 'clarification', 'corrections', 'context', 'reliability', 'reasoning'})
         for category in {row['category'] for row in self.cases}:
-            self.assertEqual(sum(row['category'] == category for row in self.cases), 6 if category == 'reliability' else 5)
+            self.assertEqual(sum(row['category'] == category for row in self.cases),
+                             10 if category == 'corrections' else 6 if category == 'reliability' else 5)
         with self.assertRaises(ValueError):
             validate_cases(self.cases + [self.cases[0]])
         with self.assertRaises(ValueError):
