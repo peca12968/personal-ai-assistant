@@ -19,6 +19,7 @@ from . import goal_stages
 from . import artifacts
 from . import autonomy_csv
 from . import date_tools
+from . import document_diff
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -154,6 +155,9 @@ def validate_action(value):
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'compare_documents':
+        document_diff.validate(args)
+        return value
     if name == 'date_math':
         date_tools.validate(args)
         return value
@@ -202,6 +206,8 @@ def calculate(args):
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
     name, args = action['tool'], action['args']
+    if name == 'compare_documents':
+        return document_diff.compare(documents, args, cancel)
     if name == 'plan_csv':
         return autonomy_csv.plan(store, gid, args['spec'])
     if name == 'execute_csv':
@@ -290,7 +296,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                        'conversation_context': goal['conversation_context'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
