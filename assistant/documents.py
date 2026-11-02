@@ -78,8 +78,11 @@ def chunks(document, max_chars=1400, max_lines=30):
 def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
     query_terms = terms(query) - STOP
     all_ranked, per_document, catalog = [], [], []
+    pieces_by_id, lines_by_id = {}, {}
     for document in documents:
         pieces = chunks(document)
+        pieces_by_id[document['id']] = pieces
+        lines_by_id[document['id']] = document['content'].splitlines()
         catalog.append({"document_id": document["id"], "name": document["name"], "sha256": document["sha256"],
                         "total_lines": len(document["content"].splitlines()), "total_chunks": len(pieces)})
         ranked = []
@@ -95,16 +98,60 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000):
             all_ranked.extend(ranked[1:])
     # Include each selected file before allocating more excerpts to a single file.
     candidates = sorted(per_document, key=lambda item: item[:3], reverse=True) + sorted(all_ranked, key=lambda item: item[:3], reverse=True)
-    selected, used = [], 0
-    for _, _, _, row in candidates:
+    selected, used, selected_keys = [], 0, set()
+    for _, negative_index, document_id, row in candidates:
         if len(selected) >= max_excerpts:
             break
         if used + len(row["text"]) <= max_chars:
             selected.append(row)
+            selected_keys.add((document_id, -negative_index))
             used += len(row["text"])
+    # Preserve the ranked selection and file representation first. Spend only
+    # remaining space on nearby full lines, where scope/exception sentences can
+    # fall just across a chunk boundary. Never stitch across an omitted line.
+    blocked = set()
+    for _ in range(2):
+        for direction in (1, -1):
+            for index, row in enumerate(selected):
+                if row['partial_line'] or (index, direction) in blocked:
+                    continue
+                line_number = row['end_line'] + 1 if direction == 1 else row['start_line'] - 1
+                lines = lines_by_id[row['document_id']]
+                already_present = any(other['document_id'] == row['document_id'] and
+                    other['start_line'] <= line_number <= other['end_line'] for other in selected)
+                if not 1 <= line_number <= len(lines) or already_present:
+                    blocked.add((index, direction))
+                    continue
+                line = lines[line_number - 1]
+                addition = f'L{line_number}: {line}'
+                if len(line) > 1400 or used + len(addition) + 1 > max_chars:
+                    blocked.add((index, direction))
+                    continue
+                if direction == 1:
+                    row['text'] += '\n' + addition
+                    row['end_line'] = line_number
+                else:
+                    row['text'] = addition + '\n' + row['text']
+                    row['start_line'] = line_number
+                row['neighbor_lines_added'] = row.get('neighbor_lines_added', 0) + 1
+                used += len(addition) + 1
     selected.sort(key=lambda row: (row["document_id"], row["start_line"]))
+    # Expansion can finish a document without selecting every original chunk.
+    # Partial long-line pieces count only when that exact piece was selected.
+    complete_ranges = {}
+    for row in selected:
+        if not row['partial_line']:
+            ranges = complete_ranges.setdefault(row['document_id'], [])
+            if ranges and row['start_line'] <= ranges[-1][1] + 1:
+                ranges[-1][1] = max(ranges[-1][1], row['end_line'])
+            else:
+                ranges.append([row['start_line'], row['end_line']])
+    limited = any((did, index) not in selected_keys and not any(
+        start <= piece['start_line'] and end >= piece['end_line']
+        for start, end in complete_ranges.get(did, []))
+        for did, pieces in pieces_by_id.items() for index, piece in enumerate(pieces))
     return {"catalog": catalog, "excerpts": selected,
-            "coverage_limited": len(selected) < sum(row["total_chunks"] for row in catalog)}
+            "coverage_limited": limited}
 
 
 def check_citations(answer, excerpts):

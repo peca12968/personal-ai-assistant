@@ -50,6 +50,9 @@ def main():
             context = app.prepare_context(sid, case["prompt"])
             selected_text = "\n".join(row["text"] for row in context["documents"]["excerpts"])
             passed = all(text in selected_text for text in case["evidence"])
+            passed = passed and all(text not in selected_text for text in case.get('absent_evidence', []))
+            if 'coverage_limited' in case:
+                passed = passed and context['documents']['coverage_limited'] == case['coverage_limited']
             if case["id"] == "partial_coverage":
                 passed = passed and context["documents"]["coverage_limited"]
             result = {"id": case["id"], "evidence_present": passed, "rubric": case["rubric"]}

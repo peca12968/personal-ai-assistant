@@ -138,6 +138,68 @@ class DocumentTests(unittest.TestCase):
         self.assertIn("12", self.store.answer_context(result["id"])["documents"]["excerpts"][0]["text"])
 
 
+class NeighborEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def documents(content):
+        return [{'id': 1, 'name': 'policy.txt', 'sha256': 'original', 'content': content}] + [
+            {'id': i, 'name': f'{i}.txt', 'sha256': str(i), 'content': '辦公用品清單。'}
+            for i in range(2, 9)]
+
+    def test_next_line_exception_preserves_all_eight_files_and_exact_citations(self):
+        content = '一般背景。\n' * 29 + '備份保留天數：十四天。\n但待審案件須保全至結案。'
+        docs = self.documents(content)
+        result = retrieve_documents('備份保留天數？', docs)
+        self.assertEqual({r['document_id'] for r in result['excerpts']}, set(range(1, 9)))
+        row = result['excerpts'][0]
+        self.assertIn('L31: 但待審案件須保全至結案。', row['text'])
+        self.assertEqual(row['end_line'], 31)
+        self.assertEqual(row['sha256'], 'original')
+        self.assertFalse(result['coverage_limited'])
+        self.assertTrue(check_citations('[D1:L30-L31]', result['excerpts'])[0]['range_valid'])
+        self.assertFalse(check_citations('[D2:L31]', result['excerpts'])[0]['range_valid'])
+        self.assertEqual(docs[0]['content'], content)
+
+    def test_previous_scope_is_added_but_earlier_unseen_lines_remain_limited(self):
+        content = '一般背景。\n' * 29 + '以下只適用測試環境。\n資料庫備份保留六天。'
+        result = retrieve_documents('資料庫備份保留六天', self.documents(content))
+        row = result['excerpts'][0]
+        self.assertIn('L30: 以下只適用測試環境。', row['text'])
+        self.assertEqual(row['start_line'], 29)
+        self.assertTrue(result['coverage_limited'])
+        self.assertFalse(check_citations('[D1:L1-L31]', result['excerpts'])[0]['range_valid'])
+
+    def test_blank_lines_count_and_never_jump_over_unavailable_long_line(self):
+        prefix = '一般背景。\n' * 29 + '備份保留天數：十四天。\n'
+        for middle, wanted in [('\n', True), ('\n\n', False), ('x' * 1500 + '\n', False)]:
+            with self.subTest(middle_length=len(middle)):
+                result = retrieve_documents('備份保留天數？', self.documents(prefix + middle + '但待審案件須保全至結案。'))
+                text = '\n'.join(r['text'] for r in result['excerpts'])
+                self.assertEqual('保全至結案' in text, wanted)
+                self.assertEqual(result['coverage_limited'], not wanted)
+
+    def test_expansion_respects_character_budget_and_zero_excerpt_limit(self):
+        content = '一般背景。\n' * 29 + '備份保留天數：十四天。\n但待審案件須保全至結案。'
+        docs = self.documents(content)[:1]
+        budget = len(chunks(docs[0])[0]['text'])
+        result = retrieve_documents('備份保留天數？', docs, max_excerpts=1, max_chars=budget)
+        self.assertEqual(sum(len(r['text']) for r in result['excerpts']), budget)
+        self.assertNotIn('保全至結案', result['excerpts'][0]['text'])
+        self.assertTrue(result['coverage_limited'])
+        result = retrieve_documents('備份', docs, max_excerpts=0)
+        self.assertEqual(result['excerpts'], [])
+        self.assertTrue(result['coverage_limited'])
+
+    def test_partial_line_never_becomes_full_coverage_from_same_line_number(self):
+        docs = self.documents('backup retention ' + 'x' * 3000 + '\n後續限制。')[:1]
+        partial = retrieve_documents('backup retention', docs, max_excerpts=1)
+        self.assertTrue(partial['coverage_limited'])
+        self.assertTrue(partial['excerpts'][0]['partial_line'])
+        self.assertNotIn('後續限制', partial['excerpts'][0]['text'])
+        complete = retrieve_documents('backup retention', docs)
+        self.assertFalse(complete['coverage_limited'])
+        self.assertLessEqual(sum(len(r['text']) for r in complete['excerpts']), 14000)
+
+
 class CitationTests(unittest.TestCase):
     def test_valid_single_and_contiguous_ranges(self):
         excerpts = [{"document_id": 1, "start_line": 2, "end_line": 4}, {"document_id": 1, "start_line": 5, "end_line": 8}]
