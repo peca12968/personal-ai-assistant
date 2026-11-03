@@ -1,6 +1,7 @@
 import queue
 import sqlite3
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -307,7 +308,7 @@ class App:
                 self.events.put(('answer', self.assistant.retry(sid, self.cancel)))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        threading.Thread(target=work, daemon=True).start()
+        start_worker(work, lambda error: self.events.put(('error', error)), daemon=True)
 
     def send(self):
         if self.busy:
@@ -318,8 +319,6 @@ class App:
         if len(question) > 16000:
             messagebox.showinfo("問題太長", "請將問題縮短至 16000 字內。")
             return "break"
-        self.input.delete("1.0", "end")
-        self.append("user", question)
         self.cancel.clear()
         self.set_busy(True)
         self.status.set("思考中… 可按「停止」中止本次回答")
@@ -330,7 +329,9 @@ class App:
                 self.events.put(("answer", self.assistant.ask(sid, question, self.cancel)))
             except Exception as exc:
                 self.events.put(("error", {'message': str(exc), 'question': question}))
-        threading.Thread(target=work, daemon=True).start()
+        if start_worker(work, lambda error: self.events.put(('error', error)), daemon=True):
+            self.input.delete('1.0', 'end')
+            self.append('user', question)
         return "break"
 
     def poll(self):

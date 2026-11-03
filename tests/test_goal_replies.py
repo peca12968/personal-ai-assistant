@@ -161,8 +161,13 @@ class ReplyUiTests(unittest.TestCase):
         self.assertEqual(a.get_goal(self.store,self.sid,self.ids[0])['status'],'paused')
         self.assertIn('回答已保存，但未能啟動', self.editor.notice.get())
         self.assertEqual(self.editor.content.get('1.0','end').strip(),'')
-        self.assertFalse(self.view.busy)
+        self.assertTrue(self.view.busy)  # Pending launch failure still owns the UI.
+        with patch('assistant.autonomy_ui.threading.Thread') as thread:
+            self.view.begin()
+            thread.assert_not_called()
+        self.assertEqual(self.view.events.qsize(), 1)
         self.view.window.after_cancel(self.view.poll_timer); self.view.poll()
+        self.assertFalse(self.view.busy)
         self.assertEqual(str(self.view.start['state']),'normal')
         self.assertIn('接續未啟動',self.view.notice.get())
 

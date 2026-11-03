@@ -1,5 +1,6 @@
 import queue
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -88,7 +89,7 @@ class SearchWindow:
                 self.events.put((True, search_folder(folder, query, cancel=self.cancel)))
             except Exception as exc:
                 self.events.put((False, str(exc)))
-        threading.Thread(target=work, daemon=True).start()
+        start_worker(work, lambda error: self.events.put((False, error)), daemon=True)
 
     def poll(self):
         try:

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -39,6 +40,8 @@ class BackupWindow:
         self.window.after(100, self.poll)
 
     def work(self, operation):
+        if self.running:
+            return
         self.running = True
         for button in (self.backup_button, self.restore_button, self.open_button):
             button.configure(state='disabled')
@@ -49,7 +52,7 @@ class BackupWindow:
             except Exception as exc:
                 self.events.put((False, str(exc)))
         # Finish a requested snapshot even if this dialog closes.
-        threading.Thread(target=run, daemon=False).start()
+        start_worker(run, lambda error: self.events.put((False, error)))
 
     def backup(self):
         if not self.running:

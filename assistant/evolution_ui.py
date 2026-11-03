@@ -2,6 +2,7 @@
 import json
 import queue
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -186,10 +187,7 @@ class EvolutionWindow:
                 self.events.put(('done', result))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        try:
-            threading.Thread(target=work, daemon=False).start()
-        except Exception as exc:
-            self.events.put(('error', '無法啟動自我改進：' + str(exc)))
+        start_worker(work, lambda error: self.events.put(('error', '無法啟動自我改進：' + error)))
 
     def poll(self):
         labels = {'preparing': '準備程式副本', 'generating': 'AI 正在產生程式變更',

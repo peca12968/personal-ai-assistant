@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -149,7 +150,7 @@ class AutonomousWindow:
                 self.events.put(('draft_done', (result, original)))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        start_worker(work, lambda error: self.events.put(('error', error)))
 
     def receive_draft(self, result, original):
         self.goal_draft_result = result
@@ -278,7 +279,7 @@ class AutonomousWindow:
                 self.events.put(('files_done', result))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        start_worker(work, lambda error: self.events.put(('error', error)))
 
     def select(self, event=None):
         try:
@@ -378,15 +379,12 @@ class AutonomousWindow:
     def reply_saved(self, gid, budget):
         self.refresh(gid)
         if budget is not None:
-            try:
-                self.begin(goal_id=gid, step_budget=budget)
-            except Exception as exc:
-                # No worker was started if Thread.start fails. Let the usual
-                # event handler restore controls; the committed answer remains.
-                self.busy = False
-                self.events.put(('error', '回答已保存，但接續未啟動：' + str(exc)))
-                raise
-            return self.busy and self.active_goal == gid
+            started = self.begin(goal_id=gid, step_budget=budget)
+            if not started:
+                # The saved answer stays committed. Keep the busy UI until its
+                # queued launch failure is consumed, preventing a new run race.
+                raise RuntimeError('接續未啟動；已保存的回答保留，請在原視窗查看原因。')
+            return True
         return False
 
     def begin(self, *, continuous_mode=False, goal_id=None, step_budget=None):
@@ -421,7 +419,7 @@ class AutonomousWindow:
                 self.events.put(('done', result))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        return start_worker(work, lambda error: self.events.put(('error', '自主工作／接續未啟動：' + error)))
 
     def poll(self):
         try:

@@ -1,6 +1,7 @@
 import json
 import queue
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -156,7 +157,7 @@ class TaskWindow:
                 self.events.put((id, execute_task(self.store, self.sid, id, self.cancel), None))
             except Exception as exc:
                 self.events.put((id, None, str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        start_worker(work, lambda error: self.events.put((id, None, error)))
 
     def propose(self):
         if self.busy:
@@ -183,7 +184,7 @@ class TaskWindow:
                     self.events.put((None, None, response.get('question') or response['reason']))
             except Exception as exc:
                 self.events.put((None, None, str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        start_worker(work, lambda error: self.events.put((None, None, error)))
 
     def poll(self):
         try:

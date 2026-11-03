@@ -2,6 +2,7 @@
 import json
 import queue
 import threading
+from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -167,6 +168,7 @@ class MemoryDraftWindow:
         if not self.busy and self.current:self.run(self.current['id'])
 
     def run(self,did):
+        if self.busy:return
         self.busy=True;self.cancel.clear()
         for widget in (self.start,self.retry,self.save,self.target,self.reload_targets_button):widget.configure(state='disabled')
         self.stop.configure(state='normal');self.notice.set('正在整理草稿；尚未新增任何長期記憶。')
@@ -175,7 +177,7 @@ class MemoryDraftWindow:
                 drafts.generate(self.store,self.sid,did,self.engine,cancel=self.cancel)
                 self.events.put((did,None))
             except Exception as exc:self.events.put((did,str(exc)))
-        threading.Thread(target=worker,daemon=False).start()
+        start_worker(worker, lambda error: self.events.put((did, error)))
 
     def accept(self):
         if self.busy or not self.current or not self.items.selection():return
