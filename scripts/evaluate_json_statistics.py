@@ -15,6 +15,22 @@ from scripts.evaluate_understanding import validate_cases, fingerprint, load_rep
 
 
 def fixture(name):
+    if name == 'median_groups':
+        rows=[]
+        for group in range(90):
+            for item in range(3+group%4):
+                value=((group*193+item*71)%1009)-300
+                if item==0:value*=13
+                rows.append({'team':f'M{group:03d}','status':'paid','value':value,
+                             'label':'合成中位數資料'*8})
+            rows.append({'team':f'M{group:03d}','status':'pending','value':None})
+        return json.dumps({'records':rows},ensure_ascii=False,separators=(',',':'))
+    if name == 'median_precision':
+        base=10**50
+        return json.dumps({'records':[{'team':'A','value':base},{'team':'A','value':base+1},
+            {'team':'B','value':base+1},{'team':'C','value':base},{'team':'C','value':base+1}]},separators=(',',':'))
+    if name == 'median_missing':
+        return '{"records":[{"team":"A","value":1},{"team":"A","value":null},{"team":"B","value":3}]}'
     if name == 'ranked_groups':
         rows=[]
         for group in range(240):

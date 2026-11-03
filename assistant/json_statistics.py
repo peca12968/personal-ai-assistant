@@ -20,12 +20,14 @@ number比較值必須是JSON數字字面字串（例如"9007199254740992"、"0.1
 可選group_by為1至2個不重複、相對每筆元素的JSON Pointer，例如["/department","/category"]；可與filters併用，先篩選再分組。只核對符合列的分組鍵與統計值；明確排除列不需分組鍵。符合列缺鍵、鍵是物件／陣列或字串超過1000碼位，整次拒絕並指明原陣列索引，不默認空白、不丟棄；未約定政策先問。null是合法分組鍵，不等於缺欄位，且不代表value_pointer可接受null。
 分組身份包含JSON型別及值：數字1、字串"1"、布林true分開；數字1／1.0／1e0同組，-0／0同組。數字鍵也經精確有理數及既有數值界線核對，結果keys中的number value以精確整數／分數字串表示；不是字串型別原資料。字串按原Unicode碼位及大小寫比較，不去空白、不正規化。多欄鍵依group_by順序組合。最多1000組，超出整次拒絕而非截斷。
 分組結果的頂層count／sum／mean／minimum／maximum仍為全部符合資料的整體統計，mean是整體sum除以count，絕非各組平均直接平均。groups各組有keys、count、sum、mean、minimum、maximum與原陣列的極值索引；每組也保留首次相同極值。未指定order_by時各組依符合條件列在來源中首次出現的順序，group_order=first_seen；明確排序／前N組見下述規則。所有組與整體依來源順序累加、驗證精確數值與平均界線後才提供分頁。
-只在group_by存在時可提供offset（0至1000，預設0），每次最多20組且整組JSON內容合計最多32000碼位。依next_offset保持相同來源、pointer、value_pointer、filters、group_by、order_by、top_n補讀；next_offset=null才沒有後續頁。group_count是全部組數、returned_group_count是本頁組數，未選top_n時omitted_before／omitted_after是全部組中的前後未顯示數；選top_n時改為所選範圍內的分頁省略數。all_groups_in_page判斷本頁是否含全部原組，page_is_partial判斷本頁是否含完整所選範圍。complete=true是整個指定範圍已計算，不代表本頁展示全部組；超過末頁的空結果不是零組。不得只交付第一頁。每次重新核對相同匯入副本，不重開原檔。沒有符合列時groups空、整體count／sum為0、平均與極值未定義。
-只有group_by存在時可選order_by，其精確形狀為{"metric":"mean","direction":"desc"}；metric限count、sum、mean、minimum、maximum，direction限asc或desc，依所有組的精確數值排序，絕不用40位顯示預覽。group_order=metric，order_by原樣回傳，tie_breaker=first_seen表示精確同分在兩種方向都依組在符合條件列中第一次出現的先後；rank是從1開始的順序位置，同分不共用名次。未指定order_by保留舊首次出現順序，不暗中排序。
+只在group_by存在時可提供offset（0至1000，預設0），每次最多20組且整組JSON內容合計最多32000碼位。依next_offset保持相同來源、pointer、value_pointer、filters、group_by、include_median、order_by、top_n補讀；next_offset=null才沒有後續頁。group_count是全部組數、returned_group_count是本頁組數，未選top_n時omitted_before／omitted_after是全部組中的前後未顯示數；選top_n時改為所選範圍內的分頁省略數。all_groups_in_page判斷本頁是否含全部原組，page_is_partial判斷本頁是否含完整所選範圍。complete=true是整個指定範圍已計算，不代表本頁展示全部組；超過末頁的空結果不是零組。不得只交付第一頁。每次重新核對相同匯入副本，不重開原檔。沒有符合列時groups空、整體count／sum為0、平均與極值未定義。
+只有group_by存在時可選order_by，其精確形狀為{"metric":"mean","direction":"desc"}；metric限count、sum、mean、minimum、maximum、median（需include_median=true），direction限asc或desc，依所有組的精確數值排序，絕不用40位顯示預覽。group_order=metric，order_by原樣回傳，tie_breaker=first_seen表示精確同分在兩種方向都依組在符合條件列中第一次出現的先後；rank是從1開始的順序位置，同分不共用名次。未指定order_by保留舊首次出現順序，不暗中排序。
 搭配order_by可再指定top_n整數1至1000，先核對並排序所有組後選最多N組；不足N組交付實際數量，名額邊界同分仍按符合列中的首次出現取捨，不擴大同分名額。一般前N要求採此固定政策並說明；使用者指定其他同分政策時，不能用固定名額結果冒充，需依完整資料核對或說明限制。order_by未提供時不可用top_n。即使只選1名，未入選組缺值或精確數值／平均超限也拒絕整次，不能先回傳冠軍。
 排序結果selected_group_count是選取數（無top_n則等於全部），unselected_group_count是因前N政策未選數，group_count仍是全部組數。offset、next_offset、omitted_before／omitted_after與page_is_partial均針對選取範圍；all_selected_groups_in_page表示本頁含完整所選範圍，all_groups_in_page仍針對全部原組，因此前N全在一頁時page_is_partial=false但all_groups_in_page可能false。next_offset=null只表示所選範圍無後頁，不是所有原組都已展示。排名後整體count／sum／mean等始終涵蓋所有符合列，不改成前N組統計，也不平均組平均。
 例如平均最高前25組的完整參數（假設D1）為{"document_id":1,"pointer":"/records","value_pointer":"/amount","group_by":["/department"],"order_by":{"metric":"mean","direction":"desc"},"top_n":25}。每頁仍最多20組／32000碼位，依next_offset以相同條件補齊選取的25組；不可只給第一頁。若要求前N名不要先把全部組逐頁讀完再手算排序，應使用明確order_by與top_n。
 分組鍵及統計是衍生結果，excerpts仍為空，不授予原文引用。新階段僅帶group_by路徑、分組／分頁數量等中繼資料，group_details_omitted=true表示未帶任何鍵值或統計數值；需依目前要求重查，不能把摘要當完整結果。
+可選include_median為真正布林，省略或false時保留原統計欄位；true時額外返回整體及每組median（含exact／decimal／rounded），並標示median_included=true、median_method=midpoint。對所有符合列的精確數字排序；奇數筆取正中間值，偶數筆取中間兩數的算術平均，空集合median=null（未定義），不把平均替代中位數。整體中位數使用全部符合列，與組中位數的平均／中位數、Top-N所選列或當頁資料都不同。只增加統計，不忽略既有總和／平均的界線。
+每個中位數以約分後最終值核對分子／分母各2000位；偶數筆先精確取兩數平均再核對，不把中間加法暫值當對外結果。所有組（包括未選入或後頁）的中位數先驗證再排序選取，任一超限整次拒絕。依中位數排名用include_median=true及order_by={"metric":"median","direction":"desc"}，其餘分頁／Top-N／同分政策不變。只實作此中位數定義，不提供任意百分位、四分位、權重或自動缺測政策。下一階段只保留計算方式與選項，不帶中位數值當新證據。
 '''
 
 NUMBER = re.compile(r'(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?)([0-9]+))?')
@@ -40,8 +42,10 @@ GROUP_PAGE_CHARS = 32000
 
 def validate(args):
     required = {'document_id','pointer','value_pointer'}
-    if not isinstance(args,dict) or not required <= set(args) or set(args)-required-{'filters','group_by','offset','order_by','top_n'}:
-        raise ValueError('JSON統計需包含document_id、pointer及value_pointer，可另提供filters、group_by與分組offset、order_by、top_n。')
+    if not isinstance(args,dict) or not required <= set(args) or set(args)-required-{'filters','group_by','offset','order_by','top_n','include_median'}:
+        raise ValueError('JSON統計需包含document_id、pointer及value_pointer，可另提供filters、group_by與分組offset、order_by、top_n，以及include_median。')
+    if 'include_median' in args and type(args['include_median']) is not bool:
+        raise ValueError('include_median須為真正布林值。')
     for key in ('pointer','value_pointer'):
         jd.validate({'document_id':args['document_id'],'pointer':args[key],'offset':0})
     if 'group_by' in args:
@@ -60,9 +64,11 @@ def validate(args):
         order=args['order_by']
         if (not isinstance(order,dict) or set(order)!={'metric','direction'}
                 or not isinstance(order['metric'],str)
-                or order['metric'] not in {'count','sum','mean','minimum','maximum'}
+                or order['metric'] not in {'count','sum','mean','minimum','maximum','median'}
                 or not isinstance(order['direction'],str) or order['direction'] not in {'asc','desc'}):
-            raise ValueError('order_by需包含metric（count／sum／mean／minimum／maximum）與direction（asc／desc）。')
+            raise ValueError('order_by需包含metric（count／sum／mean／minimum／maximum／median）與direction（asc／desc）。')
+        if order['metric']=='median' and not args.get('include_median',False):
+            raise ValueError('依median排名需明確include_median=true。')
     if 'top_n' in args:
         if 'order_by' not in args or type(args['top_n']) is not int or not 1<=args['top_n']<=MAX_GROUPS:
             raise ValueError('top_n需搭配order_by，且為1至1000的整數；同分仍依首次出現只選指定名額。')
@@ -140,22 +146,40 @@ def display(value):
 
 
 class Accumulator:
-    def __init__(self):
+    def __init__(self,include_median=False,cancel=None):
         self.total=Fraction(0)
         self.count=0
         self.low=self.high=self.low_index=self.high_index=None
+        self.values=[] if include_median else None
+        self.median=None
+        self.cancel=cancel
 
     def add(self,value,index):
         self.total=exact_math.bounded(self.total+value)
         self.count+=1
         if self.low is None or value<self.low:self.low,self.low_index=value,index
         if self.high is None or value>self.high:self.high,self.high_index=value,index
+        if self.values is not None:self.values.append(value)
 
     def result(self):
         mean=exact_math.bounded(self.total/self.count) if self.count else None
-        return {'count':self.count,'sum':display(self.total),'mean':display(mean),
+        result={'count':self.count,'sum':display(self.total),'mean':display(mean),
                 'minimum':display(self.low),'maximum':display(self.high),
                 'minimum_index':self.low_index,'maximum_index':self.high_index}
+        if self.values is not None:
+            # At most the parser's bounded node population is retained. Sort
+            # exact rationals, not previews; validate all groups before paging.
+            def checked(value):
+                jd.check_cancel(self.cancel)
+                return value
+            ordered=sorted(self.values,key=checked)
+            jd.check_cancel(self.cancel)
+            if self.count:
+                middle=self.count//2
+                self.median=exact_math.bounded(ordered[middle] if self.count%2 else
+                    (ordered[middle-1]+ordered[middle])/2)
+            result['median']=display(self.median)
+        return result
 
 
 def group_key(item,pointers,cancel):
@@ -190,7 +214,8 @@ def group_page(groups,offset,cancel,*,order_by=None,top_n=None):
             aggregate=pair[1]
             return {'count':aggregate.count,'sum':aggregate.total,
                     'mean':aggregate.total/aggregate.count,
-                    'minimum':aggregate.low,'maximum':aggregate.high}[order_by['metric']]
+                    'minimum':aggregate.low,'maximum':aggregate.high,
+                    'median':aggregate.median}[order_by['metric']]
         # Python's stable sort preserves first appearance for exact ties in
         # BOTH directions. Never compare rounded display strings or floats.
         complete.sort(key=metric,reverse=order_by['direction']=='desc')
@@ -232,7 +257,8 @@ def summarize(documents,args,cancel=None):
     array=jd.resolve(root,args['pointer'])
     if array.kind!='array':
         raise ValueError('JSON統計來源必須是陣列。')
-    aggregate=Accumulator();groups={}
+    include_median=args.get('include_median',False)
+    aggregate=Accumulator(include_median,cancel);groups={}
     for index,(_,item) in enumerate(array.children):
         jd.check_cancel(cancel)
         try:
@@ -243,7 +269,7 @@ def summarize(documents,args,cancel=None):
                 if identity not in groups:
                     if len(groups)>=MAX_GROUPS:
                         raise ValueError('分組數最多1000，未截斷組別。')
-                    groups[identity]=(keys,Accumulator())
+                    groups[identity]=(keys,Accumulator(include_median,cancel))
             node=jd.resolve(item,args['value_pointer'])
             if node.kind!='number':
                 raise ValueError('欄位類型為'+node.kind+'，必須是真正JSON數字；未忽略、填0或轉型。')
@@ -258,6 +284,8 @@ def summarize(documents,args,cancel=None):
             'excluded_count':len(array.children)-aggregate.count,'filtered':bool(filters),
             'filter_count':len(filters),'filter_logic':'all','filters':[rule for rule,_ in filters],
             'excerpts':[],'raw_values_provided':False}
+    if include_median:
+        result.update(median_included=True,median_method='midpoint')
     if 'group_by' in args:
         result.update(grouped=True,group_by=list(args['group_by']))
         result.update(group_page(groups,args.get('offset',0),cancel,

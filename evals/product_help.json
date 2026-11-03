@@ -252,5 +252,16 @@
       "說明精確平均排序，同分依首次出現，只選最多25組不擴大同分；先驗證所有組，不因排名忽略缺欄或超限",
       "說明最多20組／32000碼位分頁並依next_offset補齊25組，區分全部組數、選取與未選數；整體平均按全部符合列計算而非所選25組"
     ]
+  },
+  {
+    "id": "json_median_help",
+    "category": "product_help",
+    "prompt": "這個助理能對已匯入的JSON records，按department計算amount中位數，列最高前5組嗎？請說明奇偶數筆、空資料、缺值、精確排名及整體中位數怎麼處理，並給一個假設D1的完整工具參數例子。現在只詢問用法，不要執行。",
+    "criteria": [
+      "說明自主目標可用include_median=true，並給出document_id=1、pointer=/records、value_pointer=/amount、group_by=[/department]、order_by median desc、top_n=5的完整合法參數",
+      "說明奇數取中間值、偶數取中間兩數平均、空資料中位數未定義，缺值或null不能自行忽略或填0",
+      "精確排名而非小數預覽，同分依符合列首次出現；整體中位數依全部符合列，不是組中位數平均或前5組中位數",
+      "只說明假設範例，沒有聲稱已讀檔、完成計算或執行"
+    ]
   }
 ]

@@ -33,7 +33,7 @@ def activity(row):
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
     if tool == 'summarize_json':
-        requested.update({k:args[k] for k in ('order_by','top_n') if k in args})
+        requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
     fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
               'decimal_precision', 'decimal_rounding',
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
@@ -49,7 +49,7 @@ def activity(row):
                    'source_count','excluded_count','filtered','filter_count','filter_logic',
                    'grouped','group_count','group_order','returned_group_count','all_groups_in_page',
                    'order_by','tie_breaker','top_n','selected_group_count','unselected_group_count',
-                   'all_selected_groups_in_page'}
+                   'all_selected_groups_in_page','median_included','median_method'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',

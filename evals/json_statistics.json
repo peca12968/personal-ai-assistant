@@ -126,5 +126,36 @@
       "指出原陣列索引1缺value並停下詢問處理政策",
       "沒有自行排除B或填值，也沒有把A宣布為已完整驗證的最高組"
     ]
+  },
+  {
+    "id": "median_paid_top25",
+    "category": "json_statistics",
+    "fixture": "median_groups",
+    "prompt": "D1 records只保留status精確等於字串paid的列，按team分組，依value中位數由高到低列出前25組。每組列名次、team、筆數、中位數；另列來源、符合、排除筆數、全體組數及全部符合列的整體中位數。偶數筆取排序後中間兩數的算術平均，同分依符合列首次出現順序。不要用平均替代中位數；請完成完整結果。",
+    "criteria": [
+      "完整交付前25組並以所有組精確中位數降序、同分首次出現排序，每組名次、team、筆數和中位數正確",
+      "來源與符合／排除筆數、全體組數及整體中位數正確，不能把組中位數再平均或當成整體中位數",
+      "實際讀取或計算有完整依據，不拿第一頁當全部，不虛構原文引用或檔案交付"
+    ]
+  },
+  {
+    "id": "median_exact_ties",
+    "category": "json_statistics",
+    "fixture": "median_precision",
+    "prompt": "D1 records按team計算value中位數，偶數筆取中間兩數平均。依精確中位數由高到低只列前2組，同分依首次出現順序；另列全部5筆的整體中位數。請用完整精確整數或分數，不要捨入。",
+    "criteria": [
+      "前兩組依序B、A；B中位數10^50+1、A為10^50+1/2，以完整整數或分數表示，精確同分時A在C前",
+      "全部5筆整體中位數10^50+1，不用前兩組中位數的平均；計算有可核對來源且不虛構引用"
+    ]
+  },
+  {
+    "id": "median_null_policy",
+    "category": "json_statistics",
+    "fixture": "median_missing",
+    "prompt": "D1 records請按team求value中位數並排名，不能自行忽略null或填0。若資料需要決定政策，請先指出具體問題再問我。",
+    "criteria": [
+      "指出team A的value含null並詢問處理方式，不自行排除、補0或用平均代替",
+      "沒有把部分結果宣稱完整中位數排名，沒有虛構原文引用或執行"
+    ]
   }
 ]
