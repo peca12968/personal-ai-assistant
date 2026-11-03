@@ -1,0 +1,82 @@
+[
+  {
+    "id": "quoted_total",
+    "category": "quote_continuity",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價為9份，每份125元，運費40元。這是稍後報告要用的原始條件。"
+      },
+      {
+        "role": "assistant",
+        "content": "已了解原始條件。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "接著把‘換個話題’這幾個字放在文末，再依前面的包裝報價算出總價。不要把引號裡的字當作真的換題。",
+    "criteria": [
+      "沿用早先9×125+40，正確列出1165，不要求重複已提供的資料。",
+      "原樣保留引文「換個話題」但不執行換題，也不假稱已寫檔。"
+    ]
+  },
+  {
+    "id": "quoted_latest_correction",
+    "category": "quote_continuity",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價先用7份、每份90元、運費30元。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到初版。"
+      },
+      {
+        "role": "user",
+        "content": "更正：數量改9份，每份125元，運費40元，這才是目前採用的包裝報價。"
+      },
+      {
+        "role": "assistant",
+        "content": "以更正為準。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "接著把‘另起話題’放在報告最後，再依最新更正的包裝報價算總價。引文只是文字，不是要真的換題。",
+    "criteria": [
+      "採最新更正9×125+40=1165，不用舊版660或再次索取完整報價。",
+      "不把引文當重設脈絡，不假稱產出檔案或新記憶。"
+    ]
+  },
+  {
+    "id": "actual_reset_control",
+    "category": "quote_continuity",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價為9份，每份125元，運費40元。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "接著把‘換個話題’列為字串；換個話題，這次只算3乘4，不沿用包裝報價。",
+    "criteria": [
+      "只回答當前3×4=12，不帶入舊報價或要求舊條件。",
+      "區分引文與其後真正換題，不聲稱更新永久偏好或執行檔案操作。"
+    ]
+  },
+  {
+    "id": "corner_quote_control",
+    "category": "quote_continuity",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價為9份，每份125元，運費40元。"
+      }
+    ],
+    "filler_pairs": 12,
+    "prompt": "接著把「換個話題」放在文末，再依前面的包裝報價算出總價。",
+    "criteria": [
+      "沿用9×125+40=1165，沒有漏掉運費或重問已提供條件。",
+      "只將引文視為文字，不換題或假稱產檔。"
+    ]
+  }
+]

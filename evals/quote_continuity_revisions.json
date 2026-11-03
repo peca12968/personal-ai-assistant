@@ -1,0 +1,962 @@
+[
+  {
+    "id": "adjacent_zh",
+    "kind": "followup",
+    "question": "接著把‘換個話題’放在文末，再依前面的報價計算。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "adjacent_en",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’to the report and use the earlier quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "quoted_no_previous",
+    "kind": "followup",
+    "question": "接著把‘不要沿用前文’放在頁尾，保留原報價。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "nested_zh",
+    "kind": "followup",
+    "question": "接著加入「標示‘換個話題’後再繼續」這段文字。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "real_reset",
+    "kind": "followup",
+    "question": "接著換個話題，請說明月相。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "real_after_quote",
+    "kind": "followup",
+    "question": "接著把‘換個話題’放在文末；換個話題，請說明月相。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "double_curly",
+    "kind": "followup",
+    "question": "接著把“換個話題”放在文末。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "corner_quotes",
+    "kind": "followup",
+    "question": "接著把「換個話題」放在文末。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "plain_negation",
+    "kind": "followup",
+    "question": "Then do not change the subject; use the earlier quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "contraction",
+    "kind": "followup",
+    "question": "Then don’t change the subject; use the earlier quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "apostrophe_inside_quote",
+    "kind": "followup",
+    "question": "Then append ‘we don’t change the subject’to the report.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "real_after_contraction",
+    "kind": "followup",
+    "question": "Then copy ‘we don’t know’; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "inline_code",
+    "kind": "followup",
+    "question": "接著加上`換個話題`這個標記。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "quote_then_plain_continue",
+    "kind": "followup",
+    "question": "接著把‘換個話題’。放在文末。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "original_no_previous",
+    "kind": "followup",
+    "question": "接著不要沿用前文，介紹新主題。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "quoted_old_no_reset",
+    "kind": "followup",
+    "question": "接著把‘另外一件事’改成標記。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_chinese_adjacent",
+    "kind": "followup",
+    "question": "那這個標籤用‘另起話題’可以嗎？",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_no_reference",
+    "kind": "followup",
+    "question": "接下來把‘不用參考之前’當作附註文字。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_en_adjacent",
+    "kind": "followup",
+    "question": "Then put ‘change the subject’beside the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_en_second_pair",
+    "kind": "followup",
+    "question": "Then put ‘unrelated question’here and ‘change the subject’there.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_two_zh",
+    "kind": "followup",
+    "question": "接著把‘換個話題’和‘另起話題’兩個字串列出。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_nested_same",
+    "kind": "followup",
+    "question": "接著加入‘文字‘換個話題’之後再計算’這段。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_curly_double_inside",
+    "kind": "followup",
+    "question": "接著加入‘文字“換個話題”之後再計算’這段。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_right_apostrophe",
+    "kind": "followup",
+    "question": "Then don’t use the previous context; explain astronomy.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "h_plain_reset_after_quote",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’now; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "h_no_previous_after_quote",
+    "kind": "followup",
+    "question": "接著列出‘不要沿用前文’；不要沿用前文，重新說明。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "h_name",
+    "kind": "followup",
+    "question": "Then use d’Artagnan as the label; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "h_name_quoted",
+    "kind": "followup",
+    "question": "Then append ‘O’Connor said change the subject’beside the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_possessive_inside",
+    "kind": "followup",
+    "question": "Then append ‘the user’s request: change the subject’beside the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_curly_contractions",
+    "kind": "followup",
+    "question": "Then append ‘we’ve agreed: change the subject’beside the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_code_fence",
+    "kind": "followup",
+    "question": "接著閱讀下列標記：\n```text\n換個話題\n```\n並沿用原報價。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_blockquote",
+    "kind": "followup",
+    "question": "接著閱讀標記：\n> 換個話題\n再沿用原報價。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_quoted_negation",
+    "kind": "followup",
+    "question": "接著把‘不要換個話題’這段加到末尾。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_real_before_quote",
+    "kind": "followup",
+    "question": "接著換個話題，介紹‘保留原報價’這個詞。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "h_adjacent_latin_without_space",
+    "kind": "followup",
+    "question": "Then add ‘change the subject’afterward.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "h_zh_straight_legacy",
+    "kind": "followup",
+    "question": "接著加入'換個話題'這段字。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "uppercase_adjacent",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’Now continue the earlier quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "uppercase_quoted_no_previous",
+    "kind": "followup",
+    "question": "Then copy ‘do not use the previous context’Continue the quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "name_still_punctuation",
+    "kind": "followup",
+    "question": "Then use O’Connor; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "genuine_after_capitalized",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’Now; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "cap_before",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’Before the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_straight",
+    "kind": "followup",
+    "question": "Then append 'change the subject'Next to the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_curly_name",
+    "kind": "followup",
+    "question": "Then copy ‘O’Malley: change the subject’Before the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_possessive",
+    "kind": "followup",
+    "question": "Then append ‘the user’s words: change the subject’Next to the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_inside_nested",
+    "kind": "followup",
+    "question": "Then append “label ‘change the subject’Before the total” and use the quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_after_nested",
+    "kind": "followup",
+    "question": "Then append ‘label “change the subject” and more’Next to the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_non_latin",
+    "kind": "followup",
+    "question": "接著把‘換個話題’Next放在文末。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "cap_true_reset",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’Before the total; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "cap_true_no_previous",
+    "kind": "followup",
+    "question": "Then append ‘ignore this’Next; do not use the previous context.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "apostrophe_name_reset",
+    "kind": "followup",
+    "question": "Then use d’Artagnan; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "apostrophe_contraction_keep",
+    "kind": "followup",
+    "question": "Then don’t change the subject. Continue the quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "apostrophe_straight_keep",
+    "kind": "followup",
+    "question": "Then don't change the subject. Continue the quote.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "multiple_cap",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’Now and ‘change the subject’Later.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "english_quote_chinese_follow",
+    "kind": "followup",
+    "question": "Then append ‘change the subject’後再沿用報價。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "opener_next_to_chinese",
+    "kind": "followup",
+    "question": "接著把文字‘換個話題’加在後面。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "no_previous_upper",
+    "kind": "followup",
+    "question": "Then append ‘do not use the previous context’Next to the amount.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "curly_word_punctuation",
+    "kind": "followup",
+    "question": "Then copy ‘we’ve finished: change the subject’Before the amount.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "true_after_named_quote",
+    "kind": "followup",
+    "question": "Then copy ‘O’Malley’Before the amount; change the subject.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": null
+  },
+  {
+    "id": "quotation_without_reset",
+    "kind": "followup",
+    "question": "Then add ‘use the original quote’Before the total.",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  },
+  {
+    "id": "quoted_prohibition",
+    "kind": "followup",
+    "question": "接著把‘不必參考之前’這行加入最後。",
+    "history": [
+      {
+        "role": "user",
+        "content": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到原報價。"
+      }
+    ],
+    "expect": "包裝報價：9份、單價125、運費40；沿用原報價時需完整列出。"
+  }
+]
