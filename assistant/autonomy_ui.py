@@ -2,6 +2,7 @@
 import json
 import os
 import queue
+import sqlite3
 import threading
 from .ui_workers import start_worker
 import tkinter as tk
@@ -19,8 +20,9 @@ from .companion_profile import describe as describe_profile
 
 
 class AutonomousWindow:
-    def __init__(self, parent, store, sid, engine, *, from_chat=False, initial_objective=''):
+    def __init__(self, parent, store, sid, engine, *, from_chat=False, initial_objective='', discuss_report=None):
         self.store, self.sid, self.engine = store, sid, engine
+        self.discuss_report = discuss_report
         self.busy = False
         self.active_goal = None
         self.goal_draft_result = None
@@ -84,6 +86,9 @@ class AutonomousWindow:
         self.follow.pack(anchor='w', padx=12, pady=4)
         self.previous = ttk.Button(body, text='查看上一階段', command=self.previous_stage, state='disabled')
         self.previous.pack(anchor='w', padx=12, pady=4)
+        self.discuss = ttk.Button(body, text='將所選成果帶入聊天草稿（不送出）', command=self.discuss_selected, state='disabled')
+        self.discuss.pack(anchor='w', padx=12, pady=4)
+        self.layout.wrapped_label(body, text='選取已保存成果後，可帶回原對話討論。保留聊天中未送出的問題，附上歷史成果與當時補充；只存本機草稿，核對後自行送出，不會驗收或接續工作。', padding=12).pack(fill='x')
         self.files = ttk.Button(body, text='開啟成果資料夾', command=self.open_files, state='disabled')
         self.files.pack(anchor='w', padx=12, pady=4)
         self.rebuild = ttk.Button(body, text='核對／重建已保存文件', command=self.rebuild_files, state='disabled')
@@ -152,7 +157,7 @@ class AutonomousWindow:
         self.active_goal = None
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在整理目標草稿；不會保存或開始工作，可停止。')
@@ -281,7 +286,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -304,6 +309,7 @@ class AutonomousWindow:
         self.guidance.configure(state='normal' if not self.busy and goal['status'] in ('pending','paused','failed','needs_input') else 'disabled')
         self.follow.configure(state='normal' if not self.busy and autonomy.goal_stages.eligible(goal['status'], len(goal['steps'])) else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
+        self.discuss.configure(state='normal' if self.discuss_report and not self.busy and goal['status'] == 'report_ready' else 'disabled')
         self.files.configure(state='normal' if goal['artifacts'] else 'disabled')
         self.rebuild.configure(state='normal' if goal['artifacts'] and not self.busy else 'disabled')
         self.csv_results.configure(state='normal' if goal['csv_plans'] else 'disabled')
@@ -372,6 +378,15 @@ class AutonomousWindow:
         self.output.insert('1.0', '\n\n'.join(lines))
         self.output.configure(state='disabled')
 
+    def discuss_selected(self):
+        if self.busy or self.discuss_report is None:
+            return
+        try:
+            self.discuss_report(self.sid, self.selected_id())
+            self.notice.set('已帶入原對話的聊天草稿，尚未送出；請到主視窗核對內容與問題。')
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self.notice.set(str(exc))
+
     def add_guidance(self):
         if self.busy:return
         from .goal_guidance_ui import GoalGuidanceWindow
@@ -423,7 +438,7 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -448,7 +463,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     if kind == 'draft_done':

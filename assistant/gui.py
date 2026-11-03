@@ -5,7 +5,7 @@ from .ui_workers import start_worker
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .engine import Assistant
+from .engine import Assistant, MAX_QUESTION_CHARS
 from .ui_layout import ScrollableForm
 
 BG, PANEL, FG, MUTED, ACCENT = "#101820", "#192530", "#eef4f7", "#9db0bd", "#52d6ad"
@@ -157,7 +157,7 @@ class App:
         draft = self.input.get('1.0', 'end').strip() or '依照本對話已確認的需求，完成可處理的工作並提供可核對的成果。'
         # A new draft must not overwrite another goal window's unsaved objective.
         view = AutonomousWindow(self.root, self.store, self.sid, self.assistant.engine,
-                                from_chat=True, initial_objective=draft)
+                                from_chat=True, initial_objective=draft, discuss_report=self.discuss_goal_report)
         self.autonomous_windows.append(view)
 
     def autonomous_goals(self, sid=None, gid=None):
@@ -166,11 +166,27 @@ class App:
         self.autonomous_windows = [window for window in self.autonomous_windows if window.window.winfo_exists()]
         existing = next((window for window in self.autonomous_windows if window.sid == sid), None)
         if existing is None:
-            existing = AutonomousWindow(self.root, self.store, sid, self.assistant.engine)
+            existing = AutonomousWindow(self.root, self.store, sid, self.assistant.engine,
+                                        discuss_report=self.discuss_goal_report)
             self.autonomous_windows.append(existing)
         if gid:
             existing.refresh(gid)
         existing.window.lift()
+
+    def discuss_goal_report(self, sid, gid):
+        if self.closing or self.busy:
+            raise ValueError('請先等候聊天流程結束；關閉期間不能帶入成果。')
+        if sid != self.sid:
+            raise ValueError('請先在主視窗切換到這項工作的原對話，再帶入成果；目前聊天與草稿保留。')
+        if not self.drafts.flush():
+            raise ValueError('目前聊天草稿尚未保存或需要核對；請先處理草稿提示，再帶入成果。')
+        from .goal_discussion import stage
+        saved = stage(self.store, sid, gid, expected_revision=self.drafts.base['revision'])
+        self.drafts.base = saved
+        self.drafts.replace(saved['content'])
+        self.drafts.notice.set('已帶入歷史成果並保留原問題 · 草稿已存本機，請核對後自行送出。')
+        self.root.lift()
+        self.input.focus_set()
 
     def refresh_review_count(self):
         from .goal_review import snapshot
@@ -323,7 +339,7 @@ class App:
         question = self.input.get("1.0", "end").strip()
         if not question:
             return "break"
-        if len(question) > 16000:
+        if len(question) > MAX_QUESTION_CHARS:
             messagebox.showinfo("問題太長", "請將問題縮短至 16000 字內。")
             return "break"
         draft = self.drafts.prepare_send()

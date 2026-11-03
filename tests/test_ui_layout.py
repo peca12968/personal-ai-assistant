@@ -512,8 +512,8 @@ class FormGeometryTests(unittest.TestCase):
             before = app.sidebar_layout.canvas.yview()
             app.sidebar_layout._wheel(SimpleNamespace(widget=app.send_btn, delta=120))
             self.assertEqual(app.sidebar_layout.canvas.yview(), before)
-            def hidden_window(*args):
-                window = AutonomousWindow(*args)
+            def hidden_window(*args, **kwargs):
+                window = AutonomousWindow(*args, **kwargs)
                 window.window.withdraw()
                 return window
             with patch('assistant.autonomy_ui.AutonomousWindow', side_effect=hidden_window):

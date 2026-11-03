@@ -25,6 +25,7 @@ from .autonomy_status import goal_context
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_QUESTION_CHARS = 16000
 MAX_PROMPT_BYTES = 2 * 1024 * 1024
 MAX_ANSWER_BYTES = 2 * 1024 * 1024
 
@@ -234,7 +235,7 @@ class Assistant:
         if cancel and cancel.is_set():
             raise EngineError('已停止這次回答。', 'cancelled')
         question = question.strip()
-        if not question or len(question) > 16000:
+        if not question or len(question) > MAX_QUESTION_CHARS:
             raise ValueError("問題需為 1–16000 字。")
         command = parse_command(question)
         if command is not None and retry is None:
