@@ -52,6 +52,13 @@ class Store:
                     id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS chat_drafts (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+                    revision INTEGER NOT NULL CHECK(revision>=1), content TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS chat_draft_submissions (
+                    token TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    revision INTEGER NOT NULL CHECK(revision>=1),
+                    message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id), UNIQUE(session_id,revision));
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY, content TEXT NOT NULL,
                     kind TEXT NOT NULL CHECK(kind IN ('preference', 'fact', 'lesson')),

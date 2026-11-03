@@ -153,7 +153,7 @@ def operate(db, command):
     return prefix + '\n' + describe(updated), receipt
 
 
-def handle_command(store, sid, question, command, cancel=None):
+def handle_command(store, sid, question, command, cancel=None, draft=None):
     def check_cancel():
         if cancel and cancel.is_set():
             raise RuntimeError('已停止本次記憶操作，沒有保存變更。')
@@ -162,6 +162,8 @@ def handle_command(store, sid, question, command, cancel=None):
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         uid = db.execute("INSERT INTO messages(session_id,role,content) VALUES(?,'user',?)", (sid, question)).lastrowid
+        from .chat_drafts import consume
+        consume(db, sid, question, draft, uid)
         db.execute('SAVEPOINT memory_operation')
         try:
             answer, receipt = operate(db, command)

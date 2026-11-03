@@ -218,3 +218,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `python scripts/evaluate_conversation_priority.py`離線只建立兩個合成對話及自主目標；`--live --report data/evaluations/新的報告.json`才執行實際模型，每題最多八步、不自動重試。固定16則訊息：八則使用者與八則長助理回覆，檢查原採購條件與後來明確定案是否仍進入近期背景。前後使用相同案例與腳本，保存實際快照、工具參數及原始回應、來源／提示指紋；完整收集後才逐項評讀。
 
 改前未收到數字而發問是合理缺漏處理，應歸因來源選取，不能宣稱模型憑空遺忘。改後須核對工具確實計算1040／1050，以及採用使用者最後決定而非助理12人提案。這是固定情境的開發評讀，不是獨立理解分數。短對話方案指代、使用者本身超額、近期窗界線、跨對話與本機指令排除、草稿引用、來源變更及備份以實際SQLite測試另外驗證；原始紀錄只留本機。
+
+
+## 聊天草稿恢復說明（v0.58）
+
+產品說明第十八個情境chat_draft_recovery，使用既有understanding runner的`--suite evals/product_help.json --ids chat_draft_recovery --live --report data/evaluations/新的報告.json`收集改前／改後回答。評讀保存範圍、衝突操作、問題是否入庫與草稿清除的區分、字數與突然中斷限制；不能從模型聲稱可恢復就判定實作成功。
+
+功能證據另以實際臨時SQLite及隱藏Tk檢查切換／重開、定期保存／正常關閉、過期版本與核對中變更、草稿清除和問題入庫回滾、模型失敗後重試、完整本機命令、下一題輸入、備份與舊格式相容。保存草稿不呼叫模型，也不執行草稿中的指令。模型評讀只是功能說明正確性，不是理解分數或視覺驗收；原始對話與合成資料庫不納入GitHub。

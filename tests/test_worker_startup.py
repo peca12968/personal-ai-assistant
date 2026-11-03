@@ -1,3 +1,4 @@
+import gc
 import tempfile
 import tkinter as tk
 import unittest
@@ -23,6 +24,10 @@ class FailingEngine:
 
 class WorkerStartupTests(unittest.TestCase):
     def setUp(self):
+        # Earlier hidden-Tk tests can leave Python cycles after destroying their
+        # interpreters. Reclaim them on the main thread before this suite starts
+        # real workers; collecting a Tk Variable on a worker can abort Tcl.
+        gc.collect()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)
@@ -39,6 +44,7 @@ class WorkerStartupTests(unittest.TestCase):
             self.root.destroy()
         except tk.TclError:
             pass
+        gc.collect()
 
     def fail_start(self):
         return patch('threading.Thread.start', side_effect=RuntimeError('cannot start thread'))

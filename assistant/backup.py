@@ -15,6 +15,8 @@ from . import __version__
 
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 TABLES = {
+    'chat_drafts': {'session_id','revision','content'},
+    'chat_draft_submissions': {'token','session_id','revision','message_id'},
     'feedback_versions': {'revision','message_id','order_basis'},
     'sessions': {'id', 'title', 'created_at'},
     'messages': {'id', 'session_id', 'role', 'content', 'created_at'},
@@ -70,6 +72,9 @@ def validate_database(path):
         if any(kind not in {'table', 'index'} or (sql and 'VIRTUAL TABLE' in sql.upper()) for kind, _, sql in objects):
             raise ValueError('備份含不支援的資料庫物件。')
         actual_tables = {name for kind, name, _ in objects if kind == 'table'}
+        draft_tables = {'chat_drafts','chat_draft_submissions'}
+        if len(actual_tables & draft_tables) == 1:
+            raise ValueError('聊天草稿資料表不完整。')
         if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
             raise ValueError('自主目標資料表不完整。')
         if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} and 'autonomous_goals' not in actual_tables:
@@ -85,7 +90,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - memory_tables - {'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -99,6 +104,9 @@ def validate_database(path):
             validate(db)
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
+        if draft_tables <= actual_tables:
+            from .chat_drafts import validate_saved
+            validate_saved(db)
         if memory_tables <= actual_tables:
             from .memory_drafts import validate_saved
             validate_saved(db)

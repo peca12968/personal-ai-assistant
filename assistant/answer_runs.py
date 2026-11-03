@@ -77,7 +77,7 @@ def retry_target(store, sid):
     return {**row, 'question': messages[0]['content']}
 
 
-def begin(store, sid, run_id, question, context, retry=None):
+def begin(store, sid, run_id, question, context, retry=None, draft=None):
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         if db.execute("SELECT 1 FROM answer_runs WHERE session_id=? AND status='running'", (sid,)).fetchone():
@@ -91,6 +91,8 @@ def begin(store, sid, run_id, question, context, retry=None):
             uid = latest['user_message_id']
         else:
             uid = db.execute("INSERT INTO messages(session_id,role,content) VALUES(?,'user',?)", (sid, question)).lastrowid
+            from .chat_drafts import consume
+            consume(db, sid, question, draft, uid)
             db.execute("UPDATE sessions SET title=? WHERE id=? AND title='新對話'", (question[:50], sid))
         db.execute('INSERT INTO answer_runs(id,session_id,user_message_id,status,context_json) VALUES(?,?,?,\'running\',?)',
                    (run_id, sid, uid, json.dumps(context, ensure_ascii=False)))

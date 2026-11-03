@@ -223,14 +223,14 @@ class Assistant:
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
         return context
 
-    def ask(self, sid, question, cancel=None):
-        return self._ask(sid, question, cancel)
+    def ask(self, sid, question, cancel=None, *, draft=None):
+        return self._ask(sid, question, cancel, draft=draft)
 
     def retry(self, sid, cancel=None):
         target = answer_runs.retry_target(self.store, sid)
         return self._ask(sid, target['question'], cancel, retry=target)
 
-    def _ask(self, sid, question, cancel=None, retry=None):
+    def _ask(self, sid, question, cancel=None, retry=None, draft=None):
         if cancel and cancel.is_set():
             raise EngineError('已停止這次回答。', 'cancelled')
         question = question.strip()
@@ -238,14 +238,14 @@ class Assistant:
             raise ValueError("問題需為 1–16000 字。")
         command = parse_command(question)
         if command is not None and retry is None:
-            return handle_command(self.store, sid, question, command, cancel)
+            return handle_command(self.store, sid, question, command, cancel, draft=draft)
         answer_runs.recover(self.store, sid)
         context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
         if retry:
             context['retry_of'] = {'run_id': retry['id'], 'previous_status': retry['status'], 'uses_current_references': True}
         run_id = uuid.uuid4().hex
         with answer_runs.lease(self.store, run_id):
-            uid = answer_runs.begin(self.store, sid, run_id, question, context, retry)
+            uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
                 answer = self.engine.answer(render_prompt(context), cancel)
                 if cancel and cancel.is_set():

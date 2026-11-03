@@ -2,7 +2,7 @@
 import threading
 import tkinter as tk
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from assistant.evolution_ui import EvolutionWindow
 from assistant.gui import App
@@ -19,6 +19,8 @@ class EvolutionLifecycleTests(unittest.TestCase):
         self.app.autonomous_windows = []
         self.app.memory_draft_windows = []
         self.app.busy = False
+        self.app.drafts = Mock()
+        self.app.drafts.flush.return_value = True
         self.app.status = tk.StringVar(self.root)
         self.addCleanup(self.dispose)
 

@@ -136,6 +136,8 @@ class App:
         self.reminder_frame.grid_remove()
         sessions = store.sessions()
         self.sid = sessions[0]["id"] if sessions else store.new_session()
+        from .chat_draft_ui import DraftEditor
+        self.drafts = DraftEditor(self, main)
         self.refresh_sessions()
         self.render()
         root.after(100, self.poll)
@@ -273,14 +275,17 @@ class App:
     def new_session(self):
         if self.busy:
             return
-        self.sid = self.store.new_session()
+        if not self.drafts.flush():
+            return
+        self.drafts.switch(self.store.new_session())
         self.refresh_sessions()
         self.render()
 
     def select_session(self, event=None):
         selection = self.session_list.curselection()
         if selection and not self.busy:
-            self.sid = self.session_rows[selection[0]]["id"]
+            self.drafts.switch(self.session_rows[selection[0]]["id"])
+            self.refresh_sessions()
             self.render()
 
     def set_busy(self, busy):
@@ -319,6 +324,9 @@ class App:
         if len(question) > 16000:
             messagebox.showinfo("問題太長", "請將問題縮短至 16000 字內。")
             return "break"
+        draft = self.drafts.prepare_send()
+        if draft is None:
+            return "break"
         self.cancel.clear()
         self.set_busy(True)
         self.status.set("思考中… 可按「停止」中止本次回答")
@@ -326,7 +334,7 @@ class App:
 
         def work():
             try:
-                self.events.put(("answer", self.assistant.ask(sid, question, self.cancel)))
+                self.events.put(("answer", self.assistant.ask(sid, question, self.cancel, draft=draft)))
             except Exception as exc:
                 self.events.put(("error", {'message': str(exc), 'question': question}))
         if start_worker(work, lambda error: self.events.put(('error', error)), daemon=True):
@@ -339,6 +347,7 @@ class App:
             while True:
                 kind, value = self.events.get_nowait()
                 self.set_busy(False)
+                self.drafts.finish()
                 self.refresh_sessions()
                 self.render()
                 if kind == "answer":
@@ -350,9 +359,6 @@ class App:
                         self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
                 else:
                     if isinstance(value, dict):
-                        latest = self.store.messages(self.sid, 1)
-                        if (not latest or latest[0]['role'] != 'user' or latest[0]['content'] != value['question']) and not self.input.get('1.0', 'end').strip():
-                            self.input.insert('1.0', value['question'])
                         value = value['message']
                     self.append("note", value)
                     self.status.set("本次未完成；可重新提問")
@@ -417,6 +423,13 @@ class App:
             self.status.set("對話已匯出：" + path)
 
     def close(self):
+        if not self.busy and not self.drafts.flush():
+            self.closing = False
+            self.root._assistant_closing = False
+            self.status.set('聊天草稿尚未保存，視窗保留；請核對草稿或修正保存問題後再關閉。')
+            if self.reminder_timer is None:
+                self.reminder_timer = self.root.after(1000, self.poll_reminders)
+            return
         self.closing = True
         self.root._assistant_closing = True
         if self.reminder_timer is not None:
@@ -433,6 +446,7 @@ class App:
                             if any(window.busy for window in evolution_windows) else '正在停止推理引擎…')
             self.root.after(200, self.close)
         else:
+            self.drafts.stop_timer()
             self.root.destroy()
 
 
