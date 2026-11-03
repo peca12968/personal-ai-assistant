@@ -289,3 +289,12 @@ json_statistics案例集增至9題，新增grouped_paid_records、typed_group_id
 第23題產品說明json_grouped_statistics另評讀入口／欄位設定／AND、型別與缺值、整體與組平均、分頁及資料界線。保留初版資訊不全及下一版漏document_id的回答；發布版完整假設D1參數另經真正validate驗證，再逐項評讀。前後報告使用development_agent，human_grade空白；不把產品說明正確替代工具驗證或獨立人類驗收。全份原始證據只留本機。
 
 確定性回歸另外涵蓋雙欄跳脫、Unicode／大小寫、大整數精度、1000組界線、頁面整組字數上限、空／超末頁、排除列缺鍵、組內累加及未顯示組平均超限、取消、匯入副本／備份／階段省略與未讀引用拒絕。沒有group_by的舊介面保持相容；比較已知案例成功不產生通用理解或IQ分數。
+
+
+## 完整選項接續（v0.65）
+
+`evals/followup_choices.json`保留五個實際回答場景；使用`python scripts/evaluate_understanding.py --suite evals/followup_choices.json`做離線脈絡建構，真實收集另加`--live --report data/evaluations/新報告.json`。比較本次歷史報告時使用本機保留的`data/evaluations/followup-selection-v065/live-suite.json`原始位元組；原始回答不進GitHub。49題已知完整語法回歸及長空白子程序測試由完整unittest自動納入發布與CI。
+
+兩個實際選項案例由要求重貼保存規則轉為直接正確列出，兩個新題／換題案例維持正確。表格題第一條預先標準過度要求保存規則，當前句子其實只要求轉換上一回答的格式選項；保留原標準與不符合紀錄，不把它作答錯／改善證據，也不以總分替代逐題解釋。相關記憶有被取回不代表回答應加入所有記憶。
+
+三輪自改候選皆未直接套用：前兩輪漏保留案例，第三輪固定驗收全過但額外長空白探測發現效能缺陷；先新增主工作樹回歸令來源保護拒絕套用，之後開發者修正並正常發布。最終含開發代理介入，不能寫成完全自主自我提升。逐輪披露過的保留改稱已知案例；九題最後未入提案也不是獨立人類驗收。前後回答均由development_agent評讀並綁定證據，保持human_grade空白；runner／問題／案例未改，模型服務身份與變異並未完全控制。

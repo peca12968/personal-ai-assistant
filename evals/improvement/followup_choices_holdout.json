@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "round2_withheld_4",
+      "kind": "followup",
+      "question": "I will take the second option.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+    },
+    {
+      "id": "round2_withheld_5",
+      "kind": "followup",
+      "question": "I would like the fourth option, please.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+    },
+    {
+      "id": "round2_withheld_6",
+      "kind": "followup",
+      "question": "I've selected option four.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+    },
+    {
+      "id": "round2_withheld_7",
+      "kind": "followup",
+      "question": "Can you please format the above explanation as bullet points?",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+    },
+    {
+      "id": "round2_withheld_8",
+      "kind": "followup",
+      "question": "我不想採用第三個方案。",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "round2_withheld_9",
+      "kind": "followup",
+      "question": "我選第一個，請問可以嗎？",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "round2_withheld_10",
+      "kind": "followup",
+      "question": "I would like the fourth option for a different task.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "round2_withheld_11",
+      "kind": "followup",
+      "question": "I will not take the second option.",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": null
+    },
+    {
+      "id": "round2_withheld_12",
+      "kind": "followup",
+      "question": "Can you please format the above explanation as a list of new projects?",
+      "history": [
+        {
+          "role": "user",
+          "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+        },
+        {
+          "role": "assistant",
+          "content": "第一種是逐項說明，第二種是核對清單。"
+        }
+      ],
+      "expect": null
+    }
+  ]
+}

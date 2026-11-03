@@ -61,6 +61,78 @@ REFERENCE_FOLLOWUP = re.compile(
     r"(?:previous|preceding|above|last)\s+(?:answer|response|explanation|content)\s+"
     r"(?:in(?:to)?|as)\s+(?:a\s+)?(?:table|list|bullet\s+points)"
     r")[。.!！?？\s]*", re.I)
+
+# Compose complete utterances from finite grammatical slots. These fragments
+# are only used with fullmatch; they do not broaden the legacy prefix hints.
+# Selection punctuation excludes questions, and the only permitted trailing
+# clause requests continuation. New subjects, reports and uncertainty therefore
+# cannot be consumed as arbitrary suffixes.
+_ZH_NUMBER = r"(?:[一二三四五六七八九十百]{1,6}|[0-9]{1,3})"
+_ZH_CHOICE = (
+    r"第\s*" + _ZH_NUMBER + r"\s*"
+    r"(?:(?:個|項|種)\s*(?:選項|方案)?|選項|方案)"
+)
+_ZH_SELECT_VERB = r"(?:選擇|選定|選|採用|使用|用)"
+_ZH_SELECT_TENSE = r"(?:(?:已經|已)\s*)?(?:決定\s*)?"
+_ZH_SELECT_SUBJECT = r"(?:我\s*(?:就\s*)?|那\s*就\s*(?:我\s*)?)"
+_ZH_POLITE = r"(?:(?:請\s*(?:幫我\s*)?|麻煩(?:你)?\s*(?:幫我\s*)?|幫我\s*))?"
+_ZH_CONTINUE = r"(?:繼續|接著)(?:說明|說|解釋|介紹)?"
+_ZH_SELECT_END = (
+    r"\s*(?:了)?\s*(?:吧)?\s*"
+    r"(?:[,，。;；]\s*(?:請\s*|麻煩(?:你)?\s*)?" + _ZH_CONTINUE + r")?"
+    r"[。.!！\s]*"
+)
+_EN_CARDINAL = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|[0-9]{1,3})"
+_EN_ORDINAL = (
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"[0-9]{1,3}(?:st|nd|rd|th))"
+)
+_EN_CHOICE_NOUN = r"(?:option|choice|alternative|plan)"
+_EN_CHOICE = (
+    r"(?:the\s+)?(?:" + _EN_ORDINAL + r"\s+" + _EN_CHOICE_NOUN
+    + r"|" + _EN_CHOICE_NOUN + r"\s+" + _EN_CARDINAL + r")"
+)
+_EN_SELECT_BASE = r"(?:choose|select|take|use|adopt|go\s+with)"
+_EN_SELECT_PAST = r"(?:chose|selected|took|used|adopted|went\s+with)"
+_EN_SELECT_PARTICIPLE = r"(?:chosen|selected|taken|used|adopted|gone\s+with)"
+_EN_SELECT_SUBJECT_VERB = (
+    r"(?:i\s+(?:" + _EN_SELECT_BASE + r"|" + _EN_SELECT_PAST
+    + r"|(?:have\s+)?(?:already\s+)?decided\s+to\s+" + _EN_SELECT_BASE + r")"
+    r"|i(?:\s+will|'ll)\s+" + _EN_SELECT_BASE
+    + r"|i(?:\s+would|'d)\s+like(?:\s+to\s+" + _EN_SELECT_BASE + r")?"
+    r"|i(?:\s+have|'ve)\s+(?:already\s+)?(?:" + _EN_SELECT_PARTICIPLE
+    + r"|decided\s+to\s+" + _EN_SELECT_BASE + r"))\s+"
+)
+_EN_POLITE = r"(?:please\s+)?"
+_EN_CONTINUE = r"(?:continue|go\s+on|proceed)(?:\s+with\s+the\s+explanation)?"
+_EN_SELECT_END = (
+    r"(?:\s*,\s*(?:please|(?:please\s+)?" + _EN_CONTINUE + r"))?"
+    r"(?:\s+please)?[.!\s]*"
+)
+COMPLETE_SELECTION_FOLLOWUP = re.compile(
+    r"(?:" + _ZH_POLITE + _ZH_SELECT_SUBJECT + _ZH_SELECT_TENSE
+    + _ZH_SELECT_VERB + r"\s*(?:了\s*)?" + _ZH_CHOICE + _ZH_SELECT_END
+    + r"|" + _EN_POLITE + _EN_SELECT_SUBJECT_VERB + _EN_CHOICE + _EN_SELECT_END + r")", re.I)
+
+# Formatting needs an explicit preceding object even with courteous wording.
+# Question punctuation is allowed here because the complete request itself is
+# a transformation, unlike a question about whether to choose an option.
+_ZH_REFERENCE_TRANSFORM = (
+    r"(?:把|將)\s*(?:上面|上述|剛才|前面|剛剛)(?:的)?\s*"
+    r"(?:回答|內容|說明)?\s*(?:改成|整理成|轉成)\s*(?:表格|清單|條列)"
+)
+_EN_REFERENCE_TRANSFORM = (
+    r"(?:put|turn|convert|format)\s+(?:the\s+)?"
+    r"(?:previous|preceding|above|last)\s+(?:answer|response|explanation|content)\s+"
+    r"(?:in(?:to)?|as)\s+(?:a\s+)?(?:table|list|bullet\s+points)"
+)
+COMPLETE_FORMAT_FOLLOWUP = re.compile(
+    r"(?:" + _ZH_POLITE
+    + r"(?:(?:可以|能不能|可不可以|能否|是否可以|能)\s*(?:幫我\s*)?)?"
+    + _ZH_REFERENCE_TRANSFORM + r"(?:嗎|呢)?[。.!！?？\s]*"
+    r"|" + _EN_POLITE + r"(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
+    + _EN_REFERENCE_TRANSFORM + r"(?:\s*,?\s+please)?[.!?\s]*)", re.I)
+
 NO_PREVIOUS = re.compile(
     r"(?:不要|不用|不必|別)(?:再)?\s*(?:沿用|使用|參考|接續|延續)\s*"
     r"(?:前文|上文|之前|先前|剛才|上述|前面)"
@@ -187,6 +259,16 @@ def is_followup(question):
     text = unicodedata.normalize("NFKC", question).strip()
     if context_reset(question):
         return False
+    # Match the whole original utterance, including any quotation/code marks.
+    # Masking first could silently discard a contradictory or reported clause.
+    # Curly apostrophes are equivalent only within these new complete rules.
+    # Collapse whitespace for matching only. Adjacent optional slots must not
+    # backtrack over thousands of equivalent whitespace partitions. Quotes,
+    # code marks and qualifiers stay present; stored/current text stays raw.
+    complete_text = re.sub(r'\s+', ' ', text.replace('’', "'"))
+    if (COMPLETE_SELECTION_FOLLOWUP.fullmatch(complete_text)
+            or COMPLETE_FORMAT_FOLLOWUP.fullmatch(complete_text)):
+        return True
     text = POLITE.sub("", text, count=1)
     return bool(FOLLOWUP.search(text) or SHORT_FOLLOWUP.fullmatch(text)
                 or REFERENCE_FOLLOWUP.fullmatch(text))

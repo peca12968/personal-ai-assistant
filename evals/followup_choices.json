@@ -1,0 +1,127 @@
+[
+  {
+    "id": "chinese_choice",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "第一種是逐項說明，第二種是核對清單。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "槐樹交接規則：交接代碼 HT-624，保留 17 天，交接前核對 manifest 的 SHA-256。",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "我選第二個，請繼續。",
+    "criteria": [
+      "列出已存交接代碼HT-624、保留17天及核對manifest的SHA-256，沒有要求重貼這些已存資訊",
+      "按當前選擇／格式要求整理，不聲稱已執行交接或修改記憶"
+    ]
+  },
+  {
+    "id": "english_choice",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "Use the saved cedar_handoff rules. Offer two presentation styles and give the complete rules after I choose."
+      },
+      {
+        "role": "assistant",
+        "content": "Option one: prose. Option two: a checklist."
+      }
+    ],
+    "memories": [
+      {
+        "content": "cedar_handoff: handover code CP-731; retention 23 days; reviewer OpsDesk.",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "I'll take option two.",
+    "criteria": [
+      "列出CP-731、23天與OpsDesk，不要求重貼已存資訊",
+      "採核對清單且不聲稱已執行交接或修改記憶"
+    ]
+  },
+  {
+    "id": "polite_table",
+    "category": "followup",
+    "history": [
+      {
+        "role": "user",
+        "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "第一種是逐項說明，第二種是核對清單。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "槐樹交接規則：交接代碼 HT-624，保留 17 天，交接前核對 manifest 的 SHA-256。",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "請幫我把上面的回答整理成表格。",
+    "criteria": [
+      "列出已存交接代碼HT-624、保留17天及核對manifest的SHA-256，沒有要求重貼這些已存資訊",
+      "按當前選擇／格式要求整理，不聲稱已執行交接或修改記憶"
+    ]
+  },
+  {
+    "id": "new_subject",
+    "category": "boundary",
+    "history": [
+      {
+        "role": "user",
+        "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "第一種是逐項說明，第二種是核對清單。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "槐樹交接規則：交接代碼 HT-624，保留 17 天，交接前核對 manifest 的 SHA-256。",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "我選第二個質數，請說明它為什麼是質數。",
+    "criteria": [
+      "回答第二個質數是3，說明正因數只有1和3",
+      "不把舊交接規則帶入新題或聲稱已執行作業"
+    ]
+  },
+  {
+    "id": "explicit_reset",
+    "category": "boundary",
+    "history": [
+      {
+        "role": "user",
+        "content": "請根據已存的槐樹交接規則，提供兩種整理方式；選定後列出完整規則。"
+      },
+      {
+        "role": "assistant",
+        "content": "第一種是逐項說明，第二種是核對清單。"
+      }
+    ],
+    "memories": [
+      {
+        "content": "槐樹交接規則：交接代碼 HT-624，保留 17 天，交接前核對 manifest 的 SHA-256。",
+        "kind": "fact"
+      }
+    ],
+    "prompt": "換個話題，請把水的三態整理成表格。",
+    "criteria": [
+      "提供水的固態、液態、氣態表格",
+      "不把舊交接規則帶入新題或聲稱已執行作業"
+    ]
+  }
+]
