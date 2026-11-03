@@ -4,15 +4,26 @@ import unicodedata
 
 
 def _has_positive_cue(pattern, text):
-    """Ignore cues immediately preceded by a negation and optional modifiers."""
+    """Ignore locally negated cues using bounded verb and object phrases.
+
+    Only grammatical connectors may bridge a negation and a cue. Sentence
+    boundaries and arbitrary topic words cannot extend the negation's scope.
+    """
+    english_object = (
+        r'(?:me|it|this|that|them|these|those|us|'
+        r'(?:(?:the|your|my|this|that|an?)\s+)?'
+        r'(?:answer|response|explanation|summary))'
+    )
     negation = (
         r'(?:'
         r'(?:不要|不用|不需要|無需|无需|不必|別|别|不是|並非|并非|不)'
-        r'\s*(?:要\s*)?(?:(?:再|太|過於|过于|很|那麼|那么|這麼|这么)\s*)?'
+        r'\s*(?:要\s*)?'
+        r'(?:(?:用|以|給我|给我|提供|保持|回答|回覆|回复|說明|说明|解釋|解释)\s*)?'
+        r'(?:(?:再|太|過於|过于|很|那麼|那么|這麼|这么)\s*)?'
         r'|\b(?:not|never|no|do\s+not|don[\x27\u2019]t)\s+'
         r'(?:(?:need\s+to|have\s+to|want(?:\s+to)?)\s+)?'
-        r'(?:(?:be|give|provide|explain|answer|respond|keep\s+it)\s+)?'
-        r'(?:(?:me|it|this|that|them|these|those)\s+)?'
+        r'(?:(?:be|give|provide|explain|answer|respond|keep)\s+)?'
+        r'(?:' + english_object + r'\s+)?'
         r'(?:(?:an?|the)\s+)?'
         r'(?:(?:very|too|so)\s+)?'
         r')$'
@@ -28,9 +39,8 @@ def _length_request_text(text):
 
     Code and Markdown blockquotes are always data. Other quotes count only
     in a local instruction frame: use a quoted style to answer, or give a
-    quoted response. Removing delimiters in these frames preserves negation.
-    This deliberately uses grammatical cues rather than guessing intent from
-    the quoted words themselves.
+    quoted response. Nested quotes remain data even within a style frame.
+    Delimiters become spaces so negation and word boundaries are preserved.
     """
     def blank(value):
         return re.sub(r'[^\n]', ' ', value)
@@ -62,15 +72,30 @@ def _length_request_text(text):
         text,
     )
 
-    # Apostrophes within words (don't, user's) are not quotation marks.
-    quotes = re.compile(
-        r'「[^「」]*」|『[^『』]*』|“[^“”]*”|‘[^‘’]*’'
-        r'|"[^"\n]*"|(?<!\w)\x27[^\x27\n]*\x27(?!\w)'
-    )
+    # Track paired delimiters, including repeated asymmetric opening marks.
+    # In-word apostrophes (don't, user's, user’s) never open or close quotes.
+    pairs = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'"}
+    stack = []
+    spans = []
+    for index, char in enumerate(text):
+        if char in "'‘’":
+            before_word = index > 0 and (text[index - 1].isalnum() or text[index - 1] == '_')
+            after_word = index + 1 < len(text) and (text[index + 1].isalnum() or text[index + 1] == '_')
+            if before_word and after_word:
+                continue
+        if char == '\n':
+            # Straight quotes, unlike paired typographic quotes, are local
+            # to a line, matching the existing treatment of quoted strings.
+            stack = [entry for entry in stack if entry[1] not in ('"', "'")]
+        if stack and char == pairs[stack[-1][1]]:
+            start, _ = stack.pop()
+            spans.append((start, index + 1))
+        elif char in pairs:
+            stack.append((index, char))
 
-    def quoted_text(match):
-        before = text[:match.start()]
-        after = text[match.end():]
+    def is_style_frame(start, end):
+        before = text[:start]
+        after = text[end:]
         style_frame = (
             re.search(r'(?:用|以)\s*$', before)
             and re.match(
@@ -87,11 +112,20 @@ def _length_request_text(text):
             re.search(r'\b(?:be|keep\s+it|answer|respond)\s*$', before, re.I)
             and re.match(r'\s*(?:[.!?,;]|$)', after)
         )
-        if style_frame or response_frame or english_style_frame:
-            return match.group()[1:-1]
-        return blank(match.group())
+        return bool(style_frame or response_frame or english_style_frame)
 
-    return quotes.sub(quoted_text, text)
+    result = list(text)
+    outer_end = -1
+    for start, end in sorted(spans, key=lambda span: (span[0], -span[1])):
+        nested = start < outer_end
+        if not nested:
+            outer_end = end
+        if not nested and is_style_frame(start, end):
+            result[start] = ' '
+            result[end - 1] = ' '
+        else:
+            result[start:end] = list(blank(text[start:end]))
+    return ''.join(result)
 
 
 def _current_length_request(text):
