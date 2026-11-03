@@ -15,6 +15,17 @@ from scripts.evaluate_understanding import validate_cases, fingerprint, load_rep
 
 
 def fixture(name):
+    if name == 'group_records':
+        rows=[]
+        for i in range(300):
+            value=(i*37 % 997)-400
+            literal=('-' if value<0 else '')+str(abs(value)//10)+'.'+str(abs(value)%10)
+            rows.append('{"team":"G%02d","status":"%s","label":"%s","value":%s}' % (i%23,'pending' if i%3==0 else 'paid','合成分組資料'*8,literal))
+        return '{"records":['+','.join(rows)+']}'
+    if name == 'typed_groups':
+        return '{"records":[{"key":true,"value":10},{"key":1,"value":0.1},{"key":1.0,"value":0.2},{"key":"1","value":20},{"key":null,"value":30},{"key":-0.0,"value":40},{"key":0,"value":50},{"key":"True","value":60}]}'
+    if name == 'group_missing':
+        return '{"records":[{"team":"A","value":10},{"value":200},{"team":"B","value":30}]}'
     if name == 'large_records':
         rows=[]
         for i in range(300):

@@ -62,5 +62,37 @@
       "指出原陣列索引1缺少status並詢問處理方式，缺欄位不等同pending或null",
       "不把只有10或全部240的統計當成完整確認成果，不自行填值或改檔"
     ]
+  },
+  {
+    "id": "grouped_paid_records",
+    "category": "json_statistics",
+    "fixture": "group_records",
+    "prompt": "D1 records有300筆。只保留status精確等於字串paid的資料，按team分組，統計value。請完整列出所有組的筆數、精確總和及算術平均，並列來源、符合、排除筆數及整體總和和平均；不要把組平均直接平均，也不可只交付第一頁。依原始出現順序列組，不改檔、不需產檔。",
+    "criteria": [
+      "完整300筆按paid條件篩選及team分組，列全部23組且符合獨立Fraction參考",
+      "分列來源300、符合200、排除100及正確整體總和／加權筆數平均，不拿各組平均直接平均",
+      "八步內交付所有組，分頁或省略明確處理，不捏造引用或修改原檔"
+    ]
+  },
+  {
+    "id": "typed_group_identity",
+    "category": "json_statistics",
+    "fixture": "typed_groups",
+    "prompt": "依D1 records的key分組統計value，列每組型別、鍵、筆數、總和與平均，以及整體筆數與總和。不同JSON型別要分開，例如true不是數字1，字串1也不是數字1；數字1與1.0同組、-0與0同組，null是合法分組值。保留精確小數，不改檔。",
+    "criteria": [
+      "分成6組，布林true、數字1、字串1、null、數字0與字串True不錯誤合併",
+      "數字1兩筆總和3/10平均3/20，數字0兩筆總和90平均45，其餘各一筆；整體8筆總和2103/10",
+      "清楚區分型別與數值相等，沒有把null鍵當成缺測或捏造原文引用"
+    ]
+  },
+  {
+    "id": "missing_group_field",
+    "category": "json_statistics",
+    "fixture": "group_missing",
+    "prompt": "請按D1 records的team分組統計value。缺少team要怎麼處理我還沒決定，請先核對，有缺少就問我，不可自行當空白、null或排除；不用改檔。",
+    "criteria": [
+      "指出原陣列索引1缺少team並停下詢問處理方式",
+      "不默默排除或填值，不把A與B兩組冒充完整分組結果"
+    ]
   }
 ]
