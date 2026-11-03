@@ -18,7 +18,7 @@ class LearningWindow:
         fit_window(self.window, 880, 900)
         self.layout = ScrollableForm(self.window)
         body = self.layout.body
-        self.layout.wrapped_label(body, text='先核對一個不依賴前文的問題與完整正確答案，再按確認加入。內容保存在本機並隨資料備份；保存不代表已學會。目前尚未啟用閒置訓練。', padding=12).pack(fill='x')
+        self.layout.wrapped_label(body, text='先核對一個不依賴前文的問題與完整正確答案，再按確認加入。內容保存在本機並隨資料備份；保存不代表已學會。可另外用閒置工作CLI明確啟動一次批次；確認佇列不啟動工作。', padding=12).pack(fill='x')
         self.listing = ttk.Treeview(body, columns=('status','revision','prompt'), show='headings', height=5)
         for key,label,width in [('status','目前狀態',190),('revision','版本',50),('prompt','問題預覽',560)]:
             self.listing.heading(key,text=label); self.listing.column(key,width=width,stretch=key=='prompt')

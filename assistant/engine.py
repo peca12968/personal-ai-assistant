@@ -252,6 +252,8 @@ class Assistant:
         from .learning_queue import help_context
         learning_help = help_context(question + ('\n' + followup if followup else ''))
         if learning_help is not None:
+            from .idle_learning import capabilities
+            learning_help.update(capabilities())
             context['learning_capabilities'] = learning_help
         return context
 
