@@ -8,6 +8,52 @@ from pathlib import Path
 MAX_JSON_BYTES = 32 * 1024 * 1024
 REVIEWERS = {'user', 'development_agent', 'independent_reviewer'}
 RUNTIME_FINGERPRINTS = {'source_sha256', 'prompt_sha256', 'communication_prompt_sha256'}
+TRACE_MODE = 'understanding_trace_v1'
+TRACE_CONTEXT_MARKER = '\n\n以下 JSON 是使用者資料與當前問題：\n'
+MAX_TRACE_BYTES = 2 * 1024 * 1024
+
+
+def canonical_digest(value):
+    try:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(',', ':'), allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise ValueError('評估輸入不能建立穩定JSON指紋。') from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
+def validate_trace(row):
+    fixture = row.get('fixture')
+    if not isinstance(fixture, dict) or canonical_digest(fixture) != row.get('fixture_sha256'):
+        raise ValueError('原始案例定義與指紋不符。')
+    if not text(row.get('prompt')):
+        raise ValueError('實際請求追蹤缺少有效案例問題。')
+    for field in ('id', 'category', 'prompt', 'criteria'):
+        if field not in fixture or fixture[field] != row.get(field):
+            raise ValueError('案例定義與報告問題／標準不一致。')
+    request, context, offset = row.get('request'), row.get('context'), row.get('request_context_offset')
+    if (not isinstance(request, str) or len(request) > MAX_TRACE_BYTES
+            or not isinstance(context, dict) or type(offset) is not int
+            or not 0 <= offset < len(request)):
+        raise ValueError('實際請求、脈絡或位置紀錄無效。')
+    try:
+        raw = request.encode('utf-8')
+    except UnicodeError as exc:
+        raise ValueError('實際請求不是有效UTF-8。') from exc
+    if len(raw) > MAX_TRACE_BYTES or hashlib.sha256(raw).hexdigest() != row.get('request_sha256'):
+        raise ValueError('實際請求與指紋不符或超過2 MiB。')
+    # Use the recorded boundary, never today's prompts or a regenerated input.
+    # Quoted copies of the marker inside user JSON cannot redirect this check.
+    if not request[:offset].endswith(TRACE_CONTEXT_MARKER):
+        raise ValueError('實際請求的脈絡邊界無效。')
+    if canonical_digest(strict_json(request[offset:])) != canonical_digest(context):
+        raise ValueError('實際請求與保存的作答脈絡不同。')
+    if context.get('current_request') != row['prompt'].strip():
+        raise ValueError('實際作答問題與案例不一致。')
+    if type(row.get('engine_call_count')) is not int or row['engine_call_count'] != 1:
+        raise ValueError('理解回答追蹤需有且只有一次引擎呼叫。')
+    if not isinstance(row.get('engine_answer'), str):
+        raise ValueError('缺少引擎回傳文字；不能以處理後答案補造。')
 
 
 def strict_json(raw):
@@ -107,6 +153,10 @@ def validate_report(report):
             raise ValueError('評估指紋須為具名SHA-256文字。')
     if 'mode' in report and not text(report['mode']):
         raise ValueError('評估模式無效。')
+    traced = report.get('mode') == TRACE_MODE
+    if traced and not all(digest(report.get('fingerprint', {}).get(key)) for key in
+                          ('runner_sha256', 'report_validation_sha256', 'suite_sha256')):
+        raise ValueError('追蹤報告缺少測試器、驗證器或案例集指紋。')
     for row in rows.values():
         if not text(row.get('category')) or not criteria(row.get('criteria')) or not isinstance(row.get('answer'), str):
             raise ValueError('案例需有分類、非空標準與答案文字；空答案另列統計。')
@@ -117,6 +167,8 @@ def validate_report(report):
         for field in ('source_sha256', 'fixture_sha256', 'request_sha256'):
             if field in row and not digest(row[field]):
                 raise ValueError('案例來源或請求指紋無效。')
+        if traced:
+            validate_trace(row)
         mechanical = row.get('mechanical_checks', {})
         if not isinstance(mechanical, dict) or any(not text(k) or type(v) is not bool for k, v in mechanical.items()):
             raise ValueError('機械檢查需為具名布林；不能代替語意評讀。')
@@ -152,4 +204,6 @@ def verify_suite(report, raw):
         for field in ('category', 'criteria', 'prompt'):
             if field in row and row[field] != case[field]:
                 raise ValueError('報告的問題、分類或標準與指定案例集不符。')
+        if report.get('mode') == TRACE_MODE and canonical_digest(case) != row.get('fixture_sha256'):
+            raise ValueError('案例歷史、記憶或其他完整輸入定義與原案例集不符。')
     return True

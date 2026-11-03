@@ -925,3 +925,17 @@
 - 產品說明增至24題。改前誠實說明舊工具未支援排名，並非虛假回答；初版說明漏group_count與unselected_group_count，保留該標準失敗。補充三種數量並明確同分的符合列順序後，重新以獨立路徑收集全部三個目標與產品說明。最終四項說明標準通過，完整假設D1 JSON範例另外通過實際validate；普通聊天未執行。
 - before／after／final與產品說明各份皆在收集handle終止後才追加development_agent評讀，綁定來源與答案，human_grade保持空白。最終來源／提示／runner／案例指紋、原suite位元組及來源SHA已核對，三題比較fail→pass、pass→pass、pass→pass。這是已知任務的功能與完成效率改善，不是獨立一般智能、模型權重訓練或IQ提升。
 - README、路線圖、評估方法與維護規則同步；12個JSON場景與24個產品說明場景納入既有發布／CI／自改的離線檢查。原始回答、合成資料庫、獨立參考與日誌只在忽略的data/evaluations/json-ranking-v066。沒有操作正式個人資料庫，需重開程式載入新版本。
+
+
+## 理解評估的實際請求追溯（2026-11-03，助理仍為v0.66）
+
+- 上輪v0.66已發布，起始核對乾淨主線9113779；該版CI查詢仍在執行。本輪改善長期自我改進所依據的測量證據，沒有修改assistant來源、正式提示、模型設定或前次能力成績。
+- 重現舊understanding runner先prepare_context、再Assistant.ask內重新建脈絡的落差。以明示假引擎的受控探測，問題「  請回答三加四。  」在報告保留首尾空白、真正引擎請求已去除；兩個SHA不同。原collector也沒有記錄自身指紋。這是紀錄缺陷，不是模型答錯；baseline-evidence.json清楚標示controlled_fake_engine_not_live_model。
+- 新增understanding_trace_v1模式，live_fingerprint單獨增加runner_sha256與report_validation_sha256，保留其他專用goal runner的既有fingerprint介面。原suite位元組有界讀入、嚴格拒絕重複鍵／NaN／Infinity，並核對讀入後是否改變，再開始收集。
+- 每題只透過真實Assistant.ask建脈絡一次，在引擎函式邊界擷取實際request與engine_answer，從Store.answer_context取得已保存脈絡，再核對render_prompt與實際請求。保存原問題、完整fixture及canonical fixture_sha256、request_sha256、明確request_context_offset與engine_call_count=1；保留engine_answer和實際交付answer的差別（例如引用檢查附註）。零次模型呼叫的本機命令會停止且不加入模型回答紀錄；不以預建脈絡補造。
+- 報告驗證以保存的字串、邊界與JSON脈絡核對，不依今天的正式提示重建舊請求。新模式需有collector／validator／suite指紋，完整fixture的id／分類／問題／標準須與列一致，verify_suite另核對歷史、記憶及其他原始案例欄位。引擎請求上限2 MiB，模式與真整數呼叫次數／位置、UTF-8指紋及脈絡皆核對。指紋可被一起重寫，因此僅證明內部一致，不能驗證真實呼叫、模型身份或服務內部完整提示。
+- 接續前改為完整驗證已保存列與既有評讀，不再只核對ID。collector或validator在回答期間改變時，本題不加入；不同來源／案例／模式不可混合接續。舊模式仍可讀及以原條件比較，不追溯補實際請求；新舊模式比較會拒絕。摘要分列request_trace_verified_ids與request_trace_missing_ids，舊hash欄位不因此當成已驗證引擎請求。
+- 保存前先嚴格序列化並限制32 MiB，超限或非有限值保留既有完整檔案，不寫部分新結果。既有測試中用無效短hash／缺標準的resume樣本更新為真正有效資料，以繼續驗證可接續與變更拒絕。其他歷史格式及離線脈絡建構保留。
+- 十項新回歸涵蓋實際一次呼叫／保存脈絡／去空白差異、引擎文字與交付附註分離、請求／fixture／脈絡／邊界／次數改動、完整案例對原suite、已評讀證據接續拒絕、完成後不重呼叫、不將舊模式升級、collector／validator中途改變、讀取後suite變動、本機命令無呼叫、嚴格JSON及有界寫入。受控探測修正後實際請求和報告SHA一致；假引擎紀錄另有明確標記，不冒稱真實模型測量。
+- 使用新協定另收兩個真實案例（空白包住的算術問題與記憶選項接續）。答案分別為7，以及HT-624／17天／manifest SHA-256核對清單；實際請求SHA、保存JSON脈絡、原案例與trim後問題、collector／validator／正式來源／提示指紋全部核對。收集handle終止後才追加development_agent評讀，human_grade空白；這只是collector實際運作驗證，沒有拿新舊模式評分作能力提升比較。
+- 以新validator唯讀檢查四個既有評估目錄中的19份報告／41筆結果，原始檔案SHA完全未變，皆標示未有新協定追蹤。完整735項測試通過（93.261秒），發布器另執行必要檢查。原始請求、真實／假引擎回答、合成資料及核對全在忽略的data/evaluations/evaluation-trace-v067；目錄名稱是工作序號，不代表助理已升至v0.67。沒有讀取正式個人資料庫或新增工具權限。

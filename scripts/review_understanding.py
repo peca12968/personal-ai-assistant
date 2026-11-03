@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.evaluate_understanding import save_report
 from scripts.evaluation_reports import (REVIEWERS, RUNTIME_FINGERPRINTS, MAX_JSON_BYTES,
-    load_json, validate_report, validate_review, verify_suite, evidence_digest)
+    load_json, validate_report, validate_review, verify_suite, evidence_digest, TRACE_MODE)
 
 
 def apply_reviews(report, reviews, reviewer):
@@ -74,6 +74,8 @@ def summarize(report, *, suite_bytes=None):
             'bound_review_ids': [row['id'] for row in report['results'] if row.get('reviews') and 'evidence_sha256' in row['reviews'][-1]],
             'unbound_review_ids': [row['id'] for row in report['results'] if row.get('reviews') and 'evidence_sha256' not in row['reviews'][-1]],
             'missing_prompt_ids': [row['id'] for row in report['results'] if 'prompt' not in row],
+            'request_trace_verified_ids': [row['id'] for row in report['results'] if report.get('mode') == TRACE_MODE],
+            'request_trace_missing_ids': [row['id'] for row in report['results'] if report.get('mode') != TRACE_MODE],
             'mechanical_failures': sum(any(value is False for value in row.get('mechanical_checks', {}).values()) for row in report['results']),
             'note': 'Counts describe recorded rows/nonempty answer fields and latest explicit reviews, not task completion or IQ. Structural/suite consistency does not authenticate model calls, inputs or reviewer identity; no independent general intelligence score.'}
 

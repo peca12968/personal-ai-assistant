@@ -66,9 +66,9 @@ class UnderstandingEvaluationTests(unittest.TestCase):
 
     def test_resume_preserves_answers_and_rejects_changed_run(self):
         path = self.root / 'report.json'
-        signature = {'suite_sha256': 'suite', 'prompt_sha256': 'prompt', 'source_sha256': 'source'}
+        signature = {'suite_sha256': 'a'*64, 'prompt_sha256': 'b'*64, 'source_sha256': 'c'*64}
         report = load_report(path, signature, ['one', 'two'], False)
-        report['results'].append({'id': 'one', 'answer': '已保留的答案', 'human_grade': None})
+        report['results'].append({'id': 'one', 'category':'test', 'criteria':['正確'], 'answer': '已保留的答案', 'human_grade': None})
         save_report(path, report)
         reopened = load_report(path, signature, ['one', 'two'], True)
         self.assertEqual(reopened['results'][0]['answer'], '已保留的答案')
@@ -102,7 +102,7 @@ class UnderstandingEvaluationTests(unittest.TestCase):
         with patch('scripts.evaluate_understanding.ROOT', self.root):
             original = fingerprint()
             report = load_report(path, original, ['one', 'two'], False)
-            report['results'].append({'id': 'one', 'answer': '原回答'})
+            report['results'].append({'id': 'one', 'category':'test', 'criteria':['正確'], 'answer': '原回答'})
             save_report(path, report)
             before = path.read_bytes()
             communication.write_text('改成直接給步驟。', encoding='utf-8')

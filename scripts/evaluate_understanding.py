@@ -11,11 +11,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from assistant.engine import Assistant, CodexEngine, render_prompt
-from scripts.evaluation_reports import index_report, load_json
+from scripts.evaluation_reports import (index_report, load_json, strict_json, validate_report,
+    verify_suite, canonical_digest, TRACE_MODE, TRACE_CONTEXT_MARKER, MAX_JSON_BYTES)
 from assistant.store import Store
 from assistant.companion_profile import get_profile, reset_profile, save_profile, validate as validate_profile
 
 SUITE = ROOT / 'evals/understanding.json'
+RUNNER_PATH = Path(__file__).resolve()
+VALIDATOR_PATH = RUNNER_PATH.with_name('evaluation_reports.py')
 
 
 def sha(data):
@@ -27,13 +30,13 @@ def validate_cases(cases):
         raise ValueError('案例集不能為空。')
     ids = set()
     for case in cases:
-        if not isinstance(case.get('id'), str) or not case['id'] or case['id'] in ids:
+        if not isinstance(case, dict) or not isinstance(case.get('id'), str) or not case['id'].strip() or case['id'] in ids:
             raise ValueError('案例編號無效或重複。')
         ids.add(case['id'])
-        if not case.get('category') or not isinstance(case.get('prompt'), str) or not case['prompt'].strip():
+        if not isinstance(case.get('category'), str) or not case['category'].strip() or not isinstance(case.get('prompt'), str) or not case['prompt'].strip():
             raise ValueError('案例缺少分類或問題。')
         criteria = case.get('criteria')
-        if not isinstance(criteria, list) or not criteria or not all(isinstance(c, str) and c for c in criteria):
+        if not isinstance(criteria, list) or not criteria or not all(isinstance(c, str) and c.strip() for c in criteria):
             raise ValueError('每題需要明確評讀標準。')
         if case.get('check') not in (None, 'three_bullets'):
             raise ValueError('未知的確定性檢查。')
@@ -83,15 +86,24 @@ def fingerprint(suite_path=None):
             'source_sha256': sha(source)}
 
 
-def load_report(path, signature, ids, resume):
+def live_fingerprint(suite_path):
+    # Keep fingerprint() compatible with the other dedicated goal runners;
+    # this protocol specifically fingerprints its collector and validator.
+    return {**fingerprint(suite_path), 'runner_sha256': sha(RUNNER_PATH.read_bytes()),
+            'report_validation_sha256': sha(VALIDATOR_PATH.read_bytes())}
+
+
+def load_report(path, signature, ids, resume, *, mode=None):
     index_report({'case_ids': ids, 'results': []})
     if path.exists():
         if not resume:
             raise ValueError('報告已存在；請使用新路徑或 --resume，不會覆寫結果。')
         report = load_json(path)
-        index_report(report)
+        validate_report(report)
         if report.get('fingerprint') != signature or report.get('case_ids') != ids:
             raise ValueError('來源、提示或案例選取已改變，不能混入同一份報告。')
+        if mode is not None and report.get('mode') != mode:
+            raise ValueError('評估紀錄模式不同，不能補造舊報告的實際請求。')
         seen = [row['id'] for row in report['results']]
         if len(set(seen)) != len(seen) or any(item not in ids for item in seen):
             raise ValueError('報告案例紀錄無效。')
@@ -99,15 +111,56 @@ def load_report(path, signature, ids, resume):
     if resume:
         raise ValueError('找不到要接續的報告。')
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True)
-    return {'format_version': 1, 'created_at': datetime.now(timezone.utc).isoformat(),
+    result = {'format_version': 1, 'created_at': datetime.now(timezone.utc).isoformat(),
             'git_head': commit.stdout.strip(), 'fingerprint': signature, 'case_ids': ids,
             'review_note': 'Requires actual-answer rubric review; no automated overall correctness score.', 'results': []}
+    if mode is not None:
+        result['mode'] = mode
+    return result
+
+
+def collect_case(store, sid, case, engine, unchanged):
+    calls = []
+    class Recorded:
+        def answer(self, prompt, cancel=None):
+            if calls:
+                raise ValueError('本理解案例意外呼叫引擎多次，未將它視為單次作答。')
+            unchanged()
+            calls.append({'request': prompt})
+            result = engine.answer(prompt, cancel)
+            calls[0]['engine_answer'] = result
+            return result
+    answer = Assistant(store, Recorded()).ask(sid, case['prompt'])
+    unchanged()
+    if len(calls) != 1:
+        raise ValueError('此案例未呼叫模型（可能是本機命令），不保存為模型回答；請使用對應功能評估器。')
+    context = store.answer_context(answer['id'])
+    request = calls[0]['request']
+    if not isinstance(context, dict) or request != render_prompt(context):
+        raise ValueError('實際引擎請求與已保存作答脈絡不一致，未加入報告。')
+    body = json.dumps(context, ensure_ascii=False)
+    offset = len(request)-len(body)
+    if not request[offset:] == body or not request[:offset].endswith(TRACE_CONTEXT_MARKER):
+        raise ValueError('無法核對實際請求的脈絡位置。')
+    fixture = json.loads(json.dumps(case, ensure_ascii=False, allow_nan=False))
+    return {'id':case['id'], 'category':case['category'], 'prompt':case['prompt'],
+            'criteria':case['criteria'], 'fixture':fixture, 'fixture_sha256':canonical_digest(fixture),
+            'context':context, 'request':request, 'request_sha256':sha(request.encode('utf-8')),
+            'request_context_offset':offset, 'engine_call_count':len(calls),
+            'engine_answer':calls[0]['engine_answer'], 'answer':answer['content'],
+            'mechanical_checks':mechanical_check(case, answer['content']), 'human_grade':None}
 
 
 def save_report(path, report):
+    try:
+        raw = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise ValueError('評估報告不能序列化為有效JSON。') from exc
+    if len(raw) > MAX_JSON_BYTES:
+        raise ValueError('評估報告超過32 MiB，保留先前已保存內容；請減少每次案例選取。')
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.tmp')
-    temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.write_bytes(raw)
     temporary.replace(path)
 
 
@@ -120,7 +173,11 @@ def main():
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     try:
-        cases = validate_cases(json.loads(args.suite.read_text(encoding='utf-8')))
+        with args.suite.open('rb') as stream:
+            suite_bytes = stream.read(MAX_JSON_BYTES+1)
+        if len(suite_bytes) > MAX_JSON_BYTES:
+            raise ValueError('案例集單檔上限32 MiB。')
+        cases = validate_cases(strict_json(suite_bytes))
         if args.ids:
             if set(args.ids) - {case['id'] for case in cases}:
                 raise ValueError('有未知案例編號。')
@@ -140,29 +197,28 @@ def main():
             return
         if not args.report:
             raise ValueError('--live 需指定 --report，建議使用 data/evaluations 下的新路徑。')
-        signature = fingerprint(args.suite)
-        report = load_report(args.report, signature, [case['id'] for case in cases], args.resume)
+        signature = live_fingerprint(args.suite)
+        if signature['suite_sha256'] != sha(suite_bytes):
+            raise ValueError('案例集在讀取後已變更，未開始收集。')
+        report = load_report(args.report, signature, [case['id'] for case in cases], args.resume, mode=TRACE_MODE)
+        verify_suite(report, suite_bytes)
         save_report(args.report, report)
         engine = CodexEngine(ROOT / 'data')
+        def unchanged():
+            if live_fingerprint(args.suite) != signature:
+                raise ValueError('評估期間程式、提示、案例、測試器或驗證器已改變，停止以免混用版本。')
         finished = {row['id'] for row in report['results']}
         for case in cases:
             if case['id'] in finished:
                 continue
-            if fingerprint(args.suite) != signature:
-                raise ValueError('評估期間程式、提示或案例已改變，已停止以免混用版本。')
+            unchanged()
             with tempfile.TemporaryDirectory() as tmp:
                 store = Store(Path(tmp) / 'state.sqlite3')
                 sid = prepare_case(store, case)
-                app = Assistant(store, engine)
-                context = app.prepare_context(sid, case['prompt'])
-                answer = app.ask(sid, case['prompt'])
-                if fingerprint(args.suite) != signature:
-                    raise ValueError('回答期間程式、提示或案例已改變；本題未加入報告，請使用新版本另建評估。')
-                report['results'].append({'id': case['id'], 'category': case['category'],
-                    'prompt': case['prompt'], 'criteria': case['criteria'],
-                    'context': context, 'request_sha256': sha(render_prompt(context).encode('utf-8')),
-                    'answer': answer['content'], 'mechanical_checks': mechanical_check(case, answer['content']),
-                    'human_grade': None})
+                row = collect_case(store, sid, case, engine, unchanged)
+                report['results'].append(row)
+                validate_report(report)
+                verify_suite(report, suite_bytes)
             save_report(args.report, report)
             print(case['id'], 'answered; rubric review pending', flush=True)
         print(f'Collected {len(report["results"])}/{len(cases)} actual answers; review required.')
