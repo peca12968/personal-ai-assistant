@@ -71,6 +71,9 @@ def show_context(parent, store, message_id):
                          json.dumps(context['image_inputs'], ensure_ascii=False, indent=2)))
     if not local:
         sections.append(('夥伴設定', describe_profile(context.get('companion_profile'))))
+        if context.get('engine_selection'):
+            sections.append(('推理引擎', '這是此回答選用的引擎與參數版本；成功回覆前已核對相同選用指紋。不是目前仍在執行的程序狀態，也不代表自動訓練或回答正確性。\n\n' +
+                             json.dumps(context['engine_selection'], ensure_ascii=False, indent=2)))
     corrections = context.get('earlier_user_corrections', {})
     sections.append(('早期更正', '依明確開頭選取的原文，不是自動確認的事實或長期記憶。\n\n' +
                      ('更早的更正未全部提供。\n\n' if corrections.get('selection_limited') else '') +

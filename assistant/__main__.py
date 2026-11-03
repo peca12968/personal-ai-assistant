@@ -73,9 +73,20 @@ def main():
     parser.add_argument("--session", help="延續指定對話 ID")
     mode.add_argument("--doctor", action="store_true", help="檢查環境")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
+    parser.add_argument('--engine', choices=('codex', 'local'), default='codex', help='選用推理引擎；local為需另裝環境的本機Qwen3-4B實驗引擎')
+    parser.add_argument('--local-experiment', help='搭配--engine local，明確選用已驗證研究參數；預設為未微調底座')
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     parser.add_argument('--image', type=Path, action='append', default=[], help='搭配--ask匯入並附上PNG／JPEG，可重複指定，最多4張')
     args = parser.parse_args()
+    if args.local_experiment is not None and args.engine != 'local':
+        parser.error('--local-experiment需搭配--engine local。')
+    if args.engine == 'local' and (args.improve or args.rollback_improvement):
+        parser.error('程式自我改進目前使用Codex；本機參數學習是另一個流程，不能混用--engine local。')
+    def make_engine():
+        if args.engine == 'local':
+            from .local_engine import LocalEngine
+            return LocalEngine(args.data_dir, experiment=args.local_experiment)
+        return CodexEngine(args.data_dir)
     if args.image and (not args.ask or len(args.image) > 4):
         parser.error('--image需搭配--ask，最多4張；重試沿用原題圖片。')
     alias_change = args.set_memory_aliases is not None
@@ -191,7 +202,7 @@ def main():
                 result = plan_workflow(store, sid, args.plan_workflow, read_spec(args.workflow_spec))
             elif args.propose_csv:
                 from .workflows import propose_workflow
-                result = propose_workflow(store, sid, args.propose_csv, args.request, CodexEngine(args.data_dir))
+                result = propose_workflow(store, sid, args.propose_csv, args.request, make_engine())
                 result['session_id'] = sid
             elif args.run_task:
                 result = execute_task(store, sid, args.run_task)
@@ -228,7 +239,17 @@ def main():
     if args.doctor:
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
-        print("Codex:", find_codex())
+        if args.engine == 'local':
+            try:
+                from .local_engine import LocalEngine
+                selected = LocalEngine(args.data_dir, experiment=args.local_experiment)
+                print('Local model:', json.dumps(selected.describe(), ensure_ascii=False))
+                print('Optional runtime present:', selected.python.is_file())
+                print('完整套件、模型雜湊與GPU檢查會在實際回答前執行；本次沒有載入模型。')
+            except (ValueError, OSError, RuntimeError) as exc:
+                parser.exit(1, '本機引擎檢查未完成：' + str(exc) + '\n')
+        else:
+            print("Codex:", find_codex())
         try:
             import PIL
             print('Image decoder: Pillow', PIL.__version__)
@@ -288,17 +309,17 @@ def main():
             store = Store(args.data_dir / 'assistant.sqlite3')
             if args.draft_goal is not None:
                 from .goal_drafts import capture, generate
-                result = generate(capture(store, args.session, args.draft_goal), CodexEngine(args.data_dir))
+                result = generate(capture(store, args.session, args.draft_goal), make_engine())
             elif args.new_goal is not None:
                 gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document, from_chat=args.from_chat, history_search=args.history_search)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 if args.continuous_steps is not None:
                     from .continuous import run_continuous
-                    result = run_continuous(store, args.session, args.run_goal, CodexEngine(args.data_dir),
+                    result = run_continuous(store, args.session, args.run_goal, make_engine(),
                         max_steps=args.continuous_steps, max_seconds=(args.continuous_minutes or 30) * 60)
                 else:
-                    result = run_goal(store, args.session, args.run_goal, CodexEngine(args.data_dir),
+                    result = run_goal(store, args.session, args.run_goal, make_engine(),
                                       max_steps=args.goal_steps or 6)
             elif args.reply_goal is not None:
                 reply(store, args.session, args.reply_goal, args.goal_reply, expected_fingerprint=args.goal_fingerprint)
@@ -318,8 +339,11 @@ def main():
         except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
             parser.exit(1, '自主工作未完成：' + str(exc) + '\n')
         return
-    store = Store(args.data_dir / "assistant.sqlite3")
-    engine = CodexEngine(args.data_dir)
+    try:
+        engine = make_engine()
+        store = Store(args.data_dir / "assistant.sqlite3")
+    except (ValueError, OSError, RuntimeError) as exc:
+        parser.exit(1, '助理未啟動：' + str(exc) + '\n')
     if args.ask or args.retry_answer:
         try:
             sid = args.session or store.new_session()

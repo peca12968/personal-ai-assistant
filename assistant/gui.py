@@ -29,6 +29,8 @@ class App:
         from .engine import ROOT
         if store.path.parent.resolve() != (ROOT / 'data').resolve():
             root.title('個人 AI 助理 · ' + str(store.path.parent.resolve()))
+        if getattr(engine, 'display_name', None):
+            root.title(root.title() + ' · ' + engine.display_name)
         root.geometry("1120x780")
         root.minsize(840, 600)
         root.configure(bg=BG)
@@ -43,9 +45,10 @@ class App:
         tk.Label(header, text="個人 AI 助理", bg=BG, fg=FG,
                  font=("Microsoft JhengHei UI", 22, "bold")).pack(side="left")
         ttk.Button(header, text="工作工具", command=self.work_tools).pack(side='right', padx=(12, 0))
-        ttk.Button(header, text='自我改進', command=self.self_improve).pack(side='right', padx=(8, 0))
+        ttk.Button(header, text='自我改進（Codex）' if getattr(engine, 'display_name', None) else '自我改進',
+                   command=self.self_improve).pack(side='right', padx=(8, 0))
         ttk.Button(header, text='自主目標', command=self.autonomous_goals).pack(side='right', padx=(8, 0))
-        tk.Label(header, text="聊天建議  ·  本機記憶", bg=BG, fg=ACCENT,
+        tk.Label(header, text=getattr(engine, 'display_name', "聊天建議  ·  本機記憶"), bg=BG, fg=ACCENT,
                  font=("Microsoft JhengHei UI", 11)).pack(side="right")
         body = tk.Frame(root, bg=BG, padx=18)
         body.grid(row=1, column=0, sticky="nsew")

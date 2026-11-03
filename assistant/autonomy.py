@@ -327,7 +327,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             payload = {'objective': goal['objective'], 'user_notes': goal['notes'],
                        'work_plan': goal['work_plan'],
                        'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
-                           if key != 'companion_profile'}} for step in goal['steps']],
+                           if key not in {'companion_profile', 'engine_selection'}}} for step in goal['steps']],
                        'companion_profile': profile,
                        'previous_stage': goal['previous_stage'],
                        'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
@@ -335,6 +335,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            describe_engine = getattr(engine, 'describe', None)
+            engine_selection = describe_engine() if callable(describe_engine) else None
+            if engine_selection is not None:
+                payload['engine_selection'] = engine_selection
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
@@ -366,6 +370,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                     if attempted['tool']=='calculate_expression' and isinstance(exc,expression_math.CalculationFailure):
                         observation['calculation_failure'] = exc.details()
             observation['companion_profile'] = profile
+            if engine_selection is not None:
+                observation['engine_selection'] = engine_selection
             observation['goal_conditions_sha256'] = work_plan.conditions(goal)
             status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'
             if cancel.is_set():

@@ -246,6 +246,9 @@ class Assistant:
         context['self_improvement'] = improvement_context(ROOT, question)
         context['answer_attempts'] = answer_runs.context_status(self.store, sid)
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
+        describe = getattr(self.engine, 'describe', None)
+        if callable(describe):
+            context['engine_selection'] = describe()
         return context
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):

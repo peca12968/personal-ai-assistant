@@ -9,7 +9,7 @@ if errorlevel 1 (
     ".venv\Scripts\python.exe" -m pip install --only-binary=:all: -r requirements.txt
     if errorlevel 1 goto failed
 )
-".venv\Scripts\python.exe" -m assistant
+".venv\Scripts\python.exe" -m assistant %*
 if errorlevel 1 goto failed
 exit /b 0
 :failed
