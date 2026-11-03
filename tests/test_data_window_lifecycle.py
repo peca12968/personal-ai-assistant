@@ -198,7 +198,10 @@ class DataWindowLifecycleTests(unittest.TestCase):
         view.listing.selection_set('0')
         parent.destroy()
         other_sid = self.store.new_session('另一段對話')
-        view.import_selected()
+        with patch('assistant.document_import_ui.start_worker',self.launch):
+            progress=view.import_selected()
+            self.finish_worker(progress)
+        progress.poll()
         callback.assert_not_called()
         self.assertEqual(len(self.store.documents(self.sid)), 1)
         self.assertEqual(self.store.documents(other_sid), [])

@@ -127,11 +127,15 @@ class DocxTests(unittest.TestCase):
         store=Store(self.root/'data'/'assistant.sqlite3');sid=store.new_session()
         self.path.write_bytes(example())
         view=DocumentWindow(root,store,sid);view.window.withdraw()
-        view.import_paths([self.path]);view.listing.selection_set(view.listing.get_children()[0]);view.select()
+        with patch('assistant.document_import_ui.start_worker',side_effect=lambda work,failed,**kw:work()):
+            progress=view.import_paths([self.path])
+        progress.poll();view.listing.selection_set(view.listing.get_children()[0]);view.select()
         self.assertIn('不是Word頁碼',view.detail.get('1.0','end'))
         broken=self.root/'broken.docx';broken.write_bytes(b'broken')
-        with patch('assistant.document_ui.messagebox.showerror') as error:view.import_paths([broken])
-        self.assertTrue(error.called);self.assertEqual(len(store.documents(sid)),1)
+        with patch('assistant.document_import_ui.start_worker',side_effect=lambda work,failed,**kw:work()):
+            progress=view.import_paths([broken])
+        progress.poll();self.assertEqual(progress.result['results'][0]['status'],'failed')
+        self.assertEqual(len(store.documents(sid)),1)
 
     def test_package_metadata_change_does_not_create_text_difference(self):
         original=example();output=io.BytesIO()

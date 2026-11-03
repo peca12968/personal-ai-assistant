@@ -112,7 +112,8 @@ class SearchWindow(DataWindow):
                 self.report = result
                 for i, row in enumerate(result['results']):
                     self.listing.insert('', 'end', iid=str(i), values=(row['relative_path'], f'L{row["start_line"]}–L{row["end_line"]}'))
-                self.import_btn.configure(state='normal' if result['results'] else 'disabled')
+                importing=getattr(self,'importer',None) and self.importer.active()
+                self.import_btn.configure(state='normal' if result['results'] and not importing else 'disabled')
                 self.notice.set(f'已讀 {result["files_read"]} 個檔案，顯示 {len(result["results"])} 個結果；排除 {result["excluded"]} 項、無法讀取 {result["unreadable"]} 項。' +
                                 (' 已停止，結果不完整。' if result['cancelled'] else '') +
                                 (' 達搜尋上限，結果不完整。' if result['limits_hit'] else '') +
@@ -133,18 +134,21 @@ class SearchWindow(DataWindow):
         self.preview_text.configure(state='disabled')
 
     def import_selected(self):
-        if self.unavailable() or self.busy:
+        if self.unavailable() or self.busy or (getattr(self,'importer',None) and self.importer.active()):
             return
         if not self.report:
             return
-        count, errors = 0, []
-        for item in self.listing.selection():
-            row = self.report['results'][int(item)]
-            try:
-                attach_result(self.store, self.sid, self.report, row)
-                count += 1
-            except (ValueError, OSError) as exc:
-                errors.append(row['relative_path'] + '：' + str(exc))
-        self.notice.set(f'已加入 {count} 個文件；下次在目前對話提問時可供分析。' + ('\n' + '\n'.join(errors[:3]) if errors else ''))
-        if self.on_import and self.import_parent.winfo_exists():
-            self.on_import()
+        from pathlib import Path
+        from .document_import_ui import DocumentImportWindow
+        selected=[self.report['results'][int(item)] for item in self.listing.selection()]
+        if not selected:return
+        root=Path(self.report['root'])
+        items=[{'path':root/row['relative_path'],'scope':root,'expected_sha256':row['sha256']} for row in selected]
+        def completed():
+            self.import_btn.configure(state='normal' if self.report and self.report['results'] and not self.busy else 'disabled')
+            if self.on_import and self.import_parent.winfo_exists():self.on_import()
+        try:self.importer=DocumentImportWindow(self.window,self.store,self.sid,items,completed)
+        except ValueError as exc:self.notice.set(str(exc));return
+        self.notice.set('請查看「文件匯入進度」。匯入時仍會重新核對搜尋範圍與來源指紋。')
+        self.import_btn.configure(state='disabled')
+        return self.importer

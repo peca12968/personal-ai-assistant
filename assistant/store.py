@@ -361,12 +361,17 @@ class Store:
             row = db.execute("SELECT payload FROM answer_checks WHERE message_id=?", (message_id,)).fetchone()
             return json.loads(row["payload"]) if row else []
 
-    def attach_document(self, sid, path, *, scope=None, expected_sha256=None):
-        document = read_document(path, scope=scope)
+    def attach_document(self, sid, path, *, scope=None, expected_sha256=None, cancel=None):
+        def check_cancel():
+            if cancel is not None and cancel.is_set():raise ValueError('已停止文件匯入，這個檔案未保存。')
+        check_cancel()
+        document = read_document(path, scope=scope, **({'cancel':cancel} if cancel is not None else {}))
+        check_cancel()
         if expected_sha256 is not None and document['sha256'] != expected_sha256:
             raise ValueError('文件已在搜尋後變更，請重新搜尋並確認預覽。')
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            check_cancel()
             size = db.execute("SELECT COALESCE(SUM(size_bytes),0), COUNT(*) FROM documents WHERE session_id=? AND path_key<>?",
                               (sid, document["path_key"])).fetchone()
             if size[1] >= MAX_DOCUMENTS or size[0] + document["size_bytes"] > MAX_SESSION_BYTES:
@@ -376,6 +381,7 @@ class Store:
                 ON CONFLICT(session_id, path_key) DO UPDATE SET name=excluded.name, source_path=excluded.source_path,
                 content=excluded.content, sha256=excluded.sha256, encoding=excluded.encoding,
                 size_bytes=excluded.size_bytes, imported_at=CURRENT_TIMESTAMP""", {"session_id": sid, **document})
+            check_cancel()
             return db.execute("SELECT id FROM documents WHERE session_id=? AND path_key=?", (sid, document["path_key"])).fetchone()[0]
 
     def documents(self, sid, include_content=False):

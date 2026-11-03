@@ -27,10 +27,13 @@ class DocumentWindow:
         self.listing.bind("<<TreeviewSelect>>", self.select)
         controls = ttk.Frame(self.window, padding=12)
         controls.pack(fill="x")
-        ttk.Button(controls, text="加入文件", command=self.add).pack(side="left", padx=(0, 8))
+        self.add_btn=ttk.Button(controls, text="加入文件", command=self.add)
+        self.add_btn.pack(side="left", padx=(0, 8))
         ttk.Button(controls, text="搜尋資料夾", command=self.search_folder).pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="重新匯入選取文件", command=self.reload).pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="移除選取參考", command=self.remove).pack(side="left")
+        self.reload_btn=ttk.Button(controls, text="重新匯入選取文件", command=self.reload)
+        self.reload_btn.pack(side="left", padx=(0, 8))
+        self.remove_btn=ttk.Button(controls, text="移除選取參考", command=self.remove)
+        self.remove_btn.pack(side="left")
         self.detail = tk.Text(self.window, height=7, wrap="word", padx=12, pady=8, state="disabled", font=("Microsoft JhengHei UI", 10))
         self.detail.pack(fill="x", padx=12)
         self.notice = tk.StringVar(value="每段對話最多 8 個文件，單檔最多 2 MiB、合計 8 MiB。可在提問指定範圍，例如「查看 D1 第33到35行」；請使用列表中的實際來源編號。")
@@ -62,22 +65,25 @@ class DocumentWindow:
         return getattr(self.window._root(), "_assistant_closing", False) or not self.window.winfo_exists()
 
     def import_paths(self, paths):
-        if self.unavailable():
+        if self.unavailable() or (getattr(self,'importer',None) and self.importer.active()):
             return
-        failures, count = [], 0
-        for path in paths:
-            try:
-                self.store.attach_document(self.sid, path)
-                count += 1
-            except (ValueError, OSError) as exc:
-                failures.append(str(exc))
+        from .document_import_ui import DocumentImportWindow
+        try:self.importer=DocumentImportWindow(self.window,self.store,self.sid,[{'path':path} for path in paths],self.import_finished)
+        except ValueError as exc:
+            messagebox.showerror('未開始匯入',str(exc),parent=self.window);return
+        self.notice.set('請查看「文件匯入進度」。成功加入後才會出現在本列表；不自動監看或呼叫模型。')
+        for button in (self.add_btn,self.reload_btn,self.remove_btn):button.configure(state='disabled')
+        return self.importer
+
+    def import_finished(self):
+        for button in (self.add_btn,self.reload_btn,self.remove_btn):button.configure(state='normal')
         self.refresh()
-        self.notice.set(f"已匯入 {count} 個文件。下次提問時可分析這些文件；不會自動監看或重讀原檔。")
-        if failures:
-            messagebox.showerror("部分文件未匯入", "\n".join(failures), parent=self.window)
+
+    def importing(self):
+        return getattr(self,'importer',None) is not None and self.importer.active()
 
     def add(self):
-        if self.unavailable():
+        if self.unavailable() or self.importing():
             return
         paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字、DOCX或PDF",
                     filetypes=[("文字、程式、DOCX與PDF", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
@@ -91,14 +97,14 @@ class DocumentWindow:
         SearchWindow(self.window, self.store, self.sid, self.refresh)
 
     def reload(self):
-        if self.unavailable():
+        if self.unavailable() or self.importing():
             return
         row = self.selected()
         if row:
             self.import_paths([row["source_path"]])
 
     def remove(self):
-        if self.unavailable():
+        if self.unavailable() or self.importing():
             return
         row = self.selected()
         if row:

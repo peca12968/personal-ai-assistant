@@ -127,12 +127,17 @@ class PdfTests(unittest.TestCase):
         from assistant.document_ui import DocumentWindow
         root=tk.Tk();root.withdraw();self.addCleanup(root.destroy)
         store=Store(self.root/'state.sqlite3');sid=store.new_session();self.path.write_bytes(example())
-        view=DocumentWindow(root,store,sid);view.window.withdraw();view.import_paths([self.path])
+        view=DocumentWindow(root,store,sid);view.window.withdraw()
+        with patch('assistant.document_import_ui.start_worker',side_effect=lambda work,failed,**kw:work()):
+            progress=view.import_paths([self.path])
+        progress.poll()
         view.listing.selection_set(view.listing.get_children()[0]);view.select()
         self.assertIn('不是OCR',view.detail.get('1.0','end'))
         self.path.write_bytes(b'%PDF-broken')
-        with patch('assistant.document_ui.messagebox.showerror') as error:view.import_paths([self.path])
-        self.assertTrue(error.called);self.assertEqual(len(store.documents(sid)),1)
+        with patch('assistant.document_import_ui.start_worker',side_effect=lambda work,failed,**kw:work()):
+            progress=view.import_paths([self.path])
+        progress.poll();self.assertEqual(progress.result['results'][0]['status'],'failed')
+        self.assertEqual(len(store.documents(sid)),1)
 
     def test_last_folder_file_cancel_and_deadline_are_reported(self):
         self.path.write_bytes(example());event=threading.Event()
