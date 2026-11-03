@@ -21,6 +21,7 @@ from . import date_tools
 from . import document_diff
 from . import document_lines
 from . import json_documents
+from . import json_statistics
 from . import docx_text
 from . import work_plan
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
@@ -172,6 +173,9 @@ def validate_action(value):
     if name == 'read_json':
         json_documents.validate(args)
         return value
+    if name == 'summarize_json':
+        json_statistics.validate(args)
+        return value
     if name == 'date_math':
         date_tools.validate(args)
         return value
@@ -202,6 +206,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None)
         return document_lines.read(documents, args, cancel)
     if name == 'read_json':
         return json_documents.read(documents, args, cancel)
+    if name == 'summarize_json':
+        return json_statistics.summarize(documents, args, cancel)
     if name == 'plan_csv':
         return autonomy_csv.plan(store, gid, args['spec'])
     if name == 'execute_csv':
@@ -291,7 +297,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                        'conversation_context': goal['conversation_context'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

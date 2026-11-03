@@ -30,7 +30,7 @@ def activity(row):
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
                'date', 'start', 'end', 'days', 'months', 'day_policy', 'calendar', 'excluded_dates',
-               'old_document_id', 'new_document_id', 'offset', 'pointer', 'plan_id', 'filename', 'filenames'}
+               'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
     fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
               'decimal_precision', 'decimal_rounding',
@@ -42,6 +42,8 @@ def activity(row):
     if tool == 'read_json':
         fields |= {'pointer', 'kind', 'syntax_checked', 'page_unit', 'total_children',
                    'all_children_in_page', 'value_complete', 'returned_chars'}
+    if tool == 'summarize_json':
+        fields |= {'pointer','value_pointer','syntax_checked','complete','count','raw_values_provided'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',

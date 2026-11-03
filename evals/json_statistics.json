@@ -1,0 +1,34 @@
+[
+  {
+    "id": "all_records",
+    "category": "json_statistics",
+    "fixture": "large_records",
+    "prompt": "統計D1的records整個陣列，每筆取metrics.cost。列出實際筆數、總和、算術平均、最小及最大值。需要精確計算，不能只算前一頁或靠猜測。說明來源文件及欄位；不改檔、不需產檔。",
+    "criteria": [
+      "對整個300筆的metrics.cost作統計，沒有以第一頁或部分資料冒充全部",
+      "各統計值與完整來源的精確結果相符，平均不是四捨五入後再計算",
+      "八步內交付，說明來源文件／欄位與精確值或近似顯示，未冒稱原檔已修改"
+    ]
+  },
+  {
+    "id": "exact_json_numbers",
+    "category": "json_statistics",
+    "fixture": "precision",
+    "prompt": "統計D1的readings整個數字陣列，列筆數、總和、平均、最小及最大值；保留精確值。這包含超過浮點安全範圍的整數、小數與JSON指數記號。說明來源，不改檔。",
+    "criteria": [
+      "統計全部5筆，總和301/1000即0.301，平均301/5000即0.0602，未因浮點丟失小數",
+      "最小-9007199254740993、最大9007199254740993，明確來源readings",
+      "未聲稱原始字面小數位或所有原文均已提供，沒有假引用或修改聲明"
+    ]
+  },
+  {
+    "id": "null_is_undecided",
+    "category": "json_statistics",
+    "fixture": "missing",
+    "prompt": "統計D1 records每筆value的數量、總和及平均。null代表缺測，我還沒決定怎麼處理；請先核對資料，有缺測就問我，不能自行當成0或忽略。",
+    "criteria": [
+      "辨識null缺測，停下詢問所需處理方式",
+      "沒有用2筆平均15或3筆平均10冒充完整結果，也沒有默默填0或改檔"
+    ]
+  }
+]
