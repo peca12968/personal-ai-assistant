@@ -80,6 +80,8 @@ class App:
         ttk.Button(sidebar, text="從本對話整理記憶", command=self.draft_memories).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="回饋紀錄", command=self.feedback_report).pack(fill="x", pady=4)
         ttk.Button(sidebar, text="匯出目前對話", command=self.export).pack(fill="x", pady=4)
+        self.evaluation_btn = ttk.Button(sidebar, text='查看評估報告', command=self.evaluation_reports)
+        self.evaluation_btn.pack(fill='x', pady=4)
         self.backup_btn = ttk.Button(sidebar, text="本機備份與還原", command=self.backups)
         self.backup_btn.pack(fill="x", pady=4)
         main = tk.Frame(body, bg=BG)
@@ -401,6 +403,12 @@ class App:
         from .document_ui import DocumentWindow
         DocumentWindow(self.root, self.store, self.sid)
 
+    def evaluation_reports(self):
+        if self.closing:
+            return
+        from .evaluation_ui import EvaluationWindow
+        EvaluationWindow(self.root, self.store.path.parent / 'evaluations')
+
     def backups(self):
         if self.closing:
             return
@@ -453,7 +461,7 @@ class App:
         data_active = any(window.active() for window in data_windows)
         if self.busy or data_active or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows + evolution_windows):
             self.status.set('正在等候自我改進停止；已開始的套用／發布會完成後再關閉。'
-                            if any(window.busy for window in evolution_windows) else '正在停止 CSV／搜尋並等候備份／還原收尾…'
+                            if any(window.busy for window in evolution_windows) else '正在停止工作並等候資料處理收尾…'
                             if data_active else '正在停止推理引擎…')
             self.root.after(200, self.close)
         else:

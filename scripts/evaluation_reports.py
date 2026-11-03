@@ -56,9 +56,10 @@ def index_report(report):
         raise ValueError('案例選取須為非空且不重複的文字編號清單。')
     if not isinstance(rows, list) or len(rows) > len(ids):
         raise ValueError('報告結果清單或數量無效。')
+    selected = set(ids)
     indexed = {}
     for row in rows:
-        if not isinstance(row, dict) or not text(row.get('id')) or row['id'] not in ids or row['id'] in indexed:
+        if not isinstance(row, dict) or not text(row.get('id')) or row['id'] not in selected or row['id'] in indexed:
             raise ValueError('報告含未知、重複或無效案例編號。')
         indexed[row['id']] = row
     return indexed
