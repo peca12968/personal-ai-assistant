@@ -43,13 +43,16 @@ def activity(row):
         fields |= {'pointer', 'kind', 'syntax_checked', 'page_unit', 'total_children',
                    'all_children_in_page', 'value_complete', 'returned_chars'}
     if tool == 'summarize_json':
-        fields |= {'pointer','value_pointer','syntax_checked','complete','count','raw_values_provided'}
+        fields |= {'pointer','value_pointer','syntax_checked','complete','count','raw_values_provided',
+                   'source_count','excluded_count','filtered','filter_count','filter_logic'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',
                    'counted_days', 'calendar_days', 'calendar', 'holiday_source',
                    'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
+    if tool == 'summarize_json':
+        outcome['filter_conditions_omitted'] = bool(args.get('filters'))
     if 'excerpts' in observation:
         outcome['provided_ranges'] = [{k: v for k, v in excerpt.items()
                                       if k in {'document_id', 'start_line', 'end_line', 'partial_line',

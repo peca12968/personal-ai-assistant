@@ -241,3 +241,12 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 第二十個產品說明情境data_work_shutdown使用既有understanding runner：`--suite evals/product_help.json --ids data_work_shutdown --live --report data/evaluations/新的報告.json`。固定同題核對主視窗／單獨工作視窗關閉、CSV與搜尋取消及備份／還原收尾的差別、搜尋來源視窗關閉、禁止新工作與無自動重試／重啟，以及正常關閉和強制終止的差別。收集終止後才以development_agent逐項評讀；模型回答不是實作驗收。
 
 實作證據另由隱藏Tk及臨時SQLite驗證主程式等待每個終止佇列事件、真實CSV取消狀態、搜尋取消及來源視窗獨立性、真實備份／還原完成、關閉後不啟動還原程式、原對話匯入、直接呼叫與檔案選擇返回時的關閉檢查、啟動失敗及計時器清理。保留既有聊天草稿保存與自改碼發布收尾測試；沒有宣稱桌面視覺驗收或強制終止安全性。原始回答、失敗日誌與合成資料只留忽略的本機data。
+
+
+## JSON條件統計（v0.61）
+
+既有json_statistics套件增至六題，新增filtered_paid_quantity、filtered_exact_threshold及missing_filter_field；runner使用相同八步預算，原始來源與案例／腳本指紋固定。可用`--ids filtered_paid_quantity filtered_exact_threshold missing_filter_field --live --report data/evaluations/新的報告.json`收集。前者為300筆、paid字串與quantity>=10兩項AND；中者為精確大整數門檻，排除列含null；末者未決定缺少status的政策。
+
+完整300筆的獨立Fraction參考：符合40筆、排除260筆，總和1598/5（319.6）、平均799/100（7.99）、最小-361/10位於原索引28、最大543/10位於原索引268。核對實際工具參數、觀察值及最後交付，不能只看答案或第一頁。精度題原版已正確，改後只宣稱步數減少；缺欄位案例須停下詢問，拒絕工具動作不是成功結果。首版／候選／最終提示的報告分開保存，不覆寫或自動重試。
+
+第二十一題產品說明json_filtered_statistics沿用understanding runner，評讀型別／比較、完整來源／符合／排除、缺值規則、原極值索引與引用範圍。首輪漏列規則須保留失敗；提示改動後使用新路徑完整重收，同一最終來源下再驗證實際目標。實作邊界、取消、原副本範圍、備份、階段省略及未讀引用拒絕另由確定性測試驗證。這些是指定任務與說明的證據，不能換算成人類IQ、通用模型分數或使用者驗收。

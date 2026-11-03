@@ -22,6 +22,17 @@ def fixture(name):
             literal=('-' if value<0 else '')+str(abs(value)//10)+'.'+str(abs(value)%10)
             rows.append('{"id":"R%03d","label":"%s","metrics":{"cost":%s}}' % (i,'合成資料'*12,literal))
         return '{"records":['+','.join(rows)+']}'
+    if name == 'filtered_records':
+        rows=[]
+        for i in range(300):
+            value=(i*37 % 997)-400
+            literal=('-' if value<0 else '')+str(abs(value)//10)+'.'+str(abs(value)%10)
+            rows.append('{"id":"F%03d","status":"%s","label":"%s","metrics":{"quantity":%d,"cost":%s}}' % (i,'paid' if i%3==1 else 'pending','合成資料'*12,i%17,literal))
+        return '{"records":['+','.join(rows)+']}'
+    if name == 'filtered_precision':
+        return '{"records":[{"id":9007199254740992,"value":null},{"id":9007199254740993,"value":0.1},{"id":9007199254740994,"value":0.2}]}'
+    if name == 'filter_missing':
+        return '{"records":[{"status":"paid","value":10},{"value":200},{"status":"pending","value":30}]}'
     if name == 'precision':
         return '{"readings":[9007199254740993,0.1,0.2,-9007199254740993,1e-3]}'
     if name == 'missing':

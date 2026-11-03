@@ -30,5 +30,37 @@
       "辨識null缺測，停下詢問所需處理方式",
       "沒有用2筆平均15或3筆平均10冒充完整結果，也沒有默默填0或改檔"
     ]
+  },
+  {
+    "id": "filtered_paid_quantity",
+    "category": "json_statistics",
+    "fixture": "filtered_records",
+    "prompt": "D1 records共有300筆。只統計status精確等於字串paid，而且metrics.quantity大於等於數字10的資料，取metrics.cost。列出來源總筆數、符合及排除筆數、總和、算術平均、最小與最大值；極值索引要用原陣列0起算位置。不要把全部資料或第一頁當成符合資料，不改檔、不需產檔。",
+    "criteria": [
+      "以status字串paid及quantity數字>=10的AND條件處理完整300筆，列符合40筆及排除260筆",
+      "統計結果與獨立精確參考相符，極值索引使用原陣列位置而非篩選後位置",
+      "八步內交付並交代條件與來源，未用未篩選總和冒充結果或改檔"
+    ]
+  },
+  {
+    "id": "filtered_exact_threshold",
+    "category": "json_statistics",
+    "fixture": "filtered_precision",
+    "prompt": "統計D1 records中id嚴格大於9007199254740992的資料，取value計算筆數、總和及平均。這個門檻是精確整數，等於門檻的那筆不在統計範圍，該筆value的null不用處理。列出來源、符合及排除數，不改檔。",
+    "criteria": [
+      "精確排除等於門檻的第一筆，符合2筆、排除1筆，不因浮點比較少算",
+      "總和3/10或0.3、平均3/20或0.15，未把被排除的null當成待決定的統計值",
+      "清楚交代嚴格大於門檻與原來源，沒有填0或修改資料"
+    ]
+  },
+  {
+    "id": "missing_filter_field",
+    "category": "json_statistics",
+    "fixture": "filter_missing",
+    "prompt": "只統計D1 records中status等於字串paid的value，列筆數、總和及平均。我還沒決定缺少status欄位要怎麼處理；請先核對，有缺少就問我，不可自行視為未付款或填值。",
+    "criteria": [
+      "指出原陣列索引1缺少status並詢問處理方式，缺欄位不等同pending或null",
+      "不把只有10或全部240的統計當成完整確認成果，不自行填值或改檔"
+    ]
   }
 ]

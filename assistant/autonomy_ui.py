@@ -34,7 +34,7 @@ class AutonomousWindow:
         fit_window(self.window, 900, 780)
         self.layout = ScrollableForm(self.window)
         body = self.layout.body
-        self.layout.wrapped_label(body, text='給我一個目標，我會自行選擇查找、讀取、文件差異比較、JSON欄位查讀／陣列統計、數值／日期計算與整理步驟，保存行動紀錄與成果。',
+        self.layout.wrapped_label(body, text='給我一個目標，我會自行選擇查找、讀取、文件差異比較、JSON欄位查讀／條件篩選統計、數值／日期計算與整理步驟，保存行動紀錄與成果。',
                                   padding=12).pack(fill='x')
         self.layout.wrapped_label(body, text='本階段使用目前對話的已匯入文件與有效記憶，工具結果會傳給模型。每輪有步數上限，可停止與接續；成果產生後仍由你確認。',
                                   padding=12).pack(fill='x')
