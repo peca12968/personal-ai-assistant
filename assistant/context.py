@@ -185,16 +185,41 @@ def _instruction_text(question):
             hide(index, end)
         index = end
 
-    # Keep directional quotes distinct: replacing right curly quotes first
-    # would destroy their pairing. Apostrophes inside words are punctuation.
+    # Directional openers are unambiguous even beside Chinese text. A right
+    # single quote can also be an English apostrophe; classify that use by
+    # Latin word boundaries, never by the broad Unicode isalnum predicate.
     pairs = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'"}
     stack = []
     visible = ''.join(chars)
+
+    def latin_letter(char):
+        return char.isalpha() and 'LATIN' in unicodedata.name(char, '')
+
+    def apostrophe(index, closing):
+        if not index or not latin_letter(visible[index - 1]):
+            return False
+        following = index + 1
+        if following < len(visible) and latin_letter(visible[following]):
+            # With no matching opener this is word punctuation, including
+            # contractions, possessives and names. Inside a single quotation,
+            # recognize grammatical suffixes and capitalized name components
+            # while allowing a closing quote directly before a following word.
+            if not closing:
+                return True
+            end = following
+            while end < len(visible) and latin_letter(visible[end]):
+                end += 1
+            suffix = visible[following:end]
+            return suffix.lower() in ('s', 't', 're', 've', 'll', 'd', 'm') or suffix[0].isupper()
+        # A trailing possessive apostrophe must not open a quotation. When a
+        # matching quotation is active, its delimiter takes precedence.
+        return not closing
+
     for index, char in enumerate(visible):
-        if char in "'’" and index and index + 1 < len(visible):
-            if visible[index - 1].isalnum() and visible[index + 1].isalnum():
-                continue
-        if stack and char == stack[-1][0]:
+        closing = bool(stack and char == stack[-1][0])
+        if char in "'’" and apostrophe(index, closing):
+            continue
+        if closing:
             _, start = stack.pop()
             hide(start, index + 1)
         elif char in pairs:
