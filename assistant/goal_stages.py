@@ -30,7 +30,7 @@ def activity(row):
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
                'date', 'start', 'end', 'days', 'calendar', 'excluded_dates',
-               'old_document_id', 'new_document_id', 'offset', 'plan_id', 'filename', 'filenames'}
+               'old_document_id', 'new_document_id', 'offset', 'pointer', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
     fields = {'status', 'error', 'requested_ranges', 'exact', 'decimal', 'rounded',
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
@@ -38,6 +38,9 @@ def activity(row):
               'decoded_text_equal', 'byte_hash_equal', 'plan_id', 'report_sha256',
               'page_group_count', 'page_is_partial', 'line_number', 'start_char', 'end_char',
               'total_chars', 'next_start_char', 'omitted_before', 'omitted_after', 'line_complete'}
+    if tool == 'read_json':
+        fields |= {'pointer', 'kind', 'syntax_checked', 'page_unit', 'total_children',
+                   'all_children_in_page', 'value_complete', 'returned_chars'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',

@@ -162,3 +162,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `evals/communication_scope_revisions.json`保存59個已知提示判讀案例，以核心communication函式與固定期望核對，與原48個communication_revisions案例一起回歸。這些案例來自多輪提供／保留驗收及額外稽核，公開後都是已知案例，不是未見過的獨立驗收集。
 
 `evals/communication_scope.json`有六題真實回答情境，包括否定簡短風格、否定逐步解釋、巢狀引文資料、英文帶受詞的否定、明確引號風格及引文內更正不改句外要求。使用理解評估工具的`--suite`與`--live --report`收集固定來源指紋，完成後逐項開發評讀。改前六題已符合標準，不能把輔助提示的修正當作六題回答從錯變對。發布、CI及自我改碼包含離線情境檢查，離線不呼叫模型、不評分回答。原始自改碼、候選與實際回應只留本機忽略目錄。
+
+
+## JSON結構查讀（v0.47）
+
+`evals/json_documents.json`包含四個合成自主情境：13萬多字且跳脫欄位名的長單行、陣列後段欄位、精確數字／布林／null、解碼後重複鍵。`scripts/evaluate_json_documents.py`離線只建立來源與目標；真實執行需`--live --report data/evaluations/新報告.json`，可用`--ids`選題，每題八步。保存程式、提示、案例與執行腳本雜湊，以及實際匯入來源SHA、工具動作與原始回應；已有報告／狀態不覆寫，失敗不自動重試。收集完成後使用review_understanding.py逐項評讀，區分開發評讀與使用者驗收。原始資料、模型回應與合成資料庫不進Git。
+
+位置依據採既有行／字元引用檢查，不把JSON Pointer或欄位清單當成未讀原文的證明。[RFC 6901](https://www.rfc-editor.org/rfc/rfc6901.txt)定義路徑及跳脫規則；[RFC 8259](https://www.rfc-editor.org/rfc/rfc8259.txt)說明重複物件名稱的互通性問題。本產品選擇拒絕整份含重複鍵的結構讀取，另設定明確大小及結構上限，並不宣稱支援所有可表示的JSON輸入。

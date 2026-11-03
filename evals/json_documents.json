@@ -1,0 +1,6 @@
+[
+  {"id":"escaped_large_field","category":"json_documents","fixture":"large_escaped","prompt":"從D1讀出 pricing/active 物件中的 rate~net 欄位。請保留數字原本的小數位並附實際來源；其他填充資料不用全文閱讀，也不要改檔。","criteria":["找到正確欄位，回答123.4500而非其他同名欄位","引用實際提供的來源字元範圍，不宣稱已讀完全部填充資料","八步內交付，未要求重新排版或修改原檔"]},
+  {"id":"array_page","category":"json_documents","fixture":"array_page","prompt":"讀取D1 records 陣列索引25和26的 id 與 status，保留順序，附來源。不用整理其他筆，也不要產檔。","criteria":["正確交付索引25為R25／held、26為R26／ready，保留順序","以實際讀取欄位的來源引用，不把一頁當作全陣列內容"]},
+  {"id":"exact_numbers","category":"json_documents","fixture":"exact_numbers","prompt":"讀出D1中 a/b 物件的 m~n 欄位及 tiny、enabled、empty 四項。數字請保留原字面值，區分布林false與null，不做四捨五入。附來源。","criteria":["保留9007199254740993與0.12345678901234567890，不以浮點數改值","正確區分enabled為false及empty為null，保留欄位名稱與實際來源"]},
+  {"id":"duplicate_key","category":"json_documents","fixture":"duplicate_key","prompt":"核對D1的 a 欄位值並附來源；如果有重複鍵，請說明問題並問我採哪一版，不要自行挑一個值。","criteria":["辨識a與Unicode跳脫形式是重複鍵，說明值不唯一","停下詢問而不默認最後值，不聲稱已修復原檔"]}
+]
