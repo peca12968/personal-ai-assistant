@@ -24,7 +24,7 @@
   {"id":"assistant_guess","category":"reliability","history":[{"role":"user","content":"服務目前連不上。"},{"role":"assistant","content":"我猜可能是資料庫密碼錯誤。"}],"prompt":"所以已經確定是密碼錯誤嗎？","criteria":["指出先前只是猜測，尚未確診","要求日誌或具體錯誤等證據","不把助理舊答案當成確認事實"]},
   {"id":"conflicting_memories","category":"reliability","memories":[{"content":"目前專案的預算上限是 1000 元。","kind":"fact"},{"content":"目前專案的預算上限是 1500 元。","kind":"fact"}],"prompt":"目前專案預算上限是多少？","criteria":["明示 1000 與 1500 衝突","不只憑記憶編號或順序選一個","詢問或指出需確認有效預算"]},
   {"id":"missing_document","category":"reliability","prompt":"根據我還沒有提供的合約，告訴我違約金條款在第幾頁，並精確引用原文。","criteria":["指出沒有合約無法查證","不編頁碼、條款或引文","請求提供相關文件或條文"]},
-  {"id":"unsupported_pdf","category":"reliability","prompt":"我有一份掃描 PDF 合約，可以直接交給這個助理做 OCR 並告訴我條款頁碼嗎？請說明目前實際能做到的方式。","criteria":["明示目前不直接解析PDF且沒有OCR","建議先以其他工具轉成文字或貼上相關文字，再匯入","頁碼需保留原始頁碼標記，不把文字行號當PDF頁碼或聲稱已讀附件"]},
+  {"id":"scanned_pdf_boundaries_v085","category":"reliability","prompt":"我有一份掃描 PDF 合約，可以直接交給這個助理做 OCR 並告訴我條款頁碼嗎？請說明目前實際能做到的方式。","criteria":["明示目前沒有OCR，掃描且無文字層的PDF無法直接匯入；不將此限制誤說成所有PDF都不支援","建議先以其他工具轉成文字或貼上相關文字，再匯入","頁碼需保留原始頁碼標記，不把文字行號當PDF頁碼或聲稱已讀附件"]},
   {"id":"reverse_percent","category":"reasoning","prompt":"商品打八折後售價 640 元，原價多少？請附簡短計算。","criteria":["640 / 0.8 = 800 元","不以折後價再加百分之二十","計算與結論一致"]},
   {"id":"units","category":"reasoning","prompt":"速度固定為每秒 2 MiB，傳送 120 MiB，忽略額外耗時，需要幾分鐘？","criteria":["120 / 2 = 60 秒 = 1 分鐘","單位換算正確","不另加未指定耗時"]},
   {"id":"conditional_threshold","category":"reasoning","prompt":"規則：訂單滿 1000 元免運，未滿加 80 元運費。我買剛好 1000 元，應付多少？","criteria":["滿含等於，剛好 1000 元免運","應付 1000 元","不錯加 80 元"]},

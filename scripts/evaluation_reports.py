@@ -10,6 +10,9 @@ REVIEWERS = {'user', 'development_agent', 'independent_reviewer'}
 RUNTIME_FINGERPRINTS = {'source_sha256', 'prompt_sha256', 'communication_prompt_sha256'}
 TRACE_MODE = 'understanding_trace_v1'
 GOAL_TRACE_MODE = 'conversation_goal_trace_v1'
+DRAFT_TRACE_MODE = 'goal_draft_trace_v1'
+TRACED_MODES = (TRACE_MODE, GOAL_TRACE_MODE, DRAFT_TRACE_MODE)
+DRAFT_CONTEXT_MARKER = '\n\n整理來源：\n'
 GOAL_CONTEXT_MARKER = '\n\n目標與已觀察資料：\n'
 TRACE_CONTEXT_MARKER = '\n\n以下 JSON 是使用者資料與當前問題：\n'
 MAX_TRACE_BYTES = 2 * 1024 * 1024
@@ -155,11 +158,11 @@ def validate_report(report):
             raise ValueError('評估指紋須為具名SHA-256文字。')
     if 'mode' in report and not text(report['mode']):
         raise ValueError('評估模式無效。')
-    traced = report.get('mode') in (TRACE_MODE, GOAL_TRACE_MODE)
+    traced = report.get('mode') in TRACED_MODES
     if traced and not all(digest(report.get('fingerprint', {}).get(key)) for key in
                           ('runner_sha256', 'report_validation_sha256', 'suite_sha256')):
         raise ValueError('追蹤報告缺少測試器、驗證器或案例集指紋。')
-    if report.get('mode') == GOAL_TRACE_MODE and not digest(report.get('fingerprint', {}).get('fixture_builder_sha256')):
+    if report.get('mode') in (GOAL_TRACE_MODE, DRAFT_TRACE_MODE) and not digest(report.get('fingerprint', {}).get('fixture_builder_sha256')):
         raise ValueError('自主追蹤報告缺少來源建構器指紋。')
     for row in rows.values():
         if not text(row.get('category')) or not criteria(row.get('criteria')) or not isinstance(row.get('answer'), str):
@@ -172,7 +175,9 @@ def validate_report(report):
             if field in row and not digest(row[field]):
                 raise ValueError('案例來源或請求指紋無效。')
         if traced:
-            if report['mode'] == GOAL_TRACE_MODE:
+            if report['mode'] == DRAFT_TRACE_MODE:
+                validate_draft_trace(row)
+            elif report['mode'] == GOAL_TRACE_MODE:
                 validate_goal_trace(row)
             else:
                 validate_trace(row)
@@ -211,9 +216,146 @@ def verify_suite(report, raw):
         for field in ('category', 'criteria', 'prompt'):
             if field in row and row[field] != case[field]:
                 raise ValueError('報告的問題、分類或標準與指定案例集不符。')
-        if report.get('mode') in (TRACE_MODE, GOAL_TRACE_MODE) and canonical_digest(case) != row.get('fixture_sha256'):
+        if report.get('mode') in TRACED_MODES and canonical_digest(case) != row.get('fixture_sha256'):
             raise ValueError('案例歷史、記憶或其他完整輸入定義與原案例集不符。')
     return True
+
+
+def _draft_catalog(source):
+    """Frozen v1 evidence projection; never import today's runtime draft code."""
+    try:
+        context = source['context']
+        catalog = {}
+        opening = context.get('opening_user_message')
+        rows = ([opening] if opening is not None else []) + context['messages'] + context['earlier_corrections']
+        for item in rows:
+            if item['role'] == 'user':
+                catalog['M' + str(item['message_id'])] = item['content']
+        for item in context.get('answer_feedback', {}).get('items', []):
+            catalog['F' + str(item['answer_message_id'])] = item['correction']
+        for key in ('objective', 'constraints_text', 'decisions'):
+            value = context['brief'].get(key, '')
+            if value.strip():
+                catalog['B_' + key] = value
+        if source['current_request'].strip():
+            catalog['R'] = source['current_request']
+        if any(not isinstance(value, str) for value in catalog.values()):
+            raise ValueError('草稿來源內容須為文字。')
+        return catalog
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError('草稿來源缺少可核對的使用者背景。') from exc
+
+
+def _draft_objective(proposal, catalog):
+    def bounded(value, maximum):
+        return text(value) and len(value) <= maximum and '\0' not in value
+    if not isinstance(proposal, dict) or set(proposal) != {'items', 'questions'}:
+        raise ValueError('草稿回覆欄位不符。')
+    items, questions = proposal['items'], proposal['questions']
+    if (not isinstance(items, list) or len(items) > 10 or not isinstance(questions, list)
+            or len(questions) > 4 or any(not bounded(q, 300) for q in questions)):
+        raise ValueError('草稿項目或問題格式不符。')
+    labels = {'goal': '目標', 'constraint': '限制', 'deliverable': '交付'}
+    kinds, lines = [], []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {'kind', 'text', 'sources'}:
+            raise ValueError('草稿項目欄位不符。')
+        kind = item['kind']
+        if (not isinstance(kind, str) or kind not in labels
+                or not bounded(item['text'], 1200 if kind == 'goal' else 400)):
+            raise ValueError('草稿項目內容不符。')
+        refs = item['sources']
+        if not isinstance(refs, list) or not 1 <= len(refs) <= 3:
+            raise ValueError('草稿項目缺少來源。')
+        used = set()
+        for ref in refs:
+            if (not isinstance(ref, dict) or set(ref) != {'key', 'quote'}
+                    or not isinstance(ref['key'], str) or ref['key'] not in catalog
+                    or ref['key'] in used or not bounded(ref['quote'], 300)
+                    or ref['quote'] not in catalog[ref['key']]):
+                raise ValueError('草稿引文與保存的使用者原話不符。')
+            used.add(ref['key'])
+        kinds.append(kind)
+        lines.append(labels[kind] + '：' + item['text'])
+    if (items and (kinds[0] != 'goal' or kinds.count('goal') != 1)) or (not items and not questions):
+        raise ValueError('草稿需有一個目標或待釐清問題。')
+    if not items:
+        return ''
+    result = '\n'.join(lines + ['待釐清（不可自行假設）：' + q for q in questions])
+    if len(result) > 4000:
+        raise ValueError('草稿目標超過4000字。')
+    return result
+
+
+def validate_draft_trace(row):
+    fixture = row.get('fixture')
+    if not isinstance(fixture, dict) or canonical_digest(fixture) != row.get('fixture_sha256'):
+        raise ValueError('草稿原始案例與指紋不符。')
+    for key in ('id', 'category', 'prompt', 'criteria'):
+        if key not in fixture or fixture[key] != row.get(key):
+            raise ValueError('草稿案例與問題／標準不符。')
+    source = row.get('source')
+    if (not isinstance(source, dict) or not text(row.get('prompt'))
+            or source.get('current_request') != row['prompt']
+            or canonical_digest(source) != row.get('captured_source_sha256')):
+        raise ValueError('草稿來源或本次問題不符。')
+    catalog = _draft_catalog(source)
+    if source['context'].get('session_id') != row.get('session_id') or not text(row.get('session_id')):
+        raise ValueError('草稿來源對話不符。')
+    calls = row.get('calls')
+    if (not isinstance(calls, list) or len(calls) > 1
+            or type(row.get('engine_call_count')) is not int or row['engine_call_count'] != len(calls)):
+        raise ValueError('草稿只允許一次實際引擎呼叫。')
+    for call in calls:
+        if not isinstance(call, dict):
+            raise ValueError('草稿引擎追蹤格式不符。')
+        request, offset = call.get('request'), call.get('request_context_offset')
+        if (not isinstance(request, str) or type(offset) is not int or not 0 <= offset < len(request)
+                or not request[:offset].endswith(DRAFT_CONTEXT_MARKER)):
+            raise ValueError('草稿實際請求邊界不符。')
+        try:
+            raw = request.encode('utf-8')
+        except UnicodeError as exc:
+            raise ValueError('草稿實際請求不是UTF-8。') from exc
+        if len(raw) > MAX_TRACE_BYTES or hashlib.sha256(raw).hexdigest() != call.get('request_sha256'):
+            raise ValueError('草稿實際請求指紋或大小不符。')
+        if canonical_digest(strict_json(request[offset:])) != canonical_digest({**source, 'source_catalog': catalog}):
+            raise ValueError('草稿實際請求與保存來源不同。')
+        if call.get('status') == 'error':
+            if ('engine_answer' in call or 'engine_answer_sha256' in call
+                    or not text(call.get('error')) or row.get('error') != call['error']):
+                raise ValueError('引擎失敗不能補造回覆或隱藏錯誤。')
+        elif call.get('status') == 'returned':
+            answer = call.get('engine_answer')
+            try:
+                raw = answer.encode('utf-8') if isinstance(answer, str) else None
+            except UnicodeError as exc:
+                raise ValueError('草稿回覆不是UTF-8。') from exc
+            if (raw is None or len(raw) > MAX_TRACE_BYTES or 'error' in call
+                    or hashlib.sha256(raw).hexdigest() != call.get('engine_answer_sha256')):
+                raise ValueError('草稿原始回覆指紋或大小不符。')
+        else:
+            raise ValueError('草稿引擎追蹤尚未結束。')
+    if 'error' in row:
+        if not text(row['error']) or row['answer'] != '' or 'draft' in row:
+            raise ValueError('草稿失敗不能宣稱已有可用成果。')
+        return
+    if not calls or calls[0]['status'] != 'returned':
+        raise ValueError('草稿成功缺少實際回覆。')
+    draft = row.get('draft')
+    if not isinstance(draft, dict) or set(draft) != {'source', 'source_fingerprint', 'proposal', 'objective_text'}:
+        raise ValueError('草稿成果欄位不符。')
+    stable_source = {**source, 'context': dict(source['context'])}
+    stable_source['context'].pop('captured_at', None)
+    if draft['source'] != source or draft['source_fingerprint'] != canonical_digest(stable_source):
+        raise ValueError('草稿成果來源指紋不符。')
+    raw_answer = calls[0]['engine_answer']
+    if len(raw_answer) > 20000 or strict_json(raw_answer) != draft['proposal']:
+        raise ValueError('草稿成果與原始引擎JSON不同。')
+    objective = _draft_objective(draft['proposal'], catalog)
+    if (draft['objective_text'] != objective
+            or row['answer'] != (objective or '\n'.join(draft['proposal']['questions']))):
+        raise ValueError('草稿顯示答案與核對成果不符。')
 
 
 def validate_goal_trace(row):
