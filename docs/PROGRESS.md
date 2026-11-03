@@ -1013,3 +1013,14 @@
 - 初版程序exit0後才修改collector：在每題save_report前新增validate_report與verify_suite。原先失敗的寫檔入口回歸轉為通過，全部8項通過；初版三題及精確collector／validator／builder／reviewer來源另存本機，沒有覆寫。最終版本另收三題，分別5／7／2次呼叫與步驟，正確得到1315、未決定並比較915／1175，以及當前覆蓋420。這是新收集協定的實際驗證，不與舊模式成績或初版收集器作能力提升比較。
 - 初版與最終各自程序確認exit0後才追加development_agent評讀，human_grade空白；最終三題全部通過。逐筆對照唯讀SQLite中目標／session／狀態／答案／全部動作及觀察、固定533則副本與原fixture、SHA與實際payload，獨立Fraction重算全部計算；最終collector／builder／validator／正式來源／提示指紋一致。原始與最終報告、測試器原碼、合成資料庫及audit只在忽略的data/evaluations/conversation-goal-trace-v071。
 - 此次發布依既有publish.py完整單元／離線／隱私與私人目的地檢查；通過後才推送並核對遠端HEAD。變更限評估腳本、回歸與維護文件；正式assistant與prompts未修改，也沒有讀寫正式個人資料庫或改自我修改範圍。
+
+
+## 自主評估的答案與結束狀態一致性（2026-11-03，助理維持v0.71）
+
+- 前一回合已發布36b59ae的逐步請求追蹤，屬進展。本輪從乾淨工作樹檢查評讀前的報告一致性；起始CI仍in_progress，不重啟也不當成已成功。
+- 對先前真實final.json製作記憶體副本並移除副本的評讀，重現六類不一致仍被結構檢查接受：只改答案、改成果但不改最後觀察、把已完成改為running、假造待答問題、引擎失敗仍保留已執行的最後步驟、非文字成果；缺少prompt且fixture prompt=null則拋KeyError。原始已評讀報告的證據綁定本來就會拒絕改動，本次補強的是尚未評讀／寫入前的檢查。
+- 新增prompt與成果／問題／通知型別及已停止狀態檢查；answer需等於保存的result／question／notice。完成或待答需最後returned呼叫、相等的呼叫／步驟數及對應finish／deliver／ask的參數、觀察與目標文字；禁止同次新目標在交付／詢問後續做其他步驟。pending只容許有明示錯誤且零呼叫／步驟；paused／failed／pending不能帶已交付成果或待答問題。
+- 引擎error需與row error相等、沒有raw及raw_sha256、沒有該次執行步驟，狀態僅failed或paused。工具失敗仍是returned引擎回應加保存invalid步驟，可以再詢問。保留取消前未執行回應、執行完才取消、八步耗盡與啟動失敗的合法紀錄；不重放模型程式或報告中的動作。
+- 初始六項回歸重現19個子案例失敗與1個KeyError；修正後六項通過，再加工具失敗及執行後取消兩項正向邊界，共8項通過。原8項conversation_goal_trace回歸也通過。
+- 保存舊驗證器原碼，以同一份原真實報告及同一組七種副本變更重跑前後對照：六個accepted轉ValueError，一個KeyError轉ValueError。原actual／final兩份真實報告各三題均仍通過現行驗證與原suite核對，前後位元組SHA保持不變，原評讀及歷史驗證器指紋沒有回填。這是歷史資料重驗，沒有重新呼叫模型、改分或宣稱本輪推理提升。
+- 本機probe／baseline／audit及舊驗證器只留忽略的data/evaluations/goal-trace-consistency-v071。正式assistant、prompts、collector、模型設定與版本號維持不變；最終由既有發布器執行完整單元、離線、隱私與私人目的地檢查後才推送。

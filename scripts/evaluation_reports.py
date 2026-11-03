@@ -218,6 +218,8 @@ def verify_suite(report, raw):
 
 def validate_goal_trace(row):
     """Check recorded inputs, not the current product or service identity."""
+    if not text(row.get('prompt')):
+        raise ValueError('自主追蹤缺少有效案例問題。')
     fixture = row.get('fixture')
     if not isinstance(fixture, dict) or canonical_digest(fixture) != row.get('fixture_sha256'):
         raise ValueError('自主案例定義與指紋不符。')
@@ -230,6 +232,17 @@ def validate_goal_trace(row):
     if (goal.get('id') != row.get('goal_id') or goal.get('session_id') != row.get('session_id')
             or not text(row.get('goal_id')) or not text(row.get('session_id')) or not isinstance(goal.get('steps'), list)):
         raise ValueError('自主目標識別或步驟清單不符。')
+    status=goal.get('status')
+    if not isinstance(status,str) or status not in {'pending','paused','failed','needs_input','report_ready'}:
+        raise ValueError('自主評估須保存已停止的已知目標狀態。')
+    if any(not isinstance(goal.get(key),str) for key in ('result','question','notice')):
+        raise ValueError('自主成果、問題與通知須為文字。')
+    if row['answer']!=(goal['result'] or goal['question'] or goal['notice']):
+        raise ValueError('評估答案與保存的成果／問題／通知不符。')
+    if status in {'pending','paused','failed'} and (goal['result'] or goal['question']):
+        raise ValueError('未交付的自主狀態不能附帶已完成成果或待答問題。')
+    if status in {'pending','failed'} and not text(row.get('error')):
+        raise ValueError('未啟動或失敗的自主收集需明示錯誤。')
     for i, step in enumerate(goal['steps']):
         if (not isinstance(step, dict) or type(step.get('sequence')) is not int or step['sequence'] != i+1
                 or not isinstance(step.get('action'), dict) or not isinstance(step.get('observation'), dict)):
@@ -240,6 +253,8 @@ def validate_goal_trace(row):
         raise ValueError('自主引擎呼叫數無效。')
     if len(goal['steps']) > len(calls):
         raise ValueError('保存步驟數超過實際呼叫數。')
+    if status=='pending' and (calls or goal['steps']):
+        raise ValueError('未啟動目標不能已有引擎呼叫或執行步驟。')
     if not calls and not text(row.get('error')):
         raise ValueError('未呼叫引擎的自主案例需明示錯誤，不能視為實際回答。')
     for i, call in enumerate(calls):
@@ -274,7 +289,21 @@ def validate_goal_trace(row):
             if len(answer_bytes)>MAX_TRACE_BYTES or hashlib.sha256(answer_bytes).hexdigest()!=call.get('raw_sha256'):
                 raise ValueError('自主原始回應超限或指紋不符。')
         elif call.get('status') == 'error':
-            if not text(call.get('error')) or 'raw' in call or i != len(calls)-1 or not text(row.get('error')):
+            if (not text(call.get('error')) or 'raw' in call or 'raw_sha256' in call or i != len(calls)-1
+                    or row.get('error')!=call['error'] or len(goal['steps'])!=i or status not in {'failed','paused'}):
                 raise ValueError('失敗呼叫需保留錯誤、不得補造回答或自動重試。')
         else:
             raise ValueError('自主呼叫尚未結束或狀態無效。')
+    if any(step['action'].get('tool') in ('ask','finish','deliver') for step in goal['steps'][:-1]):
+        raise ValueError('本次新目標收集不能在詢問或交付後繼續執行。')
+    if status in {'report_ready','needs_input'}:
+        if not calls or len(goal['steps'])!=len(calls) or calls[-1]['status']!='returned':
+            raise ValueError('交付或詢問必須有最後成功返回且已保存的步驟。')
+        step=goal['steps'][-1];args=step['action'].get('args')
+        field='report' if status=='report_ready' else 'question'
+        value=goal['result' if status=='report_ready' else 'question']
+        tools=('finish','deliver') if status=='report_ready' else ('ask',)
+        if (not text(value) or goal['question' if status=='report_ready' else 'result']
+                or step['action'].get('tool') not in tools or not isinstance(args,dict)
+                or args.get(field)!=value or step['observation'].get(field)!=value):
+            raise ValueError('結束狀態、工具動作、實際觀察與成果／問題不一致。')
