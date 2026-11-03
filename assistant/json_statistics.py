@@ -19,8 +19,12 @@ number比較值必須是JSON數字字面字串（例如"9007199254740992"、"0.1
 結果source_count是完整來源陣列數、count是符合且完成統計的筆數、excluded_count是明確排除筆數，三者須交代清楚。filters保存使用條件、filter_logic=all、filter_count與filtered標示是否有篩選；complete只代表指定條件下的完整統計。無符合時count與sum為0、平均／極值未定義；極值索引始終是原陣列0起算位置，不是篩選後順位。下一階段摘要只保留是否篩選與數量等資料，filter_conditions_omitted=true表示未帶入原條件值；不得憑摘要重建條件或當作新結果，依目前要求核對後重算。
 可選group_by為1至2個不重複、相對每筆元素的JSON Pointer，例如["/department","/category"]；可與filters併用，先篩選再分組。只核對符合列的分組鍵與統計值；明確排除列不需分組鍵。符合列缺鍵、鍵是物件／陣列或字串超過1000碼位，整次拒絕並指明原陣列索引，不默認空白、不丟棄；未約定政策先問。null是合法分組鍵，不等於缺欄位，且不代表value_pointer可接受null。
 分組身份包含JSON型別及值：數字1、字串"1"、布林true分開；數字1／1.0／1e0同組，-0／0同組。數字鍵也經精確有理數及既有數值界線核對，結果keys中的number value以精確整數／分數字串表示；不是字串型別原資料。字串按原Unicode碼位及大小寫比較，不去空白、不正規化。多欄鍵依group_by順序組合。最多1000組，超出整次拒絕而非截斷。
-分組結果的頂層count／sum／mean／minimum／maximum仍為全部符合資料的整體統計，mean是整體sum除以count，絕非各組平均直接平均。groups各組有keys、count、sum、mean、minimum、maximum與原陣列的極值索引；每組也保留首次相同極值。各組依來源中首次出現的順序，group_order=first_seen，無自動排序或Top-N。所有組與整體依來源順序累加、驗證精確數值與平均界線後才提供分頁。
-只在group_by存在時可提供offset（0至1000，預設0），每次最多20組且整組JSON內容合計最多32000碼位。依next_offset保持相同來源、pointer、value_pointer、filters、group_by補讀；next_offset=null才沒有後續頁。group_count是全部組數、returned_group_count是本頁組數，omitted_before／omitted_after是前後未顯示組數，all_groups_in_page／page_is_partial明示是否一頁含全部。complete=true是整個指定範圍已計算，不代表本頁展示全部組；超過末頁的空結果不是零組。不得只交付第一頁。每次重新核對相同匯入副本，不重開原檔。沒有符合列時groups空、整體count／sum為0、平均與極值未定義。
+分組結果的頂層count／sum／mean／minimum／maximum仍為全部符合資料的整體統計，mean是整體sum除以count，絕非各組平均直接平均。groups各組有keys、count、sum、mean、minimum、maximum與原陣列的極值索引；每組也保留首次相同極值。未指定order_by時各組依符合條件列在來源中首次出現的順序，group_order=first_seen；明確排序／前N組見下述規則。所有組與整體依來源順序累加、驗證精確數值與平均界線後才提供分頁。
+只在group_by存在時可提供offset（0至1000，預設0），每次最多20組且整組JSON內容合計最多32000碼位。依next_offset保持相同來源、pointer、value_pointer、filters、group_by、order_by、top_n補讀；next_offset=null才沒有後續頁。group_count是全部組數、returned_group_count是本頁組數，未選top_n時omitted_before／omitted_after是全部組中的前後未顯示數；選top_n時改為所選範圍內的分頁省略數。all_groups_in_page判斷本頁是否含全部原組，page_is_partial判斷本頁是否含完整所選範圍。complete=true是整個指定範圍已計算，不代表本頁展示全部組；超過末頁的空結果不是零組。不得只交付第一頁。每次重新核對相同匯入副本，不重開原檔。沒有符合列時groups空、整體count／sum為0、平均與極值未定義。
+只有group_by存在時可選order_by，其精確形狀為{"metric":"mean","direction":"desc"}；metric限count、sum、mean、minimum、maximum，direction限asc或desc，依所有組的精確數值排序，絕不用40位顯示預覽。group_order=metric，order_by原樣回傳，tie_breaker=first_seen表示精確同分在兩種方向都依組在符合條件列中第一次出現的先後；rank是從1開始的順序位置，同分不共用名次。未指定order_by保留舊首次出現順序，不暗中排序。
+搭配order_by可再指定top_n整數1至1000，先核對並排序所有組後選最多N組；不足N組交付實際數量，名額邊界同分仍按符合列中的首次出現取捨，不擴大同分名額。一般前N要求採此固定政策並說明；使用者指定其他同分政策時，不能用固定名額結果冒充，需依完整資料核對或說明限制。order_by未提供時不可用top_n。即使只選1名，未入選組缺值或精確數值／平均超限也拒絕整次，不能先回傳冠軍。
+排序結果selected_group_count是選取數（無top_n則等於全部），unselected_group_count是因前N政策未選數，group_count仍是全部組數。offset、next_offset、omitted_before／omitted_after與page_is_partial均針對選取範圍；all_selected_groups_in_page表示本頁含完整所選範圍，all_groups_in_page仍針對全部原組，因此前N全在一頁時page_is_partial=false但all_groups_in_page可能false。next_offset=null只表示所選範圍無後頁，不是所有原組都已展示。排名後整體count／sum／mean等始終涵蓋所有符合列，不改成前N組統計，也不平均組平均。
+例如平均最高前25組的完整參數（假設D1）為{"document_id":1,"pointer":"/records","value_pointer":"/amount","group_by":["/department"],"order_by":{"metric":"mean","direction":"desc"},"top_n":25}。每頁仍最多20組／32000碼位，依next_offset以相同條件補齊選取的25組；不可只給第一頁。若要求前N名不要先把全部組逐頁讀完再手算排序，應使用明確order_by與top_n。
 分組鍵及統計是衍生結果，excerpts仍為空，不授予原文引用。新階段僅帶group_by路徑、分組／分頁數量等中繼資料，group_details_omitted=true表示未帶任何鍵值或統計數值；需依目前要求重查，不能把摘要當完整結果。
 '''
 
@@ -36,8 +40,8 @@ GROUP_PAGE_CHARS = 32000
 
 def validate(args):
     required = {'document_id','pointer','value_pointer'}
-    if not isinstance(args,dict) or not required <= set(args) or set(args)-required-{'filters','group_by','offset'}:
-        raise ValueError('JSON統計需包含document_id、pointer及value_pointer，可另提供filters、group_by與分組offset。')
+    if not isinstance(args,dict) or not required <= set(args) or set(args)-required-{'filters','group_by','offset','order_by','top_n'}:
+        raise ValueError('JSON統計需包含document_id、pointer及value_pointer，可另提供filters、group_by與分組offset、order_by、top_n。')
     for key in ('pointer','value_pointer'):
         jd.validate({'document_id':args['document_id'],'pointer':args[key],'offset':0})
     if 'group_by' in args:
@@ -50,8 +54,18 @@ def validate(args):
             raise ValueError('group_by不可重複。')
         if type(args.get('offset',0)) is not int or not 0<=args.get('offset',0)<=MAX_GROUPS:
             raise ValueError('分組offset須為0至1000的整數。')
-    elif 'offset' in args:
-        raise ValueError('offset僅供group_by分組結果分頁。')
+    elif set(args) & {'offset','order_by','top_n'}:
+        raise ValueError('offset、order_by與top_n僅供group_by分組結果。')
+    if 'order_by' in args:
+        order=args['order_by']
+        if (not isinstance(order,dict) or set(order)!={'metric','direction'}
+                or not isinstance(order['metric'],str)
+                or order['metric'] not in {'count','sum','mean','minimum','maximum'}
+                or not isinstance(order['direction'],str) or order['direction'] not in {'asc','desc'}):
+            raise ValueError('order_by需包含metric（count／sum／mean／minimum／maximum）與direction（asc／desc）。')
+    if 'top_n' in args:
+        if 'order_by' not in args or type(args['top_n']) is not int or not 1<=args['top_n']<=MAX_GROUPS:
+            raise ValueError('top_n需搭配order_by，且為1至1000的整數；同分仍依首次出現只選指定名額。')
     filters=args.get('filters',[])
     if not isinstance(filters,list) or len(filters)>5:
         raise ValueError('filters須為最多5個AND條件的清單。')
@@ -162,28 +176,49 @@ def group_key(item,pointers,cancel):
     return tuple(identity),keys
 
 
-def group_page(groups,offset,cancel):
+def group_page(groups,offset,cancel,*,order_by=None,top_n=None):
     # Finalize EVERY group before pagination: an invalid hidden group must not
     # make an earlier page look like a complete, successful calculation.
     complete=[]
     for keys,aggregate in groups.values():
         jd.check_cancel(cancel)
-        complete.append({'keys':keys,**aggregate.result()})
+        complete.append(({'keys':keys,**aggregate.result()},aggregate))
+    jd.check_cancel(cancel)
+    if order_by is not None:
+        def metric(pair):
+            jd.check_cancel(cancel)
+            aggregate=pair[1]
+            return {'count':aggregate.count,'sum':aggregate.total,
+                    'mean':aggregate.total/aggregate.count,
+                    'minimum':aggregate.low,'maximum':aggregate.high}[order_by['metric']]
+        # Python's stable sort preserves first appearance for exact ties in
+        # BOTH directions. Never compare rounded display strings or floats.
+        complete.sort(key=metric,reverse=order_by['direction']=='desc')
+        complete=[{**row,'rank':index+1} for index,(row,_) in enumerate(complete)]
+    else:
+        complete=[row for row,_ in complete]
+    jd.check_cancel(cancel)
+    selected=complete if top_n is None else complete[:top_n]
     page=[];chars=0
-    for group in complete[offset:offset+GROUP_PAGE_SIZE]:
+    for group in selected[offset:offset+GROUP_PAGE_SIZE]:
         jd.check_cancel(cancel)
         size=len(json.dumps(group,ensure_ascii=False,separators=(',',':')))
         if chars+size>GROUP_PAGE_CHARS:
             if not page:raise ValueError('單組結果超過顯示上限，未提供部分組內容。')
             break
         page.append(group);chars+=size
-    end=min(offset+len(page),len(complete))
-    return {'groups':page,'group_count':len(complete),'group_order':'first_seen',
+    end=min(offset+len(page),len(selected))
+    result={'groups':page,'group_count':len(complete),'group_order':'first_seen' if order_by is None else 'metric',
             'offset':offset,'returned_group_count':len(page),
-            'omitted_before':min(offset,len(complete)),'omitted_after':len(complete)-end,
-            'next_offset':end if end<len(complete) else None,
+            'omitted_before':min(offset,len(selected)),'omitted_after':len(selected)-end,
+            'next_offset':end if end<len(selected) else None,
             'all_groups_in_page':len(page)==len(complete),
-            'page_is_partial':len(page)!=len(complete)}
+            'page_is_partial':len(page)!=len(selected)}
+    if order_by is not None:
+        result.update(order_by=dict(order_by),tie_breaker='first_seen',top_n=top_n,
+                      selected_group_count=len(selected),unselected_group_count=len(complete)-len(selected),
+                      all_selected_groups_in_page=len(page)==len(selected))
+    return result
 
 
 def summarize(documents,args,cancel=None):
@@ -225,6 +260,7 @@ def summarize(documents,args,cancel=None):
             'excerpts':[],'raw_values_provided':False}
     if 'group_by' in args:
         result.update(grouped=True,group_by=list(args['group_by']))
-        result.update(group_page(groups,args.get('offset',0),cancel))
+        result.update(group_page(groups,args.get('offset',0),cancel,
+                                 order_by=args.get('order_by'),top_n=args.get('top_n')))
     jd.check_cancel(cancel)
     return result

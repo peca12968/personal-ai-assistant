@@ -15,6 +15,24 @@ from scripts.evaluate_understanding import validate_cases, fingerprint, load_rep
 
 
 def fixture(name):
+    if name == 'ranked_groups':
+        rows=[]
+        for group in range(240):
+            for item in range(group % 4 + 1):
+                value=((group*193 + item*71) % 1009)-300
+                literal=('-' if value<0 else '')+str(abs(value)//10)+'.'+str(abs(value)%10)
+                rows.append('{"team":"R%03d","status":"paid","value":%s,"label":"%s"}' %
+                            (group,literal,'合成排名資料'*6))
+            rows.append('{"team":"R%03d","status":"pending","value":null}' % group)
+        return '{"records":['+','.join(rows)+']}'
+    if name == 'ranked_exact_means':
+        base=10**50
+        rows=[{'team':'A','value':base},{'team':'B','value':base+1},
+              {'team':'A','value':base+2},{'team':'C','value':base+2},
+              {'team':'D','value':base-2}]
+        return json.dumps({'records':rows},separators=(',',':'))
+    if name == 'ranked_missing':
+        return '{"records":[{"team":"A","value":100},{"team":"B"},{"team":"C","value":-10}]}'
     if name == 'group_records':
         rows=[]
         for i in range(300):
