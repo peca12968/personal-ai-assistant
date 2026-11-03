@@ -829,6 +829,8 @@ python scripts/publish.py --message "改善問題理解與測試"
 
 ## 驗證與持續改善
 
+發布前會先用 [actionlint](https://github.com/rhysd/actionlint/blob/main/docs/usage.md) 檢查 GitHub 工作流程語法，再跑既有測試與離線評估。首次執行會下載固定 v1.7.12 Windows x64 校驗器、核對 SHA256，保存在忽略的 `data/tools`；需要網路，但不會上傳對話或登入資料。語法錯誤或無法完成檢查會停止發布，不跳過。可單獨執行 `.venv\Scripts\python scripts/check_workflow.py`；GitHub 遠端測試是否通過仍需另查看該次 Actions 結果。
+
 ```powershell
 python -m unittest discover -s tests -v
 python scripts/evaluate.py

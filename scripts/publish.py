@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--expected-file', action='append', help='Exact allowed changed file for a self-improvement release')
     parser.add_argument('--expected-sha256', action='append', help='path=sha256 of each tested self-improvement file')
     args = parser.parse_args()
+    run(sys.executable, "scripts/check_workflow.py")
     run(sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v")
     run(sys.executable, "scripts/evaluate.py")
     run(sys.executable, "scripts/evaluate_context.py")
