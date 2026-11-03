@@ -72,17 +72,49 @@ def _length_request_text(text):
         text,
     )
 
+    def latin_letter(char):
+        return char.isalpha() and 'LATIN' in unicodedata.name(char, '')
+
+    def is_apostrophe(index, char, stack):
+        """Resolve word punctuation without swallowing paired quote ends.
+
+        A left curly mark opens a quote even when it touches letters. A
+        right mark inside a Latin word is normally an apostrophe, but an
+        active single quote also makes it a possible closing delimiter.
+        In that case, possessive/contraction suffixes and elided names
+        supply local grammatical evidence for keeping it in the word.
+        """
+        if char not in ("'", '’') or index == 0:
+            return False
+        before = text[index - 1]
+        after = text[index + 1] if index + 1 < len(text) else ''
+        if char == "'":
+            return bool(after and (before.isalnum() or before == '_')
+                        and (after.isalnum() or after == '_'))
+        if not latin_letter(before):
+            return False
+        closing_single = bool(stack and stack[-1][1] == '‘')
+        if not closing_single:
+            # This also preserves trailing plural possessives inside
+            # double quotes, where this mark cannot close the quote.
+            return True
+        if not after or not latin_letter(after):
+            return False
+        suffix = re.match(r'[^\W\d_]+', text[index + 1:])
+        word = suffix.group() if suffix else ''
+        if word.lower() in ('s', 't', 're', 've', 'll', 'd', 'm'):
+            return True
+        # Names such as O’Connor and elisions such as d’Artagnan.
+        prefix = re.search(r'[^\W\d_]+$', text[:index])
+        return bool(prefix and len(prefix.group()) == 1 and after.isupper())
+
     # Track paired delimiters, including repeated asymmetric opening marks.
-    # In-word apostrophes (don't, user's, user’s) never open or close quotes.
     pairs = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'"}
     stack = []
     spans = []
     for index, char in enumerate(text):
-        if char in "'‘’":
-            before_word = index > 0 and (text[index - 1].isalnum() or text[index - 1] == '_')
-            after_word = index + 1 < len(text) and (text[index + 1].isalnum() or text[index + 1] == '_')
-            if before_word and after_word:
-                continue
+        if is_apostrophe(index, char, stack):
+            continue
         if char == '\n':
             # Straight quotes, unlike paired typographic quotes, are local
             # to a line, matching the existing treatment of quoted strings.
