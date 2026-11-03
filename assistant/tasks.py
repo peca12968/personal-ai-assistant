@@ -163,8 +163,11 @@ def export_task(store, sid, task_id, destination):
     if hashlib.sha256(payload).hexdigest() != expected:
         raise ValueError('儲存的報告指紋不符，未匯出。')
     from .csv_statistics import valid_median_report
+    from .csv_grouping import valid_grouping_report
     if not valid_median_report(task['result']['report']):
         raise ValueError('儲存的中位數格式或規則不一致，未匯出。')
+    if not valid_grouping_report(task['result']['report']):
+        raise ValueError('儲存的分組鍵、標籤或規則不一致，未匯出。')
     destination = Path(destination)
     if destination.suffix.lower() != '.json':
         raise ValueError('工作報告請使用 .json 副檔名。')
@@ -197,13 +200,14 @@ def task_context(store, sid, question):
         if task['status'] == 'succeeded' and task['result']:
             report = task['result']['report']
             from .csv_statistics import MEDIAN_FIELDS, valid_median_report
+            from .csv_grouping import valid_grouping_report, preview
             mean_fields = ('mean', 'mean_rounded', 'returned_mean', 'returned_mean_rounded', 'returned_row_count', 'mean_policy')
             invalid_mean = task['plan'].get('version') == 3 and (
                 not all(key in report for key in mean_fields) or
                 report.get('verification', {}).get('mean_basis_matches') is not True or
                 report.get('mean_policy') != task['plan'].get('mean_policy'))
             if (hashlib.sha256(canonical(report)).hexdigest() != task['result']['report_sha256'] or
-                invalid_mean or not valid_median_report(report) or not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
+                invalid_mean or not valid_median_report(report) or not valid_grouping_report(report) or not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
                 item['status'] = 'unverified'
             else:
                 item.update({key: report[key] for key in ('row_count', 'group_count', 'total', 'group_column', 'value_column', 'source_sha256', 'verification')})
@@ -214,7 +218,9 @@ def task_context(store, sid, question):
                         item.update({key: report[key] for key in mean_fields})
                         if report['workflow'].get('include_median'):
                             item.update({key:report[key] for key in MEDIAN_FIELDS})
-                item['groups_preview'] = [{**group, 'group': group['group'][:200], 'label_truncated': len(group['group']) > 200} for group in report['groups'][:10]]
+                if 'group_columns' in report:
+                    item.update({key: report[key] for key in ('group_columns', 'grouping_policy')})
+                item['groups_preview'] = [preview(group, label_flag='label_truncated') for group in report['groups'][:10]]
                 item['groups_truncated'] = len(report['groups']) > 10
                 item['report_sha256'] = task['result']['report_sha256']
                 item['verified_exports'] = [{'file_name': Path(record['path']).name, 'sha256': record['sha256'], 'verified_at': record['verified_at']}

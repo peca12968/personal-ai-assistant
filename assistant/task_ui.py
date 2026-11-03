@@ -8,6 +8,7 @@ from tkinter import filedialog, ttk
 
 from .tasks import execute_task, export_task, load_csv, plan_csv
 from .workflows import propose_workflow
+from .csv_grouping import columns
 from .engine import CodexEngine
 
 LABELS = {'planned': '待執行', 'running': '尚無完成結果（執行中／中斷）',
@@ -116,7 +117,8 @@ class TaskWindow(DataWindow):
         self.detail.delete('1.0', 'end')
         if task:
             plan = task['plan']
-            text = f'狀態：{LABELS[task["status"]]}\n來源：{plan["source_path"]}\n分組欄：{plan["group_column"]}　加總欄：{plan["value_column"]}\n來源筆數：{plan["rows"]}\n來源指紋：{plan["source_sha256"]}\n\n'
+            grouping = '、'.join(columns(plan.get('spec', plan)))
+            text = f'狀態：{LABELS[task["status"]]}\n來源：{plan["source_path"]}\n分組欄：{grouping}　加總欄：{plan["value_column"]}\n來源筆數：{plan["rows"]}\n來源指紋：{plan["source_sha256"]}\n\n'
             text += '\n'.join(f'{i}. {step}' for i, step in enumerate(plan['steps'], 1)) + '\n\n' + plan['rules']
             if plan.get('request'):
                 text += '\n\n原始需求（請逐項比對計畫是否正確）：\n' + plan['request']

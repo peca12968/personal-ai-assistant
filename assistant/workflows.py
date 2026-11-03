@@ -10,6 +10,7 @@ from . import __version__
 from .acceptance import strict_json
 from .tasks import MAX_GROUPS, check_running, load_csv, number
 from .csv_statistics import MEDIAN_POLICY, median_statistics
+from .csv_grouping import GROUPING_POLICY, columns, label, result_key
 
 TEXT_OPS = {'eq', 'ne', 'contains', 'starts_with'}
 NUM_OPS = {'num_eq', 'num_ne', 'gt', 'gte', 'lt', 'lte'}
@@ -17,14 +18,18 @@ MEMBERSHIP_OPS = {'in', 'not_in'}
 MEAN_POLICY = {'places': 4, 'rounding': 'ROUND_HALF_EVEN', 'basis': 'sum/count'}
 
 
-def validate_spec(spec, headers, *, allow_mean=True, allow_membership=True, allow_median=True):
+def validate_spec(spec, headers, *, allow_mean=True, allow_membership=True, allow_median=True, allow_secondary=True):
     required = {'group_column', 'value_column', 'filters', 'sort', 'top_n'}
-    if not isinstance(spec, dict) or not required <= set(spec) or set(spec)-required-({'include_median'} if allow_median else set()):
-        raise ValueError('工作規格只能包含分組欄、加總欄、篩選、排序、前幾名與可選include_median。')
+    optional = ({'include_median'} if allow_median else set()) | ({'secondary_group_column'} if allow_secondary else set())
+    if not isinstance(spec, dict) or not required <= set(spec) or set(spec)-required-optional:
+        raise ValueError('工作規格只能包含分組欄、加總欄、篩選、排序、前幾名與可選include_median／secondary_group_column。')
     if 'include_median' in spec and type(spec['include_median']) is not bool:
         raise ValueError('include_median必須是布林值；只有true啟用中位數。')
     if not isinstance(spec['group_column'], str) or spec['group_column'] not in headers or not isinstance(spec['value_column'], str) or spec['value_column'] not in headers:
         raise ValueError('分組欄與加總欄必須是來源中的完整欄名。')
+    if 'secondary_group_column' in spec and (not isinstance(spec['secondary_group_column'], str)
+            or spec['secondary_group_column'] not in headers or spec['secondary_group_column'] == spec['group_column']):
+        raise ValueError('第二分組欄必須是來源中不同於第一分組欄的完整欄名；不用時請省略。')
     if not isinstance(spec['filters'], list) or len(spec['filters']) > 6:
         raise ValueError('最多六個篩選條件，依序全部成立（AND）。')
     for rule in spec['filters']:
@@ -72,12 +77,13 @@ def describe(spec):
     steps = ['核對 CSV 來源雜湊、欄位與筆數']
     for rule in spec['filters']:
         steps.append(f'篩選：{rule["column"]} {ops[rule["op"]]} {json.dumps(rule["value"], ensure_ascii=False)}')
-    steps.append(f'依「{spec["group_column"]}」分組，計算「{spec["value_column"]}」的加總、筆數與算術平均')
+    grouping = '及'.join(f'「{column}」' for column in columns(spec))
+    steps.append(f'依{grouping}原文組合分組，計算「{spec["value_column"]}」的加總、筆數與算術平均')
     steps.append('平均以精確加總除以筆數，顯示小數四位，最接近值、恰好一半時取偶數；排序使用未捨入比值')
     if spec.get('include_median'):
         steps.append('中位數：奇數筆取中間值、偶數筆取中間兩數平均；保留精確值及四位半偶捨入顯示，空集合為null。整體及所選組別各按原始保留列計算，不是組中位數再平均')
     by = {'group':'組名', 'sum':'加總', 'count':'筆數', 'mean':'平均', 'median':'精確中位數'}[spec['sort']['by']]
-    steps.append('依' + by + ('升冪' if spec['sort']['direction'] == 'asc' else '降冪') + '排序，同值時組名字元升冪')
+    steps.append('依' + by + ('升冪' if spec['sort']['direction'] == 'asc' else '降冪') + '排序，同值時按分組欄原文順序逐欄升冪')
     steps.append('保留全部分組' if spec['top_n'] is None else f'選取前 {spec["top_n"]} 組，另保留所有符合條件的總額')
     steps.append('核對筆數、分組總和及來源版本，保存本機結果；匯出需另行操作')
     return steps
@@ -94,6 +100,8 @@ def plan_workflow(store, sid, path, spec, *, expected_sha256=None, request='', c
             'headers': headers, 'rows': len(rows), 'preview_rows': rows[:5], 'app_version': __version__,
             'spec': spec, 'request': request, 'steps': describe(spec), 'mean_policy': dict(MEAN_POLICY),
             'rules': '條件依序 AND，文字比較區分大小寫且保留空白；數值使用精確十進位。被前面條件排除的列不再處理；保留列的無效數值會使工作失敗。組名保留原樣。排序同值依組名字元升冪；全部總額與前幾名總額分開。平均為各自範圍內的加總除以資料筆數，不是各組平均再取平均；固定顯示四位小數，恰好一半時取偶數。沒有符合資料時平均為 null，不是零。'}
+    if "secondary_group_column" in spec:
+        plan["rules"] += " 雙欄按原文有序組合分組；組名排序及數值同分按第一欄再第二欄字元順序，不依JSON顯示標籤排序。"
     return store.task(sid, store.create_task(sid, plan))
 
 
@@ -127,8 +135,10 @@ def calculate(plan, document, headers, rows, cancel, deadline):
     with_mean = plan['version'] == 3
     if with_mean and plan.get('mean_policy') != MEAN_POLICY:
         raise ValueError('平均計算規則與計畫版本不符，請建立新計畫。')
-    spec = validate_spec(plan['spec'], headers, allow_mean=with_mean, allow_membership=with_mean, allow_median=with_mean)
+    spec = validate_spec(plan['spec'], headers, allow_mean=with_mean, allow_membership=with_mean,
+                         allow_median=with_mean, allow_secondary=with_mean)
     with_median = spec.get('include_median', False)
+    paired = 'secondary_group_column' in spec
     if spec['group_column'] != plan['group_column'] or spec['value_column'] != plan['value_column']:
         raise ValueError('計畫欄位與工作規格不一致。')
     selected = list(enumerate(rows, 1))
@@ -143,38 +153,42 @@ def calculate(plan, document, headers, rows, cancel, deadline):
                 retained.append((index, row))
         selected = retained
         stages.append({'filter': rule, 'input_rows': before, 'output_rows': len(selected)})
-    gi, vi = headers.index(spec['group_column']), headers.index(spec['value_column'])
+    group_indices, vi = [headers.index(column) for column in columns(spec)], headers.index(spec['value_column'])
     with localcontext() as context:
         context.prec = 140
         groups = defaultdict(lambda: [0, Decimal(0)])
-        group_values = defaultdict(list) if with_median else None
+        values_by_group = defaultdict(list) if with_median else None
         values = []
         for index, row in selected:
             check_running(cancel, deadline)
             value = number(row[vi], index)
             values.append(value)
-            groups[row[gi]][0] += 1
-            groups[row[gi]][1] += value
+            group = tuple(row[i] for i in group_indices) if paired else row[group_indices[0]]
+            groups[group][0] += 1
+            groups[group][1] += value
             if with_median:
-                group_values[row[gi]].append(value)
+                values_by_group[group].append(value)
             if len(groups) > MAX_GROUPS:
                 raise ValueError('分組超過 5000 組。')
         total = sum(values, Decimal(0))
         if sum(count for count, _ in groups.values()) != len(selected) or sum((value for _, value in groups.values()), Decimal(0)) != total:
             raise ValueError('分組核對失敗。')
-        output = [{'group': key, 'count': count, 'sum': format(value, 'f')} for key, (count, value) in sorted(groups.items())]
+        output = [{'group': label(key) if paired else key, 'count': count, 'sum': format(value, 'f'),
+                   **({'group_values': list(key)} if paired else {})} for key, (count, value) in sorted(groups.items())]
         if with_mean:
             for row in output:
                 row['mean'], row['mean_rounded'] = arithmetic_mean(Decimal(row['sum']), row['count'])
         if with_median:
             for row in output:
-                row.update(median_statistics(group_values[row['group']], cancel, deadline))
+                row.update(median_statistics(values_by_group[result_key(row)], cancel, deadline))
         order = spec['sort']
-        # Stable sorting retains group-name ascending tie breaks for numeric sorts.
+        # Stable sorting retains raw column tuple ascending ties for numeric sorts.
         if order['by'] == 'mean':
             key = lambda row: Fraction(Decimal(row['sum'])) / row['count']
         elif order['by'] == 'median':
             key = lambda row: Decimal(row['median_exact'])
+        elif order['by'] == 'group':
+            key = result_key
         else:
             key = (lambda row: Decimal(row['sum'])) if order['by'] == 'sum' else (lambda row: row[order['by']])
         output.sort(key=key, reverse=order['direction'] == 'desc')
@@ -188,6 +202,9 @@ def calculate(plan, document, headers, rows, cancel, deadline):
                 'group_count': all_groups, 'returned_group_count': len(output), 'selection_limited': len(output) < all_groups,
                 'total': format(total, 'f'), 'returned_total': format(shown_total, 'f'), 'groups': output,
                 'verification': {'row_count_matches': True, 'group_total_matches': True, 'source_unchanged': True}}
+        if paired:
+            report['group_columns'] = columns(spec)
+            report['grouping_policy'] = dict(GROUPING_POLICY)
         if with_mean:
             report['mean_policy'] = dict(MEAN_POLICY)
             report['mean'], report['mean_rounded'] = arithmetic_mean(total, len(selected))
@@ -198,8 +215,8 @@ def calculate(plan, document, headers, rows, cancel, deadline):
             shown_values = []
             for row in output:
                 check_running(cancel, deadline)
-                shown_values.extend(group_values[row['group']])
-            if len(shown_values) != report['returned_row_count'] or sum(len(v) for v in group_values.values()) != len(selected):
+                shown_values.extend(values_by_group[result_key(row)])
+            if len(shown_values) != report['returned_row_count'] or sum(len(v) for v in values_by_group.values()) != len(selected):
                 raise ValueError('中位數資料範圍核對失敗。')
             report.update(median_statistics(values, cancel, deadline))
             report.update({'returned_'+k:v for k,v in median_statistics(shown_values, cancel, deadline).items()})
@@ -214,10 +231,11 @@ def propose_workflow(store, sid, path, request, engine, cancel=None):
         raise ValueError('工作需求需為 1–4000 字。')
     document, headers, rows = load_csv(path, cancel)
     instructions = '''將需求轉成單一 CSV 工作規格，只回傳 JSON，不使用工具或產生程式碼。
-可做：依序最多六個 AND 篩選、單一欄分組、單一欄數值加總與算術平均、依 group/sum/count/mean 排序、前幾名。每組同時產生筆數、加總與平均，不需要 aggregation 等額外欄位。需求包含中位數時，在spec另加include_median:true；未要求時省略或false。
+可做：依序最多六個 AND 篩選、一欄或兩欄原文組合分組、單一欄數值加總與算術平均、依 group/sum/count/mean 排序、前幾名。每組同時產生筆數、加總與平均，不需要 aggregation 等額外欄位。需求包含中位數時，在spec另加include_median:true；未要求時省略或false。
 平均以加總除以筆數，固定顯示小數四位、恰好一半取偶數；排序比較未捨入的精確比值。沒有資料時平均為 null。整體平均依所有符合條件的資料筆數計算，不是各組平均的平均。
 中位數只在include_median=true時計算：奇數筆取排序中間值，偶數筆取中間兩數平均；返回median_exact精確十進位、median小數四位半偶顯示與median_rounded。整體與前幾組涵蓋資料各按原始保留列計算，不是各組中位數的平均／中位數。零筆為null；sort.by=median需include_median=true，排序比較精確值，同分依組名升冪。
-無法做：其他捨入位數或捨入方式、加權平均（另指定權重欄）、多欄分組、跨檔合併、跨欄位或混合運算的OR、日期解析或相對日期推算、修改來源、任意檔案或系統操作、上傳、寄信、排程、自動匯出。不要省略無法做到的部分後假裝整個需求可做。
+無法做：其他捨入位數或捨入方式、加權平均（另指定權重欄）、三欄以上分組、跨檔合併、跨欄位或混合運算的OR、日期解析或相對日期推算、修改來源、任意檔案或系統操作、上傳、寄信、排程、自動匯出。不要省略無法做到的部分後假裝整個需求可做。
+雙欄分組：保留group_column為第一欄，另加secondary_group_column為第二個不同的完整欄名；只有一欄時省略，不能設null或陣列。按兩欄原文的有序組合分組，保留空字串、空白、大小寫、逗號與其他字元，不拼接成有歧義的單字串。sort.by=group按第一欄再第二欄逐字排序；其他排序同值時也按這個順序升冪。結果group_values是兩個原值，group只是JSON陣列格式的顯示標籤。
 缺少會改變結果的欄位或條件需澄清，不猜欄名或數值。只使用提供的完整欄名。未指明分組欄且有多個合理選擇時必須問；有 net_amount/gross_amount 等多個合理加總欄也必須問清楚。
 文字比較區分大小寫且保留空白；eq/ne 是文字相等/不等，contains 是包含，starts_with 是開頭。
 filters 每個項目必須且只能有三個欄位：{"column":"完整欄名","op":"eq","value":"文字值"}。運算欄位名稱固定是 op，不可使用 operator 或其他名稱。
