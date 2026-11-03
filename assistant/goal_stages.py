@@ -31,7 +31,7 @@ def activity(row):
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
                'date', 'start', 'end', 'days', 'months', 'day_policy', 'calendar', 'excluded_dates',
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames',
-               'message_id', 'before', 'after'}
+               'message_id', 'before', 'after', 'value', 'places', 'mode'}
     requested = {k: v for k, v in args.items() if k in allowed}
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
@@ -51,6 +51,8 @@ def activity(row):
                    'grouped','group_count','group_order','returned_group_count','all_groups_in_page',
                    'order_by','tie_breaker','top_n','selected_group_count','unselected_group_count',
                    'all_selected_groups_in_page','median_included','median_method'}
+    if tool == 'round_number':
+        fields |= {'input_exact', 'places', 'mode', 'fixed_decimal', 'value_changed', 'is_tie', 'difference_exact'}
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',

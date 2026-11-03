@@ -403,3 +403,9 @@ expression_calculation.json固定三個案例與答案標準，沿用有逐步�
 固定expression_diagnostics四題與原collector做前後對照；新calculation_failure能直接回報巢狀第一失敗/values/0/values/1及根空path，兩題定位標準fail→pass。原版誠實承認無工具位置，不是計算錯誤。指定修正後23與正常計算21在前後都正確，保持pass→pass；步數皆2／2／3／2。產品說明新增第29例，新版四標準通過；原版缺新欄位／驗證分類標準，並不等於舊回答謊稱執行。
 
 全部完整停止報告、實際request traces、SQLite保存步驟及Fraction獨立原樹／修正／第一失敗位置核對後，才附development_agent評讀，human_grade空白。原新版程序最後輸出遺失，原handle已不存在且無matching collector，以完整terminal artifacts確認收集停止，未推定exit code。報告及audit在忽略的data/evaluations/expression-diagnostics-v073。這是固定案例開發驗證，不是獨立人類驗收或人類IQ換算。
+
+## v0.74指定捨入實測（2026-11-03）
+
+number_rounding四個固定自主案例前後數字全正確。舊版透過精確算術加模型判斷規則，誠實承認未直接工具核對規則；新版前三題由round_number直接核對，三個新增工具標準fail→pass，未選規則詢問題pass→pass。步數3／3／2／1變3／6／2／3，不能宣稱效率、答案正確率或IQ提升。產品說明新3/4、舊2/4標準，皆fail：新版缺少技術參數名稱，功能解說正確。此固定標準比原功能問題具體，保留原評讀並記錄限制，不回改測量。
+
+原與新版四個collector均exit0後才分別評讀。所有評讀為development_agent，human_grade空白；固定suite及runner不變。逐筆核對實際請求／SQLite步驟、獨立Fraction四則與相鄰上下整數捨入參考，保留原值／差額／格式／是否恰半。報告及audit限忽略的data/evaluations/number-rounding-v074，未使用正式個人記憶或資料庫。

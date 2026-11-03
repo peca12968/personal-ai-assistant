@@ -35,6 +35,7 @@ jobs:
       - run: python scripts/evaluate_conversation_search.py --suite evals/conversation_window.json
       - run: python scripts/evaluate_conversation_search.py --suite evals/expression_calculation.json
       - run: python scripts/evaluate_conversation_search.py --suite evals/expression_diagnostics.json
+      - run: python scripts/evaluate_conversation_search.py --suite evals/number_rounding.json
       - run: python scripts/evaluate_understanding.py --suite evals/communication_scope.json
       - run: python scripts/evaluate_tasks.py
       - run: python scripts/evaluate_workflows.py

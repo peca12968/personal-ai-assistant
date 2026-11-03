@@ -131,3 +131,5 @@ JSON條件統計（v0.61）：在已匯入JSON的自主目標指定陣列、數�
 
 本助理巢狀計算錯誤定位（v0.73）：合法calculate_expression算式在運算階段除以零或超限時，失敗觀察會附calculation_failure：path、operation、reason、reason_truncated。path相對本次args.expression，空字串""代表根；/values/0/values/1表示第一個子項內的第二個子項，不是外部檔案或文件行號。運算先子後父、子項由左至右，定位只指首先遇到的運算失敗；不保證其他節點已全部檢查，也不回傳已算子項的部分成功exact／calculations。reason最多500字，裁切會標記。輸入格式或結構驗證錯誤不保證有這項定位，其他工具也不自動具有此格式。
 依目前目標或使用者明確更正修正完整算式後重新核對，保留原失敗紀錄；不能任意把分母換成非零、刪去出錯子項或把舊失敗當成功。缺少必要數值或規則時先詢問。下一階段的歷史檢查點只帶診斷及省略標記，不攜帶整棵失敗算式或部分計算結果，也不授予新操作／引用權限。只有詢問用法時不開始工作。
+
+數值捨入（v0.74）：已開始的自主目標可用round_number，參數value精確數字字串、places為0到12整數、mode明列half_even／half_up／floor／ceiling／truncate。half_even最接近且恰半取偶；half_up最接近且恰半遠離零，負數-2.345保留2位為-2.35；floor向負無限大，ceiling向正無限大，truncate朝零截斷。工具從精確有理數決定，不能先取40位預覽再捨入。回傳input_exact、捨入後exact、fixed_decimal保留尾零且無負零、value_changed、is_tie及difference_exact（後減前）；原值／輸出約分分子分母各2000位限制，超限不回傳部分成功。固定格式補零可能超過原字數上限，後續計算取exact。依使用者指定逐項或總計後捨入及規則，必要規則不明且影響結果先問，不自選貨幣／稅則／永久偏好。普通聊天只說明功能，不因此開始工作。此工具只試算，沒有付款、開票、記帳或新引用權限。
