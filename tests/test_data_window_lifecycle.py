@@ -154,7 +154,9 @@ class DataWindowLifecycleTests(unittest.TestCase):
     def test_real_backup_and_restore_finish_without_restart(self):
         self.store.remember('合成記憶，僅供備份測試')
         archive = create_backup(self.store.path)['path']
-        restored = self.path / 'restored'
+        # Exercise a noncanonical alias even on machines without 8.3 names.
+        (self.path / 'restore-parent').mkdir()
+        restored = self.path / 'restore-parent' / '..' / 'restored'
         for operation in (lambda: create_backup(self.store.path), lambda: restore_backup(archive, restored)):
             with self.subTest(operation=operation):
                 self.root._assistant_closing = False
@@ -181,7 +183,7 @@ class DataWindowLifecycleTests(unittest.TestCase):
                     popen.assert_not_called()
         other = Store(restored / 'assistant.sqlite3')
         self.assertEqual(other.memories(), self.store.memories())
-        self.assertEqual(view.restored, str(restored))
+        self.assertTrue(Path(view.restored).samefile(restored))
 
     def test_import_after_document_parent_close_keeps_captured_session(self):
         folder = self.path / 'documents'
