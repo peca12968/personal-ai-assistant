@@ -22,6 +22,8 @@ jobs:
       - run: python scripts/evaluate_understanding.py --suite evals/product_help.json
       - run: python scripts/evaluate_understanding.py --suite evals/topic_context.json
       - run: python scripts/evaluate_goal_drafts.py
+      - run: python scripts/evaluate_goal_drafts.py --suite evals/goal_draft_inputs.json
+      - run: python scripts/evaluate_goal_drafts.py --suite evals/goal_draft_planning.json
       - run: python scripts/evaluate_goal_replies.py
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py
