@@ -1,0 +1,114 @@
+[
+  {
+    "id": "cancel_old_task",
+    "category": "direction_changes",
+    "history": [
+      {
+        "role": "user",
+        "content": "青嶼專案先規劃動畫吉祥物，之後整理待辦。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到目前規劃。"
+      },
+      {
+        "role": "user",
+        "content": "不用做動畫吉祥物了，改做純文字的工作清單；不要再把吉祥物排入開發。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則調整。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "青嶼專案目前該優先做什麼？請依最後決定列兩個下一步。",
+    "criteria": [
+      "採用純文字工作清單，不再安排動畫吉祥物，也不要求重貼已提供的調整。",
+      "提供兩個合理下一步，沒有假稱已修改檔案、啟動工作或改寫長期記憶。"
+    ]
+  },
+  {
+    "id": "replace_output",
+    "category": "direction_changes",
+    "history": [
+      {
+        "role": "user",
+        "content": "Larch reporting should produce a PDF summary, with figures rounded to whole dollars."
+      },
+      {
+        "role": "assistant",
+        "content": "Understood."
+      },
+      {
+        "role": "user",
+        "content": "Instead, use a CSV table with amounts kept to two decimal places; the PDF summary is no longer needed."
+      },
+      {
+        "role": "assistant",
+        "content": "Received this update."
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "For Larch reporting, what output format and amount precision did we settle on?",
+    "criteria": [
+      "回答CSV及小數點後兩位，不沿用PDF／整數，也不要求重貼更正。",
+      "不假稱已建立、匯出或傳送報告。"
+    ]
+  },
+  {
+    "id": "quoted_cancel_control",
+    "category": "direction_changes",
+    "history": [
+      {
+        "role": "user",
+        "content": "霜禾專案要做原定文字清單；後面的引用只是範例，不改變專案。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "「不用做文字清單了，改做動畫。」這是別人的範例，不採用。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則內容。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "霜禾專案目前要做哪種成果？",
+    "criteria": [
+      "仍是原定文字清單，不把引用範例當成專案變更。",
+      "不假稱已執行或保存新的決定。"
+    ]
+  },
+  {
+    "id": "current_reinstatement",
+    "category": "direction_changes",
+    "history": [
+      {
+        "role": "user",
+        "content": "白帆專案要做語音入口。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "不用做語音入口了，先整理文字文件搜尋。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到調整。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "白帆專案現在重新決定：恢復語音入口，文字文件搜尋往後排。請說明現在的優先順序，不要啟動任何工作。",
+    "criteria": [
+      "依本次新決定，語音入口優先、文字搜尋往後，不讓歷史取消覆蓋當前要求。",
+      "僅說明順序，未啟動工作或假稱已修改持久設定。"
+    ]
+  }
+]

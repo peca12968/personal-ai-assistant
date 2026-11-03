@@ -64,6 +64,7 @@ def main():
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_scope.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/quote_continuity.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/recent_budget.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/direction_changes.json")
     run(sys.executable, "scripts/evaluate_csv_membership.py")
     run(sys.executable, "scripts/evaluate_csv_membership.py", "--suite", "evals/csv_median.json")
     run(sys.executable, "scripts/evaluate_csv_membership.py", "--suite", "evals/csv_grouping.json")

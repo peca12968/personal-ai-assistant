@@ -18,11 +18,41 @@ CORRECTION_PREFIX = re.compile(
     r"不是(?:這個|那個|這樣)\s*[,。]\s*(?:我是指|我要的是)|"
     r"我(?:剛才|剛剛|先前)說錯了\s*[,。:])", re.I)
 
+# Explicit direction changes often lack a formal "correction:" label. Retain
+# their raw wording, including qualifiers, without deciding which work is
+# cancelled, accepted or authorized. Only short leading imperative frames
+# qualify; quoted/reported examples and questions must not gain this priority.
+DIRECTION_PREFIX = re.compile(
+    r"^(?:(?:請|麻煩(?:你)?)\s*)?(?:"
+    r"(?:先)?(?:不用|不必|不要|別)(?:再)?\s*"
+    r"(?:做|製作|開發|處理|進行|執行|實作|開啟|啟動)\s*"
+    r"|(?:改用|改成|改為|改回|換成|換用)\s*"
+    r"|取消(?:原本|之前|先前|原先)的?\s*)"
+    r"|^(?:please\s+)?(?:"
+    r"instead\s*[,;:]?\s+(?:use|make|keep|switch\s+to|focus\s+on)\s+"
+    r"|(?P<complete>(?:cancel|drop|skip|stop)\s+(?:the\s+)?(?:previous|original|earlier)\s+"
+    r"(?:task|plan|request|work)\b)\s*|switch\s+to\s+)", re.I)
+DIRECTION_MENTION = re.compile(
+    r"這句|这句|這幾個字|这几个字|的意思|的說法|的说法|只是(?:範例|范例|例子|引文)|"
+    r"\b(?:phrase|quotation|quoted|example|means?|meaning)\b", re.I)
+
+
+def is_direction_change(prefix):
+    match = DIRECTION_PREFIX.match(prefix)
+    if not match or DIRECTION_MENTION.search(prefix):
+        return False
+    # Reject first-sentence questions (including those after an initial comma),
+    # while retaining later qualifiers as data in the original excerpt.
+    sentence = re.split(r'[。.!;\n]', prefix, maxsplit=1)[0]
+    if '?' in sentence or re.search(r'(?:嗎|吗|呢)\s*$', sentence):
+        return False
+    return bool(match.group('complete') or prefix[match.end():].strip(' ,;:。.!'))
+
 
 def is_explicit_correction(text):
     """A bounded prefix hint for retaining raw user text, not a semantic verdict."""
     prefix = unicodedata.normalize('NFKC', text[:160]).lstrip()
-    return bool(CORRECTION_PREFIX.search(prefix))
+    return bool(CORRECTION_PREFIX.search(prefix)) or is_direction_change(prefix)
 
 
 def correction_context(question, rows):
