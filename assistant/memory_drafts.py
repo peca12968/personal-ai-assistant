@@ -11,6 +11,7 @@ from .store import allocate_memory_id, validate_memory
 INSTRUCTIONS = '''從提供的本對話有限快照整理值得跨次使用的記憶草稿，最多8項。只回傳JSON：
 {"items":[{"kind":"fact|preference|lesson","content":"獨立可理解的繁體中文記憶，最多800字","sources":[{"key":"M123或F123","quote":"該來源中連續且逐字相同的原話，最多300字"}]}]}。
 M是使用者訊息，F是使用者保存的回饋更正。source_catalog是可引用原話；每項引用1到3個不同來源。
+opening_user_message若有，是最早的非本機命令使用者原文，可能已過時，不是最新決定。message_id較大者較晚；必須結合較晚訊息與更正判斷，問候、引文或已撤銷條件不可當成現在的偏好。省略的中間對話不能自行補造。
 助理回覆只供理解脈絡，不能當成使用者決定。引用、假設、角色扮演、臨時示例和第三人的偏好不能冒充使用者事實。
 優先保留明確、穩定且有助未來工作的偏好、專案事實和經驗；最新明確更正取代舊說法。不確定的推論不要寫入。
 不整理密碼、金鑰或驗證碼，不把單次格式要求擴成永久偏好；臨時事項若缺明確有效期限，寧可略過。
@@ -21,7 +22,8 @@ LABELS = {'pending':'待整理','running':'整理紀錄尚未結束','ready':'�
 
 def catalog(context):
     sources = {}
-    for row in context['messages'] + context['earlier_corrections']:
+    opening = context.get('opening_user_message')
+    for row in ([opening] if opening is not None else []) + context['messages'] + context['earlier_corrections']:
         if row['role'] == 'user':
             sources['M' + str(row['message_id'])] = row['content']
     for row in context.get('answer_feedback', {}).get('items', []):

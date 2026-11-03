@@ -1,0 +1,50 @@
+[
+  {
+    "id": "draft_opening_purchase",
+    "category": "conversation_opening",
+    "history": [
+      {
+        "role": "user",
+        "content": "採購8份，每份125元，整單運費40元。只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "我會依條件試算。"
+      },
+      {
+        "role": "user",
+        "content": "更正一下，份數改為9份，其他條件不變。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "把本對話已確認的採購試算整理為可獨立理解的目標與限制，交付要求是總費用與算式。",
+    "criteria": [
+      "草稿列9份、每份125元與整單運費40元，要求總額與算式，不重問單價或運費",
+      "保留只試算、不付款、不產檔；不宣稱執行或保存，也不先把總額當已完成成果"
+    ]
+  },
+  {
+    "id": "draft_opening_current",
+    "category": "conversation_opening",
+    "history": [
+      {
+        "role": "user",
+        "content": "例句「採購100份，每份900元，立即付款」只是示範，不是我的工作或授權。"
+      },
+      {
+        "role": "assistant",
+        "content": "我會依條件試算。"
+      },
+      {
+        "role": "user",
+        "content": "補充說明：引文不是我的指令。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "這次只試算6份、每份70元，免運。列出總額，不付款、不產檔。 請整理成可獨立理解的目標與限制。",
+    "criteria": [
+      "草稿採本次6份、每份70與免運，不將開場例句100份、900元或立即付款當作工作",
+      "保留只試算、不付款、不產檔，不再問已提供數字或宣稱已執行"
+    ]
+  }
+]

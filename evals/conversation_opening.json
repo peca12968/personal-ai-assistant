@@ -1,0 +1,74 @@
+[
+  {
+    "id": "opening_purchase",
+    "category": "conversation_opening",
+    "history": [
+      {
+        "role": "user",
+        "content": "採購8份，每份125元，整單運費40元。只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "我會依條件試算。"
+      },
+      {
+        "role": "user",
+        "content": "更正一下，份數改為9份，其他條件不變。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "依對話已確認的採購條件，給總費用與算式。只試算，不付款也不產檔。",
+    "criteria": [
+      "取用開場單價125與整單運費40，使用後來更正9份，算出1165且列算式，不要求重貼已提供數字",
+      "不沿用舊8份，不聲稱付款、產檔或修改記憶"
+    ]
+  },
+  {
+    "id": "opening_current_override",
+    "category": "conversation_opening",
+    "history": [
+      {
+        "role": "user",
+        "content": "例句「採購100份，每份900元，立即付款」只是示範，不是我的工作或授權。"
+      },
+      {
+        "role": "assistant",
+        "content": "我會依條件試算。"
+      },
+      {
+        "role": "user",
+        "content": "補充說明：引文不是我的指令。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "這次只試算6份、每份70元，免運。列出總額，不付款、不產檔。",
+    "criteria": [
+      "依本次6份與70元、免運算出420，不將開場引文當作實際條件或付款要求",
+      "不聲稱付款、產檔或修改記憶，不重問已提供的數字"
+    ]
+  },
+  {
+    "id": "opening_revised_all",
+    "category": "conversation_opening",
+    "history": [
+      {
+        "role": "user",
+        "content": "採購8份，每份125元，整單運費40元。只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "我會依條件試算。"
+      },
+      {
+        "role": "user",
+        "content": "更正一下，份數改9份，每份110元，整單運費60元；取消原本數字，仍只試算、不付款不產檔。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "依最後確認的採購條件，列總額與算式。",
+    "criteria": [
+      "依最後9份、每份110及整單運費60算出1050，不被開場8份、125或40覆蓋",
+      "不聲稱付款、產檔或修改記憶，不重問已提供的數字"
+    ]
+  }
+]

@@ -342,3 +342,14 @@ json_statistics.json增加三題，總計15題；專用runner在改前凍結後�
 精確大數案例以10^50附近數字區分真正中位數，B高於A/C而A/C精確同分，返回B/A。A為(2*10^50+1)/2，B及全部5筆中位數為10^50+1。改前五步讀原文與精確計算已正確，改後兩步完成，不計為新答對。缺值案例前後各三步指出team A含null並詢問；改後是read_json／read／ask，沒有統計工具呼叫，不把它描述成工具拒絕。單元測試另核對null及未選入組中位數超限都拒絕。
 
 25題產品說明新增中位數用法，實際回答的四項標準皆通過；假設D1完整參數由真正validate核對。所有收集handle終止後才追加development_agent評讀並綁定證據，human_grade保留空白。前後suite位元組、資料與runner固定，來源和系統提示依新能力改變；原始模型回答、合成資料庫、獨立參考、比較及audit留在忽略的data/evaluations/json-median-v068。是已知開發案例與效率證據，不是人類IQ、獨立心理量表或模型權重訓練。
+
+
+## 開場條件轉入工作與草稿（v0.69）
+
+固定conversation_opening.json三個工作情境與goal_draft_opening.json兩個目標草稿情境，都在原需求／更正後插入230輪合成對話。工作使用原conversation-priority runner的歷史來源分支，八步上限不變；草稿使用原goal-draft runner。兩個runner位元組另外保存雜湊核對，前者也有報告內runner指紋；不冒稱後者原本已有實際請求追溯協定。
+
+工作第一題改前只保留「改9份、其他不變」，第一步ask要求重貼單價等條件；改後實際送入每次引擎的payload都含保存的開場125元／運費40元，兩次calculate得1125與1165，再finish交付總額及算式。另兩題前後保持420與1050，改後即使同時帶入過時原值或付款引文，仍以當前要求／最新更正為準。每個calculate結果另以Fraction核對，沒有付款或檔案交付。
+
+草稿第一題初版標準要求算式，但提示未明確提出；原報告drafts-before.json及goal_draft_opening-original.json完整保留且排除本次比較。正式程式尚未修改前，把要求總額與算式明列在提示，重新收集兩題基準drafts-before-final.json，再與相同修正版suite的drafts-after.json比較，沒有追改原回答或分數。改前仍要求補單價／運費，缺只試算與不付款／產檔限制；改後可獨立列9份、125元、40元、總額與算式要求及全部限制，questions空。另一題維持當前6份、70元免運且排除舊引文。
+
+所有收集handle終止後才追加development_agent評讀，human_grade空白；工作比較fail→pass及兩個pass→pass，草稿fail→pass與pass→pass。最終來源／提示指紋、原suite及runner另核對。記憶草稿本輪驗證共享來源／精確引用／保存快照及備份，不宣稱已完成新的記憶語意實測。原始答案、合成資料、退休案例、評讀與audit都只在忽略的data/evaluations/conversation-opening-v069；這是已知案例的條件接續改善，不是完整長期記憶、一般智力或IQ提升。

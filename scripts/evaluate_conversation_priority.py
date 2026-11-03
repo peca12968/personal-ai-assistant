@@ -11,7 +11,7 @@ sys.path.insert(0,str(ROOT))
 from assistant import autonomy
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
-from scripts.evaluate_understanding import validate_cases, fingerprint, load_report, save_report
+from scripts.evaluate_understanding import validate_cases, prepare_case, fingerprint, load_report, save_report
 
 
 def signature(suite):
@@ -19,6 +19,9 @@ def signature(suite):
 
 
 def prepare(store, case):
+    if 'history' in case:
+        sid=prepare_case(store,case)
+        return sid,autonomy.create_goal(store,sid,case['prompt'],from_chat=True)
     sid = store.new_session()
     store.add_message(sid, 'user', case['message'])
     for i in range(8):
