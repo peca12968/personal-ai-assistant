@@ -365,12 +365,39 @@ def select_excerpts(question, older, limit=6):
     return excerpts
 
 
+def _history_budgets(recent):
+    """Share spare character capacity without changing message selection.
+
+    Short messages consume only their actual length. Redistribute the rest
+    equally among unsatisfied messages, capped at 6000 each and 24000 total.
+    Any indivisible remainder goes to the newer messages, in stable order.
+    Budgets include clip()'s omission marker; these are code points, not tokens.
+    """
+    wanted = [min(6000, len(row['content'])) for row in recent]
+    budgets = [0] * len(recent)
+    pending = list(range(len(recent)))
+    remaining = 24000
+    while pending:
+        share, extra = divmod(remaining, len(pending))
+        satisfied = [index for index in pending if wanted[index] <= share]
+        if satisfied:
+            for index in satisfied:
+                budgets[index] = wanted[index]
+                remaining -= wanted[index]
+            pending = [index for index in pending if index not in satisfied]
+        else:
+            for offset, index in enumerate(reversed(pending)):
+                budgets[index] = share + (offset < extra)
+            break
+    return budgets
+
+
 def make_context(question, history, memories, brief=None, excerpts=None):
     recent = history[-16:]
-    per_message = min(6000, 24000 // max(1, len(recent)))
+    budgets = _history_budgets(recent)
     history_context = []
-    for row in recent:
-        content, truncated = clip(row["content"], per_message)
+    for row, budget in zip(recent, budgets):
+        content, truncated = clip(row["content"], budget)
         history_context.append({"message_id": row.get("id"), "role": row["role"],
                                 "content": content, "truncated": truncated})
     memory_context = []

@@ -63,6 +63,7 @@ def main():
     run(sys.executable, "scripts/evaluate_conversation_search.py", "--suite", "evals/month_schedule.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_scope.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/quote_continuity.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/recent_budget.json")
     run(sys.executable, "scripts/evaluate_tasks.py")
     run(sys.executable, "scripts/evaluate_workflows.py")
     run(sys.executable, "scripts/evaluate_memory_commands.py")
