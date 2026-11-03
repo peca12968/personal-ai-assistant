@@ -35,6 +35,7 @@ CHECKS.append(('scripts/evaluate_goal_drafts.py',))
 CHECKS.append(('scripts/evaluate_goal_replies.py',))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
+CHECKS.append(('scripts/evaluate_date_months.py',))
 
 
 def git(root, *args):

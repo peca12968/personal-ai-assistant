@@ -176,3 +176,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `python scripts/evaluate_tool_recovery.py`只建立三個固定失敗與補充情境，不評分模型。加上`--live --report data/evaluations/新的報告.json`才呼叫模型，最多接續五步，不自動重試；完整原始回應、失敗種子與本機資料庫保留於忽略目錄。初始失敗由腳本注入，必須與模型自行規劃、犯錯和修正的端到端評估分開。
 
 案例核對除以零後保留原分子並依補充重算、同名文件衝突後原樣另存並保留原檔、尚未指定新除數時僅釐清缺少的值。前後比較須固定案例、執行腳本、初始動作與目標，並核對程式／提示指紋及實際文件位元組；收集完成後使用既有review_understanding.py逐項評讀，保留開發者與使用者驗收的區別。failed_action是未成功的歷史動作，不是新授權、結果或完成證據；舊資料未保留的參數不能靠評估補造。
+
+
+## 公曆月份規則與實際日期目標（v0.50）
+
+`python scripts/evaluate_date_months.py`只驗證四題格式並建立待開始的本機目標；`--live --report data/evaluations/新的日期報告.json`才收集實際模型的工具動作與成果，每題八步、不自動重試。固定比較原起日逐月計算、明確月底、反向及世紀閏年、未決定短月規則的澄清；保存程式／提示／案例／執行腳本指紋，收集結束後使用review_understanding.py逐項評讀。
+
+需要區分模型自行推算後查weekday，與工具直接以add_months計算所選規則。原本正確的日期不能因改用新工具就說原答案錯誤；新增能力及更可核對的計算依據，不等同整體推理品質提升。所有實際回應與合成資料庫留在忽略目錄；使用者與獨立評讀仍需分開記錄。

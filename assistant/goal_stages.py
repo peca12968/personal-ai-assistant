@@ -29,7 +29,7 @@ def activity(row):
     tool, args = action['tool'], action['args']
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
-               'date', 'start', 'end', 'days', 'calendar', 'excluded_dates',
+               'date', 'start', 'end', 'days', 'months', 'day_policy', 'calendar', 'excluded_dates',
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
     fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
@@ -44,7 +44,8 @@ def activity(row):
     if tool == 'date_math':
         fields |= {'operation', 'date', 'weekday', 'weekday_iso', 'local_datetime',
                    'observed_at_utc', 'timezone_source', 'utc_offset_seconds', 'start', 'end',
-                   'counted_days', 'calendar_days', 'calendar', 'holiday_source'}
+                   'counted_days', 'calendar_days', 'calendar', 'holiday_source',
+                   'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
     if 'excerpts' in observation:
         outcome['provided_ranges'] = [{k: v for k, v in excerpt.items()
