@@ -61,6 +61,7 @@ class AnswerFeedbackTests(unittest.TestCase):
             for index, mid in enumerate(ids):
                 db.execute('UPDATE feedback SET updated_at=? WHERE message_id=?',(f'2026-11-03 00:00:0{index}',mid))
             db.execute("UPDATE feedback SET updated_at='2026-11-03 00:00:09' WHERE message_id=?",(ids[0],))
+        self.store.rate(ids[0], -1, '更正0')  # A real save, not a clock edit, determines recency.
         for _ in range(220):
             self.store.add_message(self.sid,'user','一般討論')
         value = self.context()

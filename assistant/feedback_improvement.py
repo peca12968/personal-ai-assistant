@@ -9,8 +9,10 @@ from .context import clip
 
 def feedback_source(store, message_id, *, db=None):
     with (nullcontext(db) if db is not None else store.connect()) as db:
-        row = db.execute('''SELECT f.message_id,f.rating,f.correction,f.updated_at,m.content AS answer,c.payload
+        row = db.execute('''SELECT f.message_id,f.rating,f.correction,f.updated_at,
+            v.revision AS update_revision,v.order_basis,m.content AS answer,c.payload
             FROM feedback f JOIN messages m ON m.id=f.message_id
+            JOIN feedback_versions v ON v.message_id=f.message_id
             LEFT JOIN answer_contexts c ON c.message_id=m.id WHERE f.message_id=?''', (message_id,)).fetchone()
     if row is None:
         raise ValueError('這筆回饋已不存在，請重新整理。')
@@ -92,4 +94,6 @@ def revise_feedback(store, message_id, fingerprint, correction):
             raise ValueError('回饋或原回答快照已變更，請重新選取後再修改。')
         db.execute("UPDATE feedback SET rating=-1,correction=?,updated_at=CURRENT_TIMESTAMP WHERE message_id=?",
                    (correction, message_id))
+        from .feedback_order import record
+        record(db, message_id)
     return feedback_source(store, message_id)

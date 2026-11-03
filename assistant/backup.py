@@ -15,6 +15,7 @@ from . import __version__
 
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 TABLES = {
+    'feedback_versions': {'revision','message_id','order_basis'},
     'sessions': {'id', 'title', 'created_at'},
     'messages': {'id', 'session_id', 'role', 'content', 'created_at'},
     'memories': {'id', 'content', 'kind', 'created_at', 'active', 'expires_on', 'updated_at'},
@@ -84,7 +85,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - memory_tables - {'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - memory_tables - {'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -93,6 +94,9 @@ def validate_database(path):
                 raise ValueError('資料庫欄位不相容：' + name)
         if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
             raise ValueError('資料庫完整性檢查未通過。')
+        if 'feedback_versions' in actual_tables:
+            from .feedback_order import validate
+            validate(db)
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
         if memory_tables <= actual_tables:

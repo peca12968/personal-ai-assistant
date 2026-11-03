@@ -135,6 +135,9 @@ class FeedbackWindow:
             self.preview.configure(state='normal')
             self.preview.delete('1.0', 'end')
             self.preview.insert('1.0', '原回答：\n' + source['answer'] + '\n\n原更正：\n' + source['correction'] +
+                '\n\n保存順序：' + str(source['update_revision']) +
+                ('（依舊時間與回答編號重建；同秒的真實先後未知）' if source['order_basis']=='legacy_timestamp' else '（實際保存順序）') +
+                '\n電腦記錄時間：' + source['updated_at'] + ' UTC' +
                 '\n\n當時溝通提示（不是答案品質分數）：\n' + json.dumps(context.get('communication', {}), ensure_ascii=False))
             self.preview.configure(state='disabled')
             example = example_from_source(source)

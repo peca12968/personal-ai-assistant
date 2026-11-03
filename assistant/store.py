@@ -189,6 +189,8 @@ class Store:
                 db.execute("PRAGMA user_version = 2")
             db.execute('INSERT OR IGNORE INTO memory_sequence(id,last_id) VALUES(1,0)')
             db.execute('UPDATE memory_sequence SET last_id=MAX(last_id,(SELECT COALESCE(MAX(id),0) FROM memories)) WHERE id=1')
+            from .feedback_order import initialize
+            initialize(db)
 
     @contextmanager
     def connect(self):
@@ -447,6 +449,7 @@ class Store:
         if rating not in (-1, 1):
             raise ValueError("評分只能是 -1 或 1。")
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             row = db.execute("SELECT role FROM messages WHERE id=?", (message_id,)).fetchone()
             if row is None or row["role"] != "assistant":
                 raise ValueError("只能評價助理回答。")
@@ -454,11 +457,15 @@ class Store:
                 ON CONFLICT(message_id) DO UPDATE SET rating=excluded.rating,
                 correction=excluded.correction, updated_at=CURRENT_TIMESTAMP""",
                 (message_id, rating, correction[:4000]))
+            from .feedback_order import record
+            record(db, message_id)
 
     def feedback_summary(self):
         with self.connect() as db:
-            rows = db.execute("""SELECT f.*, m.content AS answer, m.session_id FROM feedback f
-                JOIN messages m ON m.id=f.message_id ORDER BY f.updated_at DESC""")
+            rows = db.execute("""SELECT f.*, v.revision AS update_revision, v.order_basis,
+                m.content AS answer, m.session_id FROM feedback f
+                JOIN messages m ON m.id=f.message_id
+                JOIN feedback_versions v ON v.message_id=f.message_id ORDER BY v.revision DESC""")
             return [dict(r) for r in rows]
 
     def export_session(self, sid, path):
