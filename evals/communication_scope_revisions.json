@@ -1,0 +1,533 @@
+[
+  {
+    "id": "cn_quoted_negation",
+    "kind": "communication",
+    "question": "不要用「簡短」的方式回答，這次請完整解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "cn_unquoted_negation",
+    "kind": "communication",
+    "question": "不要以簡短的方式回答，請完整解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "cn_response_quote",
+    "kind": "communication",
+    "question": "不要給我「簡短回答」。請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "en_keep_object",
+    "kind": "communication",
+    "question": "Do not keep the answer concise; explain it in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "cn_nested",
+    "kind": "communication",
+    "question": "請分析「外層簡短敘述裡有「內層句子」」的結構。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "en_nested",
+    "kind": "communication",
+    "question": "Analyze “a brief outer quote with “inner text” inside”.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "cn_negated_detail_style",
+    "kind": "communication",
+    "question": "請不要用「逐步解釋」的方式回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "cn_give_negated",
+    "kind": "communication",
+    "question": "不要給我簡短答案，請逐步解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "en_keep_response",
+    "kind": "communication",
+    "question": "Please do not keep your response concise.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "positive_quote",
+    "kind": "communication",
+    "question": "請用「簡短」的方式回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "positive_plain",
+    "kind": "communication",
+    "question": "請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "mixed_plain",
+    "kind": "communication",
+    "question": "先簡短結論，再詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "mixed"
+    }
+  },
+  {
+    "id": "negative_plain",
+    "kind": "communication",
+    "question": "不要簡短，請完整解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "english_give",
+    "kind": "communication",
+    "question": "Please do not give me a concise answer.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "en_positive_quote",
+    "kind": "communication",
+    "question": "Please be \"concise\".",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "cn_nested_outside",
+    "kind": "communication",
+    "question": "請詳細說明「簡短範例內有「句子」」的用法。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "cn_quoted_style_nested",
+    "kind": "communication",
+    "question": "請用「簡短，但不要提「完整解釋」這個詞」的方式回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "code_only",
+    "kind": "communication",
+    "question": "說明這段字串：`請簡短回答`。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "reset_direct",
+    "kind": "communication",
+    "question": "請簡短回答。更正：請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "topic_not_reset",
+    "kind": "communication",
+    "question": "請簡短回答。更正：主題是時間管理，不是成本估算。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "neutral",
+    "kind": "communication",
+    "question": "這個詞是什麼意思？",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "cn_double_negation",
+    "kind": "communication",
+    "question": "不是不要簡短，請簡潔回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "en_negate_detail",
+    "kind": "communication",
+    "question": "Do not explain the answer in detail; be concise.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "quote_contraction",
+    "kind": "communication",
+    "question": "Analyze “a brief statement about the user’s choice”.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "h_cn_quoted_form",
+    "kind": "communication",
+    "question": "不需要以「精簡」的形式回覆，請詳細說明。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_cn_give",
+    "kind": "communication",
+    "question": "別給我簡潔版，請完整解釋。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "audit_adjacent_curly",
+    "kind": "communication",
+    "question": "請分析‘簡短’這個詞。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "audit_apostrophe_in_curly",
+    "kind": "communication",
+    "question": "Analyze ‘the user’s concise note’.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "audit_nested_mixed",
+    "kind": "communication",
+    "question": "請分析「外層有『簡短』與其他敘述」的結構。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "audit_adjacent_style",
+    "kind": "communication",
+    "question": "請用‘簡短’的方式回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r2_quote_adjacent_detail",
+    "kind": "communication",
+    "question": "解析‘詳細說明’這個標籤。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r2_quote_adjacent_short",
+    "kind": "communication",
+    "question": "說明‘精簡’兩個字的意思。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r2_quote_outer_styled",
+    "kind": "communication",
+    "question": "請用‘簡潔’的形式回覆。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r2_quote_negated_styled",
+    "kind": "communication",
+    "question": "請別用‘簡短’的方式回答，完整解釋原因。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "r2_quote_after_english",
+    "kind": "communication",
+    "question": "Analyze‘brief’and its antonym.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r2_outer_with_possessive",
+    "kind": "communication",
+    "question": "Review ‘an owner’s brief description’.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r2_ascii_contraction",
+    "kind": "communication",
+    "question": "Don't keep this answer brief; explain in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "r2_curly_contraction",
+    "kind": "communication",
+    "question": "Don’t explain your response in detail; be concise.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r2_nested_adjacent",
+    "kind": "communication",
+    "question": "分析‘外層‘簡短’內層’各自的範圍。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r2_outside_instruction",
+    "kind": "communication",
+    "question": "分析‘簡短’這個詞，並詳細說明用法。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_en_keep_demonstrative",
+    "kind": "communication",
+    "question": "Never keep this explanation brief. Explain in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_nested_chinese",
+    "kind": "communication",
+    "question": "請翻譯「他說「你好」，後面附上簡短筆記」。",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "h_nested_curly",
+    "kind": "communication",
+    "question": "Translate “she said “hello” then added a concise note”.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "h_nested_single_curly",
+    "kind": "communication",
+    "question": "Analyze ‘a brief description containing ‘inner text’’.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "h_detail_negation",
+    "kind": "communication",
+    "question": "不用以「詳細說明」的方式回覆，三句就好。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "h_positive_after_data",
+    "kind": "communication",
+    "question": "請分析「精簡文章中的「章節」標記」，再完整解釋原因。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_contraction",
+    "kind": "communication",
+    "question": "Don’t keep that response concise; explain in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_positive_style",
+    "kind": "communication",
+    "question": "請以「完整解釋」的方式回覆。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "h_data_does_not_retract",
+    "kind": "communication",
+    "question": "請簡短回答。例句是「更正：請詳細說明，包含「內層引用」」。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "h_negation_ends",
+    "kind": "communication",
+    "question": "不要產檔。請簡短回答。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r3_adjacent_word",
+    "kind": "communication",
+    "question": "Analyze‘concise’now.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r3_adjacent_detail",
+    "kind": "communication",
+    "question": "Describe‘in detail’carefully.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r3_inner_possessive",
+    "kind": "communication",
+    "question": "Review‘the owner’s concise memo’now.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r3_positive_style",
+    "kind": "communication",
+    "question": "請用‘精簡’的語氣回覆。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r3_negative_style",
+    "kind": "communication",
+    "question": "不要以‘完整解釋’的形式回答，請簡短。",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  },
+  {
+    "id": "r3_ascii_possessive",
+    "kind": "communication",
+    "question": "Analyze “the user's brief note”.",
+    "history": [],
+    "expect": {
+      "length_hint": "unspecified"
+    }
+  },
+  {
+    "id": "r3_negative_summary",
+    "kind": "communication",
+    "question": "Don’t keep the summary concise. Explain in detail.",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "r3_nested_data",
+    "kind": "communication",
+    "question": "請詳細說明。引用文字是‘更正：簡短，還有‘內層’資料’。",
+    "history": [],
+    "expect": {
+      "length_hint": "detailed"
+    }
+  },
+  {
+    "id": "r3_english_style",
+    "kind": "communication",
+    "question": "Please be ‘concise’.",
+    "history": [],
+    "expect": {
+      "length_hint": "concise"
+    }
+  }
+]

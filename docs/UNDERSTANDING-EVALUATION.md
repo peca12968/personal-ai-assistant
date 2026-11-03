@@ -155,3 +155,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `evals/goal_replies.json`保存四個合成情境：補充期間、最新人數更正、未採用的引文選項、仍未決定。`python scripts/evaluate_goal_replies.py`只核對格式與建立來源，不呼叫模型。實際評估使用`--live --report data/evaluations/指定新檔.json`，每題先讓模型提問、明確保存固定的使用者回答，再啟動同一目標；保存本身不呼叫模型。報告保存兩階段、原問題、使用者回答、工具步驟、原始回應與固定來源指紋，另保留合成資料庫。已有報告／狀態目錄不覆寫，失敗不自動重試。全部完成後以`review_understanding.py`記錄逐項開發評讀；`human_grade`仍空白，不能當成獨立驗收或通用理解分數。發布、CI及自我改碼檢查包含離線來源核對。
 
 `evals/product_help.json`新增第十一題，核對固定問題視窗、保存與接續差別、過期回答及未保存文字的實際行為。真實資料與報告只存忽略的本機資料夾。
+
+
+## 否定風格與巢狀引文（v0.46）
+
+`evals/communication_scope_revisions.json`保存59個已知提示判讀案例，以核心communication函式與固定期望核對，與原48個communication_revisions案例一起回歸。這些案例來自多輪提供／保留驗收及額外稽核，公開後都是已知案例，不是未見過的獨立驗收集。
+
+`evals/communication_scope.json`有六題真實回答情境，包括否定簡短風格、否定逐步解釋、巢狀引文資料、英文帶受詞的否定、明確引號風格及引文內更正不改句外要求。使用理解評估工具的`--suite`與`--live --report`收集固定來源指紋，完成後逐項開發評讀。改前六題已符合標準，不能把輔助提示的修正當作六題回答從錯變對。發布、CI及自我改碼包含離線情境檢查，離線不呼叫模型、不評分回答。原始自改碼、候選與實際回應只留本機忽略目錄。

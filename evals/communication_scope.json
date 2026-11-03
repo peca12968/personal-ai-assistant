@@ -1,0 +1,106 @@
+[
+  {
+    "id": "negated_short_style",
+    "category": "style_scope",
+    "prompt": "不要用「簡短」的方式回答，這次請完整解釋二分搜尋的前提、步驟與為什麼能縮小範圍，並用搜尋數列1、3、5、7、9中的7示範。",
+    "criteria": [
+      "清楚交代排序前提、比較中點與保留哪一半，沒有壓成只有結論",
+      "示範正確定位7並解釋排除另一半的理由",
+      "遵循本次完整解釋要求，不讓通常簡短的偏好壓掉必要說明"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  },
+  {
+    "id": "negated_detailed_style",
+    "category": "style_scope",
+    "prompt": "請不要用「逐步解釋」的方式回答。只回一行算式：每份12元，買5份，總價多少？",
+    "criteria": [
+      "僅一行算式且結果60元",
+      "未加逐步說明、前言或後續提問"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  },
+  {
+    "id": "nested_data",
+    "category": "style_scope",
+    "prompt": "資料句是「作者寫了簡短筆記，內容包含「今天下雨」四字」。請完整解釋外層引文與內層引文各自界定的文字及作用。",
+    "criteria": [
+      "區分完整外層引文與內層今天下雨，不把引文中的簡短當成本次要求",
+      "說明兩層引用的作用，未刪掉必要解釋"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  },
+  {
+    "id": "english_negative_object",
+    "category": "style_scope",
+    "prompt": "Do not keep the answer concise; explain it in detail. Explain why averaging two group averages can be wrong when the group sizes differ, using two people averaging 10 and eight people averaging 20. Answer in Traditional Chinese.",
+    "criteria": [
+      "解釋組大小不同必須按人數加權",
+      "正確對比直接平均15與加權平均18，提供計算",
+      "依本次要求提供足夠解釋，使用繁體中文"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  },
+  {
+    "id": "quoted_style_positive",
+    "category": "style_scope",
+    "prompt": "請用「簡短」的方式回答：為什麼要先保存草稿？兩句就好。",
+    "criteria": [
+      "兩句簡短說明保存草稿的用途",
+      "沒有將引號中的簡短一律視為無效資料而長篇回答"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  },
+  {
+    "id": "outside_correction",
+    "category": "style_scope",
+    "prompt": "請簡短回答。例句是「更正：請詳細說明，包含「內層引用」」。我只問這段例句有幾層引用，回一行即可。",
+    "criteria": [
+      "正確回答兩層引用",
+      "一行回答，不把例句中的更正當作實際要求詳細說明"
+    ],
+    "companion_profile": {
+      "assistant_name": "個人 AI 助理",
+      "user_name": "",
+      "tone": "direct",
+      "detail": "concise",
+      "support": "action_first",
+      "notes": ""
+    }
+  }
+]
