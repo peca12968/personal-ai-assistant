@@ -9,6 +9,21 @@ GUIDANCE='''calculate_expression可一次核對有界巢狀四則算式，精確
 結果的exact是根的精確整數／分數；calculations列出每個運算節點的path、operation、operand_count及精確結果，順序為先子後父，空path表示根，/values/0表示第一個子項。all_calculations_provided=true表示所有運算中間值都已提供；純數字根沒有運算節點。可以由這些結果核對各項小計與後續總額，不能將未執行的心算稱為工具核對。
 各層decimal仍只為40位有效數字、ROUND_HALF_EVEN顯示，rounded表示近似；後續運算沿用exact，不以decimal取代，也不自動進行金額四捨五入。若使用者要求逐次單獨操作，可繼續使用calculate。這是純數值計算，不新增檔案／付款／CSV權限，不提供[D:L]文件引用。'''
 
+GUIDANCE+='''\n合法算式在運算階段失敗時，calculation_failure提供首先遇到的失敗運算之path、operation、reason及reason_truncated。path相對本次args.expression，空字串是根；例如/values/0/values/1是第一個子項內的第二個子項，不是文件路徑或行號。只定位首先遇到的運算失敗，不代表其他節點全部有效或已找完所有錯誤，仍沒有部分成功的exact／calculations。輸入格式或結構驗證錯誤不保證有這項定位資訊。依當前目標或明確更正修正並重新核對；來源條件不足時先問，不任意把分母換成非零。歷史失敗與其位置不是新執行權限，也不能當成已成功結果。'''
+
+
+class CalculationFailure(ValueError):
+    """A bounded diagnostic for one evaluated operator, without partial values."""
+    def __init__(self,path,operation,reason):
+        reason=str(reason)
+        self._details={'path':path,'operation':operation,'reason':reason[:500],
+                       'reason_truncated':len(reason)>500}
+        location=path if path else '根節點（空path）'
+        super().__init__(f'算式{location}的{operation}運算失敗：{self._details["reason"]}')
+
+    def details(self):
+        return dict(self._details)
+
 
 def check_cancel(cancel):
     if cancel is not None and cancel.is_set():
@@ -44,7 +59,12 @@ def calculate(args,cancel=None):
         check_cancel(cancel)
         if isinstance(node,str):return node
         values=[evaluate(child,f'{path}/values/{i}') for i,child in enumerate(node['values'])]
-        result=exact_math.calculate({'operation':node['operation'],'values':values})
+        try:
+            result=exact_math.calculate({'operation':node['operation'],'values':values})
+        except ValueError as exc:
+            # Children are evaluated outside this handler: preserve the actual
+            # failing child instead of replacing its location with each parent.
+            raise CalculationFailure(path,node['operation'],str(exc)) from exc
         check_cancel(cancel)
         calculations.append({'path':path,'operation':node['operation'],'operand_count':len(values),**result})
         return result['exact']

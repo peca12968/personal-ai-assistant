@@ -350,6 +350,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 if attempted is not None:
                     action['note'] = '工具嘗試未成功；原動作保留供核對'
                     observation['failed_action'] = attempted
+                    if attempted['tool']=='calculate_expression' and isinstance(exc,expression_math.CalculationFailure):
+                        observation['calculation_failure'] = exc.details()
             observation['companion_profile'] = profile
             observation['goal_conditions_sha256'] = work_plan.conditions(goal)
             status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'

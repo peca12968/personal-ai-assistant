@@ -397,3 +397,9 @@ expression_calculation.json固定三個案例與答案標準，沿用有逐步�
 分數題(1/7+2/3)/(5/11-1/13)前後正確為2431/1134，含17/21與54/143中間值，4步減為2步。除以零題前後均正確說明無定義：改前先算分母0，改後整式在execution被拒絕，沒有exact或calculations部分成功，然後交付原因。三題結果為1個未完成→通過、2個維持通過；沒有拿通過率換算IQ。
 
 所有模型handle終止後才追加development_agent評讀，human_grade空白。保存完整固定fixture、實際請求／回應與每步工具觀察；逐筆對照唯讀SQLite、運算樹每條path／operation／operand_count、精確結果與顯示是否近似。產品說明增至28例，新例完整JSON另經schema與獨立算術核對為1073/2；舊版誠實說明當時尚無巢狀API，不把新增標準未達當成舊版事實錯誤。原始資料及audit限本機忽略目錄。
+
+## v0.73運算失敗定位實測（2026-11-03）
+
+固定expression_diagnostics四題與原collector做前後對照；新calculation_failure能直接回報巢狀第一失敗/values/0/values/1及根空path，兩題定位標準fail→pass。原版誠實承認無工具位置，不是計算錯誤。指定修正後23與正常計算21在前後都正確，保持pass→pass；步數皆2／2／3／2。產品說明新增第29例，新版四標準通過；原版缺新欄位／驗證分類標準，並不等於舊回答謊稱執行。
+
+全部完整停止報告、實際request traces、SQLite保存步驟及Fraction獨立原樹／修正／第一失敗位置核對後，才附development_agent評讀，human_grade空白。原新版程序最後輸出遺失，原handle已不存在且無matching collector，以完整terminal artifacts確認收集停止，未推定exit code。報告及audit在忽略的data/evaluations/expression-diagnostics-v073。這是固定案例開發驗證，不是獨立人類驗收或人類IQ換算。

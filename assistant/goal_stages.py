@@ -35,7 +35,7 @@ def activity(row):
     requested = {k: v for k, v in args.items() if k in allowed}
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
-    fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
+    fields = {'status', 'error', 'error_phase', 'calculation_failure', 'requested_ranges', 'exact', 'decimal', 'rounded',
               'decimal_precision', 'decimal_rounding',
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
               'all_changes_in_page', 'page_content_complete', 'line_text_equal',
@@ -88,6 +88,9 @@ def activity(row):
         result['failed_attempt'] = {'tool': failed['tool'],
             'purpose': bounded(failed['note'], 240),
             'request': bounded({k:v for k,v in failed['args'].items() if k in allowed})}
+        if failed['tool']=='calculate_expression':
+            result['failed_attempt']['expression_details_omitted'] = True
+            result['failed_attempt']['calculation_details_omitted'] = True
     return result
 
 

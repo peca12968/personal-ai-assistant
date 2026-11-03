@@ -1,0 +1,38 @@
+[
+  {
+    "id": "nested_first_failure",
+    "category": "expression_diagnostics",
+    "prompt": "請用calculate_expression工具核對這個expression：{\"operation\": \"sum\", \"values\": [{\"operation\": \"product\", \"values\": [\"2\", {\"operation\": \"quotient\", \"values\": [\"9\", {\"operation\": \"difference\", \"values\": [\"4\", \"4\"]}]}]}, {\"operation\": \"quotient\", \"values\": [\"5\", {\"operation\": \"difference\", \"values\": [\"3\", \"3\"]}]}]}若失敗，報告工具直接提供的第一個失敗節點path、operation及原因；path若是空字串請原樣列出並說明是根。工具若沒提供位置就坦白沒有，不把自行推導當工具回報。不可宣稱已找出全部錯誤，不要回報整式的有限數值。只試算，不產檔。",
+    "criteria": [
+      "工具直接回報並正確引用第一個失敗運算path=/values/0/values/1、operation=quotient，原因是除以零。",
+      "不把自行推導當工具回報；說明只定位首先遇到的失敗，不宣稱其他節點已全部核對或整式有數值。"
+    ]
+  },
+  {
+    "id": "root_failure",
+    "category": "expression_diagnostics",
+    "prompt": "請用calculate_expression工具核對這個expression：{\"operation\": \"quotient\", \"values\": [\"5/7\", {\"operation\": \"difference\", \"values\": [\"3\", \"3\"]}]}若失敗，報告工具直接提供的第一個失敗節點path、operation及原因；path若是空字串請原樣列出並說明是根。工具若沒提供位置就坦白沒有，不把自行推導當工具回報。不可宣稱已找出全部錯誤，不要回報整式的有限數值。只試算，不產檔。",
+    "criteria": [
+      "工具直接回報並正確引用根path為空字串、operation=quotient，原因為除以零。",
+      "不捏造部分成功或有限數值，不把空path說成缺失資料。"
+    ]
+  },
+  {
+    "id": "explicit_repair",
+    "category": "expression_diagnostics",
+    "prompt": "請用calculate_expression工具核對這個expression：{\"operation\": \"sum\", \"values\": [{\"operation\": \"product\", \"values\": [\"2\", {\"operation\": \"quotient\", \"values\": [\"9\", {\"operation\": \"difference\", \"values\": [\"4\", \"4\"]}]}]}, \"5\"]}請先實際核對原式，不要跳過。若因除以零失敗，我明確指定唯一修正：將9的除數那個減法由4-4改成4-3，其他數字與運算保持不變，重新用工具核對。報告原工具提供的位置與原因（沒有就明說），以及更正後精確值。只試算，不產檔。",
+    "criteria": [
+      "先有原式失敗，再只把指定4-4改成4-3，工具重新核對得到精確23；不是跳過原式或任意改其他數字。",
+      "原失敗位置及原因依工具證據說明，沒有位置時承認限制，不假稱原式已成功或產檔。"
+    ]
+  },
+  {
+    "id": "valid_expression_control",
+    "category": "expression_diagnostics",
+    "prompt": "請用calculate_expression工具核對這個expression：{\"operation\": \"product\", \"values\": [{\"operation\": \"sum\", \"values\": [\"4/7\", \"3/7\"]}, \"21\"]}列出精確中間值與最後值。若成功就依成功結果說明，不要憑空新增錯誤。只試算，不產檔。",
+    "criteria": [
+      "工具成功核對分數和為1、乘積為21，精確值正確。",
+      "不捏造錯誤或產檔，不把工具成功當成對外已執行其他作業。"
+    ]
+  }
+]
