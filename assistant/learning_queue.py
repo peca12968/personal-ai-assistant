@@ -75,12 +75,14 @@ def help_context(question):
         return None
     return {
         'scope':'僅描述這個個人助理的已實作功能，不適用其他軟體；不是使用者資料或操作結果。',
-        'queue_contents_provided':False, 'queue_training_implemented':False,
+        'queue_contents_provided':False, 'idle_training_implemented':False,
+        'finite_manual_batches_available':True,
         'confirmation_updates_weights':False,
         'entry':'回饋紀錄 → 選取已保存的具體更正 → 整理成學習例子；或記憶與夥伴設定 → 本機學習佇列新建獨立例子。',
         'authoring':'原問題可編輯為不依賴前文的完整問題；正確答案留白，使用者自行填寫完整正確答案後按確認。原錯誤回答與更正意見不會自動成為訓練答案。',
         'source_change':'原回饋或回答快照變更，重新整理或核對項目時會顯示需重新核對，保存時也會重新檢查，不能直接沿用；舊例子不自動改寫。載入項目後按重新核對（保留草稿）、閱讀新更正並修改完整答案，再按確認加入／更新。',
         'confirmation':'只保存已確認待訓練版本；尚未啟動閒置訓練、沒有更新模型權重，不能宣稱已學會。',
+        'manual_training':'另有scripts/learning/batches.py的明確選取、準備與手動執行有限批次流程；只產生待核對候選，不自動啟用。按確認不會執行此流程，閒置排程尚未實作。',
         'withdrawal':'保留歷史，排除後續學習；不代表刪除備份或已訓練參數已忘記。',
     }
 

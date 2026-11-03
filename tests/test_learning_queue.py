@@ -45,7 +45,7 @@ class LearningQueueTests(unittest.TestCase):
         asked=Assistant(self.store,Engine()).ask(self.sid,'這個助理的學習佇列會直接訓練嗎？')
         recorded=self.store.answer_context(asked['id'])
         self.assertFalse(recorded['learning_capabilities']['queue_contents_provided'])
-        self.assertFalse(recorded['learning_capabilities']['queue_training_implemented'])
+        self.assertFalse(recorded['learning_capabilities']['idle_training_implemented'])
         self.assertNotIn('QUEUE_ONLY_TARGET_9',json.dumps(recorded,ensure_ascii=False))
 
     def test_stale_feedback_blocks_save_and_existing_readiness_without_rewriting_history(self):
@@ -127,7 +127,7 @@ class LearningQueueTests(unittest.TestCase):
             hint=queue.help_context(question)
             self.assertIsNotNone(hint)
             self.assertFalse(hint['queue_contents_provided'])
-            self.assertFalse(hint['queue_training_implemented'])
+            self.assertFalse(hint['idle_training_implemented'])
         for question in ['今天想吃什麼？','給我一個加總的例子','學習Python需要哪些基本知識？']:
             self.assertIsNone(queue.help_context(question))
 
