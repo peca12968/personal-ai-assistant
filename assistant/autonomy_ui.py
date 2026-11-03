@@ -11,6 +11,7 @@ from . import autonomy
 from . import continuous
 from . import artifacts
 from . import work_plan
+from . import goal_drafts
 from .goal_conversation import describe as describe_conversation
 from .ui_layout import ScrollableForm, fit_window
 from .companion_profile import describe as describe_profile
@@ -21,6 +22,8 @@ class AutonomousWindow:
         self.store, self.sid, self.engine = store, sid, engine
         self.busy = False
         self.active_goal = None
+        self.goal_draft_result = None
+        self.draft_origin = None
         self.cancel = threading.Event()
         self.events = queue.Queue()
         self.window = tk.Toplevel(parent)
@@ -34,10 +37,20 @@ class AutonomousWindow:
                                   padding=12).pack(fill='x')
         self.layout.wrapped_label(body, text='本階段使用目前對話的已匯入文件與有效記憶，工具結果會傳給模型。每輪有步數上限，可停止與接續；成果產生後仍由你確認。',
                                   padding=12).pack(fill='x')
-        self.objective = tk.Text(body, height=3, wrap='word')
-        self.objective.pack(fill='x', padx=12)
+        objective_frame = ttk.Frame(body)
+        objective_frame.pack(fill='x', padx=12)
+        self.objective = tk.Text(objective_frame, height=5, wrap='word')
+        objective_scroll = ttk.Scrollbar(objective_frame, command=self.objective.yview)
+        self.objective.configure(yscrollcommand=objective_scroll.set)
+        objective_scroll.pack(side='right', fill='y')
+        self.objective.pack(side='left', fill='both', expand=True)
         if initial_objective:
             self.objective.insert('1.0', initial_objective)
+        self.draft_button = ttk.Button(body, text='從本對話整理目標草稿', command=self.draft_from_chat)
+        self.draft_button.pack(anchor='w', padx=12, pady=4)
+        self.draft_preview = ttk.Button(body, text='查看整理草稿與原話', command=self.preview_draft, state='disabled')
+        self.draft_preview.pack(anchor='w', padx=12, pady=4)
+        self.layout.wrapped_label(body, text='整理會把目前輸入與本對話有限背景送給模型，填入可編輯的目標、限制與交付文字。只整理草稿；核對後再保存並開始，CSV／文件／帶入背景選項仍由你選擇。未保存草稿只留在本視窗。', padding=12).pack(fill='x')
         self.from_chat = tk.BooleanVar(value=from_chat)
         self.chat_option = ttk.Checkbutton(body, text='新目標帶入本對話背景（近期討論、較早更正與已保存目標）', variable=self.from_chat)
         self.chat_option.pack(anchor='w', padx=12, pady=6)
@@ -108,8 +121,84 @@ class AutonomousWindow:
         self.output = tk.Text(body, height=14, wrap='word', state='disabled')
         self.output.pack(fill='x', padx=12, pady=8)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.after(150, self.poll)
+        self.poll_timer = self.window.after(150, self.poll)
         self.refresh()
+
+    def draft_guard(self):
+        if self.draft_origin and self.objective.get('1.0', 'end').strip() == self.draft_origin['objective_text'].strip():
+            return self.draft_origin
+        return None  # An explicit manual rewrite uses the ordinary goal editor.
+
+    def draft_from_chat(self):
+        if self.busy:
+            return
+        original = self.objective.get('1.0', 'end-1c')
+        try:
+            source = goal_drafts.capture(self.store, self.sid, original.strip())
+        except (ValueError, OSError) as exc:
+            messagebox.showerror('無法整理', str(exc), parent=self.window)
+            return
+        self.busy = True
+        self.active_goal = None
+        self.cancel.clear()
+        self.csv_input.configure(state='disabled')
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
+            button.configure(state='disabled')
+        self.stop.configure(state='normal')
+        self.notice.set('正在整理目標草稿；不會保存或開始工作，可停止。')
+        def work():
+            try:
+                result = goal_drafts.generate(source, self.engine, self.cancel)
+                self.events.put(('draft_done', (result, original)))
+            except Exception as exc:
+                self.events.put(('error', str(exc)))
+        threading.Thread(target=work, daemon=False).start()
+
+    def receive_draft(self, result, original):
+        self.goal_draft_result = result
+        self.draft_preview.configure(state='normal')
+        if self.cancel.is_set():
+            self.notice.set('已停止，原目標草稿未變更。')
+            return
+        if self.objective.get('1.0', 'end-1c') != original:
+            self.notice.set('整理期間你已修改目標，保留目前文字；可查看整理草稿與原話，或重新整理。')
+            return
+        try:
+            with self.store.connect() as db:
+                db.execute('BEGIN')
+                goal_drafts.ensure_current(db, self.sid, result)
+        except ValueError as exc:
+            self.notice.set(str(exc))
+            return
+        if not result['objective_text']:
+            self.notice.set('尚無明確工作目標；請查看待釐清問題，原輸入保留。')
+            return
+        self.objective.delete('1.0', 'end')
+        self.objective.insert('1.0', result['objective_text'])
+        self.draft_origin = result
+        self.notice.set('已填入目標草稿，請核對原話及修改文字，再選擇所需選項、保存並開始。尚未建立目標。')
+
+    def preview_draft(self):
+        result = self.goal_draft_result
+        if result is None:
+            return
+        window = tk.Toplevel(self.window)
+        window.title('目標草稿與來源（未自動保存）')
+        fit_window(window, 800, 650)
+        frame = ttk.Frame(window); frame.pack(fill='both', expand=True)
+        field = tk.Text(frame, wrap='word', padx=12, pady=12)
+        scroll = ttk.Scrollbar(frame, command=field.yview)
+        field.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y'); field.pack(fill='both', expand=True)
+        lines = ['模型草稿，需核對語意；原話存在不等於已確認決策。',
+                 result['objective_text'] or '尚無可辨認的目標。',
+                 '待釐清：\n' + '\n'.join(result['proposal']['questions'])]
+        for item in result['proposal']['items']:
+            lines += [{'goal': '目標', 'constraint': '限制', 'deliverable': '交付'}[item['kind']] + '：' + item['text']]
+            lines += [ref['key'] + ' 原話：' + ref['quote'] for ref in item['sources']]
+        lines += ['本次有限來源快照：', describe_conversation(result['source']['context']),
+                  '整理時的目標輸入：' + result['source']['current_request']]
+        field.insert('1.0', '\n\n'.join(lines)); field.configure(state='disabled')
 
     def selected_id(self):
         selection = self.listing.selection()
@@ -146,7 +235,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard())
             self.refresh(gid)
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
@@ -155,7 +244,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard())
             self.refresh(gid)
             self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
         except Exception as exc:
@@ -182,7 +271,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -303,7 +392,7 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -328,15 +417,20 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
+                    if kind == 'draft_done':
+                        self.receive_draft(*value)
+                        self.active_goal = None
+                        self.select()
+                        continue
                     self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))
                     self.refresh(self.active_goal)
                     self.active_goal = None
         except queue.Empty:
             pass
-        self.window.after(150, self.poll)
+        self.poll_timer = self.window.after(150, self.poll)
 
     def close(self):
         self.cancel.set()
@@ -344,4 +438,5 @@ class AutonomousWindow:
             self.notice.set('正在停止自主流程，已保存步驟會保留。')
             self.window.after(200, self.close)
         else:
+            self.window.after_cancel(self.poll_timer)
             self.window.destroy()

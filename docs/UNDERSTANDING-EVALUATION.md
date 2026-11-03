@@ -132,3 +132,20 @@ v0.43以本機合成的10586碼位單行文件驗證實際自主流程。改前r
 `evals/product_help.json` 現為九題，新增long_single_line。新題使用既有理解評估工具實際收集及逐項development_agent評讀，沒有獨立人類驗收；首答的格式示例觸發來源提示，調整說明後最終答覆以文字描述引用規則，不假造實際引用。
 
 原始報告及開發評讀保存在忽略的 `data/evaluations/line-reading-v043`，human_grade空白。模型收集完成後僅變更context_ui.py的字元位置顯示；ui-verification.json記錄實際來源差異並核對其他所有模型相關程式與提示未變，另以隱藏Tk文字檢查確認顯示。舊全專案指紋保留原值，不把顯示更新後的版本冒稱完全相同，也不將隱藏視窗檢查當作視覺驗收。
+
+
+## 2026-11-03：從對話整理目標草稿
+
+v0.44新增 `evals/goal_drafts.json` 四個固定合成情境，直接呼叫實際goal_drafts流程，驗證最新更正與必要數字、尚未決定工作、引文與錯誤助理提案、工具能力缺口。模型草稿須通過結構與逐字來源核對，再另做語意評讀；來源匹配不能證明使用者已確認該意思。
+
+```powershell
+python scripts/evaluate_goal_drafts.py
+python scripts/evaluate_goal_drafts.py --live --report data/evaluations/goal-drafts-new.json
+python scripts/review_understanding.py --report data/evaluations/goal-drafts-new.json --reviews data/evaluations/goal-drafts-reviews.json --reviewer development_agent
+```
+
+離線只建立固定來源，不呼叫模型，已接入發布、CI與自我改碼。真實模式要求新報告及狀態目錄，保留同題來源、草稿、指紋及合成資料庫；收集前後核對來源，不能更動中混入結果，不會自動重試失敗。完整收集後使用既有逐項評讀工具，評讀者須明列，human_grade不由開發者冒填。
+
+本輪兩次收集的四題均符合開發標準；沒有將助理建議或引文當成已確認操作，未決工作保留問題，無法直接處理的PDF／寄信需求保留完整範圍並指出缺口。另把最終真實費用草稿明確保存為pending目標，不帶額外聊天背景或CSV／檔案權限；開始後三次計算得到720、900與180，再交付文字成果。這驗證此草稿可獨立接續該任務，不能代表任意任務都可完成。
+
+`evals/product_help.json` 現為十題，新增conversation_goal_draft。舊說明與首輪新說明均保留未全通過的評讀；補清楚三種權限選項不會自動選取後，最終答覆符合四項標準。所有真實報告、原話、實際草稿及流程記錄只在忽略的 `data/evaluations/goal-draft-v044`，與最終來源／提示指紋對照；這是開發評讀，不是使用者或獨立人類驗收。

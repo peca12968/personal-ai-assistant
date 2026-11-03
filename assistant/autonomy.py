@@ -73,17 +73,21 @@ def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
 
 
-def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False):
+def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None):
     objective = text(objective, 4000)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
     if type(from_chat) is not bool:
         raise ValueError('帶入對話選項需為布林值。')
     gid = uuid.uuid4().hex
-    sources = signature(store.documents(sid))
     with lease(store, parent_id) if parent_id is not None else nullcontext():
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            if goal_draft is not None:
+                from .goal_drafts import ensure_current
+                ensure_current(db, sid, goal_draft)
+            sources = signature([dict(row) for row in db.execute(
+                'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,))])
             previous = goal_stages.capture(db, sid, parent_id) if parent_id is not None else None
             db.execute('INSERT INTO autonomous_goals(id,session_id,objective,status,sources_json) VALUES(?,?,?,?,?)',
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
