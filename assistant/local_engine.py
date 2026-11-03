@@ -52,6 +52,9 @@ class LocalEngine:
             raise EngineError(ERRORS['environment'], 'local_environment')
         return [str(self.python), '-I', str(local_models.ROOT/'assistant/local_worker.py'), '--output', str(output)]
 
+    def response_directory(self):
+        return answer_directory(self.workdir)
+
     def answer(self, prompt, cancel=None):
         deadline = time.monotonic() + self.timeout
         def check():
@@ -80,7 +83,7 @@ class LocalEngine:
         if len(request) > local_models.MAX_REQUEST_BYTES:
             raise EngineError('本機推理請求超過大小上限。', 'input_too_large')
         try:
-            with answer_directory(self.workdir) as temporary:
+            with self.response_directory() as temporary:
                 folder = Path(temporary)
                 output, log = folder/'result.json', folder/'worker.log'
                 with tempfile.TemporaryFile(dir=folder) as source, log.open('wb') as stderr:
