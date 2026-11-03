@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 from .ui_workers import start_worker
+from .data_window import DataWindow
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -12,13 +13,16 @@ from .backup import create_backup, restore_backup, stamp
 from .engine import ROOT
 
 
-class BackupWindow:
+class BackupWindow(DataWindow):
+    shutdown_text = '正在等候本次備份／還原完成或回報失敗，再關閉視窗。'
+    shutdown_controls = ('backup_button', 'restore_button', 'open_button')
+
     def __init__(self, parent, store):
         self.store = store
         self.restored = None
         self.running = False
         self.events = queue.Queue()
-        self.window = tk.Toplevel(parent)
+        self.own_window(parent)
         self.window.title('本機備份與還原')
         self.window.geometry('730x510')
         self.window.minsize(620, 440)
@@ -37,10 +41,10 @@ class BackupWindow:
         ttk.Label(self.window, textvariable=self.notice, wraplength=670, padding=14).pack(fill='both', expand=True)
         self.open_button = ttk.Button(self.window, text='開啟還原後的助理', state='disabled', command=self.open_restored)
         self.open_button.pack(anchor='e', padx=14, pady=14)
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def work(self, operation):
-        if self.running:
+        if self.running or self.unavailable():
             return
         self.running = True
         for button in (self.backup_button, self.restore_button, self.open_button):
@@ -51,26 +55,28 @@ class BackupWindow:
                 self.events.put((True, operation()))
             except Exception as exc:
                 self.events.put((False, str(exc)))
-        # Finish a requested snapshot even if this dialog closes.
+        # Keep the dialog owned until the requested snapshot/restore returns.
         start_worker(run, lambda error: self.events.put((False, error)))
 
     def backup(self):
-        if not self.running:
+        if not self.running and not self.unavailable():
             self.work(lambda: create_backup(self.store.path))
 
     def restore(self):
-        if self.running:
+        if self.running or self.unavailable():
             return
         backup = filedialog.askopenfilename(parent=self.window, title='選取助理備份',
                     initialdir=self.store.path.parent / 'backups', filetypes=[('助理備份', '*.paibackup')])
-        if not backup:
+        if not backup or self.unavailable():
             return
         parent = filedialog.askdirectory(parent=self.window, title='選取還原資料夾的存放位置')
-        if parent:
+        if parent and not self.unavailable():
             destination = Path(parent) / ('assistant-restored-' + stamp())
             self.work(lambda: restore_backup(backup, destination))
 
     def poll(self):
+        if not self.begin_poll():
+            return
         try:
             ok, result = self.events.get_nowait()
         except queue.Empty:
@@ -90,10 +96,10 @@ class BackupWindow:
             else:
                 self.notice.set('未完成：' + result)
             self.open_button.configure(state='normal' if self.restored else 'disabled')
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def open_restored(self):
-        if self.restored and not self.running:
+        if self.restored and not self.running and not self.unavailable():
             try:
                 subprocess.Popen([sys.executable, '-m', 'assistant', '--data-dir', self.restored], cwd=ROOT,
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)

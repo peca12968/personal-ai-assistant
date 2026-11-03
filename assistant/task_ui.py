@@ -2,6 +2,7 @@ import json
 import queue
 import threading
 from .ui_workers import start_worker
+from .data_window import DataWindow
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -13,14 +14,16 @@ LABELS = {'planned': '待執行', 'running': '尚無完成結果（執行中／�
           'succeeded': '已驗證完成', 'failed': '失敗', 'cancelled': '已取消'}
 
 
-class TaskWindow:
+class TaskWindow(DataWindow):
+    shutdown_controls = ('choose_btn', 'plan_btn', 'propose_btn', 'execute_btn', 'export_btn', 'stop_btn')
+
     def __init__(self, parent, store, sid):
         self.store, self.sid = store, sid
         self.path = None
         self.busy = False
         self.cancel = threading.Event()
         self.events = queue.Queue()
-        self.window = tk.Toplevel(parent)
+        self.own_window(parent)
         self.window.title('工作工具 · CSV 計畫與驗證')
         self.window.geometry('920x800')
         self.window.minsize(820, 600)
@@ -76,12 +79,13 @@ class TaskWindow:
         self.notice = tk.StringVar(value='來源上限 2 MiB、50000 筆、5000 組。數值不接受空白、千分位或貨幣符號；報告為 JSON，不會覆寫既有檔案。')
         ttk.Label(self.window, textvariable=self.notice, wraplength=850, padding=12).pack(fill='x')
         self.refresh()
-        self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def choose(self):
+        if self.unavailable() or self.busy:
+            return
         path = filedialog.askopenfilename(parent=self.window, title='選取要彙總的 CSV', filetypes=[('CSV', '*.csv')])
-        if path:
+        if path and not self.unavailable():
             try:
                 _, headers, rows = load_csv(path)
                 self.path = path
@@ -126,10 +130,12 @@ class TaskWindow:
                     text += '\n[…預覽已省略，請匯出完整報告…]'
             self.detail.insert('1.0', text)
         self.detail.configure(state='disabled')
-        self.execute_btn.configure(state='normal' if task and task['status'] == 'planned' and not self.busy else 'disabled')
-        self.export_btn.configure(state='normal' if task and task['status'] == 'succeeded' and not self.busy else 'disabled')
+        self.execute_btn.configure(state='normal' if task and task['status'] == 'planned' and not self.busy and not self.unavailable() else 'disabled')
+        self.export_btn.configure(state='normal' if task and task['status'] == 'succeeded' and not self.busy and not self.unavailable() else 'disabled')
 
     def plan(self):
+        if self.unavailable() or self.busy:
+            return
         if not self.path:
             self.notice.set('請先選取 CSV。')
             return
@@ -141,8 +147,10 @@ class TaskWindow:
             self.notice.set(str(exc))
 
     def execute(self):
+        if self.unavailable() or self.busy:
+            return
         id = self.selected()
-        if not id or self.busy:
+        if not id:
             return
         self.busy = True
         self.cancel.clear()
@@ -160,7 +168,7 @@ class TaskWindow:
         start_worker(work, lambda error: self.events.put((id, None, error)))
 
     def propose(self):
-        if self.busy:
+        if self.unavailable() or self.busy:
             return
         request = self.request.get().strip()
         if not self.path or not request:
@@ -187,6 +195,8 @@ class TaskWindow:
         start_worker(work, lambda error: self.events.put((None, None, error)))
 
     def poll(self):
+        if not self.begin_poll():
+            return
         try:
             id, task, error = self.events.get_nowait()
         except queue.Empty:
@@ -200,25 +210,19 @@ class TaskWindow:
             self.refresh(id)
             self.notice.set(error or ('計畫已保存但尚未執行；請比對原始需求與每一步，再按執行。' if task['status'] == 'planned' else
                 '已驗證完成，結果已存本機；可另存 JSON 報告。' if task['status'] == 'succeeded' else task['error']))
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def export(self):
+        if self.unavailable() or self.busy:
+            return
         id = self.selected()
         if not id:
             return
         path = filedialog.asksaveasfilename(parent=self.window, title='另存新報告', defaultextension='.json',
                     initialdir=self.store.path.parent, initialfile='task-' + id[:12] + '.json', filetypes=[('JSON', '*.json')])
-        if path:
+        if path and not self.unavailable():
             try:
                 result = export_task(self.store, self.sid, id, path)
                 self.notice.set('已匯出並驗證：' + result['path'])
             except (OSError, ValueError) as exc:
                 self.notice.set('未匯出：' + str(exc))
-
-    def close(self):
-        if self.busy:
-            self.cancel.set()
-            self.notice.set('正在停止，等待工作紀錄保存後關閉。')
-            self.window.after(100, self.close)
-        else:
-            self.window.destroy()

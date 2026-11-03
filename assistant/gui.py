@@ -396,14 +396,20 @@ class App:
         BriefWindow(self.root, self.store, self.sid)
 
     def manage_documents(self):
+        if self.closing:
+            return
         from .document_ui import DocumentWindow
         DocumentWindow(self.root, self.store, self.sid)
 
     def backups(self):
+        if self.closing:
+            return
         from .backup_ui import BackupWindow
         BackupWindow(self.root, self.store)
 
     def work_tools(self):
+        if self.closing:
+            return
         from .task_ui import TaskWindow
         TaskWindow(self.root, self.store, self.sid)
 
@@ -441,9 +447,14 @@ class App:
         evolution_windows = getattr(self.root, '_assistant_evolution_windows', [])
         for window in evolution_windows:
             window.request_shutdown()
-        if self.busy or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows + evolution_windows):
+        data_windows = list(getattr(self.root, '_assistant_data_windows', []))
+        for window in data_windows:
+            window.request_shutdown()
+        data_active = any(window.active() for window in data_windows)
+        if self.busy or data_active or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows + evolution_windows):
             self.status.set('正在等候自我改進停止；已開始的套用／發布會完成後再關閉。'
-                            if any(window.busy for window in evolution_windows) else '正在停止推理引擎…')
+                            if any(window.busy for window in evolution_windows) else '正在停止 CSV／搜尋並等候備份／還原收尾…'
+                            if data_active else '正在停止推理引擎…')
             self.root.after(200, self.close)
         else:
             self.drafts.stop_timer()

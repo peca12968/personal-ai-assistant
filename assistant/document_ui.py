@@ -58,7 +58,12 @@ class DocumentWindow:
             if metadata(row): self.detail.insert('end', '\n\n'+metadata(row)['extraction_limits'])
         self.detail.configure(state="disabled")
 
+    def unavailable(self):
+        return getattr(self.window._root(), "_assistant_closing", False) or not self.window.winfo_exists()
+
     def import_paths(self, paths):
+        if self.unavailable():
+            return
         failures, count = [], 0
         for path in paths:
             try:
@@ -72,21 +77,29 @@ class DocumentWindow:
             messagebox.showerror("部分文件未匯入", "\n".join(failures), parent=self.window)
 
     def add(self):
+        if self.unavailable():
+            return
         paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字文件或DOCX",
                     filetypes=[("文字、程式與DOCX", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
         if paths:
             self.import_paths(paths)
 
     def search_folder(self):
+        if self.unavailable():
+            return
         from .search_ui import SearchWindow
         SearchWindow(self.window, self.store, self.sid, self.refresh)
 
     def reload(self):
+        if self.unavailable():
+            return
         row = self.selected()
         if row:
             self.import_paths([row["source_path"]])
 
     def remove(self):
+        if self.unavailable():
+            return
         row = self.selected()
         if row:
             self.store.detach_document(self.sid, row["id"])

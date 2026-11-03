@@ -1,20 +1,24 @@
 import queue
 import threading
 from .ui_workers import start_worker
+from .data_window import DataWindow
 import tkinter as tk
 from tkinter import filedialog, ttk
 
 from .folder_search import attach_result, search_folder
 
 
-class SearchWindow:
+class SearchWindow(DataWindow):
+    shutdown_controls = ('choose_btn', 'search_btn', 'stop_btn', 'import_btn')
+
     def __init__(self, parent, store, sid, on_import=None):
         self.store, self.sid, self.on_import = store, sid, on_import
+        self.import_parent = parent
         self.report = None
         self.busy = False
         self.cancel = threading.Event()
         self.events = queue.Queue()
-        self.window = tk.Toplevel(parent)
+        self.own_window(parent)
         self.window.title('搜尋資料夾 · 僅在本機搜尋')
         self.window.geometry('900x680')
         self.window.minsize(700, 560)
@@ -54,12 +58,13 @@ class SearchWindow:
         self.import_btn.pack(anchor='e', padx=12)
         self.notice = tk.StringVar(value='單次最多讀取 500 個文字檔／32 MiB；跳過隱藏項目、連結、常見憑證及產出目錄。搜尋結果不代表完整閱讀。')
         ttk.Label(self.window, textvariable=self.notice, wraplength=820, padding=12).pack(fill='x')
-        self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def choose(self):
+        if self.unavailable() or self.busy:
+            return
         path = filedialog.askdirectory(parent=self.window, title='選取唯讀搜尋範圍')
-        if path:
+        if path and not self.unavailable():
             self.folder.set(path)
             self.report = None
             self.clear_results()
@@ -70,7 +75,7 @@ class SearchWindow:
         self.preview()
 
     def search(self):
-        if self.busy:
+        if self.unavailable() or self.busy:
             return
         if not self.folder.get():
             self.notice.set('請先選取資料夾。')
@@ -92,6 +97,8 @@ class SearchWindow:
         start_worker(work, lambda error: self.events.put((False, error)), daemon=True)
 
     def poll(self):
+        if not self.begin_poll():
+            return
         try:
             ok, result = self.events.get_nowait()
         except queue.Empty:
@@ -112,7 +119,7 @@ class SearchWindow:
                                 ' 尚未加入對話；每段對話仍最多 8 個文件。')
             else:
                 self.notice.set('搜尋未完成：' + result)
-        self.window.after(100, self.poll)
+        self.schedule_poll()
 
     def preview(self, event=None):
         self.preview_text.configure(state='normal')
@@ -126,7 +133,9 @@ class SearchWindow:
         self.preview_text.configure(state='disabled')
 
     def import_selected(self):
-        if not self.report or self.busy:
+        if self.unavailable() or self.busy:
+            return
+        if not self.report:
             return
         count, errors = 0, []
         for item in self.listing.selection():
@@ -137,9 +146,5 @@ class SearchWindow:
             except (ValueError, OSError) as exc:
                 errors.append(row['relative_path'] + '：' + str(exc))
         self.notice.set(f'已加入 {count} 個文件；下次在目前對話提問時可供分析。' + ('\n' + '\n'.join(errors[:3]) if errors else ''))
-        if self.on_import:
+        if self.on_import and self.import_parent.winfo_exists():
             self.on_import()
-
-    def close(self):
-        self.cancel.set()
-        self.window.destroy()
