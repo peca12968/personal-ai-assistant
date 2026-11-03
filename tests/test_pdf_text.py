@@ -148,7 +148,9 @@ class PdfTests(unittest.TestCase):
         self.assertTrue(result['cancelled']);self.assertEqual(result['results'],[])
         import time
         def delayed(*args,**kwargs):
-            self.assertLessEqual(kwargs['timeout'],.1);time.sleep(.12);raise ValueError('timeout')
+            # Deadline addition/subtraction can differ by a few binary float ULPs.
+            self.assertLessEqual(kwargs['timeout'],.1+1e-6)
+            time.sleep(.12);raise ValueError('timeout')
         with patch('assistant.folder_search.read_document',side_effect=delayed):
             result=search_folder(self.root,'ORBIT',timeout=.1)
         self.assertIn('time',result['limits_hit']);self.assertEqual(result['results'],[])
