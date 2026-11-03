@@ -96,6 +96,12 @@ class Store:
                     decisions TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS answer_contexts (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS chat_images (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    name TEXT NOT NULL, format TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+                    size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, data BLOB NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS local_memory_messages (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE);
                 CREATE TABLE IF NOT EXISTS answer_runs (

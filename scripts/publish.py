@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "peca12968/personal-ai-assistant"
 ALLOWED_DIRS = {"assistant", "prompts", "tests", "scripts", "evals", "docs", ".github"}
-ALLOWED_ROOT = {".gitignore", ".gitattributes", "README.md", "AGENTS.md", "Start.cmd", "Publish.cmd"}
+ALLOWED_ROOT = {".gitignore", ".gitattributes", "README.md", "AGENTS.md", "Start.cmd", "Publish.cmd", "requirements.txt"}
 SECRET = re.compile(rb"(?:sk-[A-Za-z0-9_-]{24,}|gh[pousr]_[A-Za-z0-9]{24,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 
 
@@ -67,6 +67,7 @@ def main():
     run(sys.executable, "scripts/evaluate_csv_membership.py")
     run(sys.executable, "scripts/evaluate_csv_membership.py", "--suite", "evals/csv_median.json")
     run(sys.executable, "scripts/evaluate_csv_membership.py", "--suite", "evals/csv_grouping.json")
+    run(sys.executable, "scripts/evaluate_images.py")
     run(sys.executable, "scripts/evaluate_goal_status.py")
     run(sys.executable, "scripts/evaluate_goal_discussion.py")
     run(sys.executable, "scripts/evaluate_reasoning_pair.py", "--profile", "baseline", "--out", "data/evaluations/offline-reasoning-baseline")

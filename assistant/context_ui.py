@@ -66,6 +66,9 @@ def show_context(parent, store, message_id):
         ("最近對話", "\n\n".join(f'{"你" if r["role"] == "user" else "助理"} · #{r["message_id"]}\n{r["content"]}' for r in context["recent_conversation"]) or "本次沒有前文。"),
     ]
     documents = context.get("documents", {})
+    if context.get('image_inputs'):
+        sections.append(('本次圖片', '以下是本次實際附件的順序與本機副本指紋；不是辨識正確性的保證。\n\n' +
+                         json.dumps(context['image_inputs'], ensure_ascii=False, indent=2)))
     if not local:
         sections.append(('夥伴設定', describe_profile(context.get('companion_profile'))))
     corrections = context.get('earlier_user_corrections', {})

@@ -4,6 +4,11 @@ if not exist ".venv\Scripts\python.exe" (
     python -m venv .venv
     if errorlevel 1 goto failed
 )
+".venv\Scripts\python.exe" -c "import PIL; assert PIL.__version__ == '13.0.0'" >nul 2>&1
+if errorlevel 1 (
+    ".venv\Scripts\python.exe" -m pip install --only-binary=:all: -r requirements.txt
+    if errorlevel 1 goto failed
+)
 ".venv\Scripts\python.exe" -m assistant
 if errorlevel 1 goto failed
 exit /b 0

@@ -18,6 +18,7 @@ class App:
         self.events = queue.Queue()
         self.cancel = threading.Event()
         self.busy = False
+        self.image_selections = {}
         self.autonomous_windows = []
         self.memory_draft_windows = []
         self.closing = False
@@ -140,6 +141,12 @@ class App:
         self.sid = sessions[0]["id"] if sessions else store.new_session()
         from .chat_draft_ui import DraftEditor
         self.drafts = DraftEditor(self, main)
+        image_bar = ttk.Frame(main)
+        image_bar.grid(row=5, column=0, sticky='ew')
+        self.image_btn = ttk.Button(image_bar, text='聊天圖片…', command=self.choose_images)
+        self.image_btn.pack(side='left')
+        self.image_notice = tk.StringVar(value='未選取圖片。')
+        ttk.Label(image_bar, textvariable=self.image_notice, wraplength=500).pack(side='left', padx=8)
         self.refresh_sessions()
         self.render()
         root.after(100, self.poll)
@@ -260,6 +267,7 @@ class App:
         self.chat.see("end")
 
     def render(self):
+        self.refresh_image_notice()
         self.refresh_review_count()
         from .answer_runs import recover, runs, ERROR_LABELS
         recovery_notice = ''
@@ -312,6 +320,25 @@ class App:
         for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn, self.retry_btn, self.chat_goal_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
+        if hasattr(self, 'image_btn'):
+            self.image_btn.configure(state=state)
+
+    def refresh_image_notice(self):
+        if not hasattr(self, 'image_notice'):
+            return
+        ids = getattr(self, 'image_selections', {}).get(self.sid, ())
+        self.image_notice.set(f'每次傳送會附上 {len(ids)} 張圖片 · 可在圖片視窗取消附圖' if ids else '未選取圖片 · 文字草稿不保存圖片選取')
+
+    def choose_images(self):
+        if self.busy or self.closing:
+            return
+        from .image_ui import ImageWindow
+        def apply(sid, ids):
+            if self.busy or self.closing or self.sid != sid:
+                raise ValueError('聊天狀態或對話已改變，請回原對話重新選取圖片。')
+            self.image_selections[sid] = ids
+            self.refresh_image_notice()
+        return ImageWindow(self.root, self.store, self.sid, self.image_selections.get(self.sid, ()), apply)
 
     def retry_answer(self):
         if self.busy:
@@ -324,7 +351,7 @@ class App:
             return
         self.cancel.clear()
         self.set_busy(True)
-        self.status.set('重試最後一題，使用目前有效的記憶與文件；不重複新增問題。')
+        self.status.set('重試最後一題：如有附圖會沿用原副本，記憶與文件採目前版本；不重複新增問題。')
         sid = self.sid
         def work():
             try:
@@ -352,9 +379,11 @@ class App:
 
         def work():
             try:
-                self.events.put(("answer", self.assistant.ask(sid, question, self.cancel, draft=draft)))
+                self.events.put(("answer", self.assistant.ask(sid, question, self.cancel, draft=draft, **image_options)))
             except Exception as exc:
                 self.events.put(("error", {'message': str(exc), 'question': question}))
+        selected_images = tuple(getattr(self, 'image_selections', {}).get(sid, ()))
+        image_options = {'image_ids': selected_images} if selected_images else {}
         if start_worker(work, lambda error: self.events.put(('error', error)), daemon=True):
             self.input.delete('1.0', 'end')
             self.append('user', question)
@@ -374,7 +403,7 @@ class App:
                     if value.get('response_mode') == 'local_memory':
                         self.status.set('本機記憶操作已回覆 · 未呼叫模型 · 可查看本次操作紀錄')
                     else:
-                        self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個')
+                        self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個 · 圖片：{value.get("image_count",0)} 張')
                 else:
                     if isinstance(value, dict):
                         value = value['message']

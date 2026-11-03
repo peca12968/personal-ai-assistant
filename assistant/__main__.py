@@ -74,7 +74,10 @@ def main():
     mode.add_argument("--doctor", action="store_true", help="檢查環境")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
+    parser.add_argument('--image', type=Path, action='append', default=[], help='搭配--ask匯入並附上PNG／JPEG，可重複指定，最多4張')
     args = parser.parse_args()
+    if args.image and (not args.ask or len(args.image) > 4):
+        parser.error('--image需搭配--ask，最多4張；重試沿用原題圖片。')
     alias_change = args.set_memory_aliases is not None
     alias_mode = args.show_memory_aliases or alias_change
     if alias_change and (args.aliases_revision is None or args.aliases_revision < 0):
@@ -226,6 +229,11 @@ def main():
         print("Project:", ROOT)
         print("Data:", args.data_dir.resolve())
         print("Codex:", find_codex())
+        try:
+            import PIL
+            print('Image decoder: Pillow', PIL.__version__)
+        except ImportError:
+            print('Image decoder: missing; run .venv\\Scripts\\python -m pip install -r requirements.txt')
         return
     if args.export_goal_csv is not None:
         from .autonomy_csv import export
@@ -313,7 +321,12 @@ def main():
             for path in args.file:
                 store.attach_document(sid, path)
             app = Assistant(store, engine)
-            result = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
+            if args.image:
+                from .image_inputs import attach_paths
+                image_ids = attach_paths(store, sid, args.image)
+                result = app.ask(sid, args.ask, image_ids=image_ids)
+            else:
+                result = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
         except (EngineError, ValueError, OSError, sqlite3.Error) as exc:
             parser.exit(1, '回答未完成：' + str(exc) + '\n')
         print(result["content"])

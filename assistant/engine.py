@@ -124,7 +124,10 @@ class CodexEngine:
             except ProcessLookupError:
                 pass
 
-    def answer(self, prompt, cancel: threading.Event | None = None):
+    def answer_images(self, prompt, images, cancel=None):
+        return self.answer(prompt, cancel, images=images)
+
+    def answer(self, prompt, cancel: threading.Event | None = None, *, images=()):
         deadline = time.monotonic() + self.timeout
 
         def check_running():
@@ -142,12 +145,20 @@ class CodexEngine:
             raise EngineError('推理輸入包含無效文字。', 'invalid_input') from None
         if len(payload) > MAX_PROMPT_BYTES:
             raise EngineError('本次參考內容超過 2 MiB，請減少文件或縮短內容。', 'input_too_large')
+        from .image_inputs import MAX_ATTACHMENTS, inspect_bytes
+        if not isinstance(images, (tuple, list)) or len(images) > MAX_ATTACHMENTS:
+            raise EngineError('每次最多附上4張圖片。', 'invalid_input')
+        if images:
+            images = tuple(images)
+            for data in images:
+                check_running()
+                inspect_bytes(data)
         try:
-            return self._answer(payload, check_running)
+            return self._answer(payload, check_running, images) if images else self._answer(payload, check_running)
         except OSError:
             raise EngineError('無法讀寫本機推理暫存資料，請檢查磁碟空間與存取權限。', 'local_io') from None
 
-    def _answer(self, payload, check_running):
+    def _answer(self, payload, check_running, images=()):
         with answer_directory(self.workdir) as tmp:
             output = Path(tmp) / "answer.txt"
             # A seekable stdin file avoids a blocked parent-side pipe write when the
@@ -157,6 +168,19 @@ class CodexEngine:
                 source.seek(0)
                 check_running()
                 command = self.command(output)
+                if images:
+                    from .image_inputs import inspect_bytes
+                    if command[-1] != '-':
+                        raise EngineError('圖片引擎命令缺少標準輸入位置。', 'invalid_input')
+                    flags = []
+                    for position, data in enumerate(images, 1):
+                        check_running()
+                        extension = 'png' if inspect_bytes(data)['format'] == 'PNG' else 'jpg'
+                        target = Path(tmp) / f'image-{position:02}.{extension}'
+                        target.write_bytes(data)
+                        # Generated relative names avoid CLI comma splitting of original paths.
+                        flags.extend(['--image', str(target.relative_to(self.workdir))])
+                    command = command[:-1] + flags + ['--', '-']
                 check_running()
                 try:
                     process = subprocess.Popen(command, stdin=source,
@@ -224,14 +248,14 @@ class Assistant:
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
         return context
 
-    def ask(self, sid, question, cancel=None, *, draft=None):
-        return self._ask(sid, question, cancel, draft=draft)
+    def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):
+        return self._ask(sid, question, cancel, draft=draft, image_ids=image_ids)
 
     def retry(self, sid, cancel=None):
         target = answer_runs.retry_target(self.store, sid)
         return self._ask(sid, target['question'], cancel, retry=target)
 
-    def _ask(self, sid, question, cancel=None, retry=None, draft=None):
+    def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         if cancel and cancel.is_set():
             raise EngineError('已停止這次回答。', 'cancelled')
         question = question.strip()
@@ -239,16 +263,37 @@ class Assistant:
             raise ValueError("問題需為 1–16000 字。")
         command = parse_command(question)
         if command is not None and retry is None:
+            if image_ids:
+                raise ValueError('本機記憶指令不能同時附圖；請先取消圖片選取。')
             return handle_command(self.store, sid, question, command, cancel, draft=draft)
+        from .image_inputs import prepare, validate_metadata, GUIDANCE
+        historical = None
+        if retry:
+            with self.store.connect() as db:
+                saved = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?', (retry['id'], sid)).fetchone()
+                if saved is None:
+                    raise ValueError('原回答紀錄已不存在，沒有重試。')
+                previous = json.loads(saved[0])
+            historical = previous.get('image_inputs')
+            if historical is not None:
+                validate_metadata(historical)
+                image_ids = tuple(item['id'] for item in historical)
+        image_metadata, image_payloads = prepare(self.store, sid, image_ids, historical=historical)
+        if image_payloads and not callable(getattr(self.engine, 'answer_images', None)):
+            raise ValueError('目前引擎不支援圖片，沒有送出問題或忽略附件。')
         answer_runs.recover(self.store, sid)
         context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
+        if image_metadata:
+            context['image_inputs'] = image_metadata
+            context['image_input_guidance'] = GUIDANCE
         if retry:
             context['retry_of'] = {'run_id': retry['id'], 'previous_status': retry['status'], 'uses_current_references': True}
         run_id = uuid.uuid4().hex
         with answer_runs.lease(self.store, run_id):
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
-                answer = self.engine.answer(render_prompt(context), cancel)
+                answer = (self.engine.answer_images(render_prompt(context), image_payloads, cancel) if image_payloads
+                          else self.engine.answer(render_prompt(context), cancel))
                 if cancel and cancel.is_set():
                     raise EngineError('已停止這次回答。', 'cancelled')
                 checks = check_citations(answer, context['documents']['excerpts'])
@@ -261,4 +306,5 @@ class Assistant:
         return {"id": mid, "content": answer, "memory_ids": [m["id"] for m in context["memories"]],
                 "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]],
                 "document_count": len(context["documents"]["catalog"]), "citation_checks": checks,
-                'run_id': run_id, 'user_message_id': uid}
+                'run_id': run_id, 'user_message_id': uid,
+                **({'image_count': len(image_metadata)} if image_metadata else {})}

@@ -82,6 +82,9 @@ def begin(store, sid, run_id, question, context, retry=None, draft=None):
         db.execute('BEGIN IMMEDIATE')
         if db.execute("SELECT 1 FROM answer_runs WHERE session_id=? AND status='running'", (sid,)).fetchone():
             raise ValueError('目前對話已有尚未完成的回答流程，請先等候或停止。')
+        if 'image_inputs' in context:
+            from .image_inputs import check_references
+            check_references(db, sid, context['image_inputs'], historical=retry is not None)
         if retry:
             latest = db.execute('SELECT id,status,user_message_id FROM answer_runs WHERE session_id=? ORDER BY rowid DESC LIMIT 1', (sid,)).fetchone()
             message = db.execute('SELECT id,role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1', (sid,)).fetchone()
