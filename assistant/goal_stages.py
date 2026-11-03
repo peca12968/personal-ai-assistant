@@ -32,7 +32,7 @@ def activity(row):
                'date', 'start', 'end', 'days', 'calendar', 'excluded_dates',
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
-    fields = {'status', 'error', 'requested_ranges', 'exact', 'decimal', 'rounded',
+    fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
               'all_changes_in_page', 'page_content_complete', 'line_text_equal',
               'decoded_text_equal', 'byte_hash_equal', 'plan_id', 'report_sha256',
@@ -53,9 +53,17 @@ def activity(row):
                                      for excerpt in observation['excerpts']]
     if 'memories' in observation:
         outcome['selected_memory_count'] = len(observation['memories'])
-    return {'sequence': row['sequence'], 'tool': tool,
+    result = {'sequence': row['sequence'], 'tool': tool,
             'purpose': bounded(action['note'], 240), 'request': bounded(requested),
             'observation_metadata': bounded(outcome)}
+    failed = observation.get('failed_action')
+    if tool == 'invalid' and isinstance(failed, dict):
+        # Keep failed attempts explicitly separate from executed results. In
+        # particular, never hand off rejected file bodies/reports/CSV specs.
+        result['failed_attempt'] = {'tool': failed['tool'],
+            'purpose': bounded(failed['note'], 240),
+            'request': bounded({k:v for k,v in failed['args'].items() if k in allowed})}
+    return result
 
 
 def checkpoint(db, row):

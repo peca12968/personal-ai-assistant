@@ -34,6 +34,7 @@ CHECKS.append(('scripts/evaluate_understanding.py', '--suite', 'evals/topic_cont
 CHECKS.append(('scripts/evaluate_goal_drafts.py',))
 CHECKS.append(('scripts/evaluate_goal_replies.py',))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
+CHECKS.append(('scripts/evaluate_tool_recovery.py',))
 
 
 def git(root, *args):

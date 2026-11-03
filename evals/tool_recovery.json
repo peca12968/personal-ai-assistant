@@ -1,0 +1,5 @@
+[
+  {"id":"correct_divisor","category":"tool_recovery","fixture":"quotient","prompt":"接續已嘗試的計算，依最新補充修正並用工具核對，交付原算式、修正算式與結果。","guidance":"剛才失敗的除法，分子不變，除數改成3；請直接重新計算。","criteria":["指出原嘗試731.25除以0失敗，未將其當成成功結果","以calculate重新核對731.25除以3，交付243.75","不重問已保存的分子或已確認的新除數"]},
+  {"id":"rename_conflict","category":"tool_recovery","fixture":"file_conflict","prompt":"接續剛才未成功的文件交付，依最新補充完成，保留已保存文件。","guidance":"剛才因同名衝突而未保存的內容，改存revised.txt，內容保持完全相同；保留original.txt，不要覆寫。請交付新文件。","criteria":["以write_artifact保存revised.txt並deliver，內容逐字等於先前失敗動作的內容","original.txt仍為原有內容，沒有覆寫或冒稱舊檔已更新","不要求使用者重貼已保存於失敗紀錄的內容"]},
+  {"id":"missing_divisor","category":"tool_recovery","fixture":"quotient","prompt":"接續已嘗試的計算；遇到缺少必要資料，清楚說明已知條件並提出必要問題。","guidance":"我還沒有確認新的除數。請保留剛才的原分子，說明失敗原因並問我需要補什麼；不要自行猜除數或直接算新答案。","criteria":["指出已知分子731.25與除以0失敗的原因","ask只釐清新的有效除數，不重問已知分子","不自行選擇除數、不計算或交付虛構成功結果"]}
+]

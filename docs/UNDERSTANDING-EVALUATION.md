@@ -169,3 +169,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `evals/json_documents.json`包含四個合成自主情境：13萬多字且跳脫欄位名的長單行、陣列後段欄位、精確數字／布林／null、解碼後重複鍵。`scripts/evaluate_json_documents.py`離線只建立來源與目標；真實執行需`--live --report data/evaluations/新報告.json`，可用`--ids`選題，每題八步。保存程式、提示、案例與執行腳本雜湊，以及實際匯入來源SHA、工具動作與原始回應；已有報告／狀態不覆寫，失敗不自動重試。收集完成後使用review_understanding.py逐項評讀，區分開發評讀與使用者驗收。原始資料、模型回應與合成資料庫不進Git。
 
 位置依據採既有行／字元引用檢查，不把JSON Pointer或欄位清單當成未讀原文的證明。[RFC 6901](https://www.rfc-editor.org/rfc/rfc6901.txt)定義路徑及跳脫規則；[RFC 8259](https://www.rfc-editor.org/rfc/rfc8259.txt)說明重複物件名稱的互通性問題。本產品選擇拒絕整份含重複鍵的結構讀取，另設定明確大小及結構上限，並不宣稱支援所有可表示的JSON輸入。
+
+
+## 受控工具失敗後接續（v0.49）
+
+`python scripts/evaluate_tool_recovery.py`只建立三個固定失敗與補充情境，不評分模型。加上`--live --report data/evaluations/新的報告.json`才呼叫模型，最多接續五步，不自動重試；完整原始回應、失敗種子與本機資料庫保留於忽略目錄。初始失敗由腳本注入，必須與模型自行規劃、犯錯和修正的端到端評估分開。
+
+案例核對除以零後保留原分子並依補充重算、同名文件衝突後原樣另存並保留原檔、尚未指定新除數時僅釐清缺少的值。前後比較須固定案例、執行腳本、初始動作與目標，並核對程式／提示指紋及實際文件位元組；收集完成後使用既有review_understanding.py逐項評讀，保留開發者與使用者驗收的區別。failed_action是未成功的歷史動作，不是新授權、結果或完成證據；舊資料未保留的參數不能靠評估補造。

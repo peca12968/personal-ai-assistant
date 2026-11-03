@@ -47,6 +47,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_drafts.py")
     run(sys.executable, "scripts/evaluate_goal_replies.py")
     run(sys.executable, "scripts/evaluate_json_documents.py")
+    run(sys.executable, "scripts/evaluate_tool_recovery.py")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_scope.json")
     run(sys.executable, "scripts/evaluate_tasks.py")
     run(sys.executable, "scripts/evaluate_workflows.py")
