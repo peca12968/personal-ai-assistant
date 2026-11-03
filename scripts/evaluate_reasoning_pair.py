@@ -19,6 +19,7 @@ from assistant.store import Store
 from scripts.evaluation_reports import strict_json
 from scripts.evaluate_understanding import fingerprint, save_report
 from scripts.reasoning_cases import CATEGORIES, make_cases
+from scripts.reasoning_challenge import make_challenge_cases
 
 INSTRUCTIONS='''請獨立解答以下六題原創推理題，所有必要條件都在題內。不要使用工具或外部資料。
 只輸出一個JSON物件，鍵為每題id，值為該題的最終答案字串。不得省略題目或增加其他鍵，不要解釋、推理過程或Markdown。
@@ -37,6 +38,12 @@ def sha(value):
 
 def public_prompt(cases):
     return INSTRUCTIONS+json.dumps([{'id':c['id'],'prompt':c['prompt']} for c in cases],ensure_ascii=False)
+
+
+def build_cases(seed, profile='baseline'):
+    if profile == 'baseline': return make_cases(seed)
+    if profile == 'challenge': return make_challenge_cases(seed)
+    raise ValueError('未知推理測驗題組。')
 
 
 def batches(cases):
@@ -89,8 +96,10 @@ def normalized(case,value):
         if any(not re.fullmatch('[A-Z]',p) for p in parts):raise ValueError('序列格式無效。')
         return tuple(parts)
     if case['category']=='spatial':
+        size=case.get('grid_size',5)
+        if type(size) is not int or size not in (5,7):raise ValueError('方格尺寸無效。')
         rows=[p.strip() for p in value.split('/')]
-        if len(rows)!=5 or any(not re.fullmatch('[01]{5}',p) for p in rows):raise ValueError('方格格式無效。')
+        if len(rows)!=size or any(not re.fullmatch('[01]{'+str(size)+'}',p) for p in rows):raise ValueError('方格格式無效。')
         return tuple(rows)
     if value not in ('必真','必假','不確定'):raise ValueError('邏輯選項無效。')
     return value
@@ -129,6 +138,9 @@ def frozen(cases,protocol):
     base['protocol_sha256']=sha(encoded(protocol))
     base['runner_sha256']=sha(Path(__file__).read_bytes())
     base['generator_sha256']=sha((ROOT/'scripts/reasoning_cases.py').read_bytes())
+    base['challenge_generator_sha256']=sha((ROOT/'scripts/reasoning_challenge.py').read_bytes())
+    base['evaluation_support_sha256']=sha(b''.join((ROOT/'scripts'/name).read_bytes()
+        for name in ('evaluate_understanding.py','evaluation_reports.py')))
     return base
 
 
@@ -190,6 +202,7 @@ def summarize(report,cases):
 def write_summary(folder,report,cases):
     summary=summarize(report,cases);save_report(folder/'summary.json',summary)
     p=report['protocol'];lines=['# 同模型推理對照測驗','',
+        f'題組：{p.get("profile","baseline")}；seed：{p["seed"]}。不同題組的分數不可直接視為改版前後進步幅度。',
         '這是36題原創文字推理測驗，不是經人類常模校準的IQ量表，不能換算人類智商。',
         f'模型指定：{p["model"]}；推理設定：{p["effort"]}；每邊{p["repeats"]}輪；每次六題、上限{p["timeout_seconds"]}秒。',
         f'收集狀態：{report["status"]}。私人資料未使用；助理採全新資料庫及direct風格。',
@@ -218,13 +231,15 @@ def main():
     parser.add_argument('--model',default='gpt-6.1-sol')
     parser.add_argument('--effort',choices=('low','medium','high'),default='medium')
     parser.add_argument('--seed',type=int,default=20261103)
+    parser.add_argument('--profile',choices=('baseline','challenge'),default='baseline')
     args=parser.parse_args()
-    cases=make_cases(args.seed)
+    cases=build_cases(args.seed,args.profile)
     if not args.live:
         for case in cases:normalized(case,case['answer'])
-        print('Validated 36 generated tasks; no model calls, no IQ score.');return
+        print(f'Validated 36 {args.profile} tasks; no model calls, no IQ score.');return
     folder=args.out.resolve();folder.mkdir(parents=True,exist_ok=False)
-    protocol={'model':args.model,'effort':args.effort,'seed':args.seed,'repeats':2,'timeout_seconds':240,
+    protocol={'model':args.model,'effort':args.effort,'seed':args.seed,'profile':args.profile,
+              'repeats':2,'timeout_seconds':480 if args.profile=='challenge' else 240,
               'batch_size':6,'parallel_arms':True,'tools':'disabled','private_memory':False,
               'assistant_profile':{**DEFAULTS,'tone':'direct'},'instructions':INSTRUCTIONS,
               'cli_version':subprocess.check_output([find_codex(),'--version'],text=True).strip()}
