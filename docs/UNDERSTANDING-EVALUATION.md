@@ -453,3 +453,19 @@ prepare_case將歷史訊息、填充對話與長文合併至一次SQLite交易�
 原與新版第二階段使用位元組相同的本機probe.py，已核對原始輸入套件、測試器／驗證器及每題固定標準；其目標文字本來就是上一階段的模型產物，因此前後不同。不能套用同一原始prompt比較器或聲稱兩次下游輸入完全相同。真實草稿及衍生execution-suite含模型輸出與本機路徑，全部留data/evaluations/draft-inputs-v087，不上傳GitHub；庫內只放合成輸入與固定標準。
 
 實際交付四題由2通過／2未過變4通過：原程式與採購案例把「本次只整理」留在目標，開始後仍不解題；新版程式交付負零切片原因、最小修改與兩個測試，沒有執行或改檔；採購透過精確算術得到140、60及含運225。兩項控制維持。真正只做計畫的草稿前後均保留三步唯讀、不判根因或提供修復碼。全部為development_agent逐項評讀，非使用者或獨立驗收、非IQ增幅。
+
+## 可重複執行的草稿接續收集器（2026-11-04，產品仍v0.87）
+
+`scripts/evaluate_goal_handoff.py`把前節本機探查整理為庫內可重複使用的流程。預設離線建立合成背景並核對兩組案例ID與標準，沒有模型或新目標。真實測量使用新的輸出目錄：
+
+```powershell
+.venv\Scripts\python.exe scripts/evaluate_goal_handoff.py --live --out data/evaluations/handoff-run-001
+```
+
+可用`--suite`及`--checks`選取另一組相同格式合成輸入與接續評讀標準，ID須精確涵蓋、不重複。輸出包含原input-suite、handoff-checks、drafts.json、衍生goals-suite.json、goals.json及manifest.json。草稿與工作各有獨立合成SQLite、模型目錄及實際請求側錄。第一階段全部停止後，只有成功且含目標的草稿進入第二階段；使用唯讀SQLite備份到新庫，原庫不保存目標。目標建立仍核對原草稿來源，不帶入聊天／歷史／CSV／文件交付權限。
+
+manifest區分draft_failed、draft_needs_input、goal_failed及goal_collected；collection_status是收集狀態，絕不等於任務成功。第一階段部分失敗不會冒充第二階段答案，其他可用草稿仍可被測量；程序以非零退出並保留完整狀態。來源或報告途中改變會停止追加舊指紋結果，保留實際呼叫側錄，不重試或接續舊資料夾。側錄不能證明雲端呼叫已停止。
+
+每個目標fixture綁定原案例與完整草稿row，工作報告另綁定第一報告原始位元組／canonical JSON、固定標準及共同產品／收集器指紋。`validate_links`核對兩階段內部一致性，應傳入未追加評讀的原始drafts.json；先以保存的原套件做verify_suite。原始報告保持不變，評讀另存。分階段報告可用既有檢視器載入；同prompt比較器仍不能直接用於前後不同的衍生目標。這些是結構與來源一致性核對，不是模型／評讀者身份認證。
+
+此新收集協定的首輪實測四草稿及四接續案例均通過開發評讀，共4次草稿及5次工作模型呼叫。這驗證收集器能重現已知工作流程，沒有產品提示調整、前後能力增幅或新增IQ評分。原始資料限本機data/evaluations/handoff-runner-v087。
