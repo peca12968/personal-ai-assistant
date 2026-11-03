@@ -41,6 +41,7 @@ jobs:
       - run: python scripts/evaluate_understanding.py --suite evals/quote_continuity.json
       - run: python scripts/evaluate_understanding.py --suite evals/recent_budget.json
       - run: python scripts/evaluate_csv_membership.py
+      - run: python scripts/evaluate_csv_membership.py --suite evals/csv_median.json
       - run: python scripts/evaluate_goal_status.py
       - run: python scripts/evaluate_goal_discussion.py
       - run: python scripts/evaluate_reasoning_pair.py --profile baseline --out data/evaluations/offline-reasoning-baseline

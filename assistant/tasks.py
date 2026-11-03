@@ -162,6 +162,9 @@ def export_task(store, sid, task_id, destination):
     expected = task['result']['report_sha256']
     if hashlib.sha256(payload).hexdigest() != expected:
         raise ValueError('儲存的報告指紋不符，未匯出。')
+    from .csv_statistics import valid_median_report
+    if not valid_median_report(task['result']['report']):
+        raise ValueError('儲存的中位數格式或規則不一致，未匯出。')
     destination = Path(destination)
     if destination.suffix.lower() != '.json':
         raise ValueError('工作報告請使用 .json 副檔名。')
@@ -181,7 +184,7 @@ def export_task(store, sid, task_id, destination):
 
 
 def task_context(store, sid, question):
-    if not re.search(r'工作|任務|彙總|加總|平均|報告|結果|完成|匯出|CSV|\b(?:task|sum|mean|average|summary|result|report|export|finished|done)\b', question, re.I):
+    if not re.search(r'工作|任務|彙總|加總|平均|中位數|報告|結果|完成|匯出|CSV|\b(?:task|sum|mean|median|average|summary|result|report|export|finished|done)\b', question, re.I):
         return []
     summaries = []
     for row in store.tasks(sid)[:3]:
@@ -193,13 +196,14 @@ def task_context(store, sid, question):
             item['failure_guidance'] = guidance
         if task['status'] == 'succeeded' and task['result']:
             report = task['result']['report']
+            from .csv_statistics import MEDIAN_FIELDS, valid_median_report
             mean_fields = ('mean', 'mean_rounded', 'returned_mean', 'returned_mean_rounded', 'returned_row_count', 'mean_policy')
             invalid_mean = task['plan'].get('version') == 3 and (
                 not all(key in report for key in mean_fields) or
                 report.get('verification', {}).get('mean_basis_matches') is not True or
                 report.get('mean_policy') != task['plan'].get('mean_policy'))
             if (hashlib.sha256(canonical(report)).hexdigest() != task['result']['report_sha256'] or
-                invalid_mean or not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
+                invalid_mean or not valid_median_report(report) or not all(report.get('verification', {}).get(key) is True for key in ('row_count_matches', 'group_total_matches', 'source_unchanged'))):
                 item['status'] = 'unverified'
             else:
                 item.update({key: report[key] for key in ('row_count', 'group_count', 'total', 'group_column', 'value_column', 'source_sha256', 'verification')})
@@ -208,6 +212,8 @@ def task_context(store, sid, question):
                                 'returned_group_count', 'selection_limited', 'returned_total')})
                     if task['plan'].get('version') == 3:
                         item.update({key: report[key] for key in mean_fields})
+                        if report['workflow'].get('include_median'):
+                            item.update({key:report[key] for key in MEDIAN_FIELDS})
                 item['groups_preview'] = [{**group, 'group': group['group'][:200], 'label_truncated': len(group['group']) > 200} for group in report['groups'][:10]]
                 item['groups_truncated'] = len(report['groups']) > 10
                 item['report_sha256'] = task['result']['report_sha256']
