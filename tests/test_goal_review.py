@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import contextlib
 import io
 import json
@@ -49,7 +50,7 @@ class GoalReviewTests(unittest.TestCase):
         self.assertEqual(r.snapshot(reopened)['visible_count'], 0)
         self.assertEqual(r.snapshot(reopened)['hidden_count'], 1)
         self.assertEqual(a.get_goal(reopened, self.sid, gid), before)
-        a.reply(reopened, self.sid, gid, '11月1日')
+        a.reply(reopened, self.sid, gid, '11月1日', expected_fingerprint=reply_snapshot(reopened, self.sid, gid)["fingerprint"])
         self.assertEqual(r.snapshot(reopened)['visible_count'], 1)
         self.assertEqual(self.row(gid)['next_action'], 'resume')
 

@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import contextlib
 import io
 import json
@@ -77,7 +78,7 @@ class GoalGuidanceTests(unittest.TestCase):
         self.save('另外要求先列總額。')
         result=a.get_goal(self.store,self.sid,self.gid)
         self.assertEqual((result['status'],result['question']),('needs_input','哪一天生效？'))
-        a.reply(self.store,self.sid,self.gid,'11月1日')
+        a.reply(self.store,self.sid,self.gid,'11月1日', expected_fingerprint=reply_snapshot(self.store, self.sid, self.gid)["fingerprint"])
         result=a.get_goal(self.store,self.sid,self.gid)
         self.assertIn('先列總額',result['notes']);self.assertIn('11月1日',result['notes'])
         a.update(self.store,self.gid,'failed',notice='原錯誤記錄')

@@ -109,10 +109,7 @@ class AutonomousWindow:
         self.continue_start = ttk.Button(continuous_controls, text='開始持續執行', command=lambda: self.begin(continuous_mode=True))
         self.continue_start.pack(side='left', padx=8)
         self.layout.wrapped_label(body, text='持續執行只處理所選目標，不需逐輪按接續。完成成果、需要補充、來源改變、連續三次工具錯誤或達上限即停止；目標累計仍最多32步。關閉程式會要求停止，重開不會自行啟動。', padding=12).pack(fill='x')
-        ttk.Label(body, text='需要補充時，在這裡回答：').pack(anchor='w', padx=12)
-        self.answer = tk.Text(body, height=2, wrap='word')
-        self.answer.pack(fill='x', padx=12)
-        self.reply = ttk.Button(body, text='保存補充', command=self.add_reply)
+        self.reply = ttk.Button(body, text='回答目前問題', command=self.add_reply, state='disabled')
         self.reply.pack(anchor='w', padx=12, pady=6)
         self.guidance = ttk.Button(body, text='補充／更正此目標', command=self.add_guidance, state='disabled')
         self.guidance.pack(anchor='w', padx=12, pady=6)
@@ -366,23 +363,42 @@ class AutonomousWindow:
     def add_reply(self):
         if self.busy:
             return
-        try:
-            autonomy.reply(self.store, self.sid, self.selected_id(), self.answer.get('1.0', 'end'))
-            self.answer.delete('1.0', 'end')
-            self.refresh()
-        except Exception as exc:
-            messagebox.showerror('無法保存補充', str(exc), parent=self.window)
+        from .goal_reply_ui import GoalReplyWindow
+        return GoalReplyWindow(self.window, self.store, self.sid, self.selected_id(),
+                               prepare_resume=self.reply_budget, saved=self.reply_saved)
 
-    def begin(self, *, continuous_mode=False):
+    def reply_budget(self):
+        if self.busy:
+            raise ValueError('原視窗仍在工作，請等候結束或先只保存回答。')
+        budget = int(self.budget.get())
+        if not 1 <= budget <= 12:
+            raise ValueError('原視窗的一般本輪步數需為1到12。')
+        return budget
+
+    def reply_saved(self, gid, budget):
+        self.refresh(gid)
+        if budget is not None:
+            try:
+                self.begin(goal_id=gid, step_budget=budget)
+            except Exception as exc:
+                # No worker was started if Thread.start fails. Let the usual
+                # event handler restore controls; the committed answer remains.
+                self.busy = False
+                self.events.put(('error', '回答已保存，但接續未啟動：' + str(exc)))
+                raise
+            return self.busy and self.active_goal == gid
+        return False
+
+    def begin(self, *, continuous_mode=False, goal_id=None, step_budget=None):
         if self.busy:
             return
         try:
-            gid = self.selected_id()
+            gid = goal_id or self.selected_id()
             if continuous_mode:
                 budget, seconds = int(self.continuous_steps.get()), int(self.continuous_minutes.get()) * 60
                 continuous.validate_limits(budget, seconds)
             else:
-                budget = int(self.budget.get())
+                budget = int(self.budget.get()) if step_budget is None else step_budget
                 if not 1 <= budget <= 12:
                     raise ValueError('每輪步數需為1到12。')
         except ValueError as exc:

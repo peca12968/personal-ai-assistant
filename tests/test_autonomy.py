@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import json
 import subprocess
 import sys
@@ -67,15 +68,15 @@ class AutonomyTests(unittest.TestCase):
         self.assertEqual(a.run_goal(self.store, self.sid, gid, None), result)
         other = self.store.new_session()
         with self.assertRaises(ValueError):
-            a.reply(self.store, other, gid, '明天')
+            a.reply(self.store, other, gid, '明天', expected_fingerprint=reply_snapshot(self.store, self.sid, gid)["fingerprint"])
         self.assertEqual(a.goals(self.store, other), [])
-        a.reply(self.store, self.sid, gid, '明天下午')
+        a.reply(self.store, self.sid, gid, '明天下午', expected_fingerprint=reply_snapshot(self.store, self.sid, gid)["fingerprint"])
         engine = ScriptedEngine(action('finish', report='明天下午的會議準備清單。'))
         result = a.run_goal(self.store, self.sid, gid, engine)
         self.assertIn('明天下午', engine.prompts[0])
         self.assertEqual(len(result['steps']), 2)
         with self.assertRaises(ValueError):
-            a.reply(self.store, self.sid, gid, '不應覆寫成果')
+            a.reply(self.store, self.sid, gid, '不應覆寫成果', expected_fingerprint=reply_snapshot(self.store, self.sid, gid)["fingerprint"])
 
     def test_unread_citation_rejected_then_repaired(self):
         did = self.attach('已確認事項')

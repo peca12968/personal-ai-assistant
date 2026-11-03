@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import json
 import sqlite3
 import subprocess
@@ -25,7 +26,7 @@ class GoalStageTests(unittest.TestCase):
     def parent(self, report='方案甲的工作成果'):
         gid = a.create_goal(self.store, self.sid, '確認方案')
         a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='採用哪一個方案？')))
-        a.reply(self.store, self.sid, gid, '已確認採用方案甲。')
+        a.reply(self.store, self.sid, gid, '已確認採用方案甲。', expected_fingerprint=reply_snapshot(self.store, self.sid, gid)["fingerprint"])
         a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('finish', report=report)))
         return gid
 

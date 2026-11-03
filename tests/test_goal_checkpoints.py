@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import json
 import subprocess
 import sys
@@ -55,7 +56,7 @@ class GoalCheckpointTests(unittest.TestCase):
         child = a.create_goal(self.store, self.sid, '確認需求後繼續', parent_id=parent)
         before = a.get_goal(self.store, self.sid, child)['previous_stage']
         self.assertEqual(before['checkpoint']['question'], '需要多少份？')
-        a.reply(self.store, self.sid, parent, '三份，保留原件。')
+        a.reply(self.store, self.sid, parent, '三份，保留原件。', expected_fingerprint=reply_snapshot(self.store, self.sid, parent)["fingerprint"])
         a.update(self.store, parent, 'failed', notice='引擎中斷')
         newer = a.create_goal(self.store, self.sid, '繼續', parent_id=parent)
         saved = a.get_goal(self.store, self.sid, newer)['previous_stage']

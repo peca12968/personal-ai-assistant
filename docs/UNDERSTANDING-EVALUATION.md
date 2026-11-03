@@ -149,3 +149,9 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 本輪兩次收集的四題均符合開發標準；沒有將助理建議或引文當成已確認操作，未決工作保留問題，無法直接處理的PDF／寄信需求保留完整範圍並指出缺口。另把最終真實費用草稿明確保存為pending目標，不帶額外聊天背景或CSV／檔案權限；開始後三次計算得到720、900與180，再交付文字成果。這驗證此草稿可獨立接續該任務，不能代表任意任務都可完成。
 
 `evals/product_help.json` 現為十題，新增conversation_goal_draft。舊說明與首輪新說明均保留未全通過的評讀；補清楚三種權限選項不會自動選取後，最終答覆符合四項標準。所有真實報告、原話、實際草稿及流程記錄只在忽略的 `data/evaluations/goal-draft-v044`，與最終來源／提示指紋對照；這是開發評讀，不是使用者或獨立人類驗收。
+
+## 自主問題回答與接續（v0.45）
+
+`evals/goal_replies.json`保存四個合成情境：補充期間、最新人數更正、未採用的引文選項、仍未決定。`python scripts/evaluate_goal_replies.py`只核對格式與建立來源，不呼叫模型。實際評估使用`--live --report data/evaluations/指定新檔.json`，每題先讓模型提問、明確保存固定的使用者回答，再啟動同一目標；保存本身不呼叫模型。報告保存兩階段、原問題、使用者回答、工具步驟、原始回應與固定來源指紋，另保留合成資料庫。已有報告／狀態目錄不覆寫，失敗不自動重試。全部完成後以`review_understanding.py`記錄逐項開發評讀；`human_grade`仍空白，不能當成獨立驗收或通用理解分數。發布、CI及自我改碼檢查包含離線來源核對。
+
+`evals/product_help.json`新增第十一題，核對固定問題視窗、保存與接續差別、過期回答及未保存文字的實際行為。真實資料與報告只存忽略的本機資料夾。

@@ -141,17 +141,9 @@ def update(store, gid, status, *, notice='', question='', result=None):
             db.execute('UPDATE autonomous_goals SET result=? WHERE id=?', (result, gid))
 
 
-def reply(store, sid, gid, answer):
-    answer = text(answer, 4000)
-    with lease(store, gid):
-        goal = get_goal(store, sid, gid)
-        if goal['status'] != 'needs_input':
-            raise ValueError('此目標目前沒有等待補充的問題。')
-        notes = goal['notes'] + '\n問題：' + goal['question'] + '\n使用者補充：' + answer
-        if len(notes) > 12000:
-            raise ValueError('補充內容已達上限，請建立下一階段目標。')
-        with store.connect() as db:
-            db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=?", (notes, gid))
+def reply(store, sid, gid, answer, *, expected_fingerprint):
+    from .goal_replies import save
+    return save(store, sid, gid, answer, expected_fingerprint=expected_fingerprint)
 
 
 def validate_action(value):

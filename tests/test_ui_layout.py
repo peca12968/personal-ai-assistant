@@ -746,7 +746,11 @@ class FormGeometryTests(unittest.TestCase):
             gid=autonomy.create_goal(store,sid,'計算10人的費用')
             view=AutonomousWindow(self.root,store,sid,None);layout=self.allocate(view)
             view.objective.insert('1.0','另一份尚未保存的目標')
-            view.answer.insert('1.0','尚未送出的回答')
+            reply_gid=autonomy.create_goal(store,sid,'另一個等待回答的目標')
+            autonomy.update(store,reply_gid,'needs_input',question='需要幾份？')
+            view.refresh(reply_gid)
+            reply_editor=view.add_reply();reply_editor.window.withdraw()
+            reply_editor.content.insert('1.0','尚未送出的回答')
             view.refresh(gid);self.assert_reachable(layout,view.guidance)
             editor=view.add_guidance();editor_layout=self.allocate(editor)
             other=GoalGuidanceWindow(self.root,store,sid,gid);other.window.withdraw()
@@ -764,11 +768,23 @@ class FormGeometryTests(unittest.TestCase):
             self.assertEqual(goal['status'],'pending');self.assertEqual(goal['steps'],[])
             self.assertIn('12人',goal['notes']);self.assertIn('先給總額',goal['notes'])
             self.assertEqual(view.objective.get('1.0','end').strip(),'另一份尚未保存的目標')
-            self.assertEqual(view.answer.get('1.0','end').strip(),'尚未送出的回答')
+            self.assertEqual(reply_editor.content.get('1.0','end').strip(),'尚未送出的回答')
             view.busy=True;view.select();self.assertEqual(str(view.guidance['state']),'disabled')
             view.busy=False;autonomy.update(store,gid,'report_ready',result='結果')
             view.refresh(gid);self.assertEqual(str(view.guidance['state']),'disabled')
             editor.reload();self.assertEqual(str(editor.save_button['state']),'disabled')
+
+    def test_goal_reply_editor_exposes_fixed_question_and_reachable_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');sid=store.new_session()
+            gid=autonomy.create_goal(store,sid,'核對人數')
+            autonomy.update(store,gid,'needs_input',question='有幾人？')
+            view=AutonomousWindow(self.root,store,sid,None);self.allocate(view)
+            view.refresh(gid);editor=view.add_reply();layout=self.allocate(editor)
+            self.assertIn('有幾人？',editor.context.get('1.0','end'))
+            for widget in (editor.content,editor.save_button,editor.resume_button,editor.reload_button):
+                self.assert_reachable(layout,widget)
+            self.assertEqual(str(editor.resume_button['state']),'normal')
 
     def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
         import threading

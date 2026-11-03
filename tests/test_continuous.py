@@ -1,3 +1,4 @@
+from assistant.goal_replies import snapshot as reply_snapshot
 import contextlib
 import io
 import json
@@ -59,7 +60,7 @@ class ContinuousTests(unittest.TestCase):
         result = self.run_goal(action('ask', question='請提供日期。'), FINISH)
         self.assertEqual(result['continuous_runs'][0]['reason'], 'needs_input')
         self.assertEqual(self.run_goal(), result)
-        a.reply(self.store, self.sid, self.gid, '十一月一日')
+        a.reply(self.store, self.sid, self.gid, '十一月一日', expected_fingerprint=reply_snapshot(self.store, self.sid, self.gid)["fingerprint"])
         self.assertEqual(self.run_goal(FINISH)['status'], 'report_ready')
 
     def test_deadline_stops_pending_model_and_cannot_execute_late_action(self):
