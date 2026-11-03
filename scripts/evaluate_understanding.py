@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from assistant.engine import Assistant, CodexEngine, render_prompt
+from scripts.evaluation_reports import index_report, load_json
 from assistant.store import Store
 from assistant.companion_profile import get_profile, reset_profile, save_profile, validate as validate_profile
 
@@ -83,10 +84,12 @@ def fingerprint(suite_path=None):
 
 
 def load_report(path, signature, ids, resume):
+    index_report({'case_ids': ids, 'results': []})
     if path.exists():
         if not resume:
             raise ValueError('報告已存在；請使用新路徑或 --resume，不會覆寫結果。')
-        report = json.loads(path.read_text(encoding='utf-8'))
+        report = load_json(path)
+        index_report(report)
         if report.get('fingerprint') != signature or report.get('case_ids') != ids:
             raise ValueError('來源、提示或案例選取已改變，不能混入同一份報告。')
         seen = [row['id'] for row in report['results']]

@@ -160,18 +160,18 @@ class UnderstandingEvaluationTests(unittest.TestCase):
         self.assertEqual(summarize(report)['latest_reviewers'], ['user'])
 
     def test_invalid_review_batch_does_not_partially_update(self):
-        report = {'case_ids': ['one'], 'results': [{'id': 'one', 'category': 'test', 'criteria': ['a']}]}
+        report = {'case_ids': ['one'], 'results': [{'id': 'one', 'category': 'test', 'answer': '合成答案', 'criteria': ['a']}]}
         with self.assertRaises(ValueError):
             apply_reviews(report, [{'id': 'one', 'criteria_pass': [True], 'note': '核對'},
                                    {'id': 'missing', 'criteria_pass': [True], 'note': '核對'}], 'development_agent')
         self.assertNotIn('reviews', report['results'][0])
 
     def test_comparison_keeps_unreviewed_cases_pending_and_rejects_other_suite(self):
-        report = {'fingerprint': {'suite_sha256': 'same'}, 'case_ids': ['one'],
-                  'results': [{'id': 'one', 'category': 'test', 'criteria': ['a']}]}
+        report = {'fingerprint': {'suite_sha256': 'a' * 64}, 'case_ids': ['one'],
+                  'results': [{'id': 'one', 'category': 'test', 'answer': '合成答案', 'criteria': ['a']}]}
         self.assertEqual(compare(report, report)['pending_ids'], ['one'])
         with self.assertRaises(ValueError):
-            compare(report, {**report, 'fingerprint': {'suite_sha256': 'different'}})
+            compare(report, {**report, 'fingerprint': {'suite_sha256': 'b' * 64}})
 
 
 if __name__ == '__main__':
