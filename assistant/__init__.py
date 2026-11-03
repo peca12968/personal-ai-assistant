@@ -1,3 +1,3 @@
 """Personal AI Assistant: local memory, accountable answers."""
 
-__version__ = "0.76.0"
+__version__ = "0.76.1"

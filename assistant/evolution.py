@@ -22,7 +22,12 @@ from .acceptance import compare, grade, strict_json, validate_suite
 # The model cannot edit this controller, publishing, storage, tests or credentials.
 EDITABLE = ('assistant/communication.py', 'assistant/context.py',
             'assistant/retrieval.py', 'prompts/communication.txt')
-CHECKS = [('-m', 'unittest', 'discover', '-s', 'tests', '-v')] + [
+FULL_TEST_CHECK = ('-m', 'unittest', 'discover', '-s', 'tests', '-v')
+CHECK_TIMEOUT_SECONDS = 180
+FULL_TEST_TIMEOUT_SECONDS = 600
+ACCEPTANCE_TIMEOUT_SECONDS = 60
+PUBLICATION_TIMEOUT_SECONDS = 900
+CHECKS = [FULL_TEST_CHECK] + [
     ('scripts/' + name + '.py',) for name in
     ('evaluate', 'evaluate_context', 'evaluate_documents', 'evaluate_search',
      'evaluate_understanding', 'evaluate_tasks', 'evaluate_workflows', 'evaluate_memory_commands', 'evaluate_answer_runs')]
@@ -88,7 +93,19 @@ def parse_proposal(raw, selected):
     return files
 
 
-def run_checked(command, cwd, log, cancel=None, timeout=180):
+def execution_limits():
+    """Fresh, host-controlled limits recorded for each new revision run."""
+    return {'full_test_seconds': FULL_TEST_TIMEOUT_SECONDS,
+            'check_seconds': CHECK_TIMEOUT_SECONDS,
+            'acceptance_seconds': ACCEPTANCE_TIMEOUT_SECONDS,
+            'publication_seconds': PUBLICATION_TIMEOUT_SECONDS}
+
+
+def run_checked(command, cwd, log, cancel=None, timeout=CHECK_TIMEOUT_SECONDS):
+    if type(timeout) not in (int, float) or not 0 < timeout <= PUBLICATION_TIMEOUT_SECONDS:
+        raise ValueError('驗證或發布時限需為正數，且不得超過900秒。')
+    if cancel and cancel.is_set():
+        raise EngineError('自我改進已停止，尚未套用的變更保留於本機紀錄。', 'cancelled')
     env = os.environ.copy()
     env.pop('PYTHONPATH', None)
     env['PYTHONIOENCODING'] = 'utf-8'
@@ -101,9 +118,9 @@ def run_checked(command, cwd, log, cancel=None, timeout=180):
         try:
             while process.poll() is None:
                 if cancel and cancel.is_set():
-                    raise EngineError('自我改進已停止，尚未套用的變更保留於本機紀錄。')
+                    raise EngineError('自我改進已停止，尚未套用的變更保留於本機紀錄。', 'cancelled')
                 if time.monotonic() >= deadline:
-                    raise EngineError('驗證或發布逾時；請查看本機紀錄。')
+                    raise EngineError(f'驗證或發布逾時（上限{timeout:g}秒）；請查看本機紀錄。', 'validation_timeout')
                 time.sleep(.1)
             if process.returncode:
                 raise ValueError('驗證或發布失敗，詳細紀錄：' + str(log))
@@ -155,8 +172,10 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
         folder = state_dir / run_id
         candidate = folder / 'candidate'
         candidate.mkdir(parents=True)
+        limits = execution_limits()
         report = {'id': run_id, 'goal': goal.strip(), 'base_commit': baseline,
                   'selected': selected, 'status': 'preparing', 'checks': [], 'directory': str(folder),
+                  'execution_limits': dict(limits),
                   'acceptance': {'status': 'pending' if suite else 'not_provided'},
                   'holdout': {'status': 'pending' if withheld else 'not_provided'}}
 
@@ -205,7 +224,8 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             observed_path = withheld_path if held_out else suite_path
             output = folder / (phase + '-observations.json')
             run_checked([sys.executable, 'scripts/observe_acceptance.py', '--suite', str(observed_path),
-                         '--output', str(output)], candidate, folder / (phase + '-acceptance.log'), cancel, timeout=60)
+                         '--output', str(output)], candidate, folder / (phase + '-acceptance.log'), cancel,
+                        timeout=limits['acceptance_seconds'])
             unchanged_suites()
             with output.open('rb') as stream:
                 raw = stream.read(2_000_001)
@@ -258,8 +278,9 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
             (candidate / name).write_bytes(content)
         save('testing')
         for index, command in enumerate(CHECKS):
-            run_checked([sys.executable, *command], candidate, folder / f'check-{index}.log', cancel)
-            report['checks'].append({'command': list(command), 'passed': True})
+            timeout = limits['full_test_seconds'] if tuple(command) == FULL_TEST_CHECK else limits['check_seconds']
+            run_checked([sys.executable, *command], candidate, folder / f'check-{index}.log', cancel, timeout=timeout)
+            report['checks'].append({'command': list(command), 'passed': True, 'timeout_seconds': timeout})
             save('testing')
         if suite:
             save('acceptance_testing')
@@ -309,7 +330,7 @@ def improve(goal, selected=None, *, root=ROOT, engine=None, cancel=None, progres
         for name in edits:
             command.extend(['--expected-file', name])
             command.extend(['--expected-sha256', name + '=' + digest(edits[name])])
-        run_checked(command, root, folder / 'publish.log', timeout=300)
+        run_checked(command, root, folder / 'publish.log', timeout=limits['publication_seconds'])
         report['commit'] = git(root, 'rev-parse', 'HEAD')
         branch = git(root, 'branch', '--show-current')
         remote = git(root, 'ls-remote', 'origin', 'refs/heads/' + branch).split()[0]
@@ -350,10 +371,12 @@ def rollback(run_id, *, root=ROOT):
         if not names or names != set(report.get('files', {})) or not names.issubset(EDITABLE):
             raise ValueError('版本變更範圍與自我改進紀錄不符。')
         run_checked(['git', 'revert', '--no-edit', commit], root, folder / 'rollback.log')
-        report['rollback'] = {'status': 'reverted_unpublished', 'commit': git(root, 'rev-parse', 'HEAD')}
+        publication_timeout = execution_limits()['publication_seconds']
+        report['rollback'] = {'status': 'reverted_unpublished', 'commit': git(root, 'rev-parse', 'HEAD'),
+                              'publication_timeout_seconds': publication_timeout}
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         run_checked([sys.executable, str(root / 'scripts/publish.py'), '--message',
-                     'Revert self-improvement ' + run_id], root, folder / 'rollback-publish.log', timeout=300)
+                     'Revert self-improvement ' + run_id], root, folder / 'rollback-publish.log', timeout=publication_timeout)
         branch = git(root, 'branch', '--show-current')
         if git(root, 'ls-remote', 'origin', 'refs/heads/' + branch).split()[0] != report['rollback']['commit']:
             raise ValueError('回復已完成，但尚未確認遠端同步。')
