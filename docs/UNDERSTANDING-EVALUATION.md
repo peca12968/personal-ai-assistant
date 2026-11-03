@@ -409,3 +409,9 @@ expression_calculation.json固定三個案例與答案標準，沿用有逐步�
 number_rounding四個固定自主案例前後數字全正確。舊版透過精確算術加模型判斷規則，誠實承認未直接工具核對規則；新版前三題由round_number直接核對，三個新增工具標準fail→pass，未選規則詢問題pass→pass。步數3／3／2／1變3／6／2／3，不能宣稱效率、答案正確率或IQ提升。產品說明新3/4、舊2/4標準，皆fail：新版缺少技術參數名稱，功能解說正確。此固定標準比原功能問題具體，保留原評讀並記錄限制，不回改測量。
 
 原與新版四個collector均exit0後才分別評讀。所有評讀為development_agent，human_grade空白；固定suite及runner不變。逐筆核對實際請求／SQLite步驟、獨立Fraction四則與相鄰上下整數捨入參考，保留原值／差額／格式／是否恰半。報告及audit限忽略的data/evaluations/number-rounding-v074，未使用正式個人記憶或資料庫。
+
+## v0.75多期月份核對（2026-11-03）
+
+固定month_schedule四題與同一八步collector前後比較：12期31號clamp排程原版8筆正確後暫停，新版2步完整交付12筆日期與星期；一題fail→pass不代表原版追加步數後也無法完成。其餘三題前後均正確，分別6→2、3→2、4→2步，涵蓋負偏移／重複順序、嚴格同日不存在需問、零月固定月底。新版產品說明4標準通過；舊版對無批次規格的誠實說明保留。
+
+四個收集程序均確認exit0後才追加development_agent評讀，human_grade空白。獨立公曆日期／星期參考、唯讀SQLite保存步驟、實際request traces與最終來源指紋均核對；第一失敗筆次與無部分batch結果也核對。原始資料及audit限忽略的data/evaluations/month-schedule-v075，正式個人資料庫未使用。此為單次開發驗證，不是一般能力或IQ分數。

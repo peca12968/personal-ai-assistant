@@ -29,7 +29,7 @@ def activity(row):
     tool, args = action['tool'], action['args']
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
-               'date', 'start', 'end', 'days', 'months', 'day_policy', 'calendar', 'excluded_dates',
+               'date', 'start', 'end', 'days', 'months', 'offsets', 'day_policy', 'calendar', 'excluded_dates',
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames',
                'message_id', 'before', 'after', 'value', 'places', 'mode'}
     requested = {k: v for k, v in args.items() if k in allowed}
@@ -51,6 +51,8 @@ def activity(row):
                    'grouped','group_count','group_order','returned_group_count','all_groups_in_page',
                    'order_by','tie_breaker','top_n','selected_group_count','unselected_group_count',
                    'all_selected_groups_in_page','median_included','median_method'}
+    if tool == 'month_schedule':
+        fields |= {'anchor_date', 'offsets', 'day_policy', 'count', 'all_items_provided'}
     if tool == 'round_number':
         fields |= {'input_exact', 'places', 'mode', 'fixed_decimal', 'value_changed', 'is_tie', 'difference_exact'}
     if tool == 'date_math':
@@ -59,6 +61,8 @@ def activity(row):
                    'counted_days', 'calendar_days', 'calendar', 'holiday_source',
                    'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
+    if tool == 'month_schedule':
+        outcome['schedule_details_omitted'] = True
     if tool == 'calculate_expression':
         outcome.update({k:observation[k] for k in ('node_count','number_count','operation_count','max_depth',
                        'evaluation_order','all_calculations_provided') if k in observation})
