@@ -8,6 +8,7 @@ from assistant import autonomy as a, goal_conversation as gc, goal_drafts, memor
 from assistant.backup import create_backup, restore_backup
 from assistant.engine import Assistant
 from assistant.store import Store
+from scripts.evaluate_understanding import seed_history
 from test_autonomy import ScriptedEngine, action
 
 
@@ -22,7 +23,7 @@ class ConversationOpeningTests(unittest.TestCase):
             return gc.validate(gc.capture(db,self.sid),self.sid)
 
     def fill(self,count=230):
-        for i in range(count):self.store.add_message(self.sid,'user',f'背景討論{i}')
+        seed_history(self.store, self.sid, (('user', f'背景討論{i}') for i in range(count)))
 
     def test_opening_and_later_correction_reach_real_goal_and_draft_sources(self):
         text='採購8份，每份125元，整單運費40元；只試算、不付款。'

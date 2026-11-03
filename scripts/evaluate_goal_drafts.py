@@ -11,6 +11,13 @@ from assistant import goal_drafts
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
 from scripts.evaluate_understanding import validate_cases, prepare_case, fingerprint, load_report, save_report
+from scripts import evaluate_understanding as fixture_builder
+
+
+def signature(suite):
+    return {**fingerprint(suite),
+            'runner_sha256': fixture_builder.sha(Path(__file__).read_bytes()),
+            'fixture_builder_sha256': fixture_builder.sha(fixture_builder.RUNNER_PATH.read_bytes())}
 
 
 def main():
@@ -34,8 +41,8 @@ def main():
             return
         if not args.report:
             raise ValueError('真實整理需指定新報告路徑，請使用本機data/evaluations。')
-        signature = fingerprint(args.suite)
-        report = load_report(args.report, signature, [case['id'] for case in cases], False)
+        frozen = signature(args.suite)
+        report = load_report(args.report, frozen, [case['id'] for case in cases], False)
         report['mode'] = 'goal_draft'
         # Persist synthetic states for inspecting the exact generated source or
         # explicitly continuing a reviewed draft. Never reuse an old directory.
@@ -43,7 +50,7 @@ def main():
         folder.mkdir(parents=True, exist_ok=False)
         failed = False
         for index, case in enumerate(cases):
-            if signature != fingerprint(args.suite):
+            if frozen != signature(args.suite):
                 raise ValueError('來源或案例變更，停止收集。')
             path = folder/f'{index}.sqlite3'
             store = Store(path); sid = prepare_case(store, case)
@@ -56,7 +63,7 @@ def main():
             except (ValueError, EngineError) as exc:
                 failed = True
                 row.update(answer='', error=str(exc), source=source)
-            if signature != fingerprint(args.suite):
+            if frozen != signature(args.suite):
                 raise ValueError('來源或案例變更，本次結果未存入舊指紋。')
             report['results'].append(row)
             save_report(args.report, report)

@@ -48,6 +48,38 @@ def validate_cases(cases):
     return cases
 
 
+def seed_history(store, sid, rows):
+    """Seed synthetic history in one transaction, never a production chat send.
+
+    Match Store.add_message's row order and conditional title updates. Tests
+    compare this fixture-only SQL with that public method to detect drift.
+    Keep real SQLite constraints, timestamps and durability; failure rolls back
+    the whole batch. Callers must not use this for commit/lease/concurrency tests.
+    This stays in the fingerprinted fixture builder used by live collectors.
+    """
+    ids = []
+    with store.connect() as db:
+        for role, content in rows:
+            cur = db.execute('INSERT INTO messages(session_id,role,content) VALUES(?,?,?)',
+                             (sid, role, content))
+            ids.append(cur.lastrowid)
+            if role == 'user':
+                db.execute("UPDATE sessions SET title=? WHERE id=? AND title='新對話'",
+                           (content[:50], sid))
+    return ids
+
+
+def _history_rows(case):
+    for row in case.get('history', []):
+        yield row['role'], row['content']
+    for number in range(case.get('filler_pairs', 0)):
+        yield 'user', f'一般背景討論第 {number+1} 回。'
+        yield 'assistant', '收到這項背景。'
+    if case.get('long_message'):
+        yield 'user', ('長文開始。\n' + '一般背景。' * 1000
+                       + '\n復原代號：不可見-947。\n' + '其他背景。' * 1000 + '\n長文結束。')
+
+
 def prepare_case(store, case):
     sid = store.new_session()
     if 'prior_companion_profile' in case:
@@ -56,14 +88,7 @@ def prepare_case(store, case):
         store.remember(**memory)
     if case.get('brief'):
         store.save_session_brief(sid, **case['brief'])
-    for row in case.get('history', []):
-        store.add_message(sid, row['role'], row['content'])
-    for number in range(case.get('filler_pairs', 0)):
-        store.add_message(sid, 'user', f'一般背景討論第 {number+1} 回。')
-        store.add_message(sid, 'assistant', '收到這項背景。')
-    if case.get('long_message'):
-        text = '長文開始。\n' + '一般背景。' * 1000 + '\n復原代號：不可見-947。\n' + '其他背景。' * 1000 + '\n長文結束。'
-        store.add_message(sid, 'user', text)
+    seed_history(store, sid, _history_rows(case))
     if 'companion_profile' in case:
         save_profile(store, case['companion_profile'], expected_revision=get_profile(store)['revision'])
     elif case.get('reset_companion_profile'):

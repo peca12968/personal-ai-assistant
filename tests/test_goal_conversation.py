@@ -12,6 +12,7 @@ from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
+from scripts.evaluate_understanding import seed_history
 
 
 class GoalConversationTests(unittest.TestCase):
@@ -75,8 +76,7 @@ class GoalConversationTests(unittest.TestCase):
     def test_recent_budget_clipping_and_older_corrections_are_independently_bounded(self):
         ids = [self.message('更正：' + str(i) + 'c' * 1100) for i in range(8)]
         # Corrections stay available beyond the ordinary recent window and scan size.
-        for _ in range(220):
-            self.message('一般較早訊息')
+        seed_history(self.store, self.sid, (('user', '一般較早訊息') for _ in range(220)))
         for _ in range(20):
             self.message('最近長訊息' + 'x' * 3000, 'assistant')
         context = self.context(self.goal())

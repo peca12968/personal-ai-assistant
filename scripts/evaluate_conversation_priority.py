@@ -12,10 +12,12 @@ from assistant import autonomy
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
 from scripts.evaluate_understanding import validate_cases, prepare_case, fingerprint, load_report, save_report
+from scripts import evaluate_understanding as fixture_builder
 
 
 def signature(suite):
-    return {**fingerprint(suite),'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    return {**fingerprint(suite),'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'fixture_builder_sha256':fixture_builder.sha(fixture_builder.RUNNER_PATH.read_bytes())}
 
 
 def prepare(store, case):

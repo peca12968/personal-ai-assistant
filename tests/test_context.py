@@ -7,6 +7,7 @@ from assistant.context import clip, followup_query, is_explicit_correction, make
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
 from assistant.acceptance import validate_suite
+from scripts.evaluate_understanding import seed_history
 
 
 class CaptureEngine:
@@ -148,8 +149,7 @@ class ContextTests(unittest.TestCase):
 
     def test_very_old_opening_goal_is_preserved_beyond_scan_window(self):
         first = self.store.add_message(self.sid, "user", "目標：保留最早約定")
-        for i in range(240):
-            self.store.add_message(self.sid, "user", f"閒聊 {i}")
+        seed_history(self.store, self.sid, (('user', f'閒聊 {i}') for i in range(240)))
         self.app.ask(self.sid, "最初的目標呢？")
         self.assertIn(first, [row["message_id"] for row in self.engine.context["earlier_user_excerpts"]])
 
@@ -160,8 +160,7 @@ class ContextTests(unittest.TestCase):
     def test_correction_beyond_two_hundred_users_reaches_answer_snapshot(self):
         self.store.add_message(self.sid, 'user', '目標：三十天後可刪原始檔。')
         cid = self.store.add_message(self.sid, 'user', '不是這個，我是指保留九十天，不能刪原始檔。')
-        for i in range(230):
-            self.store.add_message(self.sid, 'user', f'背景閒聊 {i}')
+        seed_history(self.store, self.sid, (('user', f'背景閒聊 {i}') for i in range(230)))
         result = self.app.ask(self.sid, '現在保留多久？')
         snapshot = self.store.answer_context(result['id'])
         corrections = snapshot['earlier_user_corrections']

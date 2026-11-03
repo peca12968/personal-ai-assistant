@@ -9,6 +9,7 @@ from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant, EngineError
 from assistant.feedback_improvement import feedback_source, revise_feedback
 from assistant.store import Store
+from scripts.evaluate_understanding import seed_history
 from test_autonomy import ScriptedEngine, action
 
 
@@ -62,8 +63,7 @@ class AnswerFeedbackTests(unittest.TestCase):
                 db.execute('UPDATE feedback SET updated_at=? WHERE message_id=?',(f'2026-11-03 00:00:0{index}',mid))
             db.execute("UPDATE feedback SET updated_at='2026-11-03 00:00:09' WHERE message_id=?",(ids[0],))
         self.store.rate(ids[0], -1, '更正0')  # A real save, not a clock edit, determines recency.
-        for _ in range(220):
-            self.store.add_message(self.sid,'user','一般討論')
+        seed_history(self.store, self.sid, (('user', '一般討論') for _ in range(220)))
         value = self.context()
         self.assertTrue(value['selection_limited'])
         self.assertEqual([i['answer_message_id'] for i in value['items']], [ids[3],ids[4],ids[0]])

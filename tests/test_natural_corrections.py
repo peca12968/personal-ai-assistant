@@ -6,6 +6,7 @@ from pathlib import Path
 from assistant.context import is_explicit_correction
 from assistant.engine import Assistant
 from assistant.store import Store
+from scripts.evaluate_understanding import seed_history
 
 
 class CaptureEngine:
@@ -32,8 +33,7 @@ class NaturalCorrectionTests(unittest.TestCase):
             texts = ['  我更正一下，改為14人，每人275元；只是試算，不要付款。  ',
                      'Let me correct that: use 17 boxes, 26 units each. Do not ship.']
             ids = [store.add_message(sid, 'user', text) for text in texts]
-            for i in range(230):
-                store.add_message(sid, 'user', f'背景閒聊 {i}')
+            seed_history(store, sid, (('user', f'背景閒聊 {i}') for i in range(230)))
             answer = app.ask(sid, '這次另改15人，每人260元，只按目前條件計算。')
             snapshot = store.answer_context(answer['id'])
             corrections = snapshot['earlier_user_corrections']['excerpts']
