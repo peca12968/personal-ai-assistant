@@ -417,14 +417,19 @@ class App:
 
     def close(self):
         self.closing = True
+        self.root._assistant_closing = True
         if self.reminder_timer is not None:
             self.root.after_cancel(self.reminder_timer)
             self.reminder_timer = None
         self.cancel.set()
         for window in self.autonomous_windows + self.memory_draft_windows:
             window.cancel.set()
-        if self.busy or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows):
-            self.status.set("正在停止推理引擎…")
+        evolution_windows = getattr(self.root, '_assistant_evolution_windows', [])
+        for window in evolution_windows:
+            window.request_shutdown()
+        if self.busy or any(window.busy for window in self.autonomous_windows + self.memory_draft_windows + evolution_windows):
+            self.status.set('正在等候自我改進停止；已開始的套用／發布會完成後再關閉。'
+                            if any(window.busy for window in evolution_windows) else '正在停止推理引擎…')
             self.root.after(200, self.close)
         else:
             self.root.destroy()

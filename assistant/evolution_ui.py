@@ -13,7 +13,10 @@ from .ui_layout import ScrollableForm, fit_window
 class EvolutionWindow:
     def __init__(self, parent, initial_draft=None, source_check=None):
         self.source_check = source_check
-        self.window = tk.Toplevel(parent)
+        # A feedback dialog may close while this worker is still publishing.
+        # Keep the window owned by the application, not that temporary dialog.
+        self.root = parent._root()
+        self.window = tk.Toplevel(self.root)
         self.window.title('自我改進 · 程式與溝通')
         fit_window(self.window, 800, 780)
         self.layout = ScrollableForm(self.window)
@@ -69,7 +72,7 @@ class EvolutionWindow:
         self.output = tk.Text(body, height=8, wrap='word', state='disabled')
         self.output.pack(fill='x', padx=16, pady=12)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.after(150, self.poll)
+        self.poll_timer = self.window.after(150, self.poll)
         if initial_draft:
             self.goal.insert('1.0', initial_draft['goal'])
             for name, value in self.targets.items():
@@ -79,6 +82,11 @@ class EvolutionWindow:
             self.example.configure(state='disabled')
             self.case_notice.set('已帶入你指定的回饋案例；預期值由你選定。可查看完整案例，再決定是否開始。')
         ttk.Button(frame, text='查看完整驗收案例', command=self.show_cases).pack(anchor='w')
+        if not hasattr(self.root, '_assistant_evolution_windows'):
+            self.root._assistant_evolution_windows = []
+        self.root._assistant_evolution_windows.append(self)
+        if getattr(self.root, '_assistant_closing', False):
+            self.request_shutdown()
 
     def show_cases(self, *, held_out=False):
         window = tk.Toplevel(self.window)
@@ -136,7 +144,7 @@ class EvolutionWindow:
         self.output.configure(state='disabled')
 
     def begin(self):
-        if self.busy:
+        if self.busy or getattr(self.root, '_assistant_closing', False):
             return
         try:
             if self.source_check:
@@ -178,7 +186,10 @@ class EvolutionWindow:
                 self.events.put(('done', result))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
-        threading.Thread(target=work, daemon=False).start()
+        try:
+            threading.Thread(target=work, daemon=False).start()
+        except Exception as exc:
+            self.events.put(('error', '無法啟動自我改進：' + str(exc)))
 
     def poll(self):
         labels = {'preparing': '準備程式副本', 'generating': 'AI 正在產生程式變更',
@@ -199,15 +210,21 @@ class EvolutionWindow:
                 else:
                     self.append(json.dumps(value, ensure_ascii=False, indent=2) if kind == 'done' else value)
                     self.busy = False
-                    self.start.configure(state='normal')
+                    self.start.configure(state='disabled' if getattr(self.root, '_assistant_closing', False) else 'normal')
                     self.stop.configure(state='disabled')
         except queue.Empty:
             pass
-        self.window.after(150, self.poll)
+        self.poll_timer = self.window.after(150, self.poll)
+
+    def request_shutdown(self):
+        self.cancel.set()
+        self.start.configure(state='disabled')
 
     def close(self):
         if self.busy:
             self.cancel.set()
             self.append('已要求停止；若已開始套用／發布，請等候完成再關閉。')
         else:
+            self.window.after_cancel(self.poll_timer)
+            self.root._assistant_evolution_windows.remove(self)
             self.window.destroy()
