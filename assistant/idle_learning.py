@@ -16,8 +16,8 @@ POLICY={'automatic_activation':False,'automatic_retry':False,'poll_seconds':1,'i
 
 
 def capabilities():
-    return {'idle_training_implemented':True,'persistent_idle_scheduler_implemented':False,
-            'idle_training_scope':'明確準備並啟動的一次Windows閒置工作；不是保存佇列後自動排程或開機常駐。',
+    return {'idle_training_implemented':True,'persistent_idle_scheduler_implemented':False,'desktop_idle_jobs_available':True,
+            'idle_training_scope':'明確準備並啟動的一次Windows閒置工作；桌面入口為本機學習佇列 → 閒置學習工作。不是保存佇列後自動排程或開機常駐。',
             'manual_training':'scripts/learning/batches.py仍可手動準備／執行有限批次；另可用scripts/learning/idle.py prepare指定尚未執行的批次與完整助理驗收題庫，再run啟動一次等待。確認佇列不啟動工作。',
             'idle_training':'目前工作階段輸入閒置達門檻且共用GPU鎖可用後，訓練並驗收；輸入恢復、撤回、觀察失敗或超時就停止，不自動續跑。observe只觀察。',
             'idle_candidate':'通過才標為待選用候選，沒有自動啟用或改變保存選擇；需要另外明確選用。'}
@@ -139,7 +139,7 @@ class Gate:
         if self.is_set(): raise batches.Stopped(self.reason)
 
 
-def run(data_dir,job_id,*,cancel=None,sensor=None,clock=time.monotonic,sleep=time.sleep):
+def run(data_dir,job_id,*,cancel=None,sensor=None,clock=time.monotonic,sleep=time.sleep,on_progress=None):
     path=folder(data_dir,job_id)
     if not path.is_dir(): raise ValueError('閒置工作不存在。')
     with batches.owner(path):
@@ -151,7 +151,9 @@ def run(data_dir,job_id,*,cancel=None,sensor=None,clock=time.monotonic,sleep=tim
         receipt.update(status='waiting',started=time.time()); batches.save(path/'receipt.json',receipt)
         def stage(status):
             receipt.update(status=status,last_observed_input=gate.sample); batches.save(path/'receipt.json',receipt)
+            if on_progress: on_progress({'status':status})
         try:
+            if on_progress: on_progress({'status':'waiting'})
             current,receipt_hash=prepared_batch(manifest['data_dir'],manifest['batch_id'])
             if (batches.queue.digest(current)!=manifest['batch_manifest_sha256']
                     or receipt_hash!=manifest['batch_receipt_sha256']): raise batches.Stale('批次準備紀錄已變更。')

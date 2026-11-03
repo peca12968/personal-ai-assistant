@@ -18,7 +18,7 @@ class LearningWindow:
         fit_window(self.window, 880, 900)
         self.layout = ScrollableForm(self.window)
         body = self.layout.body
-        self.layout.wrapped_label(body, text='先核對一個不依賴前文的問題與完整正確答案，再按確認加入。內容保存在本機並隨資料備份；保存不代表已學會。可另外用閒置工作CLI明確啟動一次批次；確認佇列不啟動工作。', padding=12).pack(fill='x')
+        self.layout.wrapped_label(body, text='先核對一個不依賴前文的問題與完整正確答案，再按確認加入。內容保存在本機並隨資料備份；保存不代表已學會。可按「閒置學習工作」準備並明確啟動一次批次；確認佇列不啟動工作。', padding=12).pack(fill='x')
         self.listing = ttk.Treeview(body, columns=('status','revision','prompt'), show='headings', height=5)
         for key,label,width in [('status','目前狀態',190),('revision','版本',50),('prompt','問題預覽',560)]:
             self.listing.heading(key,text=label); self.listing.column(key,width=width,stretch=key=='prompt')
@@ -32,6 +32,7 @@ class LearningWindow:
         ttk.Button(controls,text='載入選取項目（取代草稿）',command=self.load_selected).pack(side='left')
         ttk.Button(controls,text='新建獨立例子（清空草稿）',command=self.new).pack(side='left',padx=6)
         ttk.Button(controls,text='查看選取項目的歷史',command=self.show_history).pack(side='left')
+        ttk.Button(body,text='閒置學習工作',command=self.idle_work).pack(anchor='w',padx=12,pady=6)
         self.saved = tk.Text(body,height=6,wrap='word',state='disabled'); self.saved.pack(fill='x',padx=12,pady=8)
         self.source_view = tk.Text(body,height=5,wrap='word',state='disabled'); self.source_view.pack(fill='x',padx=12)
         self.fields = {}
@@ -54,6 +55,11 @@ class LearningWindow:
     @staticmethod
     def put(widget, value):
         widget.configure(state='normal'); widget.delete('1.0','end'); widget.insert('1.0',value); widget.configure(state='disabled')
+
+    def idle_work(self):
+        if getattr(self.window._root(),'_assistant_closing',False): return
+        from .idle_learning_ui import IdleLearningWindow
+        return IdleLearningWindow(self.window,self.store)
 
     def display_source(self):
         if self.source:
