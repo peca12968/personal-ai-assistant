@@ -56,6 +56,9 @@ def activity(row):
                    'counted_days', 'calendar_days', 'calendar', 'holiday_source',
                    'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
+    if tool == 'search_conversation':
+        outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
+        outcome['history_details_omitted'] = True
     if tool == 'summarize_json':
         outcome['filter_conditions_omitted'] = bool(args.get('filters'))
         outcome['group_details_omitted'] = bool(args.get('group_by'))

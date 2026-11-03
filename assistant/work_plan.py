@@ -17,6 +17,8 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 
 def conditions(goal):
     value = {key: goal[key] for key in ('id', 'objective', 'notes', 'sources')}
+    if goal.get('conversation_history') is not None:
+        value['conversation_history_sha256'] = goal['conversation_history']['sha256']
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 

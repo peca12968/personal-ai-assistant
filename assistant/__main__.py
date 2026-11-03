@@ -39,6 +39,7 @@ def main():
     mode.add_argument('--new-goal', help='保存自主目標；需 --session，使用目前已匯入的參考文件')
     mode.add_argument('--draft-goal', help='依目前輸入與指定對話整理目標草稿；需 --session，輸出JSON但不保存或開始工作')
     parser.add_argument('--from-chat', action='store_true', help='搭配 --new-goal，固定帶入同對話的有限近期討論、更早更正及已保存目標')
+    parser.add_argument('--history-search', action='store_true', help='搭配 --new-goal 與 --from-chat，另存當時本對話的有界歷史供自主查找')
     parser.add_argument('--csv-document', type=int, help='搭配 --new-goal，選取此對話已匯入CSV編號，允許開始後自主規劃及執行分析')
     mode.add_argument('--export-goal-csv', help='匯出已完成自主CSV計畫ID；需 --csv-goal、--session、--output')
     parser.add_argument('--csv-goal', help='搭配 --export-goal-csv 指定所屬目標ID')
@@ -82,6 +83,8 @@ def main():
         parser.error('--aliases-revision 只能搭配 --set-memory-aliases。')
     if alias_mode and (args.session or args.file):
         parser.error('搜尋稱呼套用此資料庫，不搭配 --session 或 --file。')
+    if args.history_search and (args.new_goal is None or not args.from_chat):
+        parser.error('--history-search需搭配 --new-goal 與 --from-chat。')
     if args.from_chat and args.new_goal is None:
         parser.error('--from-chat只能搭配 --new-goal。')
     if args.csv_document is not None and args.new_goal is None:
@@ -274,7 +277,7 @@ def main():
                 from .goal_drafts import capture, generate
                 result = generate(capture(store, args.session, args.draft_goal), CodexEngine(args.data_dir))
             elif args.new_goal is not None:
-                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document, from_chat=args.from_chat)
+                gid = create_goal(store, args.session, args.new_goal, parent_id=args.from_goal, file_delivery=args.deliver_files, csv_document_id=args.csv_document, from_chat=args.from_chat, history_search=args.history_search)
                 result = get_goal(store, args.session, gid)
             elif args.run_goal is not None:
                 if args.continuous_steps is not None:

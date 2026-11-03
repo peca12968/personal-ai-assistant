@@ -38,6 +38,28 @@ class FormGeometryTests(unittest.TestCase):
         self.root.update_idletasks()
         return view.layout
 
+    def test_history_search_option_is_explicit_reachable_and_saves_without_starting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'state.sqlite3');sid=store.new_session()
+            store.add_message(sid,'user','橡樹原始條件')
+            view=AutonomousWindow(self.root,store,sid,None)
+            layout=self.allocate(view)
+            self.assert_reachable(layout,view.history_option)
+            self.assertFalse(view.history_search.get())
+            view.history_option.invoke()
+            self.assertTrue(view.from_chat.get());self.assertTrue(view.history_search.get())
+            view.chat_option.invoke()
+            self.assertFalse(view.from_chat.get());self.assertFalse(view.history_search.get())
+            view.history_option.invoke()
+            view.objective.delete('1.0','end');view.objective.insert('1.0','查找橡樹條件')
+            with patch('assistant.autonomy_ui.messagebox.showerror',side_effect=AssertionError):
+                view.new_goal()
+            goals=autonomy.goals(store,sid);self.assertEqual(len(goals),1)
+            goal=autonomy.get_goal(store,sid,goals[0]['id'])
+            self.assertEqual(goal['status'],'pending');self.assertEqual(goal['steps'],[])
+            self.assertEqual(goal['conversation_history']['captured_message_count'],1)
+            self.assertIn('可搜尋歷史',view.output.get('1.0','end'))
+
     def assert_reachable(self, layout, widget):
         layout.canvas.yview_moveto(0)
         layout._focus(SimpleNamespace(widget=widget))

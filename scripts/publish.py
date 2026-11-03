@@ -55,6 +55,7 @@ def main():
     run(sys.executable, "scripts/evaluate_feedback_order.py")
     run(sys.executable, "scripts/evaluate_conversation_text.py")
     run(sys.executable, "scripts/evaluate_conversation_priority.py")
+    run(sys.executable, "scripts/evaluate_conversation_search.py")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_scope.json")
     run(sys.executable, "scripts/evaluate_tasks.py")
     run(sys.executable, "scripts/evaluate_workflows.py")

@@ -353,3 +353,16 @@ json_statistics.json增加三題，總計15題；專用runner在改前凍結後�
 草稿第一題初版標準要求算式，但提示未明確提出；原報告drafts-before.json及goal_draft_opening-original.json完整保留且排除本次比較。正式程式尚未修改前，把要求總額與算式明列在提示，重新收集兩題基準drafts-before-final.json，再與相同修正版suite的drafts-after.json比較，沒有追改原回答或分數。改前仍要求補單價／運費，缺只試算與不付款／產檔限制；改後可獨立列9份、125元、40元、總額與算式要求及全部限制，questions空。另一題維持當前6份、70元免運且排除舊引文。
 
 所有收集handle終止後才追加development_agent評讀，human_grade空白；工作比較fail→pass及兩個pass→pass，草稿fail→pass與pass→pass。最終來源／提示指紋、原suite及runner另核對。記憶草稿本輪驗證共享來源／精確引用／保存快照及備份，不宣稱已完成新的記憶語意實測。原始答案、合成資料、退休案例、評讀與audit都只在忽略的data/evaluations/conversation-opening-v069；這是已知案例的條件接續改善，不是完整長期記憶、一般智力或IQ提升。
+
+
+## 自主查找固定對話歷史（v0.70）
+
+conversation_search.json與專用evaluate_conversation_search.py先於正式修改凍結。三題都先有開場及40則無關討論，中段才給橡樹採購條件，之後加入230或600輪合成對話。runner記錄history_search_requested=true；舊版API未提供選項時明示history_search_supported=false，使用原明確from_chat背景，新版才明確傳history_search=true。這是新工具能力比較，不冒稱兩邊原有工具完全相同。每次固定八步上限、保存實際引擎請求／動作／觀察與來源指紋。
+
+改前兩個中段條件案例都只能詢問已提供數字。最終版第一題查找兩次，再以calculate乘積與加總、finish，共五步，從訊息#42取7份／145元／35元得1050。第二題一次查找、兩次計算及finish，共四步，結果同時包含舊條件、新更正、助理20份建議及使用者明說不採用的99份例句；最終採#44的9份／130元／50元得1220。工具的全部查找頁與只讀開啟的固定副本逐筆核對，計算另用Fraction核對；初始payload僅有大副本範圍摘要，原有限背景仍按原方式提供。
+
+範圍限制題原有1243則，只保存最近1000則，目標條件在已省略區。最終兩次搜尋無命中後以finish交付缺漏說明，明確不能認定從未提供、不猜數字；這份成果是依題目條件產生缺漏說明，不是已完成採購計算。前後此題維持正確。
+
+初次三題實測成功後，額外大型UTF-16回歸發現SQLite BLOB位元組長度與UTF-8序列化上限不同，會誤拒絕1百萬字控制字元的合法副本。保留after.json與help.json，不改寫它們的來源；修正原生UTF-16最多兩倍的預取界線後，重新收完整final.json與help-final.json，最終來源及提示指紋相符。產品說明四項通過，交代選用、範圍、固定副本、文字比對／分頁、無命中及語意／權限限制。
+
+全部handle終止才追加development_agent評讀，human_grade空白。最終比較兩題fail→pass、一題pass→pass；參考案例、runner與問題保持，正式來源／提示依功能變更。既有推理對照成績沒有改動。原始答案、合成資料庫／歷史副本、工具頁、初次與最終報告、比較和audit只在忽略的data/evaluations/conversation-search-v070。這是已知資料任務的接續能力，不是完整記憶、獨立一般智力或人類IQ分數。

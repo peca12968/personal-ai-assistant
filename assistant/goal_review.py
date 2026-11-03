@@ -5,6 +5,7 @@ import json
 from .autonomy import MAX_STEPS, signature
 from .artifacts import inventory
 from . import autonomy_csv
+from . import conversation_history
 
 
 def next_action(status, sources_match, step_count):
@@ -48,6 +49,9 @@ def _rows(db, gid=None):
         # Full local state drives redisplay, even when the visible excerpt is clipped.
         evidence = {**row, 'current_sources': current_sources[sid], 'artifacts': files,
                     'csv_plans': autonomy_csv.inventory(db, row['id'])}
+        history_sha = conversation_history.saved_fingerprint(db, row['id'])
+        if history_sha is not None:
+            evidence['conversation_history_sha256'] = history_sha
         latest = db.execute('SELECT * FROM autonomous_continuous_runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1', (row['id'],)).fetchone()
         if latest is not None:  # Preserve pre-upgrade fingerprints until there is new work.
             evidence['continuous_run'] = dict(latest)

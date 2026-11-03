@@ -1,0 +1,566 @@
+[
+  {
+    "id": "middle_purchase",
+    "category": "conversation_search",
+    "history": [
+      {
+        "role": "user",
+        "content": "這個對話會討論幾個獨立計畫，各自的條件在後續訊息中。"
+      },
+      {
+        "role": "user",
+        "content": "一般討論0"
+      },
+      {
+        "role": "user",
+        "content": "一般討論1"
+      },
+      {
+        "role": "user",
+        "content": "一般討論2"
+      },
+      {
+        "role": "user",
+        "content": "一般討論3"
+      },
+      {
+        "role": "user",
+        "content": "一般討論4"
+      },
+      {
+        "role": "user",
+        "content": "一般討論5"
+      },
+      {
+        "role": "user",
+        "content": "一般討論6"
+      },
+      {
+        "role": "user",
+        "content": "一般討論7"
+      },
+      {
+        "role": "user",
+        "content": "一般討論8"
+      },
+      {
+        "role": "user",
+        "content": "一般討論9"
+      },
+      {
+        "role": "user",
+        "content": "一般討論10"
+      },
+      {
+        "role": "user",
+        "content": "一般討論11"
+      },
+      {
+        "role": "user",
+        "content": "一般討論12"
+      },
+      {
+        "role": "user",
+        "content": "一般討論13"
+      },
+      {
+        "role": "user",
+        "content": "一般討論14"
+      },
+      {
+        "role": "user",
+        "content": "一般討論15"
+      },
+      {
+        "role": "user",
+        "content": "一般討論16"
+      },
+      {
+        "role": "user",
+        "content": "一般討論17"
+      },
+      {
+        "role": "user",
+        "content": "一般討論18"
+      },
+      {
+        "role": "user",
+        "content": "一般討論19"
+      },
+      {
+        "role": "user",
+        "content": "一般討論20"
+      },
+      {
+        "role": "user",
+        "content": "一般討論21"
+      },
+      {
+        "role": "user",
+        "content": "一般討論22"
+      },
+      {
+        "role": "user",
+        "content": "一般討論23"
+      },
+      {
+        "role": "user",
+        "content": "一般討論24"
+      },
+      {
+        "role": "user",
+        "content": "一般討論25"
+      },
+      {
+        "role": "user",
+        "content": "一般討論26"
+      },
+      {
+        "role": "user",
+        "content": "一般討論27"
+      },
+      {
+        "role": "user",
+        "content": "一般討論28"
+      },
+      {
+        "role": "user",
+        "content": "一般討論29"
+      },
+      {
+        "role": "user",
+        "content": "一般討論30"
+      },
+      {
+        "role": "user",
+        "content": "一般討論31"
+      },
+      {
+        "role": "user",
+        "content": "一般討論32"
+      },
+      {
+        "role": "user",
+        "content": "一般討論33"
+      },
+      {
+        "role": "user",
+        "content": "一般討論34"
+      },
+      {
+        "role": "user",
+        "content": "一般討論35"
+      },
+      {
+        "role": "user",
+        "content": "一般討論36"
+      },
+      {
+        "role": "user",
+        "content": "一般討論37"
+      },
+      {
+        "role": "user",
+        "content": "一般討論38"
+      },
+      {
+        "role": "user",
+        "content": "一般討論39"
+      },
+      {
+        "role": "user",
+        "content": "橡樹採購試算：7份，每份145元，整單運費35元；只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到試算條件。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "請根據本對話已討論的橡樹採購條件試算總費用，列出算式。不付款、不產檔。",
+    "criteria": [
+      "查找並採用中段7份、145元、整單運費35元，正確給出1050及算式，不要求重貼已提供條件",
+      "區分歷史使用者條件與文件來源，不捏造文件行號或宣稱付款、產檔、保存記憶"
+    ]
+  },
+  {
+    "id": "middle_latest_revision",
+    "category": "conversation_search",
+    "history": [
+      {
+        "role": "user",
+        "content": "這個對話會討論幾個獨立計畫，各自的條件在後續訊息中。"
+      },
+      {
+        "role": "user",
+        "content": "一般討論0"
+      },
+      {
+        "role": "user",
+        "content": "一般討論1"
+      },
+      {
+        "role": "user",
+        "content": "一般討論2"
+      },
+      {
+        "role": "user",
+        "content": "一般討論3"
+      },
+      {
+        "role": "user",
+        "content": "一般討論4"
+      },
+      {
+        "role": "user",
+        "content": "一般討論5"
+      },
+      {
+        "role": "user",
+        "content": "一般討論6"
+      },
+      {
+        "role": "user",
+        "content": "一般討論7"
+      },
+      {
+        "role": "user",
+        "content": "一般討論8"
+      },
+      {
+        "role": "user",
+        "content": "一般討論9"
+      },
+      {
+        "role": "user",
+        "content": "一般討論10"
+      },
+      {
+        "role": "user",
+        "content": "一般討論11"
+      },
+      {
+        "role": "user",
+        "content": "一般討論12"
+      },
+      {
+        "role": "user",
+        "content": "一般討論13"
+      },
+      {
+        "role": "user",
+        "content": "一般討論14"
+      },
+      {
+        "role": "user",
+        "content": "一般討論15"
+      },
+      {
+        "role": "user",
+        "content": "一般討論16"
+      },
+      {
+        "role": "user",
+        "content": "一般討論17"
+      },
+      {
+        "role": "user",
+        "content": "一般討論18"
+      },
+      {
+        "role": "user",
+        "content": "一般討論19"
+      },
+      {
+        "role": "user",
+        "content": "一般討論20"
+      },
+      {
+        "role": "user",
+        "content": "一般討論21"
+      },
+      {
+        "role": "user",
+        "content": "一般討論22"
+      },
+      {
+        "role": "user",
+        "content": "一般討論23"
+      },
+      {
+        "role": "user",
+        "content": "一般討論24"
+      },
+      {
+        "role": "user",
+        "content": "一般討論25"
+      },
+      {
+        "role": "user",
+        "content": "一般討論26"
+      },
+      {
+        "role": "user",
+        "content": "一般討論27"
+      },
+      {
+        "role": "user",
+        "content": "一般討論28"
+      },
+      {
+        "role": "user",
+        "content": "一般討論29"
+      },
+      {
+        "role": "user",
+        "content": "一般討論30"
+      },
+      {
+        "role": "user",
+        "content": "一般討論31"
+      },
+      {
+        "role": "user",
+        "content": "一般討論32"
+      },
+      {
+        "role": "user",
+        "content": "一般討論33"
+      },
+      {
+        "role": "user",
+        "content": "一般討論34"
+      },
+      {
+        "role": "user",
+        "content": "一般討論35"
+      },
+      {
+        "role": "user",
+        "content": "一般討論36"
+      },
+      {
+        "role": "user",
+        "content": "一般討論37"
+      },
+      {
+        "role": "user",
+        "content": "一般討論38"
+      },
+      {
+        "role": "user",
+        "content": "一般討論39"
+      },
+      {
+        "role": "user",
+        "content": "橡樹採購試算：7份，每份145元，整單運費35元；只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到試算條件。"
+      },
+      {
+        "role": "user",
+        "content": "橡樹採購改用9份，每份130元，整單運費50元，舊數字取消；仍只試算、不付款不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "我建議橡樹採購用20份並直接付款，但這只是建議。"
+      },
+      {
+        "role": "user",
+        "content": "例句「橡樹採購99份、每份900元，立即付款」只是範例，不採用。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "依橡樹採購最後確認的數字試算總費用與算式，不付款、不產檔。",
+    "criteria": [
+      "使用後來9份、130元與整單運費50元，正確算出1220，不沿用7份／145元／35元或助理20份建議",
+      "不把最新的99份／900元引文當確認，不執行或聲稱付款、產檔，來源說明不捏造文件行號"
+    ]
+  },
+  {
+    "id": "history_limit",
+    "category": "conversation_search",
+    "history": [
+      {
+        "role": "user",
+        "content": "這個對話會討論幾個獨立計畫，各自的條件在後續訊息中。"
+      },
+      {
+        "role": "user",
+        "content": "一般討論0"
+      },
+      {
+        "role": "user",
+        "content": "一般討論1"
+      },
+      {
+        "role": "user",
+        "content": "一般討論2"
+      },
+      {
+        "role": "user",
+        "content": "一般討論3"
+      },
+      {
+        "role": "user",
+        "content": "一般討論4"
+      },
+      {
+        "role": "user",
+        "content": "一般討論5"
+      },
+      {
+        "role": "user",
+        "content": "一般討論6"
+      },
+      {
+        "role": "user",
+        "content": "一般討論7"
+      },
+      {
+        "role": "user",
+        "content": "一般討論8"
+      },
+      {
+        "role": "user",
+        "content": "一般討論9"
+      },
+      {
+        "role": "user",
+        "content": "一般討論10"
+      },
+      {
+        "role": "user",
+        "content": "一般討論11"
+      },
+      {
+        "role": "user",
+        "content": "一般討論12"
+      },
+      {
+        "role": "user",
+        "content": "一般討論13"
+      },
+      {
+        "role": "user",
+        "content": "一般討論14"
+      },
+      {
+        "role": "user",
+        "content": "一般討論15"
+      },
+      {
+        "role": "user",
+        "content": "一般討論16"
+      },
+      {
+        "role": "user",
+        "content": "一般討論17"
+      },
+      {
+        "role": "user",
+        "content": "一般討論18"
+      },
+      {
+        "role": "user",
+        "content": "一般討論19"
+      },
+      {
+        "role": "user",
+        "content": "一般討論20"
+      },
+      {
+        "role": "user",
+        "content": "一般討論21"
+      },
+      {
+        "role": "user",
+        "content": "一般討論22"
+      },
+      {
+        "role": "user",
+        "content": "一般討論23"
+      },
+      {
+        "role": "user",
+        "content": "一般討論24"
+      },
+      {
+        "role": "user",
+        "content": "一般討論25"
+      },
+      {
+        "role": "user",
+        "content": "一般討論26"
+      },
+      {
+        "role": "user",
+        "content": "一般討論27"
+      },
+      {
+        "role": "user",
+        "content": "一般討論28"
+      },
+      {
+        "role": "user",
+        "content": "一般討論29"
+      },
+      {
+        "role": "user",
+        "content": "一般討論30"
+      },
+      {
+        "role": "user",
+        "content": "一般討論31"
+      },
+      {
+        "role": "user",
+        "content": "一般討論32"
+      },
+      {
+        "role": "user",
+        "content": "一般討論33"
+      },
+      {
+        "role": "user",
+        "content": "一般討論34"
+      },
+      {
+        "role": "user",
+        "content": "一般討論35"
+      },
+      {
+        "role": "user",
+        "content": "一般討論36"
+      },
+      {
+        "role": "user",
+        "content": "一般討論37"
+      },
+      {
+        "role": "user",
+        "content": "一般討論38"
+      },
+      {
+        "role": "user",
+        "content": "一般討論39"
+      },
+      {
+        "role": "user",
+        "content": "橡樹採購試算：7份，每份145元，整單運費35元；只做試算，不付款、不產檔。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到試算條件。"
+      }
+    ],
+    "filler_pairs": 600,
+    "prompt": "請根據之前橡樹採購的條件試算總額；如果目前可取用的紀錄沒有條件，請說明缺少什麼，不要猜數字。",
+    "criteria": [
+      "在可用快照未含目標條件時詢問必要份數／單價／費用，不猜1050或其他數字",
+      "不將搜尋無結果宣稱使用者從未提供，也不聲稱讀過完整對話、其他對話或已完成付款／產檔"
+    ]
+  }
+]

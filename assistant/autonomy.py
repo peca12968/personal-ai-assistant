@@ -26,6 +26,7 @@ from . import docx_text
 from . import work_plan
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
+from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
 MAX_STEPS = 32
@@ -43,6 +44,7 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
 如果本目標有csv_source，另可使用後附CSV工具處理所選副本；沒有時不可使用CSV工具。
+如果本目標有conversation_history，另可用後附search_conversation查找該目標保存的歷史片段；沒有時不可查找其他或即時對話。
 只有file_delivery=true的目標可用write_artifact及deliver，在此目標管理的成果資料夾建立文件；不能指定其他路徑或覆寫既有內容。
 不能修改原檔、瀏覽網路、發訊息、執行程式或自行改碼。不要假稱已執行不具備的動作。
 若目標需要其他能力，用ask簡短說明需要什麼；資料足夠時自行前進，不反覆要求確認。
@@ -78,12 +80,14 @@ def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
 
 
-def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None):
+def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None, history_search=False):
     objective = text(objective, 4000)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
     if type(from_chat) is not bool:
         raise ValueError('帶入對話選項需為布林值。')
+    if type(history_search) is not bool or (history_search and not from_chat):
+        raise ValueError('歷史查找需明確布林選項，且同時帶入本對話。')
     gid = uuid.uuid4().hex
     with lease(store, parent_id) if parent_id is not None else nullcontext():
         with store.connect() as db:
@@ -102,6 +106,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
                 autonomy_csv.configure(db, sid, gid, csv_document_id)
             if from_chat:
                 goal_conversation.save(db, sid, gid)
+            if history_search:
+                conversation_history.save(db, sid, gid)
             if previous is not None:
                 db.execute('INSERT INTO autonomous_handoffs(goal_id,parent_goal_id,context_json) VALUES(?,?,?)',
                            (gid, parent_id, json.dumps(previous, ensure_ascii=False)))
@@ -127,6 +133,7 @@ def get_goal(store, sid, gid):
         result['continuous_runs'] = [dict(r) for r in db.execute(
             'SELECT * FROM autonomous_continuous_runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 10', (gid,))]
         result['conversation_context'] = goal_conversation.read(db, gid)
+        result['conversation_history'] = conversation_history.inventory(db, sid, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
             result['previous_stage']['sources_match_current'] = result['previous_stage']['sources'] == result['sources']
@@ -161,6 +168,9 @@ def validate_action(value):
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'search_conversation':
+        conversation_history.validate_args(args)
+        return value
     if name == 'update_plan':
         work_plan.validate(args)
         return value
@@ -197,6 +207,8 @@ def validate_action(value):
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
     name, args = action['tool'], action['args']
+    if name == 'search_conversation':
+        return conversation_history.search(store, sid, gid, args, cancel)
     if name == 'update_plan':
         goal = get_goal(store, sid, gid)
         return work_plan.observe(args, steps, work_plan.conditions(goal))
@@ -296,9 +308,11 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
                        'csv_source': goal['csv_source'], 'csv_plans': goal['csv_plans'],
                        'conversation_context': goal['conversation_context'],
+                       'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
             raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
+                ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
                 reason = 'cancelled'

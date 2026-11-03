@@ -53,9 +53,13 @@ class AutonomousWindow:
         self.draft_preview.pack(anchor='w', padx=12, pady=4)
         self.layout.wrapped_label(body, text='整理會把目前輸入與本對話有限背景送給模型，填入可編輯的目標、限制與交付文字。只整理草稿；核對後再保存並開始，CSV／文件／帶入背景選項仍由你選擇。未保存草稿只留在本視窗。', padding=12).pack(fill='x')
         self.from_chat = tk.BooleanVar(value=from_chat)
-        self.chat_option = ttk.Checkbutton(body, text='新目標帶入本對話背景（近期討論、較早更正與已保存目標）', variable=self.from_chat)
+        self.history_search = tk.BooleanVar(value=False)
+        self.chat_option = ttk.Checkbutton(body, text='新目標帶入本對話背景（開場、近期討論、更正與已保存目標）', variable=self.from_chat, command=self.toggle_chat)
         self.chat_option.pack(anchor='w', padx=12, pady=6)
         self.layout.wrapped_label(body, text='勾選後，保存目標時會固定當時的背景；可在下方查看，再開始。背景會交給模型，不會自動更新，也不增加檔案或CSV權限。', padding=12).pack(fill='x')
+        self.history_option = ttk.Checkbutton(body, text='另存本對話歷史供此目標查找', variable=self.history_search, command=self.toggle_history)
+        self.history_option.pack(anchor='w', padx=12, pady=6)
+        self.layout.wrapped_label(body, text='選用：固定保存最近最多1000則、每則前2000字、總100萬字；排除本機記憶命令。模型只收到查找命中的片段，不是整份歷史。超出範圍會標示，後續新訊息不自動加入。', padding=12).pack(fill='x')
         self.file_delivery = tk.BooleanVar(value=False)
         self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機Markdown／TXT／JSON，不覆寫既有內容）', variable=self.file_delivery)
         self.file_option.pack(anchor='w', padx=12, pady=6)
@@ -127,6 +131,14 @@ class AutonomousWindow:
             return self.draft_origin
         return None  # An explicit manual rewrite uses the ordinary goal editor.
 
+    def toggle_chat(self):
+        if not self.from_chat.get():
+            self.history_search.set(False)
+
+    def toggle_history(self):
+        if self.history_search.get():
+            self.from_chat.set(True)
+
     def draft_from_chat(self):
         if self.busy:
             return
@@ -140,7 +152,7 @@ class AutonomousWindow:
         self.active_goal = None
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在整理目標草稿；不會保存或開始工作，可停止。')
@@ -233,7 +245,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard(), history_search=self.history_search.get())
             self.refresh(gid)
         except Exception as exc:
             messagebox.showerror('無法保存目標', str(exc), parent=self.window)
@@ -242,7 +254,7 @@ class AutonomousWindow:
         if self.busy:
             return
         try:
-            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard())
+            gid = autonomy.create_goal(self.store, self.sid, self.objective.get('1.0', 'end'), parent_id=self.selected_id(), file_delivery=self.file_delivery.get(), csv_document_id=self.selected_csv_id(), from_chat=self.from_chat.get(), goal_draft=self.draft_guard(), history_search=self.history_search.get())
             self.refresh(gid)
             self.notice.set('下一階段已保存；可先查看帶入背景，再開始自主工作。')
         except Exception as exc:
@@ -269,7 +281,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -323,6 +335,11 @@ class AutonomousWindow:
             lines += ['需要你的補充：' + goal['question']]
         if goal['notes']:
             lines += ['本階段的問題與補充紀錄：', goal['notes']]
+        if goal.get('conversation_history') is not None:
+            history = goal['conversation_history']
+            lines += [f"可搜尋歷史：保存{history['captured_message_count']}／{history['source_message_count']}則，{history['captured_characters']}字；時間{history['captured_at']}。",
+                      '部分訊息或內容已省略。' if history['messages_limited'] or history['content_truncated'] else '來源訊息在此副本界線內完整保存。',
+                      '開始工作後可查找此固定副本；不包含後來的新訊息，也不授權其他對話。']
         if goal['conversation_context'] is not None:
             lines += [describe_conversation(goal['conversation_context'])]
         previous = goal['previous_stage']
@@ -406,7 +423,7 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在自主選擇下一步；可隨時停止。')
@@ -431,7 +448,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.draft_button):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     if kind == 'draft_done':

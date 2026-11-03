@@ -174,6 +174,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS autonomous_conversations (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     context_json TEXT NOT NULL, context_sha256 TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS autonomous_conversation_history (
+                    goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
+                    context_json TEXT NOT NULL, context_sha256 TEXT NOT NULL);
             """)
             columns = {r["name"] for r in db.execute("PRAGMA table_info(memories)")}
             if "active" not in columns:
