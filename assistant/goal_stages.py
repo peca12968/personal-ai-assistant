@@ -30,7 +30,8 @@ def activity(row):
     # Never copy document/memory contents, model reports, file bodies or CSV specs.
     allowed = {'query', 'document_id', 'start_line', 'end_line', 'line_number', 'start_char', 'operation', 'values',
                'date', 'start', 'end', 'days', 'months', 'day_policy', 'calendar', 'excluded_dates',
-               'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames'}
+               'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames',
+               'message_id', 'before', 'after'}
     requested = {k: v for k, v in args.items() if k in allowed}
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
@@ -56,9 +57,12 @@ def activity(row):
                    'counted_days', 'calendar_days', 'calendar', 'holiday_source',
                    'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
-    if tool == 'search_conversation':
+    if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
+    if tool == 'read_conversation':
+        outcome.update({k:observation[k] for k in ('message_id','requested_before','requested_after',
+            'provided_before','provided_after','window_limited','order') if k in observation})
     if tool == 'summarize_json':
         outcome['filter_conditions_omitted'] = bool(args.get('filters'))
         outcome['group_details_omitted'] = bool(args.get('group_by'))

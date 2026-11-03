@@ -44,7 +44,7 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
 如果本目標有csv_source，另可使用後附CSV工具處理所選副本；沒有時不可使用CSV工具。
-如果本目標有conversation_history，另可用後附search_conversation查找該目標保存的歷史片段；沒有時不可查找其他或即時對話。
+如果本目標有conversation_history，另可用後附search_conversation查找與read_conversation讀取該目標保存的歷史片段及前後文；沒有時不可查找其他或即時對話。
 只有file_delivery=true的目標可用write_artifact及deliver，在此目標管理的成果資料夾建立文件；不能指定其他路徑或覆寫既有內容。
 不能修改原檔、瀏覽網路、發訊息、執行程式或自行改碼。不要假稱已執行不具備的動作。
 若目標需要其他能力，用ask簡短說明需要什麼；資料足夠時自行前進，不反覆要求確認。
@@ -168,6 +168,9 @@ def validate_action(value):
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'read_conversation':
+        conversation_history.validate_window_args(args)
+        return value
     if name == 'search_conversation':
         conversation_history.validate_args(args)
         return value
@@ -207,6 +210,8 @@ def validate_action(value):
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
     name, args = action['tool'], action['args']
+    if name == 'read_conversation':
+        return conversation_history.window(store, sid, gid, args, cancel)
     if name == 'search_conversation':
         return conversation_history.search(store, sid, gid, args, cancel)
     if name == 'update_plan':
