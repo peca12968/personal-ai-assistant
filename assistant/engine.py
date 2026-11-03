@@ -249,6 +249,10 @@ class Assistant:
         describe = getattr(self.engine, 'describe', None)
         if callable(describe):
             context['engine_selection'] = describe()
+        from .learning_queue import help_context
+        learning_help = help_context(question + ('\n' + followup if followup else ''))
+        if learning_help is not None:
+            context['learning_capabilities'] = learning_help
         return context
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):

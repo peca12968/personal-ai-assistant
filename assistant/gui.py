@@ -78,6 +78,7 @@ class App:
         menu = tk.Menu(memory_menu, tearoff=False)
         menu.add_command(label='管理長期記憶', command=self.memories)
         menu.add_command(label='夥伴設定', command=self.companion_settings)
+        menu.add_command(label='本機學習佇列', command=self.learning_queue)
         menu.add_command(label='主動回顧提醒', command=self.reminder_settings)
         memory_menu.configure(menu=menu)
         memory_menu.pack(fill='x', pady=4)
@@ -476,6 +477,10 @@ class App:
     def feedback_report(self):
         from .feedback_ui import FeedbackWindow
         FeedbackWindow(self.root, self.store)
+
+    def learning_queue(self):
+        from .learning_ui import LearningWindow
+        return LearningWindow(self.root, self.store)
 
     def export(self):
         path = filedialog.asksaveasfilename(defaultextension=".json", initialdir=self.store.path.parent,

@@ -15,6 +15,7 @@ from . import __version__
 
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 TABLES = {
+    'learning_examples': {'id','revision','status','prompt','answer','source_json','fingerprint','recorded_at'},
     'chat_images': {'id','session_id','name','format','width','height','size_bytes','sha256','data','active','created_at'},
     'chat_drafts': {'session_id','revision','content'},
     'chat_draft_submissions': {'token','session_id','revision','message_id'},
@@ -92,7 +93,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - draft_tables - memory_tables - {'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -106,6 +107,9 @@ def validate_database(path):
         if 'feedback_versions' in actual_tables:
             from .feedback_order import validate
             validate(db)
+        if 'learning_examples' in actual_tables:
+            from .learning_queue import validate_saved
+            validate_saved(db)
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('資料庫關聯檢查未通過。')
         if draft_tables <= actual_tables:

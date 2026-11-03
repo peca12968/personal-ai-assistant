@@ -75,6 +75,9 @@ def show_context(parent, store, message_id):
             sections.append(('推理引擎', '這是此回答選用的引擎與參數版本；成功回覆前已核對相同選用指紋。不是目前仍在執行的程序狀態，也不代表自動訓練或回答正確性。\n\n' +
                              json.dumps(context['engine_selection'], ensure_ascii=False, indent=2)))
     corrections = context.get('earlier_user_corrections', {})
+    if context.get('learning_capabilities'):
+        sections.append(('學習功能', '當時程式提供的功能說明；沒有讀取或附上學習佇列內容，不是已訓練證據。\n\n' +
+                         json.dumps(context['learning_capabilities'], ensure_ascii=False, indent=2)))
     sections.append(('早期更正', '依明確開頭選取的原文，不是自動確認的事實或長期記憶。\n\n' +
                      ('更早的更正未全部提供。\n\n' if corrections.get('selection_limited') else '') +
                      ('\n\n'.join(f'使用者訊息 #{r["message_id"]}' +

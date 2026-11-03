@@ -90,6 +90,12 @@ class Store:
                     rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
                     correction TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS learning_examples (
+                    id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
+                    status TEXT NOT NULL CHECK(status IN ('confirmed','withdrawn')),
+                    prompt TEXT NOT NULL, answer TEXT NOT NULL, source_json TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(id,revision));
                 CREATE TABLE IF NOT EXISTS session_briefs (
                     session_id TEXT PRIMARY KEY REFERENCES sessions(id),
                     objective TEXT NOT NULL DEFAULT '', constraints_text TEXT NOT NULL DEFAULT '',

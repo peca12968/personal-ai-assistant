@@ -37,6 +37,8 @@ class FeedbackWindow:
         self.save_feedback.pack(side='left')
         self.clear_feedback = ttk.Button(edit_buttons, text='停止帶入這筆更正', command=lambda: self.revise(clear=True), state='disabled')
         self.clear_feedback.pack(side='left', padx=8)
+        self.learning_button = ttk.Button(edit_buttons, text='整理成學習例子', command=self.prepare_learning, state='disabled')
+        self.learning_button.pack(side='left')
         form = ttk.Frame(body, padding=12)
         form.pack(fill='x')
         self.fields = {}
@@ -98,6 +100,7 @@ class FeedbackWindow:
 
     def refresh(self):
         self.selected_source = None
+        self.learning_button.configure(state='disabled')
         self.save_feedback.configure(state='disabled')
         self.clear_feedback.configure(state='disabled')
         self.source = None
@@ -112,6 +115,7 @@ class FeedbackWindow:
         selected = self.listing.selection()
         self.source = None
         self.selected_source = None
+        self.learning_button.configure(state='disabled')
         self.saved_correction.delete('1.0', 'end')
         self.save_feedback.configure(state='disabled')
         self.clear_feedback.configure(state='disabled')
@@ -128,6 +132,7 @@ class FeedbackWindow:
         try:
             source = feedback_source(self.store, int(selected[0]))
             self.selected_source = source
+            self.learning_button.configure(state='normal')
             self.saved_correction.insert('1.0', source['correction'])
             self.save_feedback.configure(state='normal')
             self.clear_feedback.configure(state='normal')
@@ -148,6 +153,19 @@ class FeedbackWindow:
             self.next.configure(state='normal')
             self.notice.set('下一頁可再核對；按「開始改進並發布」才會將編輯後的描述、問題與前文傳給模型，並執行一輪改碼。原回答不會自動傳送。')
         except (ValueError, KeyError) as exc:
+            self.notice.set(str(exc))
+
+    def prepare_learning(self):
+        if self.selected_source is None:
+            return
+        try:
+            from .learning_queue import source_from_feedback
+            from .learning_ui import LearningWindow
+            source = source_from_feedback(self.store,self.selected_source['message_id'])
+            if source['fingerprint'] != self.selected_source['fingerprint']:
+                raise ValueError('來源已變更，請重新選取回饋後核對。')
+            return LearningWindow(self.window,self.store,source)
+        except (ValueError,KeyError) as exc:
             self.notice.set(str(exc))
 
     def revise(self, *, clear=False):
