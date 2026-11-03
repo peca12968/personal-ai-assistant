@@ -37,6 +37,7 @@ CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
 CHECKS.append(('scripts/evaluate_date_months.py',))
 CHECKS.append(('scripts/evaluate_docx_reading.py',))
+CHECKS.append(('scripts/evaluate_exact_calculation.py',))
 
 
 def git(root, *args):

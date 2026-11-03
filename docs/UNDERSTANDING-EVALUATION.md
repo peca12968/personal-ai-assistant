@@ -190,3 +190,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `python scripts/evaluate_docx_reading.py`以scripts/docx_fixture.py產生固定合成DOCX，驗證可匯入並建立三個待開始目標；加`--live --report data/evaluations/新的報告.json`才收集實際模型，每題最多八步、不自動重試。報告綁定程式、提示、案例、runner及fixture腳本，另存DOCX原始SHA、抽取副本、工具與回答；完成收集後使用review_understanding.py逐項評讀。
 
 重點為表格與註腳合計560、頁首頁尾／附註資料與未決議註解、無法由文字得知Word頁碼／圖片時的限制說明。引用應對照實際抽取行號，不能把部件順序、註記封裝ID或文字行號當成Word頁碼／顯示編號。原封裝與投影的來源指紋只是版本證據，並非原版面等價；單輪開發者評讀與使用者驗收分開。初輪服務失敗的紀錄必須保留，改程式後的新收集不覆寫舊結果。
+
+
+## 精確結果接續計算（v0.53）
+
+`python scripts/evaluate_exact_calculation.py`離線只驗證三個固定情境並建立目標；加上`--live --report data/evaluations/新的報告.json`才呼叫真實模型，每題最多八步、不自動重試、不覆寫舊報告。保存程式／提示／案例／腳本指紋、原始動作與完整目標；收集完成後以review_understanding.py逐項評讀。案例涵蓋循環分數接續、長有限小數與大整數抵消。
+
+改前模型能以精確整數拆解繞過輸入限制時，保留正確評讀；另比較被拒絕的直接輸入、成功工具的完整參數與總步數，不能將「改成直接工具計算」冒稱原答案錯誤或整體推理分數提升。小數顯示不等於精確值，模型是否沿用exact須由實際工具輸入核對。原始報告與資料庫只留本機；開發評讀不等同使用者驗收。

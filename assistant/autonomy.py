@@ -8,8 +8,7 @@ import re
 import threading
 import uuid
 from contextlib import nullcontext
-from decimal import Decimal, localcontext
-from fractions import Fraction
+from .exact_math import calculate
 
 from .acceptance import strict_json
 from .answer_runs import lease
@@ -57,13 +56,14 @@ documents的line_count是該份文件總行數；read不得超過它，每次最
 search: {"query":"關鍵字"}，在目標文件中搜尋，返回有限片段。
 read: {"document_id":1,"start_line":1,"end_line":20}，完整讀取最多200行、10000字。
 recall: {"query":"相關偏好或事實"}，查找目前有效的長期記憶。
-calculate: {"operation":"sum|difference|product|quotient","values":["12.5","3"]}，精確四則運算。
+calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}，精確有理數四則運算，接受整數、有限小數或整數分數字串。
 ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
 write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
 deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
 artifacts只是已保存檔案的歷史紀錄，不保證檔案現在未被改動；deliver會重新核對。未被列入deliver的文件仍是草稿，不能冒稱都已交付。不能聲稱上傳或將本機路徑冒充下載網址。
-difference與quotient恰好兩個數；sum與product一至50個數。數字用十進位字串。
+difference與quotient恰好兩個數；sum與product一至50個數。數字字串例如-2、0.125、-1/7；不接受空白、科學記號、算式、正號或負分母。整數／有限小數合計最多2000位數字（含前導零），分數分子／分母各最多2000位；每次按輸入順序運算後約分的中間結果亦受分子／分母各2000位上限限制，超限整次失敗。
+calculate的exact是精確約分結果（整數或分數），後續計算直接沿用exact字串，不用decimal近似值代替。decimal只是40位有效數字、ROUND_HALF_EVEN（恰半取偶）的小數顯示，可能含科學記號；rounded=true表示它不等於精確值，並非計算本身不精確。顯示可能捨入長整數或有限小數，不只循環小數。報告依使用者需要區分精確與近似；這不是固定小數位、金額捨入或任意算式執行。
 不要不停查詢同一資料；有依據完成成果後，文字模式使用finish，文件交付模式使用deliver。'''
 
 
@@ -189,33 +189,6 @@ def validate_action(value):
     elif name == 'write_artifact':
         artifacts.payload(args['filename'], args['content'])
     return value
-
-
-def calculate(args):
-    op, values = args['operation'], args['values']
-    if op not in ('sum', 'difference', 'product', 'quotient') or not isinstance(values, list) or not 1 <= len(values) <= 50:
-        raise ValueError('計算運算或數量不支援。')
-    if op in ('difference', 'quotient') and len(values) != 2:
-        raise ValueError('減法與除法恰好需要兩個數。')
-    if any(not isinstance(v, str) or not re.fullmatch(r'-?[0-9]{1,20}(?:\.[0-9]{1,10})?', v) for v in values):
-        raise ValueError('每個數須為最多20位整數、10位小數的十進位字串。')
-    numbers = [Fraction(v) for v in values]
-    if op == 'sum':
-        result = sum(numbers, Fraction(0))
-    elif op == 'difference':
-        result = numbers[0] - numbers[1]
-    elif op == 'quotient':
-        if not numbers[1]:
-            raise ValueError('不能除以零。')
-        result = numbers[0] / numbers[1]
-    else:
-        result = Fraction(1)
-        for number in numbers:
-            result *= number
-    with localcontext() as context:
-        context.prec = 40
-        decimal = Decimal(result.numerator) / Decimal(result.denominator)
-    return {'exact': str(result), 'decimal': str(decimal), 'rounded': Fraction(decimal) != result}
 
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):

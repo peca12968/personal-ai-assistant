@@ -26,6 +26,7 @@ jobs:
       - run: python scripts/evaluate_tool_recovery.py
       - run: python scripts/evaluate_date_months.py
       - run: python scripts/evaluate_docx_reading.py
+      - run: python scripts/evaluate_exact_calculation.py
       - run: python scripts/evaluate_understanding.py --suite evals/communication_scope.json
       - run: python scripts/evaluate_tasks.py
       - run: python scripts/evaluate_workflows.py

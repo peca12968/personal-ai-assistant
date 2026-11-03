@@ -33,6 +33,7 @@ def activity(row):
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'plan_id', 'filename', 'filenames'}
     requested = {k: v for k, v in args.items() if k in allowed}
     fields = {'status', 'error', 'error_phase', 'requested_ranges', 'exact', 'decimal', 'rounded',
+              'decimal_precision', 'decimal_rounding',
               'total_changes', 'changed_line_counts', 'next_offset', 'offset',
               'all_changes_in_page', 'page_content_complete', 'line_text_equal',
               'decoded_text_equal', 'byte_hash_equal', 'source_fingerprint_equal', 'plan_id', 'report_sha256',
