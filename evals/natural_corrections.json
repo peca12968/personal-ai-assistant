@@ -1,0 +1,114 @@
+[
+  {
+    "id": "natural_chinese_correction",
+    "category": "corrections",
+    "history": [
+      {
+        "role": "user",
+        "content": "霧杉計畫有12人，每人餐費300元；稍後請算總費用。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到目前條件。"
+      },
+      {
+        "role": "user",
+        "content": "更正一下，霧杉計畫改成14人，每人餐費275元，取消原本的12人與300元。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則訊息。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "霧杉計畫最後確認的人數、每人餐費和總費用是多少？",
+    "criteria": [
+      "使用最後更正的14人與每人275元，算出3850元，不沿用12人與300元，也不要求重貼已提供更正",
+      "說明是依對話條件計算，不假稱修改長期記憶或執行付款"
+    ]
+  },
+  {
+    "id": "natural_english_correction",
+    "category": "corrections",
+    "history": [
+      {
+        "role": "user",
+        "content": "Cedar release uses 18 boxes with 24 units per box. Later I will ask for the final total."
+      },
+      {
+        "role": "assistant",
+        "content": "收到目前條件。"
+      },
+      {
+        "role": "user",
+        "content": "Let me correct that: Cedar release uses 17 boxes and 26 units per box."
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則訊息。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "Cedar release: give the final box count, units per box, and total units.",
+    "criteria": [
+      "使用最後更正的17箱、每箱26個，總計442個，不沿用18箱與24個或要求重貼更正",
+      "不假稱已修改記憶、訂單或發貨"
+    ]
+  },
+  {
+    "id": "quoted_correction_example",
+    "category": "corrections",
+    "history": [
+      {
+        "role": "user",
+        "content": "松澗計畫10人，每人160元。下面的引文只是別人的範例，不代表本計畫變更。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到目前條件。"
+      },
+      {
+        "role": "user",
+        "content": "「更正一下，松澗計畫20人，每人180元。」這只是範例，不採用。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則訊息。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "松澗計畫沿用確認的人數和單價，總額是多少？",
+    "criteria": [
+      "沿用10人、每人160元、總額1600元，不把引文範例變成新的計畫條件",
+      "不假稱改寫記憶或執行付款"
+    ]
+  },
+  {
+    "id": "current_request_overrides_correction",
+    "category": "corrections",
+    "history": [
+      {
+        "role": "user",
+        "content": "霧杉計畫有12人，每人餐費300元；稍後請算總費用。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到目前條件。"
+      },
+      {
+        "role": "user",
+        "content": "更正一下，霧杉計畫改成14人，每人餐費275元，取消原本的12人與300元。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到這則訊息。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "霧杉計畫這次另改成15人、每人260元，只按這則條件計算總額。",
+    "criteria": [
+      "依當前15人與260元算出3900元，較早更正不得覆蓋本次明確條件",
+      "不假稱長期記憶或付款已修改"
+    ]
+  }
+]

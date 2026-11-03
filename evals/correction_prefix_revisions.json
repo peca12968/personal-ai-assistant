@@ -1,0 +1,182 @@
+[
+  {
+    "id": "positive_1",
+    "text": "更正一下，人數改為14人。",
+    "expected": true
+  },
+  {
+    "id": "positive_2",
+    "text": "修正一下：單價是275元。",
+    "expected": true
+  },
+  {
+    "id": "positive_3",
+    "text": "我更正一下，日期是週四。",
+    "expected": true
+  },
+  {
+    "id": "positive_4",
+    "text": "讓我修正一下：地點是北館。",
+    "expected": true
+  },
+  {
+    "id": "positive_5",
+    "text": "請補充更正一下，改用新版。",
+    "expected": true
+  },
+  {
+    "id": "positive_6",
+    "text": "更正，人數是14。",
+    "expected": true
+  },
+  {
+    "id": "positive_7",
+    "text": "我更正：改成14人。",
+    "expected": true
+  },
+  {
+    "id": "positive_8",
+    "text": "讓我補充更正，改用新版。",
+    "expected": true
+  },
+  {
+    "id": "positive_9",
+    "text": "Correction, use 17 boxes.",
+    "expected": true
+  },
+  {
+    "id": "positive_10",
+    "text": "Quick correction: use 26 units.",
+    "expected": true
+  },
+  {
+    "id": "positive_11",
+    "text": "A small correction: use 17 boxes.",
+    "expected": true
+  },
+  {
+    "id": "positive_12",
+    "text": "Let me correct that: use 17 boxes.",
+    "expected": true
+  },
+  {
+    "id": "positive_13",
+    "text": "Let me correct myself, use 26 units.",
+    "expected": true
+  },
+  {
+    "id": "positive_14",
+    "text": "I need to correct that: use 17 boxes.",
+    "expected": true
+  },
+  {
+    "id": "positive_15",
+    "text": "  更正一下：人數改14。  ",
+    "expected": true
+  },
+  {
+    "id": "positive_16",
+    "text": "更正：原有格式保持。",
+    "expected": true
+  },
+  {
+    "id": "positive_17",
+    "text": "Correction: original form.",
+    "expected": true
+  },
+  {
+    "id": "positive_18",
+    "text": "我剛剛說錯了，是14人。",
+    "expected": true
+  },
+  {
+    "id": "negative_1",
+    "text": "「更正一下，人數14人。」",
+    "expected": false
+  },
+  {
+    "id": "negative_2",
+    "text": "他說更正一下，人數14人。",
+    "expected": false
+  },
+  {
+    "id": "negative_3",
+    "text": "不用更正一下，照原計畫。",
+    "expected": false
+  },
+  {
+    "id": "negative_4",
+    "text": "更正一下的意思是什麼？",
+    "expected": false
+  },
+  {
+    "id": "negative_5",
+    "text": "更正一下子這個詞。",
+    "expected": false
+  },
+  {
+    "id": "negative_6",
+    "text": "請修正這份文件。",
+    "expected": false
+  },
+  {
+    "id": "negative_7",
+    "text": "我想了解更正一下的用法。",
+    "expected": false
+  },
+  {
+    "id": "negative_8",
+    "text": "```\nQuick correction: use 17.\n```",
+    "expected": false
+  },
+  {
+    "id": "negative_9",
+    "text": "> Let me correct that: use 17.",
+    "expected": false
+  },
+  {
+    "id": "negative_10",
+    "text": "The example says: Quick correction: use 17.",
+    "expected": false
+  },
+  {
+    "id": "negative_11",
+    "text": "No correction, keep it.",
+    "expected": false
+  },
+  {
+    "id": "negative_12",
+    "text": "Quick correction is a phrase.",
+    "expected": false
+  },
+  {
+    "id": "negative_13",
+    "text": "Correctional: a different word.",
+    "expected": false
+  },
+  {
+    "id": "negative_14",
+    "text": "Let me correct that code later.",
+    "expected": false
+  },
+  {
+    "id": "negative_15",
+    "text": "I need to correct that document.",
+    "expected": false
+  },
+  {
+    "id": "negative_16",
+    "text": "不是更正一下，只是問問題。",
+    "expected": false
+  },
+  {
+    "id": "negative_17",
+    "text": "                                                                                                                                                                          更正一下：改成14人。",
+    "expected": false
+  },
+  {
+    "id": "negative_18",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxQuick correction: use 17.",
+    "expected": false
+  }
+]

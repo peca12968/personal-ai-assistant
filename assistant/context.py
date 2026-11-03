@@ -12,7 +12,9 @@ IMPORTANT = re.compile(r"目標|限制|必須|不能|不要|更正|改為|改用
 
 MAX_EARLIER_CORRECTIONS = 6
 CORRECTION_PREFIX = re.compile(
-    r"^(?:(?:請)?(?:更正|修正|補充更正)\s*:|correction\s*:|"
+    r"^(?:(?:請|我|讓我)?(?:更正|修正|補充更正)(?:一下)?\s*[:,。]|"
+    r"(?:(?:a\s+)?(?:quick|small)\s+)?correction\s*[:,]|"
+    r"(?:let\s+me\s+correct\s+(?:that|myself)|I\s+need\s+to\s+correct\s+that)\s*[:,]|"
     r"不是(?:這個|那個|這樣)\s*[,。]\s*(?:我是指|我要的是)|"
     r"我(?:剛才|剛剛|先前)說錯了\s*[,。:])", re.I)
 
