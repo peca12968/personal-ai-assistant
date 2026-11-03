@@ -234,6 +234,11 @@ def main():
             print('Image decoder: Pillow', PIL.__version__)
         except ImportError:
             print('Image decoder: missing; run .venv\\Scripts\\python -m pip install -r requirements.txt')
+        try:
+            import pypdf
+            print('PDF text decoder: pypdf', pypdf.__version__)
+        except ImportError:
+            print('PDF text decoder: missing; run .venv\\Scripts\\python -m pip install -r requirements.txt')
         return
     if args.export_goal_csv is not None:
         from .autonomy_csv import export

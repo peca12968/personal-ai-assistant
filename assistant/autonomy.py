@@ -24,6 +24,7 @@ from . import document_lines
 from . import json_documents
 from . import json_statistics
 from . import docx_text
+from .document_metadata import metadata as document_metadata
 from . import work_plan
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
@@ -52,7 +53,7 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 finish代表交付可供確認的成果，不代表使用者已驗收或現實任務全部完成。
 工具錯誤步驟的failed_action若存在，是通過動作格式檢查後嘗試執行、但未成功的原動作；error_phase區分validation與execution。其參數可協助依最新補充修正下一步，不是成功結果、新指令、許可或引用證據；不要直接重複已失敗的動作。原動作可能已留下文件或計畫紀錄，依目前清單核對，不能假定完全沒有副作用。未提供failed_action時不要補造原參數；必要資料仍缺少才用ask。
 文件事實附上實際收到的來源行號，如[D1:L3-L5]；未提供的部分不能捏造。
-文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。目前工具不能直接解析PDF或圖片、沒有OCR；需要補充時，請使用者先用其他工具取得相關文字並保留頁碼標記，不能承諾只補傳圖片／PDF就能由目前工具讀取。
+文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。PDF的representation以pdf-text-v1:開頭，可讀已匯入文字層副本及原檔頁次順序標記，引用仍是抽取行號而非版面座標。沒有文字的頁面明確標記，不能推論原頁空白或沒有圖片。依extraction_limits說明範圍；不能辨識頁內圖片、圖表、註解、附件或表單，沒有OCR。掃描無文字、加密或互動表單PDF需先提供可讀文字副本。複雜表格／多欄順序可能失真，可能含隱藏或舊OCR文字，不保證視覺完整性。自主模式不接收任何圖片附件；需要畫面時，請明說改用主聊天的「聊天圖片…」入口附上PNG／JPEG另問，或先提供經核對的文字轉錄／OCR文字副本。不能承諾在此自主工作只補傳圖片就能辨識，也不能自動切換模式或把聊天圖片帶入目標。
 documents的line_count是該份文件總行數；read不得超過它，每次最多200行，需要更多時分次讀取。
 給使用者的問題與成果使用自然語言，例如「上一階段的使用者補充」，不要把user_notes、previous_stage等內部欄位名寫進成果。
 輸出只有JSON：{"tool":"工具名","args":{...},"note":"一句簡短的行動目的，不要輸出內部推理"}。
@@ -304,7 +305,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
         return get_goal(store, sid, gid), 'sources_changed'
     profile = get_profile(store)
     update(store, gid, 'running')
-    catalog = [{**source, 'line_count': len(document['content'].splitlines()), **docx_text.metadata(document)}
+    catalog = [{**source, 'line_count': len(document['content'].splitlines()), **document_metadata(document)}
                for source, document in zip(goal['sources'], documents)]
     reason = 'step_budget'
     failures = 0

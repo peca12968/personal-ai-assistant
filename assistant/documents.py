@@ -8,22 +8,23 @@ from pathlib import Path
 
 from .retrieval import terms
 from .document_ranges import select_ranges
-from . import docx_text
+from . import docx_text,pdf_text
+from .document_metadata import metadata
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSION_BYTES = 8 * 1024 * 1024
 MAX_DOCUMENTS = 8
-EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml", ".toml", ".js", ".ts", ".html", ".css", ".docx"}
+EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml", ".toml", ".js", ".ts", ".html", ".css", ".docx", ".pdf"}
 STOP = {"the", "is", "a", "an", "of", "in", "to", "and", "what", "this", "請問", "我的", "什麼", "文件", "這份", "整理", "哪些"}
 
 
-def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES):
+def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES, cancel=None, timeout=pdf_text.TIMEOUT):
     if scope is not None:
         from .scope import check_path
         check_path(path, scope)
     path = Path(path).expanduser().resolve(strict=True)
     if path.suffix.lower() not in EXTENSIONS:
-        raise ValueError("目前支援文字、程式檔與DOCX；PDF、舊版DOC請先另存為支援格式。")
+        raise ValueError("目前支援文字、程式檔、DOCX與文字型PDF；舊版DOC請先另存為支援格式。")
     info = path.stat()
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("請選擇一般檔案。")
@@ -39,8 +40,11 @@ def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES):
         raw = stream.read(max_bytes + 1)
     if len(raw) > max_bytes:
         raise ValueError("每個文件最多 2 MiB。")
-    if path.suffix.lower() == '.docx':
-        content, encoding = docx_text.project(raw), docx_text.ENCODING
+    if path.suffix.lower() in ('.docx','.pdf'):
+        if path.suffix.lower()=='.pdf':
+            content,encoding=pdf_text.project(raw,cancel=cancel,timeout=timeout),pdf_text.ENCODING
+        else:
+            content, encoding = docx_text.project(raw), docx_text.ENCODING
         # Bind both the original package and its projection. Re-importing after
         # a projection change must invalidate existing goal/source evidence.
         digest = hashlib.sha256(encoding.encode()+b'\0'+raw+b'\0'+content.encode('utf-8')).hexdigest()
@@ -99,7 +103,7 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000, *, ref
         lines_by_id[document['id']] = document['content'].splitlines()
         catalog.append({"document_id": document["id"], "name": document["name"], "sha256": document["sha256"],
                         "total_lines": len(document["content"].splitlines()), "total_chunks": len(pieces),
-                        **docx_text.metadata(document)})
+                        **metadata(document)})
         ranked = []
         for index, piece in enumerate(pieces):
             tokens = terms(piece["text"]) - STOP

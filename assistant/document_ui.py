@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .documents import EXTENSIONS
-from .docx_text import metadata
+from .document_metadata import metadata
 
 
 class DocumentWindow:
@@ -12,7 +12,7 @@ class DocumentWindow:
         self.window.title("參考文件")
         self.window.geometry("840x580")
         self.window.minsize(650, 450)
-        ttk.Label(self.window, text="選取文字文件或DOCX供目前對話分析。DOCX僅抽取文字，行號不是Word頁碼。提問時，選出的片段會傳給 Codex；原檔不會被修改。",
+        ttk.Label(self.window, text="選取文字、DOCX或文字型PDF供目前對話分析。僅抽取文字，不做OCR；PDF保留頁次標記，引用為抽取行號。提問時，選出的片段會傳給 Codex；原檔不會被修改。",
                   padding=12, wraplength=730).pack(fill="x")
         table = ttk.Frame(self.window, padding=(12, 0))
         table.pack(fill="both", expand=True)
@@ -79,8 +79,8 @@ class DocumentWindow:
     def add(self):
         if self.unavailable():
             return
-        paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字文件或DOCX",
-                    filetypes=[("文字、程式與DOCX", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
+        paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字、DOCX或PDF",
+                    filetypes=[("文字、程式、DOCX與PDF", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
         if paths:
             self.import_paths(paths)
 

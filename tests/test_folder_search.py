@@ -113,7 +113,8 @@ class FolderSearchTests(unittest.TestCase):
         report = search_folder(self.root, 'needle', cancel=event)
         self.assertTrue(report['cancelled'])
         self.assertEqual(report['files_read'], 0)
-        with patch('assistant.folder_search.time.monotonic', side_effect=[0, 20]):
+        from itertools import chain, repeat
+        with patch('assistant.folder_search.time.monotonic', side_effect=chain([0],repeat(20))):
             report = search_folder(self.root, 'needle', timeout=1)
         self.assertIn('time', report['limits_hit'])
 

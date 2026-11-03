@@ -53,7 +53,7 @@ class WorkflowCheckTests(unittest.TestCase):
             error=subprocess.CalledProcessError(1,['actionlint'])
             with patch.object(checker,'ensure_tool',return_value=root/'tool.exe'),patch.object(checker.subprocess,'run',side_effect=error) as run:
                 with self.assertRaises(subprocess.CalledProcessError):checker.check(root)
-                self.assertEqual(run.call_args.args[0][-1],str(source))
+                self.assertEqual(Path(run.call_args.args[0][-1]),source.resolve())
                 self.assertTrue(run.call_args.kwargs['check'])
             with patch.object(publish.sys,'argv',['publish.py']),patch.object(publish,'run',side_effect=error) as run:
                 with self.assertRaises(subprocess.CalledProcessError):publish.main()

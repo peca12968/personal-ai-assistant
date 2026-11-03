@@ -52,6 +52,7 @@ def main():
     run(sys.executable, "scripts/evaluate_tool_recovery.py")
     run(sys.executable, "scripts/evaluate_date_months.py")
     run(sys.executable, "scripts/evaluate_docx_reading.py")
+    run(sys.executable, "scripts/evaluate_pdf_reading.py")
     run(sys.executable, "scripts/evaluate_exact_calculation.py")
     run(sys.executable, "scripts/evaluate_feedback_order.py")
     run(sys.executable, "scripts/evaluate_conversation_text.py")

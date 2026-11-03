@@ -135,7 +135,7 @@ class ImageInputTests(unittest.TestCase):
         code=('import sys,json,hashlib;from pathlib import Path;'
               'args=sys.argv[2:];paths=[args[i+1] for i,a in enumerate(args) if a=="--image"];'
               'out={"hashes":[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths],'
-              '"names":paths,"prompt":sys.stdin.read()};'
+              '"names":paths,"prompt":sys.stdin.buffer.read().decode("utf-8")};'
               'Path(sys.argv[1]).write_text(json.dumps(out),encoding="utf-8")')
         with patch.object(engine,'command',side_effect=lambda out:[sys.executable,'-c',code,str(out),'-']):
             answer=json.loads(engine.answer_images('圖形問題',data))

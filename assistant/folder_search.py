@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from .documents import EXTENSIONS, MAX_FILE_BYTES, STOP, chunks, read_document
-from .docx_text import metadata
+from .document_metadata import metadata
 from .retrieval import terms
 from .scope import check_path, is_link, select_root
 
@@ -95,7 +95,8 @@ def search_folder(folder, query, *, cancel=None, max_files=500, max_bytes=32 * 1
                     continue
                 report['files_read'] += 1
                 try:
-                    document = read_document(path, scope=root, max_bytes=cap)
+                    options = {'cancel': cancel, 'timeout': max(.001,deadline-time.monotonic())} if path.suffix.lower()=='.pdf' else {}
+                    document = read_document(path, scope=root, max_bytes=cap, **options)
                 except (ValueError, OSError):
                     # A failed decode/read may still consume bytes; reserve the full cap.
                     report['bytes_read_budget'] += cap
@@ -117,6 +118,7 @@ def search_folder(folder, query, *, cancel=None, max_files=500, max_bytes=32 * 1
                                     'size_bytes': document['size_bytes'], 'score': best[0], **best[1], **metadata(document)})
             except (OSError, ValueError):
                 report['unreadable'] += 1
+    stop()  # A parser may consume the final file's remaining deadline/cancellation.
     matches.sort(key=lambda row: (-row['score'], row['relative_path']))
     report['results'] = matches[:max_results]
     if len(matches) > max_results:
