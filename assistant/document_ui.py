@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .documents import EXTENSIONS
+from .docx_text import metadata
 
 
 class DocumentWindow:
@@ -11,7 +12,7 @@ class DocumentWindow:
         self.window.title("參考文件")
         self.window.geometry("840x580")
         self.window.minsize(650, 450)
-        ttk.Label(self.window, text="選取文字文件供目前對話分析。提問時，選出的片段會傳給 Codex；原檔不會被修改。",
+        ttk.Label(self.window, text="選取文字文件或DOCX供目前對話分析。DOCX僅抽取文字，行號不是Word頁碼。提問時，選出的片段會傳給 Codex；原檔不會被修改。",
                   padding=12, wraplength=730).pack(fill="x")
         table = ttk.Frame(self.window, padding=(12, 0))
         table.pack(fill="both", expand=True)
@@ -54,6 +55,7 @@ class DocumentWindow:
         self.detail.delete("1.0", "end")
         if row:
             self.detail.insert("1.0", f'來源 D{row["id"]}：{row["name"]}\n本機原檔：{row["source_path"]}\n內容指紋：{row["sha256"]}\n\n使用匯入時副本；原檔變更後需重新匯入。移除只影響未來選取，過往回答與參考快照仍保留。')
+            if metadata(row): self.detail.insert('end', '\n\n'+metadata(row)['extraction_limits'])
         self.detail.configure(state="disabled")
 
     def import_paths(self, paths):
@@ -70,8 +72,8 @@ class DocumentWindow:
             messagebox.showerror("部分文件未匯入", "\n".join(failures), parent=self.window)
 
     def add(self):
-        paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字文件",
-                    filetypes=[("文字與程式", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
+        paths = filedialog.askopenfilenames(parent=self.window, title="選取要分析的文字文件或DOCX",
+                    filetypes=[("文字、程式與DOCX", " ".join("*" + ext for ext in sorted(EXTENSIONS))), ("所有檔案", "*.*")])
         if paths:
             self.import_paths(paths)
 

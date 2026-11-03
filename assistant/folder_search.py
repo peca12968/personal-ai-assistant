@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from .documents import EXTENSIONS, MAX_FILE_BYTES, STOP, chunks, read_document
+from .docx_text import metadata
 from .retrieval import terms
 from .scope import check_path, is_link, select_root
 
@@ -113,7 +114,7 @@ def search_folder(folder, query, *, cancel=None, max_files=500, max_bytes=32 * 1
                         best = (score, piece)
                 if best:
                     matches.append({'relative_path': relative, 'sha256': document['sha256'],
-                                    'size_bytes': document['size_bytes'], 'score': best[0], **best[1]})
+                                    'size_bytes': document['size_bytes'], 'score': best[0], **best[1], **metadata(document)})
             except (OSError, ValueError):
                 report['unreadable'] += 1
     matches.sort(key=lambda row: (-row['score'], row['relative_path']))

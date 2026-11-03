@@ -120,6 +120,8 @@ class SearchWindow:
         if self.report and selection:
             row = self.report['results'][int(selection[0])]
             self.preview_text.insert('1.0', row['relative_path'] + ('（部分行內容）' if row['partial_line'] else '') + '\n\n' + row['text'])
+            if row.get('extraction_limits'):
+                self.preview_text.insert('end', '\n\n抽取範圍：'+row['extraction_limits'])
         self.preview_text.configure(state='disabled')
 
     def import_selected(self):

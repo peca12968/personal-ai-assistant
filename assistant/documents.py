@@ -8,11 +8,12 @@ from pathlib import Path
 
 from .retrieval import terms
 from .document_ranges import select_ranges
+from . import docx_text
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSION_BYTES = 8 * 1024 * 1024
 MAX_DOCUMENTS = 8
-EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml", ".toml", ".js", ".ts", ".html", ".css"}
+EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml", ".toml", ".js", ".ts", ".html", ".css", ".docx"}
 STOP = {"the", "is", "a", "an", "of", "in", "to", "and", "what", "this", "請問", "我的", "什麼", "文件", "這份", "整理", "哪些"}
 
 
@@ -22,7 +23,7 @@ def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES):
         check_path(path, scope)
     path = Path(path).expanduser().resolve(strict=True)
     if path.suffix.lower() not in EXTENSIONS:
-        raise ValueError("目前支援文字與程式檔；PDF、Word 請先另存為 UTF-8 文字。")
+        raise ValueError("目前支援文字、程式檔與DOCX；PDF、舊版DOC請先另存為支援格式。")
     info = path.stat()
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("請選擇一般檔案。")
@@ -38,17 +39,24 @@ def read_document(path, *, scope=None, max_bytes=MAX_FILE_BYTES):
         raw = stream.read(max_bytes + 1)
     if len(raw) > max_bytes:
         raise ValueError("每個文件最多 2 MiB。")
-    encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
-    try:
-        content = raw.decode(encoding)
-    except UnicodeError:
-        raise ValueError("無法讀取文字編碼，請另存為 UTF-8 或含 BOM 的 UTF-16。") from None
+    if path.suffix.lower() == '.docx':
+        content, encoding = docx_text.project(raw), docx_text.ENCODING
+        # Bind both the original package and its projection. Re-importing after
+        # a projection change must invalidate existing goal/source evidence.
+        digest = hashlib.sha256(encoding.encode()+b'\0'+raw+b'\0'+content.encode('utf-8')).hexdigest()
+    else:
+        encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+        try:
+            content = raw.decode(encoding)
+        except UnicodeError:
+            raise ValueError("無法讀取文字編碼，請另存為 UTF-8 或含 BOM 的 UTF-16。") from None
+        digest = hashlib.sha256(raw).hexdigest()
     if "\x00" in content or any(ord(char) < 32 and char not in "\n\r\t\f" for char in content):
         raise ValueError("檔案包含非文字資料，未匯入。")
     if not content.strip():
         raise ValueError("文件沒有可分析的文字。")
     return {"name": path.name, "source_path": str(path), "path_key": os.path.normcase(str(path)),
-            "content": content, "sha256": hashlib.sha256(raw).hexdigest(),
+            "content": content, "sha256": digest,
             "encoding": encoding, "size_bytes": len(raw)}
 
 
@@ -90,7 +98,8 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000, *, ref
         pieces_by_id[document['id']] = pieces
         lines_by_id[document['id']] = document['content'].splitlines()
         catalog.append({"document_id": document["id"], "name": document["name"], "sha256": document["sha256"],
-                        "total_lines": len(document["content"].splitlines()), "total_chunks": len(pieces)})
+                        "total_lines": len(document["content"].splitlines()), "total_chunks": len(pieces),
+                        **docx_text.metadata(document)})
         ranked = []
         for index, piece in enumerate(pieces):
             tokens = terms(piece["text"]) - STOP

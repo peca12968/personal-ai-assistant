@@ -183,3 +183,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 `python scripts/evaluate_date_months.py`只驗證四題格式並建立待開始的本機目標；`--live --report data/evaluations/新的日期報告.json`才收集實際模型的工具動作與成果，每題八步、不自動重試。固定比較原起日逐月計算、明確月底、反向及世紀閏年、未決定短月規則的澄清；保存程式／提示／案例／執行腳本指紋，收集結束後使用review_understanding.py逐項評讀。
 
 需要區分模型自行推算後查weekday，與工具直接以add_months計算所選規則。原本正確的日期不能因改用新工具就說原答案錯誤；新增能力及更可核對的計算依據，不等同整體推理品質提升。所有實際回應與合成資料庫留在忽略目錄；使用者與獨立評讀仍需分開記錄。
+
+
+## DOCX抽取與實際問答（v0.52）
+
+`python scripts/evaluate_docx_reading.py`以scripts/docx_fixture.py產生固定合成DOCX，驗證可匯入並建立三個待開始目標；加`--live --report data/evaluations/新的報告.json`才收集實際模型，每題最多八步、不自動重試。報告綁定程式、提示、案例、runner及fixture腳本，另存DOCX原始SHA、抽取副本、工具與回答；完成收集後使用review_understanding.py逐項評讀。
+
+重點為表格與註腳合計560、頁首頁尾／附註資料與未決議註解、無法由文字得知Word頁碼／圖片時的限制說明。引用應對照實際抽取行號，不能把部件順序、註記封裝ID或文字行號當成Word頁碼／顯示編號。原封裝與投影的來源指紋只是版本證據，並非原版面等價；單輪開發者評讀與使用者驗收分開。初輪服務失敗的紀錄必須保留，改程式後的新收集不覆寫舊結果。
