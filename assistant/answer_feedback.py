@@ -1,5 +1,6 @@
 """Bounded, attributable user feedback for subsequent answers in the same session."""
 from .context import context_reset
+from . import sqlite_text
 
 MAX_ITEMS = 3
 LIMITS = {'correction': 1000, 'answer_excerpt': 1200}
@@ -11,8 +12,8 @@ selection_limited或各truncated為true表示省略，不能聲稱已看過全�
 
 
 def capture(db, sid):
-    # BLOB prefixes bound reads and preserve embedded NULs (SQLite text length
-    # and substr stop at NUL). Four UTF-8 bytes per code point plus boundary room.
+    # Decode using the database's encoding, including UTF-16 legacy stores.
+    codec = sqlite_text.encoding(db)
     db.create_function('has_answer_correction', 1, lambda value: bool(value and value.strip()), deterministic=True)
     rows = db.execute('''SELECT m.id,m.created_at,f.updated_at,v.revision,v.order_basis,
         substr(CAST(f.correction AS BLOB),1,4004) AS correction_prefix,
@@ -30,11 +31,9 @@ def capture(db, sid):
         item = {'answer_message_id': row['id'], 'answer_created_at': row['created_at'], 'updated_at': row['updated_at']}
         item.update(update_revision=row['revision'], order_basis=row['order_basis'])
         for key, column in [('correction', 'correction'), ('answer_excerpt', 'answer')]:
-            prefix = row[column + '_prefix']
-            decoded = prefix.decode('utf-8', errors='ignore')
-            item[key] = decoded[:LIMITS[key]]
-            item[('correction' if key == 'correction' else 'answer') + '_truncated'] = (
-                len(decoded) > LIMITS[key] or row[column + '_bytes'] > len(prefix))
+            item[key], truncated = sqlite_text.prefix(row[column + '_prefix'],
+                row[column + '_bytes'], LIMITS[key], codec)
+            item[('correction' if key == 'correction' else 'answer') + '_truncated'] = truncated
         items.append(item)
     return {'items': items, 'selection_limited': len(rows) > MAX_ITEMS}
 

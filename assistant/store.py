@@ -299,12 +299,12 @@ class Store:
         This selection neither edits memory nor asserts the correction is true.
         """
         with self.connect() as db:
-            db.create_function('explicit_correction', 1, is_explicit_correction,
-                               deterministic=True)
+            from .sqlite_text import register_correction
+            register_correction(db, is_explicit_correction)
             return [dict(row) for row in db.execute("""SELECT * FROM messages
                 WHERE session_id=? AND role='user' AND id<? AND id<>?
                 AND id NOT IN (SELECT message_id FROM local_memory_messages)
-                AND explicit_correction(substr(content, 1, 160))
+                AND explicit_correction_bytes(substr(CAST(content AS BLOB),1,644),length(CAST(content AS BLOB)))
                 ORDER BY id DESC LIMIT ?""",
                 (sid, before_id, exclude_message_id or -1, MAX_EARLIER_CORRECTIONS + 1))]
 

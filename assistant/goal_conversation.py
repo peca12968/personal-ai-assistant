@@ -4,6 +4,7 @@ import json
 
 from .acceptance import strict_json
 from . import answer_feedback
+from . import sqlite_text
 from .context import is_explicit_correction, MAX_EARLIER_CORRECTIONS
 
 MAX_MESSAGES = 16
@@ -24,38 +25,42 @@ def digest(value):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _excerpt(row, limit):
-    return {'message_id': row['id'], 'role': row['role'], 'content': row['excerpt'][:limit],
-            'content_truncated': row['content_length'] > limit, 'created_at': row['created_at']}
+def _excerpt(row, limit, codec):
+    content, truncated = sqlite_text.prefix(row['content_prefix'], row['content_bytes'], limit, codec)
+    return {'message_id': row['id'], 'role': row['role'], 'content': content,
+            'content_truncated': truncated, 'created_at': row['created_at']}
 
 
 def capture(db, sid):
     """Caller supplies the transaction that also creates the goal."""
     if db.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone() is None:
         raise ValueError('找不到要帶入的對話。')
-    rows = db.execute('''SELECT id,role,substr(content,1,?) AS excerpt,length(content) AS content_length,created_at
+    codec = sqlite_text.register_correction(db, is_explicit_correction)
+    rows = db.execute('''SELECT id,role,substr(CAST(content AS BLOB),1,?) AS content_prefix,
+        length(CAST(content AS BLOB)) AS content_bytes,created_at
         FROM messages WHERE session_id=? AND id NOT IN (SELECT message_id FROM local_memory_messages)
-        ORDER BY id DESC LIMIT ?''', (PER_MESSAGE, sid, MAX_MESSAGES + 1)).fetchall()
+        ORDER BY id DESC LIMIT ?''', (sqlite_text.byte_limit(PER_MESSAGE), sid, MAX_MESSAGES + 1)).fetchall()
     selected, remaining = [], TOTAL_CHARS
     for row in rows[:MAX_MESSAGES]:
         if remaining <= 0:
             break
         limit = min(PER_MESSAGE, remaining)
-        item = _excerpt(row, limit)
+        item = _excerpt(row, limit, codec)
         selected.append(item)
         remaining -= len(item['content'])
     selected.reverse()
     before = selected[0]['message_id'] if selected else 9223372036854775807
-    db.create_function('explicit_correction', 1, is_explicit_correction, deterministic=True)
-    corrections = db.execute('''SELECT id,role,substr(content,1,?) AS excerpt,length(content) AS content_length,created_at
+    corrections = db.execute('''SELECT id,role,substr(CAST(content AS BLOB),1,?) AS content_prefix,
+        length(CAST(content AS BLOB)) AS content_bytes,created_at
         FROM messages WHERE session_id=? AND id<? AND role='user'
         AND id NOT IN (SELECT message_id FROM local_memory_messages)
-        AND explicit_correction(substr(content,1,160)) ORDER BY id DESC LIMIT ?''',
-        (CORRECTION_CHARS, sid, before, MAX_EARLIER_CORRECTIONS + 1)).fetchall()
+        AND explicit_correction_bytes(substr(CAST(content AS BLOB),1,644),length(CAST(content AS BLOB)))
+        ORDER BY id DESC LIMIT ?''',
+        (sqlite_text.byte_limit(CORRECTION_CHARS), sid, before, MAX_EARLIER_CORRECTIONS + 1)).fetchall()
     brief = db.execute('SELECT objective,constraints_text,decisions,updated_at FROM session_briefs WHERE session_id=?', (sid,)).fetchone()
     return {'session_id': sid, 'captured_at': db.execute('SELECT CURRENT_TIMESTAMP').fetchone()[0],
             'messages': selected, 'messages_limited': len(rows) > len(selected),
-            'earlier_corrections': list(reversed([_excerpt(row, CORRECTION_CHARS) for row in corrections[:MAX_EARLIER_CORRECTIONS]])),
+            'earlier_corrections': list(reversed([_excerpt(row, CORRECTION_CHARS, codec) for row in corrections[:MAX_EARLIER_CORRECTIONS]])),
             'earlier_corrections_limited': len(corrections) > MAX_EARLIER_CORRECTIONS,
             'brief': dict(brief) if brief else {}, 'answer_feedback': answer_feedback.capture(db, sid)}
 
