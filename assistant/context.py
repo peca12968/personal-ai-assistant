@@ -200,17 +200,31 @@ def _instruction_text(question):
             return False
         following = index + 1
         if following < len(visible) and latin_letter(visible[following]):
-            # With no matching opener this is word punctuation, including
-            # contractions, possessives and names. Inside a single quotation,
-            # recognize grammatical suffixes and capitalized name components
-            # while allowing a closing quote directly before a following word.
+            # Without a matching opener, retain legacy word punctuation.
             if not closing:
                 return True
+            # Inspect complete adjacent Latin components, with a fixed bound.
+            # A capitalized following word alone is not evidence of a name:
+            # a quotation may close immediately before a new sentence.
+            start = index - 1
+            while start > 0 and index - start < 64 and latin_letter(visible[start - 1]):
+                start -= 1
             end = following
-            while end < len(visible) and latin_letter(visible[end]):
+            while end < len(visible) and end - following < 64 and latin_letter(visible[end]):
                 end += 1
+            if ((start > 0 and latin_letter(visible[start - 1]))
+                    or (end < len(visible) and latin_letter(visible[end]))):
+                return False
+            stem = visible[start:index]
             suffix = visible[following:end]
-            return suffix.lower() in ('s', 't', 're', 've', 'll', 'd', 'm') or suffix[0].isupper()
+            # Contractions and singular possessives have short grammatical
+            # suffixes. Name elisions require a short prefix as well as a
+            # capitalized, otherwise lowercase second component (O'Connor,
+            # d'Artagnan); arbitrary capitalized continuation words do not.
+            if suffix.lower() in ('s', 't', 're', 've', 'll', 'd', 'm'):
+                return True
+            return (1 <= len(stem) <= 2 and len(suffix) >= 2
+                    and suffix[0].isupper() and suffix[1:].islower())
         # A trailing possessive apostrophe must not open a quotation. When a
         # matching quotation is active, its delimiter takes precedence.
         return not closing
