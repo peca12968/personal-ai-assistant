@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 
 from .engine import EngineError, CodexEngine, MAX_PROMPT_BYTES, MAX_ANSWER_BYTES, answer_directory
-from . import local_models
+from . import local_models, learned_models
+from .learning_batches import PhaseExit
 
 ERRORS = {
     'gpu_busy': '本機模型正在被另一個推理或學習程序使用，這次沒有送到其他引擎。',
@@ -25,22 +26,22 @@ ERRORS = {
 
 
 class LocalEngine:
-    def __init__(self, data_dir, *, experiment=None, timeout=240):
+    def __init__(self, data_dir, *, experiment=None, batch=None, active=False, timeout=240):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 900:
             raise ValueError('本機引擎逾時需為大於0且不超過900秒的有限值。')
         try:
-            self._selection_json = json.dumps(local_models.select(experiment), ensure_ascii=False)
-        except (ValueError, OSError, KeyError, TypeError):
+            self._selection_json = json.dumps(learned_models.select(data_dir,experiment=experiment,batch=batch,active=active), ensure_ascii=False)
+        except (ValueError, OSError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise EngineError(ERRORS['model_changed'], 'local_model_changed') from None
         self.timeout = timeout
         self.workdir = Path(data_dir).resolve()/'local-engine-workspace'
         self.workdir.mkdir(parents=True, exist_ok=True)
         folder = local_models.ROOT/'data/learning/runtime'
         self.python = folder/('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-        self.display_name = '本機 Qwen3-4B · ' + ('研究參數' if experiment else '原始參數')
+        self.display_name = '本機 Qwen3-4B · ' + ('確認批次' if self.describe().get('confirmed_batch') else '研究參數' if experiment else '原始參數')
 
     def describe(self):
-        return local_models.description(self.selection)
+        return learned_models.description(self.selection)
 
     @property
     def selection(self):
@@ -60,6 +61,13 @@ class LocalEngine:
                 raise EngineError('本機回答逾時，已要求停止程序。', 'timeout')
         check()
         selection = self.selection
+        def verify_selection(*,full=False):
+            try:
+                (learned_models.validate if full else learned_models.check_context)(selection)
+            except (ValueError,OSError,KeyError,TypeError,learned_models.sqlite3.Error):
+                raise EngineError(ERRORS['model_changed'], 'local_model_changed') from None
+        verify_selection(full=True)
+        check()
         if not isinstance(prompt, str):
             raise EngineError('推理輸入必須是文字。', 'invalid_input')
         try:
@@ -79,12 +87,17 @@ class LocalEngine:
                     source.write(request); source.seek(0)
                     command = self.command(output)
                     check()
+                    actual=PhaseExit(output.with_suffix('.started'))
                     process = subprocess.Popen(command, stdin=source, stdout=subprocess.DEVNULL, stderr=stderr,
                         cwd=local_models.ROOT,
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                     try:
+                        last_check=0
                         while process.poll() is None:
+                            actual.observe()
                             check()
+                            if time.monotonic()-last_check>=2:
+                                verify_selection(); last_check=time.monotonic()
                             if log.stat().st_size > 1024 * 1024:
                                 raise EngineError('本機推理診斷輸出超限，已要求停止。', 'local_log_limit')
                             time.sleep(0.1)
@@ -119,12 +132,16 @@ class LocalEngine:
                         if len(answer_bytes) > MAX_ANSWER_BYTES:
                             raise EngineError('本機回覆超過大小上限。', 'output_too_large')
                         check()
+                        verify_selection(full=True)
                         return result['answer'].strip()
                     finally:
-                        CodexEngine.stop(process)
                         try:
-                            process.wait(timeout=10)
-                        except (OSError, subprocess.TimeoutExpired):
+                            try: actual.observe()
+                            finally:
+                                CodexEngine.stop(process); process.wait(timeout=10)
+                            actual.wait()
+                        except (OSError, ValueError, subprocess.TimeoutExpired):
                             raise EngineError('已要求停止，但無法確認本機程序已結束。', 'cleanup_unconfirmed') from None
+                        finally: actual.close()
         except OSError:
             raise EngineError('無法啟動本機引擎或讀寫推理暫存資料。', 'local_io') from None

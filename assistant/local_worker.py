@@ -9,7 +9,7 @@ from pathlib import Path
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from assistant import local_models
+from assistant import local_models, learned_models
 from scripts.learning.runtime import gpu_lease
 from scripts.learning.protocol import EXPECTED_VERSIONS
 
@@ -60,11 +60,11 @@ def infer(request):
         torch.manual_seed(20261104)
         torch.cuda.set_per_process_memory_fraction(0.85)
         try:
-            base, adapter = local_models.verify_assets(request['selection'])
-        except (OSError, ValueError, KeyError, TypeError):
+            base, adapter = learned_models.verify_assets(request['selection'])
+        except (OSError, ValueError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise Failure('model_changed') from None
         tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True, trust_remote_code=False)
-        provenance = json.dumps(local_models.description(request['selection']), ensure_ascii=False)
+        provenance = json.dumps(learned_models.description(request['selection']), ensure_ascii=False)
         messages = [
             {'role': 'system', 'content': SYSTEM_GUIDANCE+'\n以下是程式提供的本次實際選用引擎資訊。回答引擎相關問題時以此為準；其他問題不需重述。\n'+provenance},
             {'role': 'user', 'content': request['prompt']},
@@ -76,6 +76,10 @@ def infer(request):
             use_safetensors=True, torch_dtype=torch.bfloat16, device_map={'': 0}, attn_implementation='sdpa')
         if adapter is not None:
             model = PeftModel.from_pretrained(model, adapter, is_trainable=False, local_files_only=True)
+            if request['selection'].get('schema')==learned_models.SCHEMA:
+                from scripts.learning.experiment import adapter_hash
+                if adapter_hash(model)!=request['selection']['batch']['weights_sha256']:
+                    raise Failure('model_changed')
         model.eval()
         gc.collect(); torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
         tokens = torch.tensor([ids], device='cuda')
@@ -105,8 +109,9 @@ def infer(request):
         # Recheck selection metadata after inference; never relabel an answer if
         # another process changed the selected research evidence during the call.
         try:
-            unchanged = local_models.select(request['selection']['experiment']) == request['selection']
-        except (ValueError, OSError, KeyError, TypeError):
+            learned_models.validate(request['selection'])
+            unchanged = True
+        except (ValueError, OSError, KeyError, TypeError, learned_models.sqlite3.Error):
             unchanged = False
         if not unchanged:
             raise Failure('model_changed')
@@ -132,6 +137,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    with args.output.with_suffix('.started').open('x',encoding='ascii') as marker:
+        marker.write(str(os.getpid()))
     code = 0
     try:
         payload = sys.stdin.buffer.read(local_models.MAX_REQUEST_BYTES+1)

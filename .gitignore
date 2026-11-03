@@ -1,6 +1,8 @@
 .venv/
 data/
 **/autonomy-artifacts/
+**/learning-batches/
+**/local-engine-workspace/
 __pycache__/
 *.py[cod]
 .env

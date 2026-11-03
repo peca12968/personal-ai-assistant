@@ -75,17 +75,21 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
     parser.add_argument('--engine', choices=('codex', 'local'), default='codex', help='選用推理引擎；local為需另裝環境的本機Qwen3-4B實驗引擎')
     parser.add_argument('--local-experiment', help='搭配--engine local，明確選用已驗證研究參數；預設為未微調底座')
+    parser.add_argument('--local-batch', help='搭配--engine local，選用此資料目錄內仍有效的已驗證確認批次')
+    parser.add_argument('--local-active', action='store_true', help='搭配--engine local，載入明確保存的模型選擇；變更後需重新開啟')
     parser.add_argument("--file", type=Path, action="append", default=[], help="匯入文字文件供本次對話分析；可重複指定")
     parser.add_argument('--image', type=Path, action='append', default=[], help='搭配--ask匯入並附上PNG／JPEG，可重複指定，最多4張')
     args = parser.parse_args()
-    if args.local_experiment is not None and args.engine != 'local':
-        parser.error('--local-experiment需搭配--engine local。')
+    if any((args.local_experiment is not None,args.local_batch is not None,args.local_active)) and args.engine != 'local':
+        parser.error('本機參數選項需搭配--engine local。')
+    if sum((args.local_experiment is not None,args.local_batch is not None,args.local_active))>1:
+        parser.error('--local-experiment、--local-batch與--local-active只能選一個。')
     if args.engine == 'local' and (args.improve or args.rollback_improvement):
         parser.error('程式自我改進目前使用Codex；本機參數學習是另一個流程，不能混用--engine local。')
     def make_engine():
         if args.engine == 'local':
             from .local_engine import LocalEngine
-            return LocalEngine(args.data_dir, experiment=args.local_experiment)
+            return LocalEngine(args.data_dir, experiment=args.local_experiment,batch=args.local_batch,active=args.local_active)
         return CodexEngine(args.data_dir)
     if args.image and (not args.ask or len(args.image) > 4):
         parser.error('--image需搭配--ask，最多4張；重試沿用原題圖片。')
@@ -242,7 +246,7 @@ def main():
         if args.engine == 'local':
             try:
                 from .local_engine import LocalEngine
-                selected = LocalEngine(args.data_dir, experiment=args.local_experiment)
+                selected = make_engine()
                 print('Local model:', json.dumps(selected.describe(), ensure_ascii=False))
                 print('Optional runtime present:', selected.python.is_file())
                 print('完整套件、模型雜湊與GPU檢查會在實際回答前執行；本次沒有載入模型。')
