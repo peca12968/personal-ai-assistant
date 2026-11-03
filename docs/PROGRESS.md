@@ -1001,3 +1001,15 @@
 - 新版三題完整實測：選定題5步（搜尋1次、讀前後文1次、計算2次、完成），正確採9×140+55=1315；未定題7步（搜尋1次、讀前後文1次、計算4次、詢問），列出915／1175且不把引文當決定；當前覆蓋題維持2步得到420。三題皆pass→pass，差異為8→5、8→7、2→2步；沒有宣稱舊版失敗或通用能力提升。
 - 所有模型程序確認exit0後才追加development_agent評讀，human_grade保留空白。逐筆以唯讀資料庫核對前後六個固定副本及533則完整合成輸入、實際引擎payload的目標／副本SHA且初始不含大副本原文、每次搜尋／窗口原文和數量、全部Fraction計算與最終數字；suite／runner與最終正式來源／提示指紋一致。新版產品說明三項通過，實際請求追蹤核對成功。comparison及audit保留本機；這是單次開發驗證，不是獨立人類驗收或IQ分數。
 - 最終發布透過既有publish.py執行完整單元測試、離線評估與來源／隱私／私人目的地檢查，通過才提交推送；完整程序輸出作為發布結果證據。使用者重新開啟v0.71後可在已選用歷史副本的自主目標使用前後文讀取，不自動開始工作。
+
+
+## 自主歷史工作評估的逐步請求追蹤（2026-11-03，助理維持v0.71）
+
+- 上一目標回合已完成並發布56ea5d5，屬產品進展；本輪從乾淨主線檢查評估可信度。GitHub CI查詢仍在執行但步驟有前進，沒有把它當作已通過或另行重啟。
+- 舊evaluate_conversation_search的row沒有原問題／完整fixture，且calls在engine.answer成功後才附加；可處理的引擎失敗會缺少該次實際請求。本輪新增conversation_goal_trace_v1、完整案例canonical指紋、原問題、collector／fixture builder／validator指紋與嚴格32MiB原suite讀取，拒絕重複JSON鍵、非有限數及讀入期間變更。
+- 引擎邊界在呼叫前保存request／UTF-8 SHA／JSON邊界與context SHA、連續sequence；返回保存raw及SHA，EngineError／ValueError／OSError保留失敗請求及error，不補造回答，不自動重試，收集錯誤明示非零exit。每題至多8次、每次請求及回應各2MiB，案例停止後整份報告原子保存，並非程序強制終止的耐久日誌。
+- 驗證器核對完整fixture與報告問題／標準、當前目標／session、每次請求的先前步驟（只排除控制器本來就排除的companion_profile）與歷史副本摘要、實際請求／脈絡／回應指紋；原suite完整內容另外核對，避免只改歷史而保留問題仍被接受。已評讀證據改變則拒絕沿用；舊模式不補造、不與新模式比較。摘要標示已核對的實際請求，仍不認證雲端身分或語意正確。
+- 初始7項新回歸通過，並有原10項單次追蹤、11項理解評估及12項報告檢視檢查通過。補充寫檔入口檢查時，新增第8項回歸重現：原main尚未在save_report前驗證新協定，意外改動raw可被寫入；初版真實收集保持原始來源至程序結束，後續修正再另收最終報告，不覆寫初版。正式assistant／prompts／模型設定不修改，版本維持0.71.0。
+- 初版程序exit0後才修改collector：在每題save_report前新增validate_report與verify_suite。原先失敗的寫檔入口回歸轉為通過，全部8項通過；初版三題及精確collector／validator／builder／reviewer來源另存本機，沒有覆寫。最終版本另收三題，分別5／7／2次呼叫與步驟，正確得到1315、未決定並比較915／1175，以及當前覆蓋420。這是新收集協定的實際驗證，不與舊模式成績或初版收集器作能力提升比較。
+- 初版與最終各自程序確認exit0後才追加development_agent評讀，human_grade空白；最終三題全部通過。逐筆對照唯讀SQLite中目標／session／狀態／答案／全部動作及觀察、固定533則副本與原fixture、SHA與實際payload，獨立Fraction重算全部計算；最終collector／builder／validator／正式來源／提示指紋一致。原始與最終報告、測試器原碼、合成資料庫及audit只在忽略的data/evaluations/conversation-goal-trace-v071。
+- 此次發布依既有publish.py完整單元／離線／隱私與私人目的地檢查；通過後才推送並核對遠端HEAD。變更限評估腳本、回歸與維護文件；正式assistant與prompts未修改，也沒有讀寫正式個人資料庫或改自我修改範圍。

@@ -366,3 +366,14 @@ conversation_search.json與專用evaluate_conversation_search.py先於正式修�
 初次三題實測成功後，額外大型UTF-16回歸發現SQLite BLOB位元組長度與UTF-8序列化上限不同，會誤拒絕1百萬字控制字元的合法副本。保留after.json與help.json，不改寫它們的來源；修正原生UTF-16最多兩倍的預取界線後，重新收完整final.json與help-final.json，最終來源及提示指紋相符。產品說明四項通過，交代選用、範圍、固定副本、文字比對／分頁、無命中及語意／權限限制。
 
 全部handle終止才追加development_agent評讀，human_grade空白。最終比較兩題fail→pass、一題pass→pass；參考案例、runner與問題保持，正式來源／提示依功能變更。既有推理對照成績沒有改動。原始答案、合成資料庫／歷史副本、工具頁、初次與最終報告、比較和audit只在忽略的data/evaluations/conversation-search-v070。這是已知資料任務的接續能力，不是完整記憶、獨立一般智力或人類IQ分數。
+
+
+## 自主歷史工作逐步請求追蹤（conversation_goal_trace_v1）
+
+`evaluate_conversation_search.py --live`的新報告保存完整案例fixture、原問題與canonical SHA；同時記錄測試器、來源建構器及共用驗證器指紋。每次呼叫先保存實際引擎輸入、UTF-8 SHA、明確JSON邊界及脈絡SHA，返回後保存原始文字與SHA；引擎拋出可處理錯誤時保留該次請求與error，不補造raw回答、不自動重試，命令以非零狀態結束。
+
+驗證每次請求的目標、同目標歷史副本摘要與當時先前步驟；已觀察資料只按控制器原規則排除companion_profile，其餘需與保存結果一致。每題最多8次呼叫、每次請求／回應最多2MiB；完整報告仍最多32MiB。寫入前驗證協定及原案例集，使用原子替換保留先前完整檔案。紀錄在一題停止後保存，並非逐字串流或能抵抗強制終止／斷電的日誌。
+
+舊版報告及先前v0.70／v0.71對照原樣保留，不能回填追蹤欄位或跨模式合併比較。新的實測只證明收集／核對流程運作；測試器改變後另收新報告，不將新舊評分差異當成能力提升。評讀仍需逐項判讀、區分development_agent與人類／獨立驗收；request_trace_verified_ids只表示紀錄一致性，不認證雲端模型身分或隱藏內部提示。
+
+原始報告、請求、合成對話與資料庫只在忽略的data/evaluations，正式助理來源、模型設定與版本號不因這次測試器更新而改變。

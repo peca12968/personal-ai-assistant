@@ -9,6 +9,8 @@ MAX_JSON_BYTES = 32 * 1024 * 1024
 REVIEWERS = {'user', 'development_agent', 'independent_reviewer'}
 RUNTIME_FINGERPRINTS = {'source_sha256', 'prompt_sha256', 'communication_prompt_sha256'}
 TRACE_MODE = 'understanding_trace_v1'
+GOAL_TRACE_MODE = 'conversation_goal_trace_v1'
+GOAL_CONTEXT_MARKER = '\n\n目標與已觀察資料：\n'
 TRACE_CONTEXT_MARKER = '\n\n以下 JSON 是使用者資料與當前問題：\n'
 MAX_TRACE_BYTES = 2 * 1024 * 1024
 
@@ -153,10 +155,12 @@ def validate_report(report):
             raise ValueError('評估指紋須為具名SHA-256文字。')
     if 'mode' in report and not text(report['mode']):
         raise ValueError('評估模式無效。')
-    traced = report.get('mode') == TRACE_MODE
+    traced = report.get('mode') in (TRACE_MODE, GOAL_TRACE_MODE)
     if traced and not all(digest(report.get('fingerprint', {}).get(key)) for key in
                           ('runner_sha256', 'report_validation_sha256', 'suite_sha256')):
         raise ValueError('追蹤報告缺少測試器、驗證器或案例集指紋。')
+    if report.get('mode') == GOAL_TRACE_MODE and not digest(report.get('fingerprint', {}).get('fixture_builder_sha256')):
+        raise ValueError('自主追蹤報告缺少來源建構器指紋。')
     for row in rows.values():
         if not text(row.get('category')) or not criteria(row.get('criteria')) or not isinstance(row.get('answer'), str):
             raise ValueError('案例需有分類、非空標準與答案文字；空答案另列統計。')
@@ -168,7 +172,10 @@ def validate_report(report):
             if field in row and not digest(row[field]):
                 raise ValueError('案例來源或請求指紋無效。')
         if traced:
-            validate_trace(row)
+            if report['mode'] == GOAL_TRACE_MODE:
+                validate_goal_trace(row)
+            else:
+                validate_trace(row)
         mechanical = row.get('mechanical_checks', {})
         if not isinstance(mechanical, dict) or any(not text(k) or type(v) is not bool for k, v in mechanical.items()):
             raise ValueError('機械檢查需為具名布林；不能代替語意評讀。')
@@ -204,6 +211,70 @@ def verify_suite(report, raw):
         for field in ('category', 'criteria', 'prompt'):
             if field in row and row[field] != case[field]:
                 raise ValueError('報告的問題、分類或標準與指定案例集不符。')
-        if report.get('mode') == TRACE_MODE and canonical_digest(case) != row.get('fixture_sha256'):
+        if report.get('mode') in (TRACE_MODE, GOAL_TRACE_MODE) and canonical_digest(case) != row.get('fixture_sha256'):
             raise ValueError('案例歷史、記憶或其他完整輸入定義與原案例集不符。')
     return True
+
+
+def validate_goal_trace(row):
+    """Check recorded inputs, not the current product or service identity."""
+    fixture = row.get('fixture')
+    if not isinstance(fixture, dict) or canonical_digest(fixture) != row.get('fixture_sha256'):
+        raise ValueError('自主案例定義與指紋不符。')
+    for field in ('id', 'category', 'prompt', 'criteria'):
+        if field not in fixture or fixture[field] != row.get(field):
+            raise ValueError('自主案例定義與問題／標準不符。')
+    goal = row.get('goal')
+    if not isinstance(goal, dict) or goal.get('objective') != row['prompt'].strip():
+        raise ValueError('保存目標與案例問題不符。')
+    if (goal.get('id') != row.get('goal_id') or goal.get('session_id') != row.get('session_id')
+            or not text(row.get('goal_id')) or not text(row.get('session_id')) or not isinstance(goal.get('steps'), list)):
+        raise ValueError('自主目標識別或步驟清單不符。')
+    for i, step in enumerate(goal['steps']):
+        if (not isinstance(step, dict) or type(step.get('sequence')) is not int or step['sequence'] != i+1
+                or not isinstance(step.get('action'), dict) or not isinstance(step.get('observation'), dict)):
+            raise ValueError('自主保存步驟格式無效。')
+    calls = row.get('calls')
+    if (not isinstance(calls, list) or len(calls) > 8
+            or type(row.get('engine_call_count')) is not int or row['engine_call_count'] != len(calls)):
+        raise ValueError('自主引擎呼叫數無效。')
+    if len(goal['steps']) > len(calls):
+        raise ValueError('保存步驟數超過實際呼叫數。')
+    if not calls and not text(row.get('error')):
+        raise ValueError('未呼叫引擎的自主案例需明示錯誤，不能視為實際回答。')
+    for i, call in enumerate(calls):
+        if not isinstance(call, dict) or type(call.get('sequence')) is not int or call['sequence'] != i+1:
+            raise ValueError('自主呼叫順序無效或重複。')
+        request, offset = call.get('prompt'), call.get('request_context_offset')
+        if (not isinstance(request, str) or len(request) > MAX_TRACE_BYTES or type(offset) is not int
+                or not 0 <= offset < len(request) or not request[:offset].endswith(GOAL_CONTEXT_MARKER)):
+            raise ValueError('自主請求或JSON邊界無效。')
+        try:
+            raw = request.encode('utf-8')
+        except UnicodeError as exc:
+            raise ValueError('自主請求不是有效UTF-8。') from exc
+        if len(raw) > MAX_TRACE_BYTES or hashlib.sha256(raw).hexdigest() != call.get('request_sha256'):
+            raise ValueError('自主請求指紋不符或超限。')
+        context = strict_json(request[offset:])
+        if (not isinstance(context, dict) or canonical_digest(context) != call.get('context_sha256')
+                or context.get('objective') != goal['objective']):
+            raise ValueError('自主請求脈絡指紋或目標不符。')
+        steps = [{**step, 'observation': {k:v for k,v in step['observation'].items() if k != 'companion_profile'}}
+                 for step in goal['steps'][:i]]
+        if (context.get('steps') != steps or len(steps) != i
+                or context.get('conversation_history') != goal.get('conversation_history')):
+            raise ValueError('自主請求與當時已保存步驟／歷史副本不符。')
+        if call.get('status') == 'returned':
+            if not isinstance(call.get('raw'), str) or 'error' in call:
+                raise ValueError('成功呼叫缺少原始回應或混入錯誤。')
+            try:
+                answer_bytes = call['raw'].encode('utf-8')
+            except UnicodeError as exc:
+                raise ValueError('自主回應不是有效UTF-8。') from exc
+            if len(answer_bytes)>MAX_TRACE_BYTES or hashlib.sha256(answer_bytes).hexdigest()!=call.get('raw_sha256'):
+                raise ValueError('自主原始回應超限或指紋不符。')
+        elif call.get('status') == 'error':
+            if not text(call.get('error')) or 'raw' in call or i != len(calls)-1 or not text(row.get('error')):
+                raise ValueError('失敗呼叫需保留錯誤、不得補造回答或自動重試。')
+        else:
+            raise ValueError('自主呼叫尚未結束或狀態無效。')
