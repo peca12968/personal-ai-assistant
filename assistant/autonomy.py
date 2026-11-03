@@ -9,6 +9,7 @@ import threading
 import uuid
 from contextlib import nullcontext
 from .exact_math import calculate
+from . import expression_math
 
 from .acceptance import strict_json
 from .answer_runs import lease
@@ -60,6 +61,7 @@ search: {"query":"關鍵字"}，在目標文件中搜尋，返回有限片段。
 read: {"document_id":1,"start_line":1,"end_line":20}，完整讀取最多200行、10000字。
 recall: {"query":"相關偏好或事實"}，查找目前有效的長期記憶。
 calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}，精確有理數四則運算，接受整數、有限小數或整數分數字串。
+calculate_expression: {"expression":{"operation":"sum","values":[{"operation":"product","values":["3","125"]},"55"]}}，有界巢狀四則計算，返回各層精確結果；詳細規則見後附說明。
 ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
 write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
@@ -168,6 +170,9 @@ def validate_action(value):
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'calculate_expression':
+        expression_math.validate(args)
+        return value
     if name == 'read_conversation':
         conversation_history.validate_window_args(args)
         return value
@@ -210,6 +215,8 @@ def validate_action(value):
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
     name, args = action['tool'], action['args']
+    if name == 'calculate_expression':
+        return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
         return conversation_history.window(store, sid, gid, args, cancel)
     if name == 'search_conversation':
@@ -315,7 +322,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            raw = engine.answer(INSTRUCTIONS + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)

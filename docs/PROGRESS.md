@@ -1024,3 +1024,15 @@
 - 初始六項回歸重現19個子案例失敗與1個KeyError；修正後六項通過，再加工具失敗及執行後取消兩項正向邊界，共8項通過。原8項conversation_goal_trace回歸也通過。
 - 保存舊驗證器原碼，以同一份原真實報告及同一組七種副本變更重跑前後對照：六個accepted轉ValueError，一個KeyError轉ValueError。原actual／final兩份真實報告各三題均仍通過現行驗證與原suite核對，前後位元組SHA保持不變，原評讀及歷史驗證器指紋沒有回填。這是歷史資料重驗，沒有重新呼叫模型、改分或宣稱本輪推理提升。
 - 本機probe／baseline／audit及舊驗證器只留忽略的data/evaluations/goal-trace-consistency-v071。正式assistant、prompts、collector、模型設定與版本號維持不變；最終由既有發布器執行完整單元、離線、隱私與私人目的地檢查後才推送。
+
+
+## v0.72：有界巢狀四則計算與完整中間結果（2026-11-03）
+
+- 前一回合已發布2f3eb8b的一致性檢查，屬進展；本輪從乾淨主線回到實用能力。既有calculate每次僅一種運算，多項小計與後續條件容易耗盡單輪步數，因此擴充型別化巢狀四則工具，不執行任意程式碼。
+- 新expression_math與calculate_expression只收expression；葉為原計算器接受的數字字串，運算節點只有operation／values。全樹最多32節點、8層，保持原四種運算與參數數量、2000位輸入／約分中間結果上限。先驗證所有結構／葉，按子項由左至右、先子後父呼叫未修改的exact_math.calculate；不做短路或跨溢出子項代數消除，任一失敗不回傳部分結果。
+- 回傳根exact／decimal／rounded與完整calculations，每個運算含原樹path、operation、operand_count及精確／預覽值，附節點／數字／運算數、深度與順序。純數字根只有根結果、沒有運算trace。每節點及結果前檢查取消，不改輸入。階段只帶根的既有有限數值metadata與計數，明示expression_details_omitted／calculation_details_omitted；不傳整樹、逐層結果或引用權限。
+- 新增9項測試，涵蓋31節點採購12個中間值、分數與字面根、嚴格schema／不可執行程式字串、不轉型數值、32節點及8層邊界／循環物件拒絕、零除與不可被後續抵消的中間溢出、外部Decimal context隔離、執行前／中取消、工具分派與文件引用界線／階段省略，以及備份還原後保留完整trace並接續交付。9項通過，既有7項精確計算回歸通過。
+- 三題與原runner先於正式程式修改凍結，原三題與說明程序均exit0後才改source／prompts。採購舊版8個正確小計後paused；新版只用calculate_expression及finish兩步，完整交付875／1120／237／552／1170／567／740／672、合計5933、折後5339.7、含運5394.7及精確5664.435。分數題4→2步且前後正確；除以零題2→2步，後者實際保留invalid的execution錯誤與failed_action，不產生部分計算成功。
+- 全部新版handle確認exit0後才評讀，三題皆通過；比較1個fail→pass、2個pass→pass。相同八步上限的完成改善不代表原版追加步數後也無法完成。產品說明新增第28例，完整巢狀JSON及536.5假設結果核對通過，沒有聲稱實際開始工作；舊版對缺少API的誠實說明保留。評讀者為development_agent，human_grade空白，不宣稱獨立人類驗收或IQ提升。
+- 逐次比對SQLite保存動作／觀察與報告、所有成功四則與樹節點的獨立Fraction結果、根／子結果精確值與rounded標示、除以零沒有部分結果，以及最終suite／collector／builder／validator／正式來源／提示指紋。原請求、回應、合成資料庫、前後比較與audit只留忽略的data/evaluations/expression-calculation-v072；沒有使用正式個人資料庫。
+- README、產品說明、路線圖、維護規則及CI／發布器離線場景建置同步；自改可寫範圍不變，沒有新檔案／付款／CSV權限。完整單元／離線／隱私／私人目的地檢查由既有publish.py執行，通過後推送並核對遠端。重新開啟v0.72可在已開始自主目標中使用；普通聊天不自動執行。

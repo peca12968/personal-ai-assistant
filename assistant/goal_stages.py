@@ -57,6 +57,11 @@ def activity(row):
                    'counted_days', 'calendar_days', 'calendar', 'holiday_source',
                    'months', 'day_policy', 'original_day', 'target_month_days', 'day_adjusted'}
     outcome = {k: v for k, v in observation.items() if k in fields}
+    if tool == 'calculate_expression':
+        outcome.update({k:observation[k] for k in ('node_count','number_count','operation_count','max_depth',
+                       'evaluation_order','all_calculations_provided') if k in observation})
+        outcome['expression_details_omitted'] = True
+        outcome['calculation_details_omitted'] = True
     if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
