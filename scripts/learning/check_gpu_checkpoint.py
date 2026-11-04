@@ -67,7 +67,7 @@ def parent_evidence(plan, manifest):
     return path, reports['train']['weights_after']
 
 
-def worker(folder, phase, plan, reference):
+def worker(folder, phase, plan, reference, *, admitted=None, checkpoints=None, start=None, end=None):
     configure()
     if os.environ.get('CUBLAS_WORKSPACE_CONFIG') != ':4096:8':
         raise ValueError('CUDA 工作區設定不符。')
@@ -75,7 +75,9 @@ def worker(folder, phase, plan, reference):
     if environment != EXPECTED_VERSIONS:
         raise ValueError('ML 環境不符。')
     manifest = inputs(plan)
-    input_gate(plan['admitted'])
+    if admitted is None:
+        admitted = plan['admitted']
+    input_gate(admitted)
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import PeftModel
@@ -83,7 +85,7 @@ def worker(folder, phase, plan, reference):
 
     if torch.cuda.device_count() != 1 or not torch.cuda.is_bf16_supported():
         raise ValueError('本實驗需要單一支援 BF16 的 CUDA GPU。')
-    recipe = {**manifest['recipe'], 'steps':4}
+    recipe = {**manifest['recipe'], 'steps':plan.get('training_steps',4)}
     torch.set_num_threads(8)
     torch.manual_seed(recipe['seed'])
     torch.cuda.manual_seed_all(recipe['seed'])
@@ -114,15 +116,18 @@ def worker(folder, phase, plan, reference):
                'optimizer':json.loads(json.dumps({k:v for k,v in optimizer.param_groups[0].items() if k!='params'}))}
     sampler = random.Random(recipe['seed'])
     order, cursor, history = [], 0, []
-    blobs = folder/'checkpoints'
+    blobs = folder/'checkpoints' if checkpoints is None else checkpoints
+    start = (2 if phase == 'resumed' else 0) if start is None else start
+    target = (2 if phase == 'first' else 4) if end is None else end
+    if not 0 <= start < target <= recipe['steps']:
+        raise ValueError('訓練步數範圍無效。')
     if phase == 'resumed':
         order,cursor,history = ck.restore(blobs,reference,binding,model,optimizer,sampler)
-        if len(history) != 2:
-            raise ValueError('接續點必須為第二步。')
-    target = 2 if phase == 'first' else 4
+    if len(history) != start:
+        raise ValueError('已保存步數與指定接續點不符。')
     with sdpa_kernel(SDPBackend.MATH):
         while len(history) < target:
-            input_gate(plan['admitted'])
+            input_gate(admitted)
             optimizer.zero_grad(set_to_none=True)
             samples, losses = [], []
             for _ in range(recipe['accumulation']):
@@ -144,11 +149,11 @@ def worker(folder, phase, plan, reference):
             optimizer.step()
             history.append({'samples':samples,'loss':sum(losses)/len(losses)})
         inputs(plan)
-        input_gate(plan['admitted'])
+        input_gate(admitted)
         sha = ck.capture(blobs,binding,model,optimizer,sampler,order,cursor,history)
         record = {'phase':phase, 'sha':sha, 'consumed':reference, 'binding':binding,'step':len(history),
                   'weights':adapter_hash(model), 'history':history,'pid':os.getpid()}
-        if target == 4:
+        if target == recipe['steps']:
             model.gradient_checkpointing_disable()
             model.eval()
             check = manifest['checks'][0]['prompt']
@@ -161,7 +166,7 @@ def worker(folder, phase, plan, reference):
             record.update(logits_sha256=ck.digest(ck.tensor_bytes(logits)), generated=output[0,len(tokens[0]):].tolist())
             ck.commit_bytes(folder/(phase+'.logits'),ck.tensor_bytes(logits))
     inputs(plan)
-    input_gate(plan['admitted'])
+    input_gate(admitted)
     save(folder/(phase+'.json'),record)
 
 

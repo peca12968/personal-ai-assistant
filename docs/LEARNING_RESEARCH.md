@@ -4,6 +4,23 @@
 
 ## 第4點：真正更新參數
 
+### 分段提交與下次閒置工作接續
+
+在 F 槽專案目錄，以既有的資料目錄、含父模型及短提示保留題的參考工作準備一份新規約。下例計畫 128 步，每一份工作負責 32 步。
+
+```powershell
+.venv\Scripts\python.exe scripts/learning/idle_segments.py prepare --data-dir 資料目錄 --reference-job 參考工作ID --steps 128
+.venv\Scripts\python.exe scripts/learning/idle_segments.py start --session 訓練ID --updates 32
+.venv\Scripts\python.exe scripts/learning/idle_segments.py status --session 訓練ID
+.venv\Scripts\python.exe scripts/learning/idle_segments.py continue --session 訓練ID --receipt 最近提交的交接指紋 --updates 32
+```
+
+每次啟動會重新檢查 Windows 原生輸入閒置，至少十分鐘，參考工作的門檻更長時依其設定。資料修訂與父模型須有效，GPU 鎖須可用。每份工作最多六分鐘，恢復輸入、來源變更或逾時會停止並回收子程序。可按實際閒置時間指定較短步數。
+
+保存交接時，控制器核對檢查點實體、來源、步數與程序退出紀錄，再把交接記錄提交到本機 SQLite。後續命令須提供最近成功提交的交接指紋，另行通過閒置檢查才能使用該進度。中途退出若留下檔案，下一份工作以帳本中已提交的位置為準。status 顯示歷史提交位置，接續時會重新核對檢查點與現行來源。研究工作與訓練歷程位於本機 `data/learning/idle-segments`。
+
+另可準備總長四步的規約，分兩份工作各跑兩步後，執行 `control --session 訓練ID --receipt 最終交接指紋`。這會另行啟動一次連續四步的對照，核對最終權重、檢查點與保留輸出。完成訓練交接代表生成了可核對的進度，成為可選用候選仍需模型能力驗收。
+
 ### 真實單 GPU 的四步訓練接續實驗
 
 已有本機 4B 模型、可核對的父批次、確認例子與閒置工作規約時，可在 F 槽專案目錄執行下列命令。資料目錄與參考工作 ID 取自已準備的研究工作。
