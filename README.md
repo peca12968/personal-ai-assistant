@@ -1017,3 +1017,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 ### 實測一般多輪對話
 
 在專案目錄執行 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --general --out 新的執行名稱`。這組使用送貨、展覽與列印情境，涵蓋改口、補充資訊、換話題與回到先前任務。每輪從日常本機 CLI 發問，核對實際提示指紋、模型原答與聊天文字，並分別計算完全相符數。庫存與離線工具使用不同題組。
+
+在同一段近期對話中明確說過「換個話題」後，可說「回到剛才借樣的事……」。如果話題名稱能唯一對應前面一段完整可讀的使用者訊息，日常本機助理會將該段原話和更正依序交給模型，並請模型分清楚本輪人物與先前共用的條件。
+
+使用 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --topic-pair --out 新的執行名稱` 可重跑兩個借樣案例。兩個獨立對話預置相同的合成前文，只有接班者是否有證件不同；各自核對模型呼叫、提示與最後交付。

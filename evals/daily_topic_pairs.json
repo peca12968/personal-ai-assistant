@@ -1,0 +1,38 @@
+{
+  "synthetic_history": [
+    [
+      "借樣規則：有借用證就可在甲櫃領樣；乙櫃免證。小楊沒有證。",
+      "收到。"
+    ],
+    [
+      "更正，乙櫃本週暫停領樣。小楊後來拿到了借用證。",
+      "知道了。"
+    ],
+    [
+      "換個話題。下午茶放在休息室。",
+      "收到。"
+    ]
+  ],
+  "cases": [
+    {
+      "id": "successor-1",
+      "session": "pair-1",
+      "route": "general_model",
+      "question": "回到先前借樣的事。換成小彤去，她尚未拿到借用證。她現在能領樣嗎？只回「可以」或「不行」。",
+      "answer": "不行",
+      "evidence": {
+        "resumed_topic.話題": "借樣"
+      }
+    },
+    {
+      "id": "successor-2",
+      "session": "pair-2",
+      "route": "general_model",
+      "question": "回到先前借樣的事。換成小彤去，她自己也有借用證。她現在能領樣嗎？只回「可以」或「不行」。",
+      "answer": "可以",
+      "evidence": {
+        "resumed_topic.話題": "借樣"
+      }
+    }
+  ]
+}

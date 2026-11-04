@@ -235,6 +235,8 @@ class DailyAssistant(Assistant):
             inventory = daily_stock.context_hint(context)
             if inventory:
                 context['inventory_reasoning'] = inventory
+            elif resumed := daily_dialogue.resumed_topic(context):
+                context['resumed_topic'] = resumed
             elif update := daily_dialogue.revision_focus(context):
                 context['current_revision'] = update
         return context

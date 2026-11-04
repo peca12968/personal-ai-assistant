@@ -17,6 +17,7 @@ from scripts.learning.check_gpu_checkpoint import save
 
 SUITE = ROOT / 'evals/daily_conversations.json'
 GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
+PAIR_SUITE = ROOT / 'evals/daily_topic_pairs.json'
 MODEL_ROUTES = ('model', 'general_model')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
               'daily_meeting_calculation_v1': 'meeting_source', 'daily_option_selection_v1': 'option_source'}
@@ -130,10 +131,32 @@ def check_cases(cases):
 
 def evaluate(folder, live, suite=SUITE):
     stamp = fingerprint(suite)
-    cases = [c for c in json.loads(suite.read_text(encoding='utf-8-sig')) if (c['route'] in MODEL_ROUTES) == live]
+    specification = json.loads(suite.read_text(encoding='utf-8-sig'))
+    history = specification['synthetic_history'] if suite == PAIR_SUITE else []
+    definitions = specification['cases'] if suite == PAIR_SUITE else specification
+    cases = [c for c in definitions if (c['route'] in MODEL_ROUTES) == live]
     check_cases(cases)
     sessions, refs, results = {}, {}, []
     report = dict(schema='daily_cli_eval_v1', fingerprint=stamp, suite=suite.name, live_model=live, cases=cases, results=results)
+    if suite == PAIR_SUITE:
+        require(live and len(cases) == 2 and len({c['session'] for c in cases}) == 2 and
+                len({c['answer'] for c in cases}) == 2 and all(c['route'] == 'general_model' for c in cases),
+                'pair requires two independent general-model cases with different answers')
+        require(history and all(isinstance(pair, list) and len(pair) == 2 and
+                all(isinstance(x, str) and x.strip() for x in pair) for pair in history), 'invalid synthetic history')
+        from assistant.store import Store
+        store = Store(folder/'assistant.sqlite3')
+        report['synthetic_history'] = history
+        for case in cases:
+            sid = store.new_session()
+            sessions[case['session']] = sid
+            for user, assistant in history:
+                store.add_message(sid, 'user', user)
+                store.add_message(sid, 'assistant', assistant)
+            expected = [row for pair in history for row in zip(('user','assistant'), pair)]
+            require([(r['role'],r['content']) for r in store.messages(sid, len(expected)+1)] == expected,
+                    'seeded conversation differs from the fixed history')
+        require(len(set(sessions.values())) == len(cases), 'paired sessions must be independent')
     save(folder/'report.json',report)
     for case in cases:
         thread = case['session']
@@ -159,12 +182,14 @@ def evaluate(folder, live, suite=SUITE):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--topic-pair', action='store_true', help='Test contrasting current actors with identical synthetic history')
+    group.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--out', help='New run name under local data/evaluations (required for live runs)')
     args = parser.parse_args()
-    if args.general and not args.live:
-        parser.error('--general requires --live')
+    if (args.general or args.topic_pair) and not args.live:
+        parser.error('dialogue suites require --live')
     if args.live and not args.out:
         parser.error('--live requires --out')
     if args.out:
@@ -172,7 +197,8 @@ def main():
             parser.error('--out must be a simple run name')
         folder = ROOT/'data/evaluations'/args.out
         folder.mkdir(parents=True, exist_ok=False)
-        return evaluate(folder, args.live, GENERAL_SUITE if args.general else SUITE)
+        suite = PAIR_SUITE if args.topic_pair else GENERAL_SUITE if args.general else SUITE
+        return evaluate(folder, args.live, suite)
     with tempfile.TemporaryDirectory() as tmp:
         return evaluate(Path(tmp),False)
 

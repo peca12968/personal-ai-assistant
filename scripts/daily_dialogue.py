@@ -2,6 +2,43 @@
 import re
 
 
+TOPIC_RETURN = re.compile(r'^(?:回到(?:剛才|之前|先前)?)(?:的)?([\u4e00-\u9fff]{2,12}?)'
+                          r'(?:的事情|的話題|的問題|的事)[。，,]\s*(.+)$')
+SWITCH = re.compile(r'^(?:換個話題|換個問題|換個題目|說別的事|另外一件事)[。，,：:]')
+
+
+def resumed_topic(context):
+    question = context['current_request']
+    request = TOPIC_RETURN.fullmatch(question)
+    if not request or len(question) > 800 or context.get('documents', {}).get('catalog'):
+        return None
+    topic, current = request.groups()
+    history = context.get('recent_conversation', [])
+    if not history or history[-1]['role'] != 'assistant':
+        return None
+    if (context.get('conversation_tail') or {}).get('message_id') != history[-1]['message_id']:
+        return None
+    # A named thread must match one completed stretch of user turns. Never retrieve model guesses.
+    groups = [[]]
+    for row in history:
+        if row['role'] != 'user':
+            continue
+        if row['truncated']:
+            return None
+        content = row['content']
+        if SWITCH.match(content) or TOPIC_RETURN.match(content):
+            groups.append([])
+        groups[-1].append(row)
+    matches = [group for group in groups if any(topic in r['content'] for r in group)]
+    if len(matches) != 1 or matches[0] is groups[-1]:
+        return None
+    source = matches[0]
+    if sum(len(r['content']) for r in source) > 1600:
+        return None
+    return dict(話題=topic, 先前使用者原話=[dict(訊息=r['message_id'], 原文=r['content']) for r in source],
+                本輪接續=current, 核對方式='依時間順序套用更正，再以本輪描述的人物、持有物和限制逐一核對。只有明說共用的物件或仍有效的環境條件才沿用。只回答本輪的問題。')
+
+
 def revision_focus(context):
     question = context['current_request']
     history = context.get('recent_conversation', [])

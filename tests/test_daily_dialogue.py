@@ -19,6 +19,26 @@ class DailyDialogueTests(unittest.TestCase):
                     dict(self.context(q), documents={'catalog':[1]})):
             self.assertIsNone(dialogue.revision_focus(ctx))
 
+    def test_named_topic_recovers_user_facts_and_subsequent_corrections(self):
+        q = '回到剛才借書的事。改由妹妹辦理，她沒有帶證。'
+        history = []
+        for question in ('借書需要學生證。','更新，訪客也能用臨時證。','換個話題。今天天氣如何？'):
+            history.append(dict(role='user', message_id=len(history)+1, truncated=False, content=question))
+            history.append(dict(role='assistant', message_id=len(history)+1, truncated=False, content='猜測：不必帶證。'))
+        ctx = dict(current_request=q, recent_conversation=history, conversation_tail=dict(message_id=6))
+        focus = dialogue.resumed_topic(ctx)
+        self.assertEqual(focus['話題'], '借書')
+        self.assertEqual(focus['先前使用者原話'], [dict(訊息=r['message_id'], 原文=r['content']) for r in history[:4:2]])
+        self.assertEqual(focus['本輪接續'], '改由妹妹辦理，她沒有帶證。')
+        for change in (dict(current_request='請翻譯「'+q+'」'), dict(conversation_tail=dict(message_id=8)),
+                       dict(documents={'catalog':[1]}), dict(current_request=q.replace('借書','旅遊'))):
+            self.assertIsNone(dialogue.resumed_topic({**ctx, **change}))
+        history[0]['truncated'] = True
+        self.assertIsNone(dialogue.resumed_topic(ctx))
+        history[0]['truncated'] = False
+        history[4]['content'] += '今天要借書嗎？'
+        self.assertIsNone(dialogue.resumed_topic(ctx))
+
     def test_short_names_need_a_user_source_and_a_standalone_conclusion(self):
         q = '請選一處。只回展區名稱。'
         ctx = self.context(q)

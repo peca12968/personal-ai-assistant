@@ -24,6 +24,21 @@ class DailyGateTests(unittest.TestCase):
             self.assertTrue(c['answer'].strip())
         self.assertNotEqual(gate.fingerprint(gate.GENERAL_SUITE), gate.fingerprint(gate.SUITE))
 
+    def test_paired_cases_start_from_identical_history_in_separate_sessions(self):
+        from unittest.mock import patch
+        from assistant.store import Store
+        seen = {}
+        def observe(folder, case, sid, refs, live):
+            self.assertTrue(live)
+            seen[sid] = [(r['role'], r['content']) for r in Store(folder/'assistant.sqlite3').messages(sid)]
+            return sid, dict(status='pass', raw_exact=True)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(gate, 'turn', side_effect=observe):
+            self.assertTrue(gate.evaluate(Path(tmp), True, gate.PAIR_SUITE))
+        self.assertEqual(len(seen), 2)
+        first, second = seen.values()
+        self.assertEqual(first, second)
+        self.assertTrue(first)
+
     def test_block_real_inference_when_a_local_case_falls_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             case = dict(id='fallback', question='請用一句話說明這項任務。', route='daily_meeting_calculation_v1')
