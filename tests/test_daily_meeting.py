@@ -43,6 +43,38 @@ class DailyMeetingTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assertIsNone(meeting.parse(question))
 
+    def test_everyday_wording_keeps_intent_and_explains_availability(self):
+        q = '小陳 7:05 到 8:00 有空，小蔡 7:40 到 8:10 有空。想開半小時的會，最早什麼時候能開？'
+        short = meeting.parse(q)
+        self.assertIsNotNone(short)
+        self.assertEqual(short, meeting.parse(q.replace('小陳 ', '小陳').replace('小蔡 ', '小蔡')))
+        answer, receipt = meeting.resolve(short)
+        self.assertIn('沒有可行時段', answer)
+        self.assertIn('20 分鐘', answer)
+        self.assertEqual(receipt['common'], ['07:40-08:00'])
+        answer, _ = meeting.resolve(meeting.parse(q.replace('半小時', '一刻鐘')))
+        self.assertIn('07:40-07:55', answer)
+        answer, _ = meeting.resolve(meeting.parse(q.replace('7:40 到 8:10', '8:30 到 9:10')))
+        self.assertIn('沒有共同空檔', answer)
+        for invalid in (q.replace('半小時', '大約半小時'), q.replace('有空', '可能有空'),
+                        q + '順便寄通知。', q.replace('有空', '沒空'), q.replace('7:05', '27:05')):
+            self.assertIsNone(meeting.parse(invalid))
+
+    def test_conversation_can_revise_a_prose_answer_after_reopening(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'assistant.sqlite3'
+            store = Store(path)
+            sid = store.new_session()
+            q = '甲 9:20-9:50 有空，乙 9:40-10:20 有空。想開半小時的會，最早幾點能開會？'
+            first = DailyAssistant(store, None).ask(sid, q)
+            self.assertIn('只有 10 分鐘', first['content'])
+            reopened = DailyAssistant(Store(path), None)
+            reply = reopened.ask(sid, '上一場會議，甲的空檔改為 9:00-10:20，重算。')
+            self.assertIn('09:40-10:10', reply['content'])
+            ctx = store.answer_context(reply['id'])
+            self.assertEqual(ctx['meeting_source']['answer_id'], first['id'])
+            self.assertEqual(ctx['calculation']['result']['exact'], '09:40-10:10')
+
     def test_compare_against_independent_start_time_search(self):
         rng = random.Random(105)
         for _ in range(120):

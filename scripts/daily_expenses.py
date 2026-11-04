@@ -123,7 +123,7 @@ def previous_meeting(store, sid, before):
                 and saved.get('response_mode') == 'local_calculation' and isinstance(calc, dict)
                 and isinstance(calc.get('result'), dict) and calc.get('model_called') is False
                 and calc.get('schema') == 'daily_meeting_calculation_v1' and calc.get('status') == 'complete'
-                and row['content'] == calc.get('result', {}).get('exact')):
+                and row['content'] == daily_meeting.visible_answer(plan, calc)):
             return plan, source_ref(row)
     raise ValueError('上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。')
 

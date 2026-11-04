@@ -106,8 +106,17 @@ def numeric_delivery(question, draft, sentences):
     charge_warning = questionable_charge(question, last)
     if charge_warning:
         return draft + '\n\n' + charge_warning
-    match = NUMERIC_CONCLUSION.fullmatch(last)
-    if not match or (len(sentences) > 1 and not re.search(LABEL + '|=', last)):
+    # A direct "X 多少？" question may be answered with "X 48 元" instead
+    # of a generic "答案是". Require the same field in the final assertion.
+    field = re.search(SEP + r'(?:請問)?([\u4e00-\u9fff]{2,16}?)多少(?:錢)?[？?]\s*' +
+                      CONTRACTS['number'] + END, question)
+    assertion = last
+    if field and last.startswith(field[1]):
+        remainder = last[len(field[1]):].strip()
+        if re.fullmatch(rf'{NUMBER}\s*(?:元|片|個|件|顆)?', remainder):
+            assertion = '答案是' + remainder
+    match = NUMERIC_CONCLUSION.fullmatch(assertion)
+    if not match or (len(sentences) > 1 and not re.search(LABEL + '|=', assertion)):
         return draft
     result = match['result'].replace(',', '')
     if match['left']:

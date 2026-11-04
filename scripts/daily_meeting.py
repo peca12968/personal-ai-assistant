@@ -1,19 +1,24 @@
 """Read-only earliest common slot in explicitly listed, same-day availability."""
 import re
 
-CLOCK = r'(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)'
+CLOCK = r'(?:(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|24:00)'
 SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
 # Explicit aliases keep dates, qualifications and partial instructions out of the ledger.
 NAME = r'(?:「[\u4e00-\u9fffA-Za-z0-9]{1,16}」|小[\u4e00-\u9fff]|[甲乙丙丁戊己庚辛]|[A-Za-z]{1,20})'
 AVAILABILITY = re.compile(rf'({NAME})(原本)?(可開會的時段為|可開會[：:]|可用時段[為：:]|有空[：:]|為)\s*(.+)')
 CANCEL = re.compile(rf'({NAME})(?:剛)?取消\s*(.+)')
-DURATION = re.compile(r'(?:(兩|二|三|四|五|六|七|八|[2-8])人)?需要連續\s*([1-9][0-9]{0,3})\s*分鐘')
+DURATION = re.compile(r'(?:(兩|二|三|四|五|六|七|八|[2-8])人)?(?:需要(?:連續)?|想開)\s*'
+                      r'(半小時|一小時|一刻鐘|[1-9][0-9]{0,3}\s*分鐘)(?:的會議?)?')
+LENGTHS = {'半小時': 30, '一小時': 60, '一刻鐘': 15}
+FREE = re.compile(rf'({NAME})\s*([0-9].*)')
 OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:開始及結束時間|時段|時間區間)[，,]\s*格式\s*HH:MM-HH:MM')
+ASK = re.compile(r'[，,。；;\n]\s*(?:請問)?最早(?:什麼時候|幾點)(?:能|可以)開(?:會)?[？?。]?$')
 COUNT = dict(zip('兩二三四五六七八', (2, 2, 3, 4, 5, 6, 7, 8)))
 
 
 def minutes(clock):
-    return int(clock[:2]) * 60 + int(clock[3:])
+    hour, minute = clock.split(':')
+    return int(hour) * 60 + int(minute)
 
 
 def span(text):
@@ -31,41 +36,54 @@ def slot_list(text):
 def parse(question):
     if len(question) > 2048:
         return None
-    lines = [s.strip() for s in re.split(r'[。\n]+', question.removesuffix('。'))]
-    if len(lines) < 3 or not OUTPUT.fullmatch(lines[-1]):
+    conversational = ASK.search(question)
+    if conversational:
+        lines = re.split(r'[。\n]+', question[:conversational.start()])
+    else:
+        lines = re.split(r'[。\n]+', question.removesuffix('。'))
+        if not lines or not OUTPUT.fullmatch(lines.pop().strip()):
+            return None
+    clauses = [part.strip() for line in lines for part in re.split(r'[，,；;]', line)]
+    duration = DURATION.fullmatch(clauses.pop()) if clauses else None
+    if not duration:
         return None
-    duration = DURATION.fullmatch(lines[-2])
-    if not duration or int(duration[2]) > 1440:
+    length_text = duration[2]
+    length = LENGTHS[length_text] if length_text in LENGTHS else int(length_text[:-2].strip())
+    if length > 1440:
         return None
     available, cancelled = {}, []
-    for line in lines[:-2]:
-        for clause in re.split(r'[，,；;]', line):
-            clause = clause.strip()
-            if not available:
-                clause = clause.removeprefix('今天')
-            removal = CANCEL.fullmatch(clause)
-            if removal:
-                cut = [0, 720] if removal[2] == '整個上午' else span(removal[2])
-                name = removal[1].strip('「」')
-                if name not in available or not cut or len(cancelled) >= 24:
-                    return None
-                cancelled.append(dict(name=name, interval=cut, source=clause))
-                continue
-            entry = AVAILABILITY.fullmatch(clause)
-            if (not entry or len(available) >= 8
-                    or (entry[3] == '為' and not available)):
+    for clause in clauses:
+        if not available:
+            clause = clause.removeprefix('今天')
+        removal = CANCEL.fullmatch(clause)
+        if removal:
+            cut = [0, 720] if removal[2] == '整個上午' else span(removal[2])
+            name = removal[1].strip('「」')
+            if name not in available or not cut or len(cancelled) >= 24:
                 return None
-            name = entry[1].strip('「」')
-            if name in available:
-                return None
-            slots = slot_list(entry[4])
-            if not slots:
-                return None
-            available[name] = slots
+            cancelled.append(dict(name=name, interval=cut, source=clause))
+            continue
+        entry = AVAILABILITY.fullmatch(clause)
+        if entry and (entry[3] != '為' or available):
+            alias, intervals = entry[1], entry[4]
+        elif clause.endswith('有空') and (match := FREE.fullmatch(clause[:-2].rstrip())):
+            alias, intervals = match.groups()
+        else:
+            return None
+        name = alias.strip('「」')
+        if len(available) >= 8 or name in available:
+            return None
+        slots = slot_list(intervals)
+        if not slots:
+            return None
+        available[name] = slots
     n = len(available)
     if n < 2 or (duration[1] and int(COUNT.get(duration[1], duration[1])) != n):
         return None
-    return dict(schema='daily_availability_v1', available=available, cancelled=cancelled, duration=int(duration[2]))
+    plan = dict(schema='daily_availability_v1', available=available, cancelled=cancelled, duration=length)
+    if conversational:
+        plan['output'] = 'conversational'
+    return plan
 
 
 FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
@@ -138,4 +156,17 @@ def resolve(plan):
     receipt = dict(schema='daily_meeting_calculation_v1', status='complete', model_called=False,
                    effective=effective, common=list(map(display, windows)), duration=length,
                    expression=f'共同空檔中最早連續 {length} 分鐘', result=dict(exact=answer, calculations=[]))
-    return answer, receipt
+    return visible_answer(plan, receipt), receipt
+
+
+def visible_answer(plan, receipt):
+    exact = receipt['result']['exact']
+    if plan.get('output') != 'conversational':
+        return exact
+    length = receipt['duration']
+    if exact != '沒有可行時段':
+        return f'最早可以排在 {exact}，共 {length} 分鐘。'
+    if not receipt['common']:
+        return '沒有可行時段，當天沒有共同空檔。'
+    longest = max(b-a for a, b in map(span, receipt['common']))
+    return f'沒有可行時段。最長的共同空檔只有 {longest} 分鐘，會議需要 {length} 分鐘。'

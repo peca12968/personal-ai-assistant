@@ -81,6 +81,15 @@ class DeliveryTests(unittest.TestCase):
         ]:
             self.assertNotIn('篩選核對', extract(question, draft))
 
+    def test_number_delivery_matches_the_requested_field(self):
+        q = '費用已確認。這趟可報多少？只給數字。'
+        self.assertEqual(extract(q,'補助已核准。這趟可報 126 元。'), '126')
+        for answer in ('補助已核准。上回可報 126 元。','這趟可報 120 或 126 元。',
+                       '可能有折扣。這趟可報 126 元。', '這趟可報約 126 元。'):
+            self.assertEqual(extract(q, answer), answer)
+        text = '已確認。這趟可報 126.5 元。'
+        self.assertEqual(extract(q.replace('數字','整數'), text), text)
+
     def test_no_guess_no_unrequested_formatting(self):
         risky = [
             ('簡述原因。', '總額為 80 元。'),
