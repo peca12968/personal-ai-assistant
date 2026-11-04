@@ -1,0 +1,657 @@
+[
+  {
+    "id": "named_station",
+    "category": "referent_history",
+    "history": [
+      {
+        "role": "user",
+        "content": "整理各運補站的交接資料。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "霧杉站的交接代碼是 FR-482。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "石樟站的交接代碼是 SY-761。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "月桂站的交接代碼是 BV-053。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "鳴沙站的交接代碼是 KB-164。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "雪松站的交接代碼是 AL-275。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "紫竹站的交接代碼是 JH-386。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "春桐站的交接代碼是 NM-497。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "岩楓站的交接代碼是 VE-508。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "核對第0份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第1份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第2份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第3份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第4份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第5份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第6份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第7份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "接下來談霧杉站。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      }
+    ],
+    "prompt": "它的交接代碼是什麼？只答代碼，資料不足就答缺資料。",
+    "criteria": [
+      "應逐字回覆霧杉站的 FR-482。"
+    ],
+    "expected_answer": "FR-482"
+  },
+  {
+    "id": "corrected_depot",
+    "category": "referent_history",
+    "history": [
+      {
+        "role": "user",
+        "content": "Catalog the depots."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Northglass depot has seal number 8167."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Westmere depot has seal number 7106."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Birchpool depot has seal number 4816."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Rosehill depot has seal number 5204."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Sandridge depot has seal number 8839."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Lakeford depot has seal number 1960."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Highvine depot has seal number 4322."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Lowfield depot has seal number 6501."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 0."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 1."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 2."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 3."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 4."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 5."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 6."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 7."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Focus on Westmere."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Correction: I mean Northglass depot."
+      },
+      {
+        "role": "assistant",
+        "content": "I had mentioned Westmere earlier."
+      }
+    ],
+    "prompt": "That depot's seal number? Reply with the number alone, or UNKNOWN if missing.",
+    "criteria": [
+      "Use the user’s correction and return exactly 8167."
+    ],
+    "expected_answer": "8167"
+  },
+  {
+    "id": "ambiguous_station",
+    "category": "referent_history",
+    "history": [
+      {
+        "role": "user",
+        "content": "海棠站代碼 TX-692，榆木站代碼 KD-310。"
+      },
+      {
+        "role": "assistant",
+        "content": "記下兩站資料。"
+      },
+      {
+        "role": "user",
+        "content": "兩站都還在考慮。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      }
+    ],
+    "prompt": "它的代碼是什麼？若無法判斷指哪站，只答「請指定站名」；若可判斷，只答代碼。",
+    "criteria": [
+      "兩站均未被指定，應逐字回覆請指定站名。"
+    ],
+    "expected_answer": "請指定站名"
+  },
+  {
+    "id": "current_overrides",
+    "category": "referent_history",
+    "history": [
+      {
+        "role": "user",
+        "content": "Catalog the depots."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Northglass depot has seal number 8167."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Westmere depot has seal number 7106."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Birchpool depot has seal number 4816."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Rosehill depot has seal number 5204."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Sandridge depot has seal number 8839."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Lakeford depot has seal number 1960."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Highvine depot has seal number 4322."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Lowfield depot has seal number 6501."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 0."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 1."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 2."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 3."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 4."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 5."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 6."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Check heading 7."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      },
+      {
+        "role": "user",
+        "content": "Focus on Northglass."
+      },
+      {
+        "role": "assistant",
+        "content": "OK."
+      }
+    ],
+    "prompt": "Give the seal number of Lowfield. Reply only with the number.",
+    "criteria": [
+      "The current explicit name takes priority. Return exactly 6501."
+    ],
+    "expected_answer": "6501"
+  },
+  {
+    "id": "explicit_reset",
+    "category": "referent_history",
+    "history": [
+      {
+        "role": "user",
+        "content": "整理各運補站的交接資料。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "霧杉站的交接代碼是 FR-482。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "石樟站的交接代碼是 SY-761。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "月桂站的交接代碼是 BV-053。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "鳴沙站的交接代碼是 KB-164。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "雪松站的交接代碼是 AL-275。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "紫竹站的交接代碼是 JH-386。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "春桐站的交接代碼是 NM-497。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "岩楓站的交接代碼是 VE-508。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      },
+      {
+        "role": "user",
+        "content": "核對第0份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第1份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第2份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第3份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第4份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第5份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第6份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "核對第7份封面。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      },
+      {
+        "role": "user",
+        "content": "接下來談霧杉站。"
+      },
+      {
+        "role": "assistant",
+        "content": "好。"
+      }
+    ],
+    "prompt": "新問題，不要沿用前文。這次選的站點稱為玉杉，交接代碼是 CD-812。只答這次選的代碼。",
+    "criteria": [
+      "只答當前問題提供的 CD-812。"
+    ],
+    "expected_answer": "CD-812"
+  }
+]

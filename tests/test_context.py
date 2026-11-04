@@ -98,6 +98,34 @@ class ContextTests(unittest.TestCase):
         self.app.ask(self.sid, "水的化學式是什麼？")
         self.assertEqual(self.engine.context["memories"], [])
 
+    def test_pronoun_recovers_older_rows_for_both_possible_referents(self):
+        self.store.add_message(self.sid, 'user', 'Catalog each cabinet.')
+        names = ['Plover', 'Siskin', 'Lark', 'Wren', 'Kite', 'Tern', 'Swan', 'Crow']
+        codes = [f'cover code {i + 31}' for i in range(len(names))]
+        for name, code in zip(names, codes):
+            self.store.add_message(self.sid, 'user', f'{name} has {code}.')
+        for i in range(16):
+            self.store.add_message(self.sid, 'user', f'Page {i} checked.')
+        self.store.add_message(self.sid, 'user', 'Plover and Siskin are both under consideration.')
+        self.store.add_message(self.sid, 'assistant', 'I suggest Crow.')
+        context = self.app.prepare_context(self.sid, 'What about its cover code?')
+        excerpts = context['earlier_user_excerpts']
+        self.assertLessEqual(len(excerpts), 6)
+        self.assertEqual(excerpts[0]['content'], 'Catalog each cabinet.')
+        self.assertTrue({f'{n} has {c}.' for n, c in zip(names[:2], codes[:2])}
+                        <= {row['content'] for row in excerpts})
+        self.assertEqual([row['message_id'] for row in excerpts], sorted(row['message_id'] for row in excerpts))
+
+    def test_previous_explicit_reset_cannot_expand_earlier_search(self):
+        history = [{'role':'user','content':'新問題，不要沿用前文。現在談銀杉站。'}]
+        rows = [{'id':i,'content':name + '站的封籤號碼在登記表裡。'} for i, name in
+                enumerate(['導覽','銀杉','茶花','青木','水竹','榆樹','石竹','銅蘭'], 1)]
+        question = '它的封籤號碼呢？'
+        previous = followup_query(question, history)
+        self.assertTrue(previous)
+        self.assertEqual(select_excerpts(question, rows, followup=previous), select_excerpts(question, rows))
+        self.assertEqual(select_excerpts('另起話題。', rows, followup='銀杉'), [])
+
     def test_initial_goal_and_late_correction_are_attributable(self):
         first = self.store.add_message(self.sid, "user", "目標是製作命令列工具。")
         correction = self.store.add_message(self.sid, "user", "更正：不能安裝第三方套件。")

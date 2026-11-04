@@ -373,10 +373,14 @@ def followup_query(question, history):
     return "\n".join(reversed(earlier)) if earlier else None
 
 
-def select_excerpts(question, older, limit=6):
+def select_excerpts(question, older, limit=6, *, followup=None):
     if not older or limit <= 0 or context_reset(question):
         return []
     query = terms(question)
+    # A pronoun may name the field while its preceding user turn names the object.
+    # Use those words for retrieval only. Keep the source rows and request verbatim.
+    if followup and not context_reset(followup):
+        query.update(terms(followup))
     ranked = []
     for index, row in enumerate(older):
         score = len(query & terms(row["content"])) + (3 if IMPORTANT.search(row["content"]) else 0)
