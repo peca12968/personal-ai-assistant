@@ -1,0 +1,51 @@
+[
+  {
+    "id": "entrance",
+    "session": "A",
+    "route": "general_model",
+    "question": "送貨說明：正門需要門卡，側門要走樓梯，後門有平坦坡道。送貨員推著不能抬起的推車，也沒有門卡。哪個入口可用？只回入口名稱。",
+    "answer": "後門"
+  },
+  {
+    "id": "revised-access",
+    "session": "A",
+    "route": "general_model",
+    "question": "更正，門卡已交給送貨員；後門今天封閉。推車限制照舊。現在應走哪個入口？只回入口名稱。",
+    "answer": "正門"
+  },
+  {
+    "id": "new-subject",
+    "session": "A",
+    "route": "general_model",
+    "question": "換個話題。新展覽分為序廳、主廳、尾廳；只有尾廳不開放攝影。志工要拍下第二個展區的布置。只回展區名稱。",
+    "answer": "主廳"
+  },
+  {
+    "id": "recall-delivery",
+    "session": "A",
+    "route": "general_model",
+    "question": "回到剛才送貨的事情。接班同事也推同一輛車，但他沒有接到門卡。現在有可用入口嗎？只回「有」或「沒有」。",
+    "answer": "沒有"
+  },
+  {
+    "id": "printer",
+    "session": "B",
+    "route": "general_model",
+    "question": "一份文件必須印成彩色。松室只有黑白機，柏室有彩色機但目前缺紙；若有人帶紙就能印。我還沒告訴你是否有人帶紙。能確定這份文件現在印得出來嗎？只回「能」或「不能」。",
+    "answer": "不能"
+  },
+  {
+    "id": "brief-update",
+    "session": "B",
+    "route": "general_model",
+    "question": "帶了。那要去哪一間才印得出來？只回房間名稱。",
+    "answer": "柏室"
+  },
+  {
+    "id": "withdraw-color",
+    "session": "B",
+    "route": "general_model",
+    "question": "彩色要求取消，現在黑白也可以。松室有紙，柏室正在維修。只回現在可用的房間名稱。",
+    "answer": "松室"
+  }
+]

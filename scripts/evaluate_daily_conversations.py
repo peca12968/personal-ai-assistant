@@ -16,13 +16,15 @@ from assistant.parameter_acceptance import sources
 from scripts.learning.check_gpu_checkpoint import save
 
 SUITE = ROOT / 'evals/daily_conversations.json'
+GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
+MODEL_ROUTES = ('model', 'general_model')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
               'daily_meeting_calculation_v1': 'meeting_source', 'daily_option_selection_v1': 'option_source'}
 
 
-def fingerprint():
+def fingerprint(suite=SUITE):
     files = sources()
-    for path in [SUITE, Path(__file__).resolve(), *(ROOT/'scripts').glob('daily_*.py')]:
+    for path in [suite, Path(__file__).resolve(), *(ROOT/'scripts').glob('daily_*.py')]:
         files[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
@@ -81,6 +83,13 @@ def turn(folder, case, sid, refs, live):
                 'expected real base-model route')
         require(len(calls) == 1 and calls[0].get('engine') == engine and 'raw_answer' in calls[0],
                 'real local model answer missing or selection changed')
+        if case['route'] == 'general_model':
+            from assistant.engine import render_prompt
+            require(saved.get('response_mode') in (None, 'model') and 'inventory_check' not in saved
+                    and 'calculation' not in saved, 'general scenario received a tool answer')
+            digest = hashlib.sha256(render_prompt(initial).encode('utf8')).hexdigest()
+            require(calls[0].get('prompt_sha256') == digest, 'model prompt differs from the saved request')
+            details['delivery'] = 'general_model'
         if saved.get('response_mode') == 'verified_inventory':
             audit = saved.get('inventory_check', {})
             require('inventory_check' not in initial and audit.get('model_called') is True
@@ -111,7 +120,7 @@ def check_cases(cases):
     sessions = {}
     for c in cases:
         require(c['id'] not in sessions and re.fullmatch(r'[a-z0-9_-]+', c['id']), 'duplicate or unsafe case ID')
-        require(c['route'] in (*SOURCE_KEY, 'model', 'reject') and c['question'].strip(), 'invalid route or question')
+        require(c['route'] in (*SOURCE_KEY, *MODEL_ROUTES, 'reject') and c['question'].strip(), 'invalid route or question')
         if 'source' in c:
             require(sessions.get(c['source']) == c['session'], 'parent must precede case in the same chat')
         require(c.get('error') if c['route'] == 'reject' else c.get('answer') or c.get('contains'),
@@ -119,12 +128,12 @@ def check_cases(cases):
         sessions[c['id']] = c['session']
 
 
-def evaluate(folder, live):
-    stamp = fingerprint()
-    cases = [c for c in json.loads(SUITE.read_text(encoding='utf-8-sig')) if (c['route']=='model') == live]
+def evaluate(folder, live, suite=SUITE):
+    stamp = fingerprint(suite)
+    cases = [c for c in json.loads(suite.read_text(encoding='utf-8-sig')) if (c['route'] in MODEL_ROUTES) == live]
     check_cases(cases)
     sessions, refs, results = {}, {}, []
-    report = dict(schema='daily_cli_eval_v1', fingerprint=stamp, live_model=live, cases=cases, results=results)
+    report = dict(schema='daily_cli_eval_v1', fingerprint=stamp, suite=suite.name, live_model=live, cases=cases, results=results)
     save(folder/'report.json',report)
     for case in cases:
         thread = case['session']
@@ -140,7 +149,7 @@ def evaluate(folder, live):
         results.append(dict(id=case['id'],**result))
         save(folder/'report.json',report)
         print(case['id'],result['status'],flush=True)
-    require(stamp == fingerprint(), 'evaluation inputs changed during collection')
+    require(stamp == fingerprint(suite), 'evaluation inputs changed during collection')
     passed = sum(r['status'] in ('pass','expected_rejection') for r in results)
     if live:
         print(f"{sum(r['raw_exact'] for r in results)}/{len(cases)} raw model outputs matched exactly")
@@ -150,9 +159,12 @@ def evaluate(folder, live):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--out', help='New run name under local data/evaluations (required for live runs)')
     args = parser.parse_args()
+    if args.general and not args.live:
+        parser.error('--general requires --live')
     if args.live and not args.out:
         parser.error('--live requires --out')
     if args.out:
@@ -160,7 +172,7 @@ def main():
             parser.error('--out must be a simple run name')
         folder = ROOT/'data/evaluations'/args.out
         folder.mkdir(parents=True, exist_ok=False)
-        return evaluate(folder,args.live)
+        return evaluate(folder, args.live, GENERAL_SUITE if args.general else SUITE)
     with tempfile.TemporaryDirectory() as tmp:
         return evaluate(Path(tmp),False)
 

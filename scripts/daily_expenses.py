@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 
-from scripts import daily_criteria, daily_identifiers, daily_meeting, daily_stock
+from scripts import daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
 
@@ -235,6 +235,8 @@ class DailyAssistant(Assistant):
             inventory = daily_stock.context_hint(context)
             if inventory:
                 context['inventory_reasoning'] = inventory
+            elif update := daily_dialogue.revision_focus(context):
+                context['current_revision'] = update
         return context
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):

@@ -13,6 +13,17 @@ class DailyGateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.check_cases(cases)
 
+    def test_general_dialogue_suite_uses_separate_model_sessions_and_exact_answers(self):
+        import json
+        cases = json.loads(gate.GENERAL_SUITE.read_text(encoding='utf8'))
+        gate.check_cases(cases)
+        self.assertGreaterEqual(len({c['session'] for c in cases}), 2)
+        for c in cases:
+            self.assertEqual(c['route'], 'general_model')
+            self.assertIsInstance(c['answer'], str)
+            self.assertTrue(c['answer'].strip())
+        self.assertNotEqual(gate.fingerprint(gate.GENERAL_SUITE), gate.fingerprint(gate.SUITE))
+
     def test_block_real_inference_when_a_local_case_falls_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             case = dict(id='fallback', question='請用一句話說明這項任務。', route='daily_meeting_calculation_v1')
