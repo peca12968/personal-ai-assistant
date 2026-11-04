@@ -149,7 +149,14 @@ def project(raw, *, cancel=None, timeout=TIMEOUT):
                     time.sleep(.03)
                 check_running()
             finally:
-                if process.poll() is None: process.kill()
+                if process.poll() is None:
+                    if os.name == 'nt':
+                        # The Windows venv launcher may own a child that still holds input.pdf.
+                        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=subprocess.CREATE_NO_WINDOW, timeout=5, check=False)
+                    if process.poll() is None:
+                        process.kill()
                 process.wait(timeout=5)
         with destination.open('rb') as stream: result = stream.read(MAX_RESULT+1)
         if len(result)>MAX_RESULT: raise ValueError('PDF解析回覆過大，未匯入。')

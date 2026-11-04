@@ -150,6 +150,11 @@ def turn(folder, case, sid, refs, live):
             observed = observed[int(part)] if isinstance(observed, list) else observed[part]
         require(type(observed) is type(expected) and observed == expected, 'wrong evidence at ' + field)
     exact = content == case['answer'] if 'answer' in case else all(t in content for t in case['contains'])
+    components = case.get('branch_answers')
+    if components is not None:
+        require(case['route'] == 'capacity_comparison', 'component labels require a comparison case')
+        details['components_correct'] = details.get('branches') == components
+        exact = exact and details['components_correct']
     return actual_sid, dict(status='pass' if exact else 'wrong_answer', answer=content, run_id=run[0], **details)
 
 
@@ -163,6 +168,11 @@ def check_cases(cases):
             require(sessions.get(c['source']) == c['session'], 'parent must precede case in the same chat')
         require(c.get('error') if c['route'] == 'reject' else c.get('answer') or c.get('contains'),
                 'case must have a grading criterion')
+        if 'branch_answers' in c:
+            labels = c['branch_answers']
+            require(c['route'] == 'capacity_comparison' and isinstance(labels, list) and len(labels) == 2
+                    and all(label in ('能','不能','資料不足') for label in labels),
+                    'invalid comparison reference labels')
         sessions[c['id']] = c['session']
 
 
@@ -246,6 +256,9 @@ def evaluate(folder, live, suite=SUITE):
         save(folder/'report.json', report)
         print(f"{sum(row['both_correct'] for row in pairs.values())}/{len(pairs)} pairs correct in both versions")
         print(f"{sum(not row['same_output'] for row in pairs.values())} pairs changed visible answer")
+    components = [r for r in results if 'components_correct' in r]
+    if components:
+        print(f"{sum(r['components_correct'] for r in components)}/{len(components)} model comparisons matched both reference labels")
     passed = sum(r['status'] in ('pass','expected_rejection') for r in results)
     if live:
         verified = [r for r in results if r.get('delivery') == 'verified_clearance']

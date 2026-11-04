@@ -68,6 +68,16 @@ class DailyGateTests(unittest.TestCase):
             head, a, b, rest = first['question'].split('。',3)
             self.assertEqual(second['question'], '。'.join([head, b.translate(swap), a.translate(swap), rest]))
 
+    def test_branch_references_are_only_two_valid_model_labels(self):
+        case = dict(id='comparison', session='one', question='問題', route='capacity_comparison',
+                    answer='資料不足', branch_answers=['能','不能'])
+        gate.check_cases([case])
+        for labels in ([], ['能'], ['能','不知道'], '能、不能'):
+            with self.assertRaises(ValueError):
+                gate.check_cases([{**case, 'branch_answers':labels}])
+        with self.assertRaises(ValueError):
+            gate.check_cases([{**case, 'route':'general_model'}])
+
     def test_paired_cases_start_from_identical_history_in_separate_sessions(self):
         from unittest.mock import patch
         from assistant.store import Store

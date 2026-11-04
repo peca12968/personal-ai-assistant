@@ -159,6 +159,8 @@ class DocumentImportTests(unittest.TestCase):
         import subprocess,sys
         path=self.file('slow.pdf',example());popen=subprocess.Popen;entered=threading.Event();children=[]
         def slow(args,**kwargs):
+            if '--worker' not in args:
+                return popen(args, **kwargs)
             child=popen([sys.executable,'-c','import time;time.sleep(30)'],**kwargs)
             children.append(child);entered.set();return child
         with patch('assistant.document_import_ui.start_worker',self.launch),patch('assistant.pdf_text.subprocess.Popen',slow):

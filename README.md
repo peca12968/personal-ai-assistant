@@ -1043,3 +1043,5 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 ### 檢查備援設備的回答是否受名稱和順序影響
 
 在專案目錄執行 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --devices --out 新的執行名稱`。四組標籤機情境各測兩次，每次都用新對話。兩題交換設備名稱和條件的敘述順序，保留相同的任務、共同限制和正解。報告分列逐題得分、兩版本皆答對的組數，以及換序後改答的組數。兩次都答錯同一個選項，也會記為未通過。
+
+條件對照的固定名額題現在也核對兩個假設下的模型答案。即使最後剛好答對，任一假設判錯仍會列為未通過。命令列另外列出兩個判斷都符合參考答案的題數。

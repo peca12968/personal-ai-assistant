@@ -66,6 +66,8 @@ class PdfTests(unittest.TestCase):
         def directory(**kwargs):
             result=original_temp(dir=self.root,**kwargs);folders.append(Path(result.name));return result
         def child(args,**kwargs):
+            if '--worker' not in args:
+                return original_popen(args, **kwargs)
             proc=original_popen([sys.executable,'-c','import time;time.sleep(30)'],**kwargs)
             processes.append(proc);return proc
         with patch.object(p.tempfile,'TemporaryDirectory',side_effect=directory),patch.object(p.subprocess,'Popen',side_effect=child):
