@@ -42,6 +42,32 @@ class DailyGateTests(unittest.TestCase):
         self.assertEqual(Counter(c['route'] for c in cases), {'capacity_comparison':4,'general_model':2})
         self.assertEqual({c['answer'] for c in cases}, {'能','不能','資料不足'})
 
+    def test_equivalent_pairs_distinguish_consistency_from_correctness(self):
+        import json
+        cases = json.loads(gate.DEVICE_SUITE.read_text(encoding='utf8'))
+        groups = gate.equivalent_pairs(cases)
+        self.assertEqual(len(groups), 4)
+        pair = groups['uncertain']
+        results = [dict(id=c['id'], answer='能', status='wrong_answer') for c in pair]
+        def outcome():
+            return gate.pair_outcomes({'uncertain':pair}, results)['uncertain']
+        self.assertTrue(outcome()['same_output'])
+        self.assertFalse(outcome()['both_correct'])
+        results[1].update(answer='資料不足', status='pass')
+        self.assertFalse(outcome()['same_output'])
+        for other in (dict(pair[1],answer='能'), dict(pair[1],session=pair[0]['session'])):
+            with self.assertRaises(ValueError):
+                gate.equivalent_pairs([pair[0], other])
+
+    def test_device_fixture_changes_only_the_labels_and_order_of_the_two_devices(self):
+        import json
+        cases = json.loads(gate.DEVICE_SUITE.read_text(encoding='utf8'))
+        self.assertEqual(len({c['session'] for c in cases}), len(cases))
+        swap = str.maketrans({'松':'柏','柏':'松'})
+        for first, second in gate.equivalent_pairs(cases).values():
+            head, a, b, rest = first['question'].split('。',3)
+            self.assertEqual(second['question'], '。'.join([head, b.translate(swap), a.translate(swap), rest]))
+
     def test_paired_cases_start_from_identical_history_in_separate_sessions(self):
         from unittest.mock import patch
         from assistant.store import Store

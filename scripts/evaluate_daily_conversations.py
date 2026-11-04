@@ -20,6 +20,7 @@ GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
 FEASIBILITY_SUITE = ROOT / 'evals/daily_feasibility.json'
 PAIR_SUITE = ROOT / 'evals/daily_topic_pairs.json'
 DOOR_SUITE = ROOT / 'evals/daily_door_measurements.json'
+DEVICE_SUITE = ROOT / 'evals/daily_backup_devices.json'
 CONDITIONS_SUITE = ROOT / 'evals/daily_decisive_conditions.json'
 MODEL_ROUTES = ('model', 'general_model', 'verified_clearance', 'capacity_comparison')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
@@ -165,6 +166,35 @@ def check_cases(cases):
         sessions[c['id']] = c['session']
 
 
+def equivalent_pairs(cases):
+    from collections import Counter
+    sessions = Counter(c['session'] for c in cases)
+    groups = {}
+    for case in cases:
+        key = case.get('equivalent_pair')
+        if key is None:
+            continue
+        require(isinstance(key, str) and key, 'invalid equivalent pair name')
+        require(sessions[case['session']] == 1 and isinstance(case.get('answer'), str) and case['answer'].strip(),
+                'equivalent cases require fresh sessions and exact reference answers')
+        groups.setdefault(key, []).append(case)
+    for pair in groups.values():
+        require(len(pair) == 2 and pair[0]['session'] != pair[1]['session']
+                and pair[0]['question'] != pair[1]['question'] and pair[0]['answer'] == pair[1]['answer'],
+                'equivalent cases need different questions and sessions with the same reference answer')
+    return groups
+
+
+def pair_outcomes(groups, results):
+    by_id = {r['id']: r for r in results}
+    outcomes = {}
+    for name, pair in groups.items():
+        first, second = (by_id[c['id']] for c in pair)
+        outcomes[name] = dict(cases=[c['id'] for c in pair], same_output=first['answer'] == second['answer'],
+                              both_correct=first['status'] == second['status'] == 'pass')
+    return outcomes
+
+
 def evaluate(folder, live, suite=SUITE):
     stamp = fingerprint(suite)
     specification = json.loads(suite.read_text(encoding='utf-8-sig'))
@@ -172,6 +202,7 @@ def evaluate(folder, live, suite=SUITE):
     definitions = specification['cases'] if suite == PAIR_SUITE else specification
     cases = [c for c in definitions if (c['route'] in MODEL_ROUTES) == live]
     check_cases(cases)
+    groups = equivalent_pairs(cases)
     sessions, refs, results = {}, {}, []
     report = dict(schema='daily_cli_eval_v1', fingerprint=stamp, suite=suite.name, live_model=live, cases=cases, results=results)
     if suite == PAIR_SUITE:
@@ -209,6 +240,12 @@ def evaluate(folder, live, suite=SUITE):
         save(folder/'report.json',report)
         print(case['id'],result['status'],flush=True)
     require(stamp == fingerprint(suite), 'evaluation inputs changed during collection')
+    if groups:
+        pairs = pair_outcomes(groups, results)
+        report['equivalent_pairs'] = pairs
+        save(folder/'report.json', report)
+        print(f"{sum(row['both_correct'] for row in pairs.values())}/{len(pairs)} pairs correct in both versions")
+        print(f"{sum(not row['same_output'] for row in pairs.values())} pairs changed visible answer")
     passed = sum(r['status'] in ('pass','expected_rejection') for r in results)
     if live:
         verified = [r for r in results if r.get('delivery') == 'verified_clearance']
@@ -230,6 +267,8 @@ def main():
     group.add_argument('--feasibility', dest='suite', action='store_const', const=FEASIBILITY_SUITE, help='Compare possible, impossible and unknown transport conditions')
     group.add_argument('--topic-pair', dest='suite', action='store_const', const=PAIR_SUITE, help='Test contrasting current actors with identical synthetic history')
     group.add_argument('--general', dest='suite', action='store_const', const=GENERAL_SUITE, help='Use the separate general dialogue scenarios with --live')
+    group.add_argument('--devices', dest='suite', action='store_const', const=DEVICE_SUITE,
+                       help='Check alternative devices after swapping names and order')
     group.add_argument('--conditions', dest='suite', action='store_const', const=CONDITIONS_SUITE,
                        help='Compare decisive and unresolved prerequisites across tasks')
     parser.add_argument('--live', action='store_true')

@@ -1039,3 +1039,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 針對條件寫在本題、只有剩餘票數或名額不明，且要求只回「能」、「不能」或「資料不足」的問題，日常本機助理可讓模型在一次推理中分別判斷有名額及無名額兩種情況。兩次都能或都不能時交付相同結果，若結果不同則回答資料不足。兩個假設不會存成使用者提供的事實。點「查看本次參考」可以比較兩種假設、模型原答及交付。
 
 若模型沒有按兩行格式作答，助理會改用原題再問一次。文件題、有相關記憶的題目，以及需要以前文解讀的追問，仍走原有聊天流程。使用 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --conditions --out 新的執行名稱` 可重跑接駁車、現場登記與掃描器六題。
+
+### 檢查備援設備的回答是否受名稱和順序影響
+
+在專案目錄執行 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --devices --out 新的執行名稱`。四組標籤機情境各測兩次，每次都用新對話。兩題交換設備名稱和條件的敘述順序，保留相同的任務、共同限制和正解。報告分列逐題得分、兩版本皆答對的組數，以及換序後改答的組數。兩次都答錯同一個選項，也會記為未通過。

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "ready-1",
+    "session": "ready-1",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機電源狀態還沒查到。柏機剛測試過，可以正常列印。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "能",
+    "equivalent_pair": "ready"
+  },
+  {
+    "id": "ready-2",
+    "session": "ready-2",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機剛測試過，可以正常列印。柏機電源狀態還沒查到。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "能",
+    "equivalent_pair": "ready"
+  },
+  {
+    "id": "uncertain-1",
+    "session": "uncertain-1",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機電源狀態還沒查到，若有電便可列印。柏機故障，今天不能使用。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "資料不足",
+    "equivalent_pair": "uncertain"
+  },
+  {
+    "id": "uncertain-2",
+    "session": "uncertain-2",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機故障，今天不能使用。柏機電源狀態還沒查到，若有電便可列印。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "資料不足",
+    "equivalent_pair": "uncertain"
+  },
+  {
+    "id": "down-1",
+    "session": "down-1",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機正在維修，今天不能使用。柏機電源已拔除，今天不能接電。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能",
+    "equivalent_pair": "down"
+  },
+  {
+    "id": "down-2",
+    "session": "down-2",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機電源已拔除，今天不能接電。柏機正在維修，今天不能使用。工單已在手邊，小雅有權使用兩台。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能",
+    "equivalent_pair": "down"
+  },
+  {
+    "id": "common-1",
+    "session": "common-1",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機電源狀態還沒查到。柏機剛測試過，可以正常列印。兩台都要讀取同一份工單才能列印。這份工單已遺失，今天無法取得副本。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能",
+    "equivalent_pair": "common"
+  },
+  {
+    "id": "common-2",
+    "session": "common-2",
+    "route": "general_model",
+    "question": "現場只有松、柏兩台標籤機，任選一台即可。松機剛測試過，可以正常列印。柏機電源狀態還沒查到。兩台都要讀取同一份工單才能列印。這份工單已遺失，今天無法取得副本。小雅今天能列印這份工單嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能",
+    "equivalent_pair": "common"
+  }
+]
