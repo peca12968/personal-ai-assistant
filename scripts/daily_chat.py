@@ -19,7 +19,12 @@ def run_daily_window(store, engine):
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if context and 'inventory_check' in context:
+            if context and 'clearance_check' in context:
+                title = '門寬尺寸核對'
+                ref, receipt = context['door_measurements'], context['clearance_check']
+                lines = [context['current_request'], '', ref['箱邊原文'], ref['門高原文'], ref['原門寬紀錄'],
+                         ref['假設一'], ref['假設二'], '', '模型原答：', receipt['raw_answer'], '', '交付：' + receipt['delivered']]
+            elif context and 'inventory_check' in context:
                 title = '庫存回答核對紀錄'
                 check = context['inventory_check']
                 if check['schema'] == 'stock_opening_clarification_v1':

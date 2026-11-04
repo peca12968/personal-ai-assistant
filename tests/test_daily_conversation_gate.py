@@ -30,7 +30,7 @@ class DailyGateTests(unittest.TestCase):
         cases = json.loads(gate.FEASIBILITY_SUITE.read_text(encoding='utf8'))
         gate.check_cases(cases)
         self.assertEqual(len({c['session'] for c in cases}), len(cases))
-        self.assertTrue(all(c['route'] == 'general_model' for c in cases))
+        self.assertEqual(Counter(c['route'] for c in cases), {'general_model':5, 'verified_clearance':1})
         self.assertEqual(Counter(c['answer'] for c in cases), {'可行': 2, '不可行': 2, '資料不足': 2})
 
     def test_paired_cases_start_from_identical_history_in_separate_sessions(self):

@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 
-from scripts import daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
+from scripts import daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
 
@@ -239,8 +239,10 @@ class DailyAssistant(Assistant):
                 context['resumed_topic'] = resumed
             elif update := daily_dialogue.revision_focus(context):
                 context['current_revision'] = update
-            evidence = daily_dialogue.feasibility_evidence(context)
-            if evidence:
+            clearance = daily_clearance.opening_reference(context)
+            if clearance:
+                context['door_measurements'] = clearance
+            elif evidence := daily_dialogue.feasibility_evidence(context):
                 context['feasibility_evidence'] = evidence
         return context
 
@@ -259,6 +261,17 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        if (local and hasattr(self.engine, 'answer_raw') and daily_clearance.proof_format(question)
+                and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'verified_clearance')):
+            context = self.prepare_context(sid, question, exclude_message_id=before)
+            if context.get('door_measurements'):
+                context['response_mode'] = 'verified_clearance'
+
+                def verify_clearance(uid):
+                    raw = self.engine.answer_raw(render_prompt(context), cancel)
+                    return daily_clearance.verified_answer(context, raw)
+
+                return self._run_recorded(sid, question, context, verify_clearance, cancel, retry, draft, 'clearance_check')
         if (local and daily_stock.candidate(question) and hasattr(self.engine, 'answer_raw')
                 and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'verified_inventory')):
             context = self.prepare_context(sid, question, exclude_message_id=before)

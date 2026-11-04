@@ -19,7 +19,8 @@ SUITE = ROOT / 'evals/daily_conversations.json'
 GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
 FEASIBILITY_SUITE = ROOT / 'evals/daily_feasibility.json'
 PAIR_SUITE = ROOT / 'evals/daily_topic_pairs.json'
-MODEL_ROUTES = ('model', 'general_model')
+DOOR_SUITE = ROOT / 'evals/daily_door_measurements.json'
+MODEL_ROUTES = ('model', 'general_model', 'verified_clearance')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
               'daily_meeting_calculation_v1': 'meeting_source', 'daily_option_selection_v1': 'option_source'}
 
@@ -91,7 +92,17 @@ def turn(folder, case, sid, refs, live):
                     and 'calculation' not in saved, 'general scenario received a tool answer')
             digest = hashlib.sha256(render_prompt(initial).encode('utf8')).hexdigest()
             require(calls[0].get('prompt_sha256') == digest, 'model prompt differs from the saved request')
-            details['delivery'] = 'general_model'
+            details['delivery'] = 'model_with_door_measurements' if saved.get('door_measurements') else 'general_model'
+        if case['route'] == 'verified_clearance':
+            from assistant.engine import render_prompt
+            audit = saved.get('clearance_check', {})
+            require(saved.get('response_mode') == initial.get('response_mode') == 'verified_clearance'
+                    and 'clearance_check' not in initial and audit.get('schema') == 'door_width_uncertainty_v1'
+                    and audit.get('model_called') is True and audit.get('raw_answer') == calls[0]['raw_answer']
+                    and audit.get('delivered') == content and audit.get('raw_exact') is (content == audit['raw_answer'])
+                    and calls[0].get('prompt_sha256') == hashlib.sha256(render_prompt(initial).encode('utf8')).hexdigest(),
+                    'missing verified clearance route or inconsistent evidence')
+            details['delivery'] = 'verified_clearance'
         if saved.get('response_mode') == 'verified_inventory':
             audit = saved.get('inventory_check', {})
             require('inventory_check' not in initial and audit.get('model_called') is True
@@ -176,6 +187,9 @@ def evaluate(folder, live, suite=SUITE):
     require(stamp == fingerprint(suite), 'evaluation inputs changed during collection')
     passed = sum(r['status'] in ('pass','expected_rejection') for r in results)
     if live:
+        verified = [r for r in results if r.get('delivery') == 'verified_clearance']
+        if verified:
+            print(f"{len(verified)} answers used the door-width check")
         print(f"{sum(r['raw_exact'] for r in results)}/{len(cases)} raw model outputs matched exactly")
     print(f'{passed}/{len(cases)} ' + ('visible answers with live model; exact output' if live else 'offline CLI outcomes; model calls blocked'))
     return passed == len(cases)
@@ -184,13 +198,14 @@ def evaluate(folder, live, suite=SUITE):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
+    group.add_argument('--clearance', action='store_true', help='Check missing width and measured follow-ups')
     group.add_argument('--feasibility', action='store_true', help='Compare possible, impossible and unknown transport conditions')
     group.add_argument('--topic-pair', action='store_true', help='Test contrasting current actors with identical synthetic history')
     group.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--out', help='New run name under local data/evaluations (required for live runs)')
     args = parser.parse_args()
-    if (args.general or args.topic_pair or args.feasibility) and not args.live:
+    if (args.general or args.topic_pair or args.feasibility or args.clearance) and not args.live:
         parser.error('dialogue suites require --live')
     if args.live and not args.out:
         parser.error('--live requires --out')
@@ -202,6 +217,8 @@ def main():
         suite = PAIR_SUITE if args.topic_pair else GENERAL_SUITE if args.general else SUITE
         if args.feasibility:
             suite = FEASIBILITY_SUITE
+        elif args.clearance:
+            suite = DOOR_SUITE
         return evaluate(folder, args.live, suite)
     with tempfile.TemporaryDirectory() as tmp:
         return evaluate(Path(tmp),False)

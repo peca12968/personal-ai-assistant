@@ -37,8 +37,11 @@
   {
     "id": "crate-unknown",
     "session": "crate-unknown",
-    "route": "general_model",
+    "route": "verified_clearance",
     "question": "搬運員要把一個硬質正方體箱子送進庫房。箱子每邊 78 公分，不可拆卸。唯一的門高 200 公分、寬度尚未量測，兩側空曠平坦且無其他障礙。按現有條件，能否把物件原樣運到目的地？只回「可行」、「不可行」或「資料不足」。",
-    "answer": "資料不足"
+    "answer": "資料不足",
+    "evidence": {
+      "door_measurements.尚缺尺寸": "門的淨寬"
+    }
   }
 ]
