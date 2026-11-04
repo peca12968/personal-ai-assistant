@@ -1059,3 +1059,11 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 ## 單一標籤的交付格式
 
 日常本機模式可整理「只輸出指定文字」及在證據前明示只回單一標籤的請求。當模型已完整回答一個符合指示的短標籤，程式可移除結尾多加的句點或驚嘆號；指定文字本身包含標點時保留。含說明、其他文字、疑問或引用資料中的格式指令，不會套用新規則。這是交付整理，不會改選模型的判斷，也不是參數學習；原始模型及參數驗收流程維持原答。更新後重新開啟日常本機模式即可載入。
+
+## 同一份證據的正反命題檢查
+
+`evals/claim_states.json` 固定六對合成情境：每對證據相同，待判命題相反；四題來自既有失敗情境，八題是另設的物件與條件。成立、不成立、未知各四題。它區分「已查明設備故障」和「設備功能成立」，也保留尚未查證及條件未確認的情況。參考答案不送入模型；不是訓練資料，也不代替原有日常對話測試。
+
+以 `.venv\Scripts\python.exe scripts/evaluate_understanding.py --suite evals/claim_states.json` 做離線檢查；這不載入模型。若要收集原始本機底座的真實回答，在同一命令加入 `--live --local-data-dir data/evaluations/claim-check-001 --report data/evaluations/claim-check-001/report.json`，使用尚未存在的報告路徑。每題一個獨立合成對話，保留完整模型請求、原答、來源指紋及案例。
+
+收集全部完成後，再以既有 `scripts/review_understanding.py` 按三項標準分開評讀：命題判斷、完整輸出格式、是否增添未提供的條件。開發者評讀使用 development_agent，不能標成使用者或獨立驗收。成對正確、單題正確與格式正確須分開報告；改變問法的實驗不能當成同題版本提升或參數學習。
