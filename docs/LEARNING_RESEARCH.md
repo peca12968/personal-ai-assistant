@@ -4,6 +4,25 @@
 
 ## 第4點：真正更新參數
 
+### 原始底座的分段提交
+
+從原始底座開始的新確認批次，可用 `scripts/learning/base_idle_segments.py`。先準備一份**尚未執行、有保留題、沒有父模型**的新批次，再以既有 `idle.py prepare` 固定完整助理驗收與來源；這個參考工作只供分段規約讀取，不另行執行 `idle.py run`。取消的舊批次不能拿來接續，也不能從只有步號與損失的部分紀錄恢復權重。
+
+```powershell
+.venv\Scripts\python.exe scripts/learning/base_idle_segments.py prepare --data-dir 資料目錄 --reference-job 未執行參考工作ID --steps 128
+.venv\Scripts\python.exe scripts/learning/base_idle_segments.py start --session 新訓練ID --updates 8
+.venv\Scripts\python.exe scripts/learning/base_idle_segments.py status --session 新訓練ID
+.venv\Scripts\python.exe scripts/learning/base_idle_segments.py continue --session 新訓練ID --receipt 最新提交指紋 --updates 8
+```
+
+準備不載入模型。每次 start／continue 都另行核對至少十分鐘的 Windows 原生輸入閒置、目前來源、確認例子與 GPU 鎖，工作限六分鐘；未滿門檻即拒絕，沒有常駐等待或自動續跑。它從固定種子建立新 LoRA，按段保存權重、AdamW 狀態、CPU／CUDA 亂數、抽樣次序與歷程。控制器確認擁有的工作程序退出、實體檢查點及交接鏈一致後，才提交本機 SQLite 帳本。中斷留下的檔案不等於已提交進度；來源副本、程式、資料或參考工作變動會拒絕接續。
+
+另可建立總長四步的規約，明確執行 2 步、接續 2 步，再以 `control --session 訓練ID --receipt 最終提交指紋` 作一次連續四步對照。比較檢查點、權重、抽樣與損失、保留輸入 logits／生成，以及全部短題原答。這是訓練接續驗證，不是能力驗收；完成分段不自動建立可選用候選、不切換日常模型，仍需新舊技能、重新載入及完整助理驗收。來源與成果僅留在本機 `data/learning/base-idle-segments`。
+
+此入口補足底座起點；有已核對父模型的批次仍使用下方既有 `idle_segments.py`。兩者的程式與規約分開綁定，既有父模型分段來源未改。
+
+目前十項新控制流程與五項既有分段測試通過。底座四步實機對照的一次原生閒置等候已到期，沒有啟動 GPU、提交進度仍為零；因此底座數值接續尚未實機驗證，不能把受控測試或下方父模型的 GPU 成績當作此入口已完成的證據。
+
 ### 分段提交與下次閒置工作接續
 
 在 F 槽專案目錄，以既有的資料目錄、含父模型及短提示保留題的參考工作準備一份新規約。下例計畫 128 步，每一份工作負責 32 步。
