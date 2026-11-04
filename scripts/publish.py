@@ -38,6 +38,7 @@ def main():
     run(sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v")
     run(sys.executable, "scripts/evaluate_chat_calculation.py")
     run(sys.executable, "scripts/evaluate_daily_conversations.py")
+    run(sys.executable, "scripts/evaluate_device_components.py")
     run(sys.executable, "scripts/evaluate.py")
     run(sys.executable, "scripts/evaluate_context.py")
     run(sys.executable, "scripts/evaluate_documents.py")

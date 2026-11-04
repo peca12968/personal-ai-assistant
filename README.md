@@ -1045,3 +1045,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 在專案目錄執行 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --devices --out 新的執行名稱`。四組標籤機情境各測兩次，每次都用新對話。兩題交換設備名稱和條件的敘述順序，保留相同的任務、共同限制和正解。報告分列逐題得分、兩版本皆答對的組數，以及換序後改答的組數。兩次都答錯同一個選項，也會記為未通過。
 
 條件對照的固定名額題現在也核對兩個假設下的模型答案。即使最後剛好答對，任一假設判錯仍會列為未通過。命令列另外列出兩個判斷都符合參考答案的題數。
+
+### 分別核對共同前提和設備狀態
+
+執行 `.venv\Scripts\python.exe scripts/evaluate_device_components.py` 會核對八題的拆解與參考答案，不啟動模型。加上 `--live --out 新的執行名稱` 可明確執行本機模型實驗，逐題保存完整提示、模型三行判斷、邏輯合成答案與來源指紋。共同前提和兩台設備的判斷都正確才記為通過。這個實驗供改進理解能力使用，尚未接入日常聊天。
