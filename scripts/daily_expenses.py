@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 
-from scripts import daily_identifiers, daily_meeting
+from scripts import daily_criteria, daily_identifiers, daily_meeting
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context
 
@@ -186,6 +186,18 @@ def apply_followup(ledger, target, question, *, can_prompt=False):
     row['included'] = row['status'] == '已核准' and row['currency'] == ledger['currency']
 
 
+def option_source_valid(row, saved):
+    initial = json.loads(row['context_json'])
+    calc = saved.get('calculation', {})
+    return (isinstance(saved.get('option_plan'), dict) and saved['option_plan'].get('schema') == 'daily_option_table_v1'
+            and saved['option_plan'] == initial.get('option_plan') and saved.get('option_source') == initial.get('option_source')
+            and saved.get('option_question') == initial.get('option_question') and saved.get('response_mode') == 'local_calculation'
+            and row['question'] == initial.get('current_request') == saved.get('current_request')
+            and isinstance(calc, dict) and isinstance(calc.get('result'), dict)
+            and calc.get('schema') == 'daily_option_selection_v1' and calc.get('model_called') is False
+            and calc.get('status') == 'complete' and row['content'] == calc.get('result', {}).get('exact'))
+
+
 class DailyAssistant(Assistant):
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
@@ -210,6 +222,42 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        selection_change = daily_criteria.revision(question) if local else None
+        option_plan = daily_criteria.parse(question) if local else None
+        if (option_plan or selection_change) and not self.store.documents(sid, include_content=False):
+            origin = None
+            clarification = None
+            if selection_change:
+                previous = previous_answer(self.store, sid, before)
+                saved = json.loads(previous['payload']) if previous else {}
+                if 'option_plan' in saved:
+                    if not option_source_valid(previous, saved):
+                        raise ValueError('上一份方案紀錄已變動，請重新提供條件。')
+                    origin = source_ref(previous)
+                    option_plan = saved['option_plan']
+                    clarification = daily_criteria.revise(option_plan, selection_change)
+                elif prior.get('option_source'):
+                    raise ValueError('已無法核對原先的方案紀錄，請重新提供條件。')
+            if option_plan and (not retry or 'option_plan' in prior):
+                if retry and (prior['option_plan'] != option_plan or prior.get('option_source') != origin
+                              or prior.get('option_question') != clarification):
+                    raise ValueError('重試所需的方案來源已變更。')
+                context = make_context(question, [], [])
+                context.update(response_mode='local_calculation', option_plan=option_plan,
+                               documents={'catalog': [], 'excerpts': []})
+                if origin:
+                    context['option_source'] = origin
+                if clarification:
+                    context['option_question'] = clarification
+
+                def resolve_options(uid):
+                    if origin:
+                        row = previous_answer(self.store, sid, uid)
+                        if not row or source_ref(row) != origin or not option_source_valid(row, json.loads(row['payload'])):
+                            raise ValueError('提交前方案來源已變更，請重新核對。')
+                    return daily_criteria.resolve(option_plan, clarification)
+
+                return self._run_local(sid, question, context, resolve_options, cancel, retry, draft)
         change = daily_meeting.FOLLOWUP.fullmatch(question) if self.allow_local_calculation else None
         meeting = daily_meeting.parse(question) if local and not (followup or choice or change) else None
         if change or meeting:

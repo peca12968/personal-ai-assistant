@@ -19,7 +19,21 @@ def run_daily_window(store, engine):
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if context and 'meeting_plan' in context:
+            if context and 'option_plan' in context:
+                title = '本機方案比較紀錄'
+                plan = context['option_plan']
+                lines = [context['current_request'], '', '有效限制']
+                if context.get('option_source'):
+                    lines.insert(1, f"沿用本對話方案回答 #{context['option_source']['answer_id']}")
+                if context.get('option_question'):
+                    lines.insert(1, '更正尚待確認，沿用上一份有效條件。')
+                lines.extend(rule['source'] for rule in plan['limits'].values())
+                lines += ['', '依序比較（數值較小者優先）：' + '、'.join(plan['ranking']), '逐項核對']
+                for option, check in zip(plan['options'], context['calculation']['checks'], strict=True):
+                    reason = '不符合：' + '、'.join(plan['limits'][key]['source'] for key in check['rejected']) if check['rejected'] else '符合'
+                    lines.append(option['source'] + ' · ' + reason)
+                lines += ['', context['calculation']['result']['exact']]
+            elif context and 'meeting_plan' in context:
                 title = '本機會議時段計算紀錄'
                 receipt = context['calculation']
                 lines = [context['current_request'], '', '採用的取消條件']
