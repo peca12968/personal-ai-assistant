@@ -4,10 +4,43 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from assistant.engine import Assistant, ROOT
+from assistant.engine import ROOT
 from assistant.local_engine import LocalEngine
 from assistant.store import Store
 from scripts.daily_delivery import DailyLocalEngine
+from scripts.daily_expenses import DailyAssistant
+
+
+def run_daily_window(store, engine):
+    from tkinter import scrolledtext
+    from assistant.gui import App, tk
+    from assistant.chat_calculation import describe
+
+    class DailyWindow(App):
+        def inspect_context(self):
+            context = self.store.answer_context(self.last_answer) if self.last_answer else None
+            if not context or 'expense_ledger' not in context:
+                return super().inspect_context()
+            ledger = context['expense_ledger']
+            lines = [context['current_request'], '', '逐項核對']
+            for row in ledger['rows']:
+                decision = '計入' if row['included'] else '排除'
+                lines.append(f"{decision} · {row['source']} · 最終狀態 {row['status']}")
+            if ledger['changes']:
+                lines += ['', '本輪更正'] + [change['source'] for change in ledger['changes']]
+            lines += ['', describe(context['calculation'])]
+            panel = tk.Toplevel(self.root)
+            panel.title('本機核銷計算紀錄')
+            panel.geometry('640x460')
+            view = scrolledtext.ScrolledText(panel, wrap='word', padx=10, pady=10)
+            view.pack(fill='both', expand=True)
+            view.insert('1.0', '\n'.join(lines))
+            view.configure(state='disabled')
+
+    root = tk.Tk()
+    window = DailyWindow(root, store, engine)
+    window.assistant = DailyAssistant(store, engine)
+    root.mainloop()
 
 
 def main():
@@ -56,13 +89,12 @@ def main():
             sid = args.session or store.new_session()
             for path in args.file:
                 store.attach_document(sid, path)
-            app = Assistant(store, engine)
+            app = DailyAssistant(store, engine)
             reply = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
             print(reply['content'])
             print('\nSession:', sid)
         else:
-            from assistant.gui import run
-            run(store, engine)
+            run_daily_window(store, engine)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, sqlite3.Error) as exc:
         parser.exit(1, '本機助理未完成：' + str(exc) + '\n')
 
