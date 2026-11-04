@@ -5,6 +5,7 @@ import json
 import re
 
 from assistant.engine import render_prompt
+from scripts import daily_stock
 from scripts.daily_identifiers import missing_literal, omit_unrelated_identifier, supplied_code
 
 SEP = r'(?:^|[。！？；，,;？?\n])\s*'
@@ -256,4 +257,5 @@ class DailyLocalEngine:
         concise = missing_literal(question, draft) or supplied_code(ctx, draft)
         if concise is not None:
             return concise
-        return extract(question, omit_unrelated_identifier(ctx, explanation_body(ctx, draft)))
+        delivered = extract(question, omit_unrelated_identifier(ctx, explanation_body(ctx, draft)))
+        return daily_stock.concise(ctx, delivered) or delivered

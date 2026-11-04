@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 
-from scripts import daily_criteria, daily_identifiers, daily_meeting
+from scripts import daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context
 
@@ -205,6 +205,9 @@ class DailyAssistant(Assistant):
             focus = daily_identifiers.context_focus(context)
             if focus:
                 context['identifier_request'] = focus
+            inventory = daily_stock.context_hint(context)
+            if inventory:
+                context['inventory_reasoning'] = inventory
         return context
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):

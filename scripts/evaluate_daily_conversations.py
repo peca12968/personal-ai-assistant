@@ -81,7 +81,8 @@ def turn(folder, case, sid, refs, live):
                 'expected real base-model route')
         require(len(calls) == 1 and calls[0].get('engine') == engine and 'raw_answer' in calls[0],
                 'real local model answer missing or selection changed')
-        details.update(engine=engine['selection_fingerprint'], raw_answer=calls[0]['raw_answer'])
+        details.update(engine=engine['selection_fingerprint'], raw_answer=calls[0]['raw_answer'],
+                       raw_exact=calls[0]['raw_answer'] == case['answer'])
     else:
         route = case['route']
         calc = saved.get('calculation', {})
@@ -135,7 +136,9 @@ def evaluate(folder, live):
         print(case['id'],result['status'],flush=True)
     require(stamp == fingerprint(), 'evaluation inputs changed during collection')
     passed = sum(r['status'] in ('pass','expected_rejection') for r in results)
-    print(f'{passed}/{len(cases)} ' + ('live model; exact output' if live else 'offline CLI outcomes; model calls blocked'))
+    if live:
+        print(f"{sum(r['raw_exact'] for r in results)}/{len(cases)} raw model outputs matched exactly")
+    print(f'{passed}/{len(cases)} ' + ('visible answers with live model; exact output' if live else 'offline CLI outcomes; model calls blocked'))
     return passed == len(cases)
 
 
