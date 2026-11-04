@@ -40,6 +40,47 @@ class DeliveryTests(unittest.TestCase):
             with self.subTest(q=q, draft=draft):
                 self.assertEqual(extract(q, draft), wanted)
 
+    def test_only_shorten_equations_with_consistent_numbers(self):
+        question = '總額是多少？只回答數字。'
+        for text, answer in [('3 - -2 + 7 = 12', '12'), ('0.1 + 0.2 = 0.3', '0.3'),
+                             ('-3 × 0.25 = -0.75', '-0.75'), ('7.5 ÷ 3 = 2.5', '2.5'),
+                             ('合計為：1,200 - 50 = 1,150 元。', '1150'), ('答案=18', '18')]:
+            self.assertEqual(extract(question, text), answer)
+        for text in ('7 + 8 = 16', '10 / 0 = 0', '12 × 3 = 35', '12 / 7 = 1.71'):
+            visible = extract(question, text)
+            self.assertTrue(visible.startswith(text))
+            self.assertIn('不成立', visible)
+        for text in ('1 + 2 × 3 = 7', '2 × 2 = 5。答案為 19。', '2 + 3 = 5。答案為 6。',
+                     '3％ ＝ 0.03。答案是 4。', '1' * 270 + ' + 1 = 3'):
+            self.assertEqual(extract(question, text), text)
+
+    def test_mismatched_equation_keeps_workings_in_chat_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            draft = '合計為：94 + 28 = 112 元。'
+            engine = DailyLocalEngine(Raw(draft))
+            q = '兩筆已核准，合計多少？只回覆數字。'
+            sid = store.new_session()
+            answer = Assistant(store, engine).ask(sid, q)['content']
+            self.assertIn('不成立', answer)
+            self.assertEqual(store.messages(sid, 2)[-1]['content'], answer)
+            raw = Assistant(store, engine, allow_local_calculation=False)
+            self.assertEqual(raw.ask(store.new_session(), q)['content'], draft)
+
+    def test_compare_excluded_items_to_positive_addends_only(self):
+        scoped = '只統計已核准的新台幣支出。標籤 70 元已核准，封箱 13 元待核准，運費 5 美元已核准。只輸出數字。'
+        for draft, kind in [('70 + 13 = 83', '待核准'), ('已核准總額為：70 + 5 = 75 元。', '美元')]:
+            self.assertIn('原題的' + kind, extract(scoped, draft))
+        for question, draft in [
+            (scoped, '總額為 70 元。'),
+            (scoped.replace('只統計', '不要只統計'), '70 + 13 = 83'),
+            (scoped.replace('70 元已核准', '13 元已核准'), '13 + 13 = 26'),
+            (scoped.replace('封箱 13 元待核准', '封箱 13 元待核准，後來改為已核准'), '70 + 13 = 83'),
+            (scoped, '待核准的項目不計入。總額為 70 元。'),
+            (scoped, '100 - 13 = 87'),
+        ]:
+            self.assertNotIn('篩選核對', extract(question, draft))
+
     def test_no_guess_no_unrequested_formatting(self):
         risky = [
             ('簡述原因。', '總額為 80 元。'),

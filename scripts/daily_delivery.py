@@ -1,4 +1,6 @@
 """Conservative formatting of explicit, text-only local chat conclusions."""
+from collections import Counter
+from fractions import Fraction
 import json
 import re
 
@@ -23,6 +25,38 @@ CODE = r'[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*'
 QUOTES = re.compile(r'「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"|\x60[^\x60]*\x60', re.S)
 
 
+NUMERIC_CONCLUSION = re.compile(
+    rf'(?:(?:(?:因此|所以)[，,]?\s*)?(?:{LABEL}(?:新台幣金額|金額|數量)?){IS})?'
+    rf'(?:(?P<left>(?:{NUMBER}\s*[-+*/×÷]\s*)+{NUMBER})\s*=\s*)?'
+    rf'(?P<result>{NUMBER})\s*(?:元|片|個|件|顆)?')
+
+
+def equation_agrees(match):
+    """Check a bounded numeric claim as data. None means keep the original workings."""
+    left = match['left']
+    if len(left) > 256 or len(match['result']) > 64:
+        return None
+    first = re.match(NUMBER, left)
+    value = Fraction(first[0].replace(',', ''))
+    claimed = Fraction(match['result'].replace(',', ''))
+    terms = re.findall(rf'([-+*/×÷])\s*({NUMBER})', left[first.end():])
+    if len(terms) > 24:
+        return None
+    for op, literal in terms:
+        operand = Fraction(literal.replace(',', ''))
+        if op == '+':
+            value += operand
+        elif op == '-':
+            value -= operand
+        elif len(terms) != 1:
+            return None
+        elif op in '×*':
+            return value * operand == claimed
+        else:
+            return operand != 0 and value == claimed * operand
+    return value == claimed
+
+
 def contract(question):
     # Match an imperative at a clause boundary, never a quoted example.
     for kind, pattern in CONTRACTS.items():
@@ -35,6 +69,65 @@ def contract(question):
             continue
         return kind, (match.group(1) if kind == 'missing' else None)
     return None
+
+
+def questionable_charge(question, last):
+    # Only compare explicitly listed addends, never every number in the model's prose.
+    last = ' '.join(last.split())
+    if (len(last) > 512 or not re.search(r'(?:^|[，。；！？])(?:已)?核准(?:的)?(?:金額|款項)(?:共|合計|總計)?多少'
+                      r'|(?:^|[：:，。；！？])\s*(?:請)?只(?:加總|統計|計入)(?:狀態為)?已核准', question)
+            or re.search(r'更正|改為|改成|匯率|換算|折抵|折扣|待核准(?:的)?(?:款項|金額).*多少|[「『“"`]', question)):
+        return None
+    money = r'(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,2})?'
+    term = rf'({money})\s*(?:元\s*)?(?:（[\u4e00-\u9fff]{{1,12}}）\s*)?'
+    equation = re.fullmatch(rf'(?:[\u4e00-\u9fff]{{1,24}}[為是：:]\s*[:：]?\s*)?'
+                            rf'({term}(?:\s*\+\s*{term}){{1,23}})\s*=\s*{money}\s*(?:元)?', last)
+    if not equation:
+        return None
+    addends = {Fraction(re.fullmatch(term, t.strip())[1]) for t in equation[1].split('+')}
+    amounts = list(re.finditer(rf'(?<![\d.,+-])({money})\s*(美元|元)', question))
+    occurrences = Counter(Fraction(entry[1]) for entry in amounts)
+    for entry in amounts:
+        value = Fraction(entry[1])
+        if value not in addends or occurrences[value] != 1:
+            continue
+        prefix = question[:entry.start()]
+        suffix = question[entry.end():]
+        pending = re.search(r'待(?:核准|審)(?:[\u4e00-\u9fff]{0,8})\s*$', prefix) or re.match(r'\s*待(?:核准|審)', suffix)
+        foreign = entry[2] == '美元' and re.search(r'只(?:加總|統計|計入)(?:狀態為)?已核准的?新台幣', question)
+        if pending or foreign:
+            reason = '待核准' if pending else '美元'
+            return '篩選核對：加總中有一筆 ' + entry[1] + '，與原題的' + reason + '項目金額相同。請確認該加項的來源，再採用總額。'
+    return None
+
+
+def numeric_delivery(question, draft, sentences):
+    last = sentences[-1]
+    charge_warning = questionable_charge(question, last)
+    if charge_warning:
+        return draft + '\n\n' + charge_warning
+    match = NUMERIC_CONCLUSION.fullmatch(last)
+    if not match or (len(sentences) > 1 and not re.search(LABEL + '|=', last)):
+        return draft
+    result = match['result'].replace(',', '')
+    if match['left']:
+        agrees = equation_agrees(match)
+        if agrees is False:
+            return draft + '\n\n數字核對：原答的等式「' + match['left'] + ' = ' + match['result'] + '」不成立，最後數字仍待確認。'
+        if agrees is None:
+            return draft
+    # A bare conclusion must not hide an unsupported or conflicting earlier equation.
+    for index, sentence in enumerate(sentences[:-1]):
+        if '=' not in sentence and '＝' not in sentence:
+            continue
+        prior = NUMERIC_CONCLUSION.fullmatch(sentence)
+        if not prior or (prior['left'] and equation_agrees(prior) is not True):
+            return draft
+        if index == len(sentences) - 2 and not match['left'] and prior['result'].replace(',', '') != result:
+            return draft
+    if '整數' in question[question.rfind('只'):] and '.' in result:
+        return draft
+    return result
 
 
 def extract(question, draft):
@@ -65,14 +158,7 @@ def extract(question, draft):
     if re.search(r'(?:不確定|不足|無法|可能|假設|如果|或者|若|假如|例如|排除|非|取消|[?？])', last):
         return draft
     if kind == 'number':
-        # Optional workings must be a numeric expression, not a list of amounts.
-        match = re.fullmatch(
-            rf'(?:(?:(?:因此|所以)[，,]?\s*)?(?:{LABEL}(?:新台幣金額|金額|數量)?){IS})?'
-            rf'(?:(?:{NUMBER}\s*[-+*/×÷]\s*)+{NUMBER}\s*=\s*)?({NUMBER})\s*(?:元|片|個|件|顆)?', last)
-        if len(sentences) > 1 and not re.search(LABEL + '|=', last):
-            return draft
-        if match and ('整數' not in question[question.rfind('只'):] or '.' not in match[1]):
-            return match[1].replace(',', '')
+        return numeric_delivery(question, draft, sentences)
     if kind == 'time':
         m = re.fullmatch(rf'(?:(?:因此|所以)[，,]\s*)?(?:(?:最早可行|最早|可行)(?:的)?(?:連續\s*[0-9]+\s*分鐘)?(?:開始及結束時間|時間區間|時間|時段){IS})?{RANGE}', last)
         if m and (len(sentences) == 1 or '可行' in last or '最早' in last):
