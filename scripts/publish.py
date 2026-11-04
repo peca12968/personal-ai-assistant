@@ -1,6 +1,7 @@
 """Test, inspect, commit and push only project source to the private origin."""
 import argparse
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -14,8 +15,11 @@ SECRET = re.compile(rb"(?:sk-[A-Za-z0-9_-]{24,}|gh[pousr]_[A-Za-z0-9]{24,}|-----
 
 
 def run(*args, capture=False):
+    # -X utf8 on this process is not inherited by nested Python CLIs.
+    # Keep validation output UTF-8 through every child generation on Windows.
+    child_env = {**os.environ, 'PYTHONUTF8': '1'}
     result = subprocess.run(args, cwd=ROOT, check=True, stdout=subprocess.PIPE if capture else None,
-                            encoding="utf-8", errors="replace")
+                            encoding="utf-8", errors="replace", env=child_env)
     return result.stdout.strip() if capture else ""
 
 

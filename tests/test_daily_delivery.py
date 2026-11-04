@@ -27,6 +27,24 @@ class Raw:
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_label_punctuation_changes_delivery_without_changing_the_model_or_raw_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            q = ('完成回完成，未完成回未完成，不清楚回待查。'
+                 '只回一個標籤。原文：是否完成尚未查到。')
+            raw = Raw('未完成。')
+            engine = DailyLocalEngine(raw)
+            sid = store.new_session()
+            answer = Assistant(store, engine).ask(sid, q)
+            self.assertEqual(answer['content'], '未完成')
+            self.assertEqual(raw.calls, 1)
+            self.assertEqual(raw.draft, '未完成。')
+            self.assertEqual(store.answer_context(answer['id'])['current_request'], q)
+            self.assertEqual(store.messages(sid, 1)[0]['content'], '未完成')
+            untouched = Assistant(store, engine, allow_local_calculation=False)
+            self.assertEqual(untouched.ask(store.new_session(), q)['content'], '未完成。')
+            self.assertEqual(raw.calls, 2)
+
     def test_final_conclusions_and_literal(self):
         examples = [
             ('本月結帳，只回覆合計的阿拉伯數字。', '兩筆已確認。合計為：900 + 210 = 1,110 元。', '1110'),

@@ -78,3 +78,31 @@ class DailyDialogueTests(unittest.TestCase):
         self.assertEqual(dialogue.short_label(ctx,'不同意。'), '不同意')
         self.assertIsNone(dialogue.short_label(ctx,'尚未確認是否同意。'))
         self.assertIsNone(dialogue.short_label(ctx,'反對。'))
+
+    def test_label_format_before_evidence_preserves_even_a_wrong_model_label(self):
+        q = ('請依證據判斷：已完成回完成，未完成回未完成，不清楚回待查。'
+             '只回一個標籤。原文：快遞還沒有查詢結果。')
+        for raw, label in [('完成。', '完成'), ('未完成！', '未完成'), ('待查.', '待查')]:
+            self.assertEqual(dialogue.short_label(self.context(q), raw), label)
+        # Formatting must never solve the question or select a different label.
+        for raw in ('快遞。', '待查。還需要查詢。', '可能未完成。', '完成？'):
+            self.assertIsNone(dialogue.short_label(self.context(q), raw))
+
+    def test_label_instruction_in_a_quote_or_evidence_is_not_a_format_request(self):
+        for q in ('請分析這段原文：只回一個標籤。',
+                  '完成、未完成、待查是文字資料。原文：只回一個標籤。',
+                  '請分析「待查。只回一個標籤。」',
+                  '說明這段對話：待查。只回一個標籤。',
+                  '待查是標籤。只回一個標籤並解釋原因。',
+                  '待查是標籤。只回一個標籤。再說明原因。',
+                  '待查是標籤。不要只回一個標籤。'):
+            self.assertIsNone(dialogue.short_label(self.context(q), '待查。'))
+
+    def test_a_whole_message_literal_request_only_removes_unrequested_punctuation(self):
+        for q in ('請只回覆「完成」但不附標點。', '只輸出「完成」。', '請只回「完成」'):
+            self.assertEqual(dialogue.short_label(self.context(q), '完成。'), '完成')
+            self.assertIsNone(dialogue.short_label(self.context(q), '未完成。'))
+            self.assertIsNone(dialogue.short_label(self.context(q), '完成。請再檢查。'))
+        for q in ('請只回覆「完成。」', '請解釋「只輸出完成」是什麼意思。',
+                  '若資料齊全，只輸出「完成」。', '只輸出「完成」，並說明原因。'):
+            self.assertIsNone(dialogue.short_label(self.context(q), '完成。'))

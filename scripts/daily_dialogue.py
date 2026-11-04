@@ -117,6 +117,22 @@ def short_label(context, draft):
     if not value:
         return None
     label = value[1]
+    if not conclusion:
+        # The model must already have returned one complete value. These rules
+        # only remove terminal punctuation; they never infer a label from facts.
+        literal = '(?:「' + re.escape(label) + '」|『' + re.escape(label) + '』)'
+        if re.fullmatch(r'(?:請)?只(?:回覆|回答|輸出|回)' + literal +
+                        r'(?:但不附標點)?[。！]?', question):
+            return label
+        instruction = re.search(r'(?:^|(?<=[。！？?]))\s*(?:請)?只(?:回覆|回答|輸出|回|給)'
+                                r'(?:一個|單一)標籤(?:[。！]|$)', question)
+        if instruction:
+            prefix = question[:instruction.start()]
+            unquoted = re.sub(r'「[^」]*」|『[^』]*』|“[^”]*”', '', prefix)
+            if (label in prefix and not re.search(r'解釋|說明|分析|討論', question)
+                    and not re.search(r'[「『“]|'
+                    r'(?:原文|證據|資料|引文|對話)[：:]', unquoted)):
+                return label
     if conclusion and re.search(r'或者|或是|也可|以及|[或與及和]', label):
         return None
     choices = re.search(r'[。？！?]\s*只(?:回|給|回答|輸出)(「[^「」]{1,16}」(?:、「[^「」]{1,16}」){0,4}或「[^「」]{1,16}」)[。！]?$', question)
