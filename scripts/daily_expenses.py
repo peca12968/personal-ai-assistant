@@ -190,7 +190,7 @@ class DailyAssistant(Assistant):
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
         if self.allow_local_calculation:
-            focus = daily_identifiers.request_focus(question)
+            focus = daily_identifiers.context_focus(context)
             if focus:
                 context['identifier_request'] = focus
         return context

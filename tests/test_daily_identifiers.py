@@ -4,10 +4,60 @@ import unittest
 
 from assistant.store import Store
 from scripts.daily_expenses import DailyAssistant
-from scripts.daily_identifiers import missing_literal, request_focus, supplied_code
+from scripts.daily_identifiers import context_focus, missing_literal, omit_unrelated_identifier, request_focus, supplied_code
 
 
 class DailyIdentifierTests(unittest.TestCase):
+    def test_last_explicit_change_selects_the_new_field_and_user_evidence(self):
+        q = '灰盒的序號是 C83。灰盒的型號是 J52。請查灰盒的序號。更正，改查灰盒的型號。只給型號。'
+        ctx = {'current_request': q}
+        focus = context_focus(ctx)
+        self.assertEqual((focus['target'], focus['field'], focus['user_evidence']['value']), ('灰盒', '型號', 'J52'))
+        self.assertEqual(supplied_code(ctx, '灰盒的型號是 J52。'), 'J52')
+        alternate = context_focus({'current_request': q.replace('更正，改查','更正，我要的是')})
+        self.assertEqual(alternate['user_evidence']['value'], 'J52')
+        self.assertIsNone(supplied_code(ctx, '灰盒的序號是 J52。'))
+        self.assertIsNone(supplied_code(ctx, '灰盒的型號是 C83。'))
+        self.assertIsNone(request_focus('請查灰盒的序號。更正，改查灰盒或紅盒的型號。'))
+        self.assertIsNone(request_focus('請查灰盒的序號。改成灰盒的價格。'))
+
+    def test_only_adjacent_user_statements_can_supply_cross_turn_evidence(self):
+        q = '紫筆的編號是 D49。綠筆的編號是 A75。請查紫筆的編號。只回答編號。'
+        user = dict(role='user', message_id=1, content=q, truncated=False)
+        answer = dict(role='assistant', message_id=2, content='綠筆的編號是 K11。', truncated=False)
+        ctx = dict(current_request='改查綠筆的編號。只回答編號。', recent_conversation=[user,answer],
+                   conversation_tail={'message_id':2})
+        self.assertEqual(context_focus(ctx)['user_evidence'],
+                         {'quote':'綠筆的編號是 A75','value':'A75','message_id':1})
+        for changes in ({'conversation_tail':{'message_id':3}}, {'recent_conversation':[]},
+                        {'recent_conversation':[{**user,'truncated':True}, answer]},
+                        {'recent_conversation':[{**user,'content':q.replace('綠筆的編號是 A75。','')}, answer]},
+                        {'recent_conversation':[{**user,'content':'這是練習範例。'+q}, answer]},
+                        {'recent_conversation':[{**user,'content':'綠筆的編號是 J12。'+q}, answer]},
+                        {'current_request':'改查綠筆的編號。紀錄有誤。只回答編號。'}):
+            self.assertNotIn('user_evidence', context_focus({**ctx, **changes}))
+        self.assertIsNone(supplied_code(ctx,'綠筆的編號是 K11。'))
+
+    def test_remove_only_a_confirmed_distractor_before_a_complete_clarification(self):
+        q = '高架儀器標示序號 F55，低架儀器的標籤掉了。我想查低架儀器的序號。'
+        head = '根據您的說明，高架儀器的標示序號是 F55。'
+        body = '低架儀器的序號無法確認。請提供低架儀器的登記資料。'
+        draft = head + '然而，' + body
+        def render(q, answer):
+            return omit_unrelated_identifier({'current_request':q, 'identifier_request':request_focus(q)}, answer)
+        self.assertEqual(render(q,draft), body)
+        for prompt,answer in [(q + '請列出兩者。',draft), (q.replace('F55','F54'),draft),
+                              (q,draft.replace('高架儀器的標示','低架儀器的標示')),
+                              (q,head+'請提供登記資料。'), (q,draft.replace('無法確認','已確認'))]:
+            self.assertEqual(render(prompt,answer),answer)
+
+    def test_exact_missing_assertion_requires_the_same_target_and_field(self):
+        q = '改問立架相機的型號。如果沒有資料，只回答「不詳」。'
+        self.assertEqual(missing_literal(q, '立架相機的型號未提供。'), '不詳')
+        for answer in ('橫架相機的型號未提供。','立架相機的序號不詳。','立架相機的型號並非不詳。',
+                       '如果立架相機的型號不詳。','立架相機的型號未提供。後來已找到。'):
+            self.assertIsNone(missing_literal(q,answer))
+
     def test_target_is_the_requested_pair_not_the_first_device(self):
         q = '澄河機型號 T3。松山機的標籤不在。請問松山機的型號是什麼？'
         focus = request_focus(q)
