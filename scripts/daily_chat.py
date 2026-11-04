@@ -22,11 +22,16 @@ def run_daily_window(store, engine):
             if context and 'inventory_check' in context:
                 title = '庫存回答核對紀錄'
                 check = context['inventory_check']
-                possible = '、'.join(str(n) for n in dict.fromkeys(check['possible_totals']))
-                lines = [context['current_request'], '', '物品：' + context['inventory_reasoning']['物品'],
-                         f"已確認的數量：{check['expression']} = {check['confirmed_total']} {check['unit']}",
-                         f"可能數量：{possible} {check['unit']}", '', '模型原答：', check['raw_answer'],
-                         '', '按本機核對交付：' + check['delivered']]
+                if check['schema'] == 'stock_opening_clarification_v1':
+                    lines = [context['current_request'], '', '期初數量尚待核實',
+                             f"原文依據：{check['qualifier']} {check['reported_opening']} {check['unit']}",
+                             '', '模型原答：', check['raw_answer'], '', '交付的追問：' + check['delivered']]
+                else:
+                    possible = '、'.join(str(n) for n in dict.fromkeys(check['possible_totals']))
+                    lines = [context['current_request'], '', '物品：' + context['inventory_reasoning']['物品'],
+                             f"已確認的數量：{check['expression']} = {check['confirmed_total']} {check['unit']}",
+                             f"可能數量：{possible} {check['unit']}", '', '模型原答：', check['raw_answer'],
+                             '', '按本機核對交付：' + check['delivered']]
             elif context and 'option_plan' in context:
                 title = '本機方案比較紀錄'
                 plan = context['option_plan']

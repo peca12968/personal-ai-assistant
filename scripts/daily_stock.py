@@ -6,7 +6,12 @@ UNIT = r'[本盒張個支瓶包件]'
 OUT = ('外借','借出','領走','捐出','發出','用掉','售出')
 IN = ('收到','補進','借入','入庫','買進')
 VERB = '(?:' + '|'.join((*OUT,*IN)) + ')'
-HEAD = re.compile(rf'([\u4e00-\u9fff]{{1,12}})(?:開始有|原有|原本有)\s*({QTY})\s*({UNIT})([\u4e00-\u9fff]{{1,12}})')
+ESTIMATE = re.compile(r'據估計|粗估|估計|估算|推估|推測|猜測|大概|大約|可能|也許|據說|聽說')
+HEAD = re.compile(rf'(?P<place>[\u4e00-\u9fff]{{1,12}})(?:開始有|原有|原本有)\s*'
+                  rf'(?P<estimate>{ESTIMATE.pattern}|約)?\s*(?P<count>{QTY})\s*(?P<unit>{UNIT})(?P<item>[\u4e00-\u9fff]{{1,12}})')
+OPENING_CONFIRM = re.compile(rf'(?:已清點|已盤點)[，,]\s*(?:期初|原先)(?:實際)?有\s*({QTY})\s*({UNIT})'
+                             r'[，,]\s*其他異動不變')
+SHORT_CONFIRM = re.compile(rf'(?:已清點|已盤點|清點過了|盤點過了)[，,]\s*(?:原有|期初(?:實際)?有)\s*({QTY})\s*({UNIT})[。！]?$')
 EVENT = re.compile(rf'(?:先|再|之後|後來)?(?:又)?({VERB})(?:了)?(?:別人捐的)?\s*({QTY})\s*({UNIT})')
 EDIT = re.compile(rf'更正[，,]\s*(?:實際)?({VERB})(?:的)?是\s*({QTY})\s*({UNIT})[，,]\s*'
                   rf'({VERB})(?:的)?數量(?:照舊|不變)')
@@ -40,10 +45,22 @@ def start(q):
         return None
     clauses = [c.strip() for c in re.split(r'[。；，,]',body)]
     initial = HEAD.fullmatch(clauses[0])
-    if not initial or initial[3] != unit or not 2 <= len(clauses) <= 12:
+    if not initial or initial['unit'] != unit or not 2 <= len(clauses) <= 12:
         return None
-    place = initial[1]
-    if re.search(r'如果|假設|聽說|可能|至少|最多|各|每|不|大約', place + initial[4]):
+    place = initial['place']
+    if re.search(r'如果|假設|假如|倘若|預計|預定|若是|至少|最多|各|每|不', place + initial['item']):
+        return None
+    qualifier = ESTIMATE.search(place)
+    if qualifier:
+        if qualifier.start() == 0:
+            place = place[qualifier.end():]
+        elif qualifier.end() == len(place):
+            place = place[:qualifier.start()]
+        else:
+            return None
+        if not place or ESTIMATE.search(place):
+            return None
+    if (qualifier and initial['estimate']) or ESTIMATE.search(initial['item']):
         return None
     if asked and not place.endswith(asked.removesuffix('裡')):
         return None
@@ -53,11 +70,19 @@ def start(q):
         if not m or m[3] != unit:
             return None
         events.append([m[1], number(m[2])])
-    return dict(place=place, asked_place=asked, item=initial[4], unit=unit, initial=number(initial[2]), events=events)
+    return dict(place=place, asked_place=asked, item=initial['item'], unit=unit, initial=number(initial['count']),
+                opening_qualifier=qualifier[0] if qualifier else initial['estimate'], events=events)
 
 
 def correct(state, q):
     body, asked, unit = parts(q)
+    confirmation = OPENING_CONFIRM.fullmatch(body) if body else SHORT_CONFIRM.fullmatch(q)
+    if confirmation:
+        if (not state['opening_qualifier'] or confirmation[2] != state['unit'] or (body and unit != state['unit'])
+                or (asked and not state['place'].endswith(asked.removesuffix('裡')))):
+            return False
+        state.update(initial=number(confirmation[1]), opening_qualifier=None)
+        return True
     m = EDIT.fullmatch(body) if body else None
     if (not m or m[3] != state['unit'] or unit != state['unit']
             or (asked and not state['place'].endswith(asked.removesuffix('裡')))):
@@ -81,7 +106,7 @@ def grounded_state(context):
     ids = []
     if state is None:
         body = parts(q)[0]
-        if not maybe and not (body and EDIT.fullmatch(body)):
+        if not maybe and not is_revision(q, body):
             return None
         history = context.get('recent_conversation', [])
         tail = context.get('conversation_tail') or {}
@@ -101,6 +126,8 @@ def grounded_state(context):
             return None
         if not maybe and not correct(state,q):
             return None
+    if state['opening_qualifier']:
+        return None if maybe else (state, ids, None, None)
     total = state['initial']
     for verb, count in state['events']:
         total += direction(verb) * count
@@ -116,11 +143,17 @@ def grounded_state(context):
     return state, ids, total, delta
 
 
+def is_revision(question, body):
+    if body:
+        return EDIT.fullmatch(body) or OPENING_CONFIRM.fullmatch(body)
+    return SHORT_CONFIRM.fullmatch(question)
+
+
 def candidate(question):
     if len(question) > 1000:
         return False
     body = parts(question)[0]
-    return bool(start(question) or (body and EDIT.fullmatch(body)) or MAYBE.fullmatch(question))
+    return bool(start(question) or is_revision(question, body) or MAYBE.fullmatch(question))
 
 
 def verified_answer(context, raw):
@@ -128,6 +161,11 @@ def verified_answer(context, raw):
     if not grounded or context.get('inventory_reasoning') != context_hint(context):
         raise ValueError('庫存核對來源已變更。')
     state, ids, total, delta = grounded
+    if total is None:
+        answer = f"請確認{state['place']}原有幾{state['unit']}{state['item']}？"
+        return answer, dict(schema='stock_opening_clarification_v1', model_called=True, raw_answer=raw,
+                            reported_opening=state['initial'], qualifier=state['opening_qualifier'], unit=state['unit'],
+                            source_user_ids=ids, delivered=answer, raw_exact=raw == answer)
     answer = str(total) if delta is None else ('能' if delta == 0 else '不能')
     receipt = dict(schema='verified_stock_answer_v1', model_called=True, raw_answer=raw,
                    confirmed_total=total, unit=state['unit'], expression=context['inventory_reasoning']['確認異動後的算式'],
@@ -141,6 +179,10 @@ def context_hint(context):
     if not grounded:
         return None
     state, ids, _, delta = grounded
+    if state['opening_qualifier']:
+        return dict(觀察位置=state['place'], 物品=state['item'], 單位=state['unit'], 來源訊息編號=ids,
+                    期初數量依據=state['opening_qualifier'], 待核實期初數量=state['initial'],
+                    回答要求='期初數量尚待核實。請詢問原有多少，不可給出確定總數。')
     expression = str(state['initial'])
     for verb, count in state['events']:
         expression += (' - ' if direction(verb)<0 else ' + ') + str(count)
@@ -161,6 +203,8 @@ def concise(context, draft):
     if not grounded:
         return None
     state, _, total, delta = grounded
+    if total is None:
+        return None
     if delta is not None:
         expected = '能' if delta == 0 else '不能'
         m = re.fullmatch(r'(?:答案[是為：:]\s*)?[「『]?(不能|能)[」』]?[。！]?', draft.strip())
