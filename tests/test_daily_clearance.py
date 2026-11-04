@@ -36,6 +36,27 @@ class OpeningReferenceTests(unittest.TestCase):
         for bad in (q.replace('門前後空曠','門已上鎖'), '翻譯：'+q, q.replace('唯一的門','其中一扇門')):
             self.assertIsNone(proof_format(bad))
 
+    def test_known_obstacles_take_priority_over_unknown_width(self):
+        base = ('一個不可拆的硬質正方體木箱，邊長 0.5 公尺，要原樣搬進展廳。'
+                '唯一的門高 800 毫米，淨寬不詳，門前後空曠。能否通過？只回「可行」、「不可行」或「資料不足」。')
+        self.assertEqual(verified_answer(dict(current_request=base, door_measurements=opening_reference(
+            dict(current_request=base))), '可行')[0], '資料不足')
+        for q in (base.replace('800 毫米','49 公分'), base.replace('門前後空曠','門已封閉，目前禁止通行'),
+                  base.replace('門前後空曠','門已上鎖，現在無法打開')):
+            ref = opening_reference(dict(current_request=q))
+            self.assertNotIn('尚缺尺寸', ref)
+            self.assertNotIn('假設示例非實測', ref)
+            answer, audit = verified_answer(dict(current_request=q, door_measurements=ref), '資料不足。')
+            self.assertEqual((answer, audit['schema']), ('不可行','door_passage_blocked_v1'))
+            updated = opening_reference(dict(current_request='門的淨寬量到 2 公尺。', **self.previous(q)))
+            self.assertEqual((updated['阻礙原因'],updated['本輪淨寬毫米']), (ref['阻礙原因'],'2000'))
+        self.assertIsNone(opening_reference(dict(current_request=base.replace('800 毫米','50 公分'))))
+        for status in ('門曾經上鎖，現在已解鎖','如果上鎖就無法打開','門已上鎖，但鑰匙就在手上',
+                       '這扇門現在無法打開，但旁邊另有入口'):
+            q = base.replace('門前後空曠',status)
+            self.assertIsNone(proof_format(q))
+            self.assertNotIn('阻礙原因',opening_reference(dict(current_request=q)) or {})
+
     def test_daily_answer_persists_model_disagreement_and_retries_without_duplicating_turn(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory

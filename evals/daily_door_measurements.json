@@ -42,5 +42,36 @@
       "door_measurements.箱邊毫米": "620.00",
       "door_measurements.本輪淨寬毫米": "590"
     }
+  },
+  {
+    "id": "locked",
+    "session": "X",
+    "question": "一個不可拆的硬質正方體木箱，邊長 0.62 公尺，要原樣搬進倉庫。唯一的門高 1.9 公尺，淨寬尚未量測，門已上鎖，現在無法打開。能否把箱子搬進去？請只問我還要量哪個尺寸。",
+    "answer": "不用再量尺寸。唯一的門目前無法打開。",
+    "route": "verified_clearance",
+    "evidence": {
+      "clearance_check.schema": "door_passage_blocked_v1"
+    }
+  },
+  {
+    "id": "locked-measured",
+    "session": "X",
+    "question": "門的淨寬量到 800 毫米。現在能通過嗎？只回「可行」、「不可行」或「資料不足」。",
+    "answer": "不可行",
+    "route": "general_model",
+    "evidence": {
+      "door_measurements.阻礙原因": "唯一的門目前無法打開",
+      "door_measurements.本輪淨寬毫米": "800"
+    }
+  },
+  {
+    "id": "low",
+    "session": "Y",
+    "question": "搬運員要把一個硬質正方體箱子送進庫房。箱子每邊 78 公分，不可拆卸。唯一的門高 70 公分、寬度尚未量測，兩側空曠平坦且無其他障礙。按現有條件，能否把物件原樣運到目的地？只回「可行」、「不可行」或「資料不足」。",
+    "answer": "不可行",
+    "route": "verified_clearance",
+    "evidence": {
+      "clearance_check.schema": "door_passage_blocked_v1"
+    }
   }
 ]

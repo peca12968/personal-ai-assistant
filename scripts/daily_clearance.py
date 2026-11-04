@@ -14,14 +14,14 @@ MEASURED = re.compile(r'(?:剛量了[，,]\s*|實測)?(?:門的|門口|門)淨�
 SCALE = {'毫米':1, '公釐':1, '公分':10, '公尺':1000}
 
 
-# The verifier needs a complete, single-door scene; additional constraints stay with ordinary chat.
+# Verify only complete single-door scenes with a recognized access condition.
 SPACE = r'(?:庫房|倉庫|房間|展廳)'
 SCENE = re.compile(
     rf'(?:(?:搬運員要把|要把)一個硬質正方體(?:箱子|木箱)送進{SPACE}。'
     rf'(?:箱子|木箱)每邊\s*{SIZE}[，,]\s*不可拆(?:卸|箱)'
     rf'|一個不可拆的硬質正方體(?:木箱|箱子)[，,]\s*邊長\s*{SIZE}[，,]\s*要原樣搬進{SPACE})。'
     rf'唯一的門(?:淨高|高)\s*{SIZE}[，、,]\s*(?:淨寬|寬度)(?:尚未量測|還沒量|沒有紀錄|不詳)[，,]\s*'
-    r'(?:兩側空曠平坦且無其他障礙|門前後空曠)。'
+    r'(?:(?P<closed>門已上鎖[，,](?:現在|目前)無法打開|門已封閉[，,](?:現在|目前)禁止通行)|兩側空曠平坦且無其他障礙|門前後空曠)。'
     r'(?:按現有條件[，,])?能否(?:把物件原樣運到目的地|把箱子搬進去|搬入|通過)[？?]'
     r'(?P<format>只回「可行」、「不可行」或「資料不足」。?|(?:請)?只問我還要量哪個尺寸[。？?]?)$')
 
@@ -34,11 +34,19 @@ def proof_format(question):
 def verified_answer(context, raw):
     reference = opening_reference(context)
     requested = proof_format(context['current_request'])
-    if not requested or not reference or reference != context.get('door_measurements') or '尚缺尺寸' not in reference:
-        raise ValueError('無法核對未測門寬的兩種尺寸情況。')
-    answer = '資料不足' if requested.startswith('只回') else '門的淨寬是多少？'
-    return answer, dict(schema='door_width_uncertainty_v1', model_called=True, raw_answer=raw,
+    if not requested or not reference or reference != context.get('door_measurements'):
+        raise ValueError('無法核對門口的通行條件。')
+    if '阻礙原因' in reference:
+        answer = '不可行' if requested.startswith('只回') else '不用再量尺寸。' + reference['阻礙原因'] + '。'
+        schema = 'door_passage_blocked_v1'
+    else:
+        if '尚缺尺寸' not in reference:
+            raise ValueError('找不到待量的尺寸。')
+        answer = '資料不足' if requested.startswith('只回') else '門的淨寬是多少？'
+        schema = 'door_width_uncertainty_v1'
+    return answer, dict(schema=schema, model_called=True, raw_answer=raw,
                         delivered=answer, raw_exact=(answer == raw))
+
 
 def millimetres(match):
     return Decimal(match[1]) * SCALE[match[2]]
@@ -72,10 +80,24 @@ def opening_reference(context):
     if len(re.findall(r'淨寬|寬度',text)) != 1 or len(sides) != 1 or len(heights) != 1 or len(unknown) != 1:
         return None
     side, height = millimetres(sides[0]), millimetres(heights[0])
-    if side <= 0 or height <= side or (m and millimetres(m) <= 0):
+    scene = SCENE.fullmatch(text)
+    if min(side, height) <= 0 or (m and millimetres(m) <= 0):
         return None
     result = dict(箱邊原文=sides[0][0], 門高原文=heights[0][0], 原門寬紀錄=unknown[0][0],
                   箱邊毫米=format(side, 'f'), 門高毫米=format(height, 'f'))
+    barrier = None
+    if scene and scene['closed']:
+        barrier = ('唯一的門目前無法打開' if '無法打開' in scene['closed'] else '唯一的門目前禁止通行')
+        result['通行限制原文'] = scene['closed']
+    elif scene and height < side:
+        barrier = '門高小於箱邊，即使轉動，箱子的內接球也無法通過'
+    if barrier:
+        result['阻礙原因'] = barrier
+        if m:
+            result.update(來源使用者訊息=source_id, 本輪門寬原文=m[1]+m[2], 本輪淨寬毫米=format(millimetres(m), 'f'))
+        return result
+    if height <= side or re.search(r'上鎖|封閉|禁止通行', text):
+        return None
     if m:
         width = millimetres(m)
         if width == side:
