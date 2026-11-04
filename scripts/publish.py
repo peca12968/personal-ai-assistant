@@ -50,6 +50,7 @@ def main():
     run(sys.executable, "scripts/evaluate_search.py")
     run(sys.executable, "scripts/evaluate_understanding.py")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/claim_states.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/function_claim_extraction.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/communication_context.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/companion_profile.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/product_help.json")

@@ -24,6 +24,7 @@ jobs:
       - run: python scripts/evaluate_search.py
       - run: python scripts/evaluate_understanding.py
       - run: python scripts/evaluate_understanding.py --suite evals/claim_states.json
+      - run: python scripts/evaluate_understanding.py --suite evals/function_claim_extraction.json
       - run: python scripts/evaluate_understanding.py --suite evals/communication_context.json
       - run: python scripts/evaluate_understanding.py --suite evals/companion_profile.json
       - run: python scripts/evaluate_understanding.py --suite evals/product_help.json

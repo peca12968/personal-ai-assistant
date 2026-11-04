@@ -38,7 +38,7 @@ def validate_cases(cases):
         criteria = case.get('criteria')
         if not isinstance(criteria, list) or not criteria or not all(isinstance(c, str) and c.strip() for c in criteria):
             raise ValueError('每題需要明確評讀標準。')
-        if case.get('check') not in (None, 'three_bullets'):
+        if case.get('check') not in (None, 'three_bullets', 'claim_json'):
             raise ValueError('未知的確定性檢查。')
         for key in ('companion_profile', 'prior_companion_profile'):
             if key in case:
@@ -97,6 +97,28 @@ def prepare_case(store, case):
 
 
 def mechanical_check(case, answer):
+    if case.get('check') == 'claim_json':
+        failed = {'claim_json_shape': False, 'claim_not_label': False}
+        if not isinstance(answer, str) or len(answer) > 8192:
+            return failed
+        try:
+            if len(answer.encode('utf8')) > 8192:
+                return failed
+            value = strict_json(answer)
+            if not isinstance(value, dict) or set(value) != {'claim'}:
+                return failed
+            claim = value['claim']
+            if not isinstance(claim, str) or not 2 <= len(claim) <= 200 or not claim.strip() or '\x00' in claim:
+                return failed
+            claim.encode('utf8')
+        except (ValueError, UnicodeError):
+            return failed
+        reserved = {'成立', '不成立', '未知', '已確認成立', '已確認不成立', '已確認未知',
+                    'true', 'false', 'unknown', 'yes', 'no'}
+        # This catches a label masquerading as a proposal, not its meaning.
+        # A well-formed negative or irrelevant proposition still needs review.
+        return {'claim_json_shape': True,
+                'claim_not_label': claim.strip().rstrip('。.!！').casefold() not in reserved}
     if case.get('check') == 'three_bullets':
         lines = answer.strip().splitlines()
         return {'three_bullets': len(lines) == 3 and all(line.startswith('- ') and line[2:].strip() for line in lines)}

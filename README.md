@@ -1067,3 +1067,9 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 以 `.venv\Scripts\python.exe scripts/evaluate_understanding.py --suite evals/claim_states.json` 做離線檢查；這不載入模型。若要收集原始本機底座的真實回答，在同一命令加入 `--live --local-data-dir data/evaluations/claim-check-001 --report data/evaluations/claim-check-001/report.json`，使用尚未存在的報告路徑。每題一個獨立合成對話，保留完整模型請求、原答、來源指紋及案例。
 
 收集全部完成後，再以既有 `scripts/review_understanding.py` 按三項標準分開評讀：命題判斷、完整輸出格式、是否增添未提供的條件。開發者評讀使用 development_agent，不能標成使用者或獨立驗收。成對正確、單題正確與格式正確須分開報告；改變問法的實驗不能當成同題版本提升或參數學習。
+
+## 功能命題抽取的獨立驗證
+
+`evals/function_claim_extraction.json` 保留十份原始分類請求，獨立要求模型提出待判功能；六題是既有情境，四題另設投影機、帳號與通行證條件。以 `scripts/evaluate_understanding.py --suite evals/function_claim_extraction.json` 離線檢查；實機收集沿用上述明確指定 --live、本機資料目錄及新報告路徑的流程。
+
+此組的 claim_json 機械檢查只核對 JSON 形狀、唯一 claim 欄位、字串界限與是否誤填答案標籤；重複欄位、額外欄位、無效字串及過長回應均不接受。它不判定功能、肯否或原意是否正確。複製「已故障而不能出聲」也可能通過語法，因此仍須按完整標準評讀命題含義。後續分類碰巧答對不能掩蓋抽取失敗；這是研究與驗證入口，未接入日常回答流程。
