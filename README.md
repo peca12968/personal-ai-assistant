@@ -1051,3 +1051,7 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 執行 `.venv\Scripts\python.exe scripts/evaluate_device_components.py` 會核對八題的拆解與參考答案，不啟動模型。加上 `--live --out 新的執行名稱` 可明確執行本機模型實驗，逐題保存完整提示、模型三行判斷、邏輯合成答案與來源指紋。共同前提和兩台設備的判斷都正確才記為通過。這個實驗供改進理解能力使用，尚未接入日常聊天。
 
 三項設備研究支援 `--profile original`、`--profile status` 與 `--profile isolated`。status 將中間標籤改為「已確認成立、已確認不成立、未知」。isolated 會分三次詢問，每次只送出該項原文，逐筆保存實際提示與模型原答。明確加 `--live --out 新名稱` 才會呼叫模型；報告另計共同前提和兩台設備各自的正確數。
+
+### 合成資料的有限學習準備
+
+`.venv\Scripts\python.exe scripts/learning/prepare_epistemic.py` 只檢查十二筆合成訓練例子、六筆保留題及完整助理控制題。以 `--prepare 新名稱` 可在本機建立隔離的研究資料庫與尚未啟動的閒置工作，列出批次及工作編號。該批例子由程式內部確認為合成資料，不代表使用者的個人回饋。準備不會啟動 GPU 或切換日常模型。另以既有 idle.py run 明確開始後，輸入需連續閒置十分鐘才會訓練，最多等待十五分鐘，訓練與驗收工作時限三十分鐘。
