@@ -136,5 +136,37 @@
     "question": "接著管理員說可能又借出一本，但還沒查到紀錄。僅憑現有資訊，現在的本數能唯一確定嗎？只回答「能」或「不能」。",
     "answer": "不能",
     "route": "model"
+  },
+  {
+    "id": "estimated-issues",
+    "session": "D",
+    "route": "model",
+    "question": "道具箱原有 31 件布偶。借出了約 5 件，再借出了大概 2 件。現在箱裡有幾件？只回數字。",
+    "answer": "請確認第1筆借出了幾件布偶？",
+    "evidence": {
+      "inventory_check.schema": "stock_event_clarification_v1",
+      "inventory_check.pending_events.1.筆次": 2
+    }
+  },
+  {
+    "id": "first-issue-confirmed",
+    "session": "D",
+    "route": "model",
+    "question": "已核對，第1筆實際借出了 7 件。",
+    "answer": "請確認第2筆借出了幾件布偶？",
+    "evidence": {
+      "inventory_check.pending_events.0.筆次": 2
+    }
+  },
+  {
+    "id": "second-issue-confirmed",
+    "session": "D",
+    "route": "model",
+    "question": "查過紀錄，第2筆借出了 0 件。",
+    "answer": "24",
+    "evidence": {
+      "inventory_check.expression": "31 - 7 - 0",
+      "inventory_check.confirmed_total": 24
+    }
   }
 ]

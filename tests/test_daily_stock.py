@@ -81,6 +81,36 @@ class StockContextTests(unittest.TestCase):
         for conditional in ('假如', '預計', '倘若'):
             self.assertIsNone(stock.context_hint(dict(current_request=conditional + BASE)))
 
+    def test_multiple_estimates_resolve_in_either_order_including_zero(self):
+        opening = BASE.replace('6 支', '大約 6 支').replace('4 支', '粗估 4 支')
+        issue = '已核對，實際發出 0 支。'
+        purchase = '查過紀錄，買進了 3 支。'
+        for first, second, remaining in ((issue, purchase, 2), (purchase, issue, 1)):
+            for question, prior, pending in ((opening, (), [1, 2]), (first, (opening,), [remaining]),
+                                              (second, (opening, first), [])):
+                ctx = dict(current_request=question, **history(*prior))
+                ctx['inventory_reasoning'] = stock.context_hint(ctx)
+                answer, receipt = stock.verified_answer(ctx, '25')
+                if pending:
+                    self.assertEqual([event['筆次'] for event in receipt['pending_events']], pending)
+                    self.assertNotIn('confirmed_total', receipt)
+                    self.assertIn(f'第{pending[0]}筆', answer)
+                else:
+                    self.assertEqual((answer, receipt['expression']), ('30', '27 - 0 + 3'))
+        for other in ('已核對，售出 8 支。', issue.replace('0 支', '0 盒'), '第一筆大概是 5 支。'):
+            self.assertIsNone(stock.context_hint(dict(current_request=other, **history(opening))))
+
+    def test_repeated_verbs_need_distinct_position_and_correct_unit(self):
+        opening = BASE.replace('6 支，', '約 6 支，再發出了約 1 支，')
+        first, second = '已核對，第1筆發出了 3 支。', '已核對，第2筆發出了 2 支。'
+        for bad in ('已清點，發出 2 支。', second.replace('2筆', '3筆'), second.replace('發出','買進')):
+            self.assertIsNone(stock.context_hint(dict(current_request=bad, **history(opening))))
+        ctx = dict(current_request=first, **history(opening, second))
+        ctx['inventory_reasoning'] = stock.context_hint(ctx)
+        self.assertEqual(stock.verified_answer(ctx, '999')[0], '26')
+        self.assertIsNone(stock.context_hint(dict(current_request=first, **history(opening, second, first))))
+        self.assertIsNone(stock.context_hint(dict(current_request=first, **history(opening, '說別的事'))))
+
     def test_render_needs_a_matching_model_conclusion(self):
         ctx = dict(current_request=BASE)
         ctx['inventory_reasoning'] = stock.context_hint(ctx)

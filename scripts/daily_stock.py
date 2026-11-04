@@ -1,5 +1,6 @@
 """Ground model stock-count reasoning in the direction of explicit user-reported movements."""
 import re
+from dataclasses import dataclass
 
 QTY = r'(?:0|[1-9][0-9]{0,5}|[一二兩三四五六七八九十])'
 UNIT = r'[本盒張個支瓶包件]'
@@ -12,7 +13,11 @@ HEAD = re.compile(rf'(?P<place>[\u4e00-\u9fff]{{1,12}})(?:開始有|原有|原�
 OPENING_CONFIRM = re.compile(rf'(?:已清點|已盤點)[，,]\s*(?:期初|原先)(?:實際)?有\s*({QTY})\s*({UNIT})'
                              r'[，,]\s*其他異動不變')
 SHORT_CONFIRM = re.compile(rf'(?:已清點|已盤點|清點過了|盤點過了)[，,]\s*(?:原有|期初(?:實際)?有)\s*({QTY})\s*({UNIT})[。！]?$')
-EVENT = re.compile(rf'(?:先|再|之後|後來)?(?:又)?({VERB})(?:了)?(?:別人捐的)?\s*({QTY})\s*({UNIT})')
+COUNT_ESTIMATE = r'據估計|粗估|估計|估算|推估|大概|大約|約'
+EVENT = re.compile(rf'(?:先|再|之後|後來)?(?:又)?(?P<verb>{VERB})(?:了)?(?:別人捐的)?\s*'
+                   rf'(?P<estimate>{COUNT_ESTIMATE})?\s*(?P<count>{QTY})\s*(?P<unit>{UNIT})')
+EVENT_CONFIRM = re.compile(rf'(?:已核對|已清點|已盤點|查過紀錄)[，,]\s*(?:第\s*({QTY})\s*筆)?'
+                           rf'(?:實際)?({VERB})(?:了)?\s*({QTY})\s*({UNIT})[。！]?$')
 EDIT = re.compile(rf'更正[，,]\s*(?:實際)?({VERB})(?:的)?是\s*({QTY})\s*({UNIT})[，,]\s*'
                   rf'({VERB})(?:的)?數量(?:照舊|不變)')
 COUNT_END = re.compile(r'[。；]\s*(?:現在)?([\u4e00-\u9fff]{0,12}?)(?:還剩|剩|有)幾(' + UNIT +
@@ -22,6 +27,20 @@ MAYBE = re.compile(rf'(?:接著[\u4e00-\u9fff]{{1,8}}說)?(?:可能|也許)(?:�
                    rf'(?P<n2>{QTY})\s*(?P<u2>{UNIT})被(?P<v2>{VERB}))[，,]\s*'
                    r'(?:但)?(?:還沒查到紀錄|尚未證實|尚未確認)[。；](?:僅憑現有資訊[，,])?'
                    rf'(?:現在的(?:(?P<asked>{UNIT})數|庫存數|數量)能唯一確定|能確定唯一的剩餘數量)嗎[？?]只回答「能」或「不能」[。！]?$')
+
+
+@dataclass
+class Movement:
+    verb: str
+    count: int
+    estimate: str | None
+
+    def matches(self, verb):
+        return (self.verb == verb or {self.verb, verb} == {'借出', '外借'})
+
+    def confirm(self, count):
+        self.count = number(count)
+        self.estimate = None
 
 
 def number(text):
@@ -67,9 +86,9 @@ def start(q):
     events = []
     for clause in clauses[1:]:
         m = EVENT.fullmatch(clause)
-        if not m or m[3] != unit:
+        if not m or m['unit'] != unit:
             return None
-        events.append([m[1], number(m[2])])
+        events.append(Movement(m['verb'], number(m['count']), m['estimate']))
     return dict(place=place, asked_place=asked, item=initial['item'], unit=unit, initial=number(initial['count']),
                 opening_qualifier=qualifier[0] if qualifier else initial['estimate'], events=events)
 
@@ -83,17 +102,24 @@ def correct(state, q):
             return False
         state.update(initial=number(confirmation[1]), opening_qualifier=None)
         return True
+    event = EVENT_CONFIRM.fullmatch(q)
+    if event:
+        if event[4] != state['unit']:
+            return False
+        matches = [item for i, item in enumerate(state['events'], 1)
+                   if item.matches(event[2]) and (event[1] is None or number(event[1]) == i)]
+        if len(matches) != 1 or not matches[0].estimate:
+            return False
+        matches[0].confirm(event[3])
+        return True
     m = EDIT.fullmatch(body) if body else None
     if (not m or m[3] != state['unit'] or unit != state['unit']
             or (asked and not state['place'].endswith(asked.removesuffix('裡')))):
         return False
-    def kind(verb):
-        return '借出' if verb == '外借' else verb
-    targets = [event for event in state['events'] if kind(event[0]) == kind(m[1])]
-    if len(targets) != 1 or kind(m[1]) == kind(m[4]) or not any(
-            kind(event[0]) == kind(m[4]) for event in state['events']):
+    targets = [event for event in state['events'] if event.matches(m[1])]
+    if len(targets) != 1 or targets[0].matches(m[4]) or not any(event.matches(m[4]) for event in state['events']):
         return False
-    targets[0][1] = number(m[2])
+    targets[0].confirm(m[2])
     return True
 
 
@@ -126,11 +152,11 @@ def grounded_state(context):
             return None
         if not maybe and not correct(state,q):
             return None
-    if state['opening_qualifier']:
+    if state['opening_qualifier'] or any(event.estimate for event in state['events']):
         return None if maybe else (state, ids, None, None)
     total = state['initial']
-    for verb, count in state['events']:
-        total += direction(verb) * count
+    for event in state['events']:
+        total += direction(event.verb) * event.count
         if total < 0:
             return None
     delta = None
@@ -146,7 +172,7 @@ def grounded_state(context):
 def is_revision(question, body):
     if body:
         return EDIT.fullmatch(body) or OPENING_CONFIRM.fullmatch(body)
-    return SHORT_CONFIRM.fullmatch(question)
+    return SHORT_CONFIRM.fullmatch(question) or EVENT_CONFIRM.fullmatch(question)
 
 
 def candidate(question):
@@ -161,11 +187,18 @@ def verified_answer(context, raw):
     if not grounded or context.get('inventory_reasoning') != context_hint(context):
         raise ValueError('庫存核對來源已變更。')
     state, ids, total, delta = grounded
-    if total is None:
+    if state['opening_qualifier']:
         answer = f"請確認{state['place']}原有幾{state['unit']}{state['item']}？"
         return answer, dict(schema='stock_opening_clarification_v1', model_called=True, raw_answer=raw,
                             reported_opening=state['initial'], qualifier=state['opening_qualifier'], unit=state['unit'],
                             source_user_ids=ids, delivered=answer, raw_exact=raw == answer)
+    if total is None:
+        pending = context['inventory_reasoning']['待核實異動']
+        first = pending[0]
+        answer = f"請確認第{first['筆次']}筆{first['異動']}了幾{state['unit']}{state['item']}？"
+        return answer, dict(schema='stock_event_clarification_v1', model_called=True, raw_answer=raw,
+                            pending_events=pending, unit=state['unit'], source_user_ids=ids,
+                            delivered=answer, raw_exact=raw == answer)
     answer = str(total) if delta is None else ('能' if delta == 0 else '不能')
     receipt = dict(schema='verified_stock_answer_v1', model_called=True, raw_answer=raw,
                    confirmed_total=total, unit=state['unit'], expression=context['inventory_reasoning']['確認異動後的算式'],
@@ -183,9 +216,14 @@ def context_hint(context):
         return dict(觀察位置=state['place'], 物品=state['item'], 單位=state['unit'], 來源訊息編號=ids,
                     期初數量依據=state['opening_qualifier'], 待核實期初數量=state['initial'],
                     回答要求='期初數量尚待核實。請詢問原有多少，不可給出確定總數。')
+    pending = [dict(筆次=i, 異動=e.verb, 估計用語=e.estimate, 回報數量=e.count)
+               for i, e in enumerate(state['events'], 1) if e.estimate]
+    if pending:
+        return dict(觀察位置=state['place'], 物品=state['item'], 單位=state['unit'], 來源訊息編號=ids,
+                    待核實異動=pending, 回答要求='請詢問第一筆尚待核實的異動數量。')
     expression = str(state['initial'])
-    for verb, count in state['events']:
-        expression += (' - ' if direction(verb)<0 else ' + ') + str(count)
+    for event in state['events']:
+        expression += (' - ' if direction(event.verb)<0 else ' + ') + str(event.count)
     hint = dict(觀察位置=state['place'], 物品=state['item'], 單位=state['unit'],
                 確認異動後的算式=expression, 來源訊息編號=ids,
                 回答要求='按算式求出現在數量。只回十進位整數。')

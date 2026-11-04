@@ -26,6 +26,11 @@ def run_daily_window(store, engine):
                     lines = [context['current_request'], '', '期初數量尚待核實',
                              f"原文依據：{check['qualifier']} {check['reported_opening']} {check['unit']}",
                              '', '模型原答：', check['raw_answer'], '', '交付的追問：' + check['delivered']]
+                elif check['schema'] == 'stock_event_clarification_v1':
+                    lines = [context['current_request'], '', '尚待核實的異動']
+                    for event in check['pending_events']:
+                        lines.append(f"第{event['筆次']}筆 {event['異動']} {event['估計用語']} {event['回報數量']} {check['unit']}")
+                    lines.extend(['', '模型原答：', check['raw_answer'], '', '交付的追問：' + check['delivered']])
                 else:
                     possible = '、'.join(str(n) for n in dict.fromkeys(check['possible_totals']))
                     lines = [context['current_request'], '', '物品：' + context['inventory_reasoning']['物品'],
