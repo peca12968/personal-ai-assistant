@@ -59,6 +59,75 @@ class DailyMeetingTests(unittest.TestCase):
             answer, _ = meeting.resolve(dict(available=available, cancelled=cancelled, duration=duration))
             self.assertEqual(answer, expected)
 
+    def test_followups_replace_cancel_and_change_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None)
+            sid = store.new_session()
+            first = app.ask(sid, BASE + '甲取消整個上午。乙取消 09:20-09:35。兩人需要連續 20 分鐘。' + FORMAT)
+            second = app.ask(sid, '上一場會議，甲的空檔改為 09:00-10:00，請重算。')
+            third = app.ask(sid, '上一場會議，乙取消 09:35-09:48，重算。')
+            fourth = app.ask(sid, '上一場會議，時長改為 12 分鐘，重算。')
+            self.assertEqual([r['content'] for r in (first,second,third,fourth)],
+                             ['12:00-12:20','09:35-09:55','沒有可行時段','09:48-10:00'])
+            for parent, child in [(first,second),(second,third),(third,fourth)]:
+                ctx = store.answer_context(child['id'])
+                self.assertEqual(ctx['meeting_source']['answer_id'], parent['id'])
+                self.assertFalse(child['calculation']['model_called'])
+            self.assertEqual(store.answer_context(first['id'])['meeting_plan']['cancelled'][0]['name'], '甲')
+            self.assertEqual(len(store.answer_context(second['id'])['meeting_plan']['cancelled']), 1)
+
+    def test_followup_needs_unambiguous_immediate_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None)
+            sid = store.new_session()
+            initial = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            follow = '上一場會議，甲取消整個上午，重算。'
+            with self.assertRaisesRegex(ValueError, '純文字'):
+                app.ask(sid, follow, image_ids=[123])
+            class Raw:
+                def answer(self, prompt, cancel=None):
+                    return '模型原答'
+            raw_sid = store.new_session()
+            self.assertEqual(DailyAssistant(store, Raw(), allow_local_calculation=False).ask(raw_sid, follow)['content'],
+                             '模型原答')
+            for clause in ('丙取消整個上午','他的空檔改為 13:00-15:00','改到明天','乙的空檔改為 23:00-01:00'):
+                with self.assertRaises(ValueError):
+                    app.ask(sid, '上一場會議，' + clause + '，重算。')
+            with self.assertRaisesRegex(ValueError, '沒有可接續'):
+                app.ask(store.new_session(), follow)
+            self.assertEqual(len(store.messages(sid, 20)), 2)
+            with store.connect() as db:
+                db.execute('UPDATE messages SET content=? WHERE id=?', ('錯誤時段',initial['id']))
+            with self.assertRaisesRegex(ValueError, '沒有可接續'):
+                app.ask(sid, follow)
+            app.ask(sid, '計算 1 + 1，只回答整數')
+            with self.assertRaisesRegex(ValueError, '沒有可接續'):
+                app.ask(sid, follow)
+
+    def test_followup_revalidates_tail_during_submission_and_retry(self):
+        from assistant import answer_runs
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None)
+            sid = store.new_session()
+            app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            q = '上一場會議，甲取消整個上午，重算。'
+            with patch.object(meeting, 'resolve', side_effect=EngineError('stop', 'cancelled')), self.assertRaises(EngineError):
+                app.ask(sid, q)
+            self.assertEqual(app.retry(sid)['content'], '12:00-12:20')
+            self.assertEqual(len(store.messages(sid, 20)), 4)
+            begin = answer_runs.begin
+            def raced(*args, **kwargs):
+                store.add_message(sid, 'user', '另一個話題')
+                return begin(*args, **kwargs)
+            with patch.object(answer_runs, 'begin', side_effect=raced), self.assertRaises(ValueError):
+                app.ask(sid, q)
+            self.assertEqual(answer_runs.runs(store, sid, 1)[0]['status'], 'failed')
+            with self.assertRaises(ValueError):
+                app.retry(sid)
+
     def test_receipt_retry_and_model_only_mode(self):
         class Raw:
             def answer(self, prompt, cancel=None):

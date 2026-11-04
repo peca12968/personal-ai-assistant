@@ -23,6 +23,11 @@ def span(text):
     return None
 
 
+def slot_list(text):
+    slots = [span(s.strip()) for s in re.split(r'[和與、]', text)]
+    return slots if len(slots) <= 12 and all(slots) else None
+
+
 def parse(question):
     if len(question) > 2048:
         return None
@@ -53,14 +58,47 @@ def parse(question):
             name = entry[1].strip('「」')
             if name in available:
                 return None
-            slots = [span(s.strip()) for s in re.split(r'[和與、]', entry[4])]
-            if len(slots) > 12 or not all(slots):
+            slots = slot_list(entry[4])
+            if not slots:
                 return None
             available[name] = slots
     n = len(available)
     if n < 2 or (duration[1] and int(COUNT.get(duration[1], duration[1])) != n):
         return None
     return dict(schema='daily_availability_v1', available=available, cancelled=cancelled, duration=int(duration[2]))
+
+
+FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
+
+
+def revise(plan, clause):
+    """Change the detached prior snapshot, retaining unaffected attendees and constraints."""
+    replacement = re.fullmatch(rf'({NAME})的(?:空檔|可用時段)改為\s*(.+)', clause)
+    removal = CANCEL.fullmatch(clause)
+    duration = re.fullmatch(r'(?:會議)?時長改為\s*([1-9][0-9]{0,3})\s*分鐘', clause)
+    if duration:
+        length = int(duration[1])
+        if length > 1440:
+            raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
+        plan['duration'] = length
+        return
+    if not (replacement or removal):
+        raise ValueError('請指明要更正哪位參與者（' + '、'.join(plan['available'])
+                         + '）及其同日空檔；若要換日期，請重新列出當天每人的空檔。')
+    name = (replacement or removal)[1].strip('「」')
+    if name not in plan['available']:
+        raise ValueError('上一場會議的參與者是' + '、'.join(plan['available']) + '。請指定其中一人，或重新提供完整明細。')
+    if replacement:
+        slots = slot_list(replacement[2])
+        if not slots:
+            raise ValueError('請列出這位參與者當天完整的新空檔，例如 13:00-14:30。')
+        plan['available'][name] = slots
+        plan['cancelled'] = [c for c in plan['cancelled'] if c['name'] != name]
+    else:
+        cut = [0, 720] if removal[2] == '整個上午' else span(removal[2])
+        if not cut or len(plan['cancelled']) >= 24:
+            raise ValueError('請提供有效的同日取消時段；累計超過 24 筆時，請重新列出空檔。')
+        plan['cancelled'].append(dict(name=name, interval=cut, source=clause))
 
 
 def ranges(mask):

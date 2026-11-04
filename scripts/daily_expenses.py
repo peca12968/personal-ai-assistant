@@ -94,16 +94,42 @@ def selection_prompt(ledger, pending, total):
             + '、'.join(options) + '。請回覆列號，例如「' + options[0].split('（')[0] + '」。')
 
 
-def preceding_receipt(store, sid, before=None, *, pending_only=False, allow_pending=True):
-    # Do not skip unrelated messages to find an older expense calculation.
+def previous_answer(store, sid, before=None):
+    # Never skip unrelated messages to find an older calculation.
     with store.connect() as db:
-        row = db.execute(
+        return db.execute(
             'SELECT a.id,a.content,u.id AS uid,u.content AS question,r.context_json,c.payload FROM messages a '
             'JOIN answer_runs r ON r.answer_message_id=a.id AND r.session_id=a.session_id '
             "JOIN messages u ON u.id=r.user_message_id AND u.session_id=a.session_id AND u.role='user' "
             'JOIN answer_contexts c ON c.message_id=a.id WHERE a.session_id=? '
             'AND a.id=(SELECT id FROM messages WHERE session_id=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 1) '
             "AND a.role='assistant' AND r.status='succeeded'", (sid, sid, before, before)).fetchone()
+
+
+def source_ref(row):
+    return dict(answer_id=row['id'], sha256=hashlib.sha256(row['payload'].encode('utf8')).hexdigest())
+
+
+def previous_meeting(store, sid, before):
+    row = previous_answer(store, sid, before)
+    if row:
+        saved = json.loads(row['payload'])
+        initial = json.loads(row['context_json'])
+        plan = saved.get('meeting_plan')
+        calc = saved.get('calculation', {})
+        if (isinstance(plan, dict) and plan.get('schema') == 'daily_availability_v1'
+                and plan == initial.get('meeting_plan') and saved.get('meeting_source') == initial.get('meeting_source')
+                and row['question'] == initial.get('current_request') == saved.get('current_request')
+                and saved.get('response_mode') == 'local_calculation' and isinstance(calc, dict)
+                and isinstance(calc.get('result'), dict) and calc.get('model_called') is False
+                and calc.get('schema') == 'daily_meeting_calculation_v1' and calc.get('status') == 'complete'
+                and row['content'] == calc.get('result', {}).get('exact')):
+            return plan, source_ref(row)
+    raise ValueError('上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。')
+
+
+def preceding_receipt(store, sid, before=None, *, pending_only=False, allow_pending=True):
+    row = previous_answer(store, sid, before)
     if row:
         context = json.loads(row['payload'])
         ledger = context.get('expense_ledger')
@@ -134,7 +160,7 @@ def preceding_receipt(store, sid, before=None, *, pending_only=False, allow_pend
                     raise ValueError('核銷選項或原始明細已變更。')
                 expected = selection_prompt(ledger, pending, total)
             if row['content'] == expected:
-                return ledger, dict(answer_id=row['id'], sha256=hashlib.sha256(row['payload'].encode('utf8')).hexdigest()), pending
+                return ledger, source_ref(row), pending
     elif pending_only:
         return None
     raise ValueError('請提供本次要更正的核銷明細；這段對話上一則回答沒有可接續的核銷紀錄。')
@@ -176,14 +202,31 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
-        meeting = daily_meeting.parse(question) if local and not (followup or choice) else None
-        if meeting and not self.store.documents(sid, include_content=False):
-            if not retry or prior.get('meeting_plan') == meeting:
+        change = daily_meeting.FOLLOWUP.fullmatch(question) if self.allow_local_calculation else None
+        meeting = daily_meeting.parse(question) if local and not (followup or choice or change) else None
+        if change or meeting:
+            attached = image_ids or self.store.documents(sid, include_content=False)
+            if change and attached:
+                raise ValueError('會議更正需要純文字的原始時段；若要參考附件，請重新提供完整條件。')
+            if not attached and (not retry or prior.get('meeting_plan')):
+                origin = None
+                if change:
+                    meeting, origin = previous_meeting(self.store, sid, before)
+                    daily_meeting.revise(meeting, change[1])
+                if retry and (prior.get('meeting_plan') != meeting or prior.get('meeting_source') != origin):
+                    raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
                 context = make_context(question, [], [])
                 context.update(response_mode='local_calculation', meeting_plan=meeting,
                                documents={'catalog': [], 'excerpts': []})
-                return self._run_local(sid, question, context, lambda uid: daily_meeting.resolve(meeting),
-                                       cancel, retry, draft)
+                if origin:
+                    context['meeting_source'] = origin
+
+                def resolve_meeting(uid):
+                    if origin and previous_meeting(self.store, sid, uid)[1] != origin:
+                        raise ValueError('提交前會議來源已變更，請核對後再更正。')
+                    return daily_meeting.resolve(meeting)
+
+                return self._run_local(sid, question, context, resolve_meeting, cancel, retry, draft)
         ledger = parse(question) if local and not (followup or selection) else None
         pending = None
         source = None

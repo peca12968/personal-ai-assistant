@@ -23,6 +23,8 @@ def run_daily_window(store, engine):
                 title = '本機會議時段計算紀錄'
                 receipt = context['calculation']
                 lines = [context['current_request'], '', '採用的取消條件']
+                if context.get('meeting_source'):
+                    lines.insert(1, f"沿用本對話會議回答 #{context['meeting_source']['answer_id']} 的日期與條件")
                 lines += [c['source'] for c in context['meeting_plan']['cancelled']] or ['無']
                 lines += ['', '每人剩餘時段']
                 for name, slots in receipt['effective'].items():
