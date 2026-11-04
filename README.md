@@ -1021,3 +1021,9 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 在同一段近期對話中明確說過「換個話題」後，可說「回到剛才借樣的事……」。如果話題名稱能唯一對應前面一段完整可讀的使用者訊息，日常本機助理會將該段原話和更正依序交給模型，並請模型分清楚本輪人物與先前共用的條件。
 
 使用 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --topic-pair --out 新的執行名稱` 可重跑兩個借樣案例。兩個獨立對話預置相同的合成前文，只有接班者是否有證件不同；各自核對模型呼叫、提示與最後交付。
+
+### 搬運可行性對照
+
+在專案目錄執行 `.venv\Scripts\python.exe scripts/evaluate_daily_conversations.py --live --feasibility --out 新的執行名稱`。這組以六個獨立會話比較樓梯、坡道、待確認的升降機，以及箱子和門的尺寸。三種預期結果各有兩題；每次同時保存模型原答和聊天交付，並依使用者指定格式分別計分。日常聊天可將模型已選出的三個以上明列選項之一整理成單獨的標籤。
+
+日常本機聊天遇到明確詢問搬運可行性時，可把本輪已明說的通行能力或尚未確認的條件另列給模型。若升降機是否開放或門寬不明，助理會提示模型分別考慮兩種可能；實際答案仍由模型作判斷。

@@ -62,6 +62,42 @@ def revision_focus(context):
     return dict(本輪使用者更新=facts, 處理方式='先依本輪更新替換相衝突的舊條件，保留仍有效的限制。逐一排除違反現行條件的選項，再按使用者指定的格式回答。')
 
 
+def feasibility_evidence(context):
+    q = context['current_request']
+    if (context.get('documents', {}).get('catalog') or len(q) > 1200
+            or re.search(r'假設|舉例|翻譯|改寫|聽說|據說|如果|[「『“].+[」』”].*[？?]', q)
+            or not re.search(r'能否[^。？?]{0,30}(?:運|送|搬|通過)', q)):
+        return None
+    # Keep the whole statement, including qualifications about operating status.
+    statements = re.split(r'[。！？?\n]', q)
+    ability, unknown = [], []
+    for fact in statements[:-1]:
+        if '能否' in fact or '只回' in fact:
+            continue
+        clauses = re.split(r'[，,；;]', fact)
+        if any(re.search(r'(?:可|能)(?:讓|供|容納)|能載|可通過|能直接|能在.{1,12}運行', clause)
+               and not re.search(r'是否|未必|不一定|不確定|可能|不能|不可|未能|無法|沒有說|尚未確認', clause)
+               for clause in clauses):
+            ability.append(fact)
+        if re.search(r'是否.{1,12}(?:未查到|不明)|(?:淨寬|寬度|高度|尺寸).{0,4}(?:沒有紀錄|尚未量測|不詳)', fact):
+            unknown.append(fact)
+    if not ability and not unknown:
+        return None
+    focus = {}
+    if unknown:
+        focus['尚未核實的原話'] = unknown
+        if any(re.search(r'(?:淨寬|寬度).{0,4}(?:沒有紀錄|尚未量測|不詳)', fact) for fact in unknown):
+            focus['情況核對'] = '情況一：實際通道比物件寬。情況二：實際通道比物件窄。分別核對其他已知條件；不要自行挑選其中一種寬度。'
+        elif any('是否開放' in fact for fact in unknown):
+            focus['情況核對'] = '分開檢查今天有開放和今天未開放的情況，兩者都要考慮其他已知通道。不能把未查到開放狀態當成已關閉。'
+        else:
+            focus['情況核對'] = '將未知條件視為兩種可能，分別核對是否會改變最後結果。'
+    elif ability:
+        focus['通行能力的原話'] = ability
+        focus['能力核對'] = '原文明說可供這件物品通過時，按該條件判斷。另核對有無明說的其他阻礙。'
+    return focus
+
+
 def short_label(context, draft):
     question = context['current_request']
     if (not isinstance(draft, str) or len(draft) > 2500 or len(question) > 1200
@@ -83,8 +119,8 @@ def short_label(context, draft):
     label = value[1]
     if conclusion and re.search(r'或者|或是|也可|以及|[或與及和]', label):
         return None
-    binary = re.search(r'[。？！?]\s*只(?:回|給|回答|輸出)「([^「」]{1,16})」或「([^「」]{1,16})」[。！]?$', question)
-    if binary and not conclusion and label in binary.groups():
+    choices = re.search(r'[。？！?]\s*只(?:回|給|回答|輸出)(「[^「」]{1,16}」(?:、「[^「」]{1,16}」){0,4}或「[^「」]{1,16}」)[。！]?$', question)
+    if choices and not conclusion and label in re.findall(r'「([^「」]+)」', choices[1]):
         return label
     if not re.search(r'[。？！?]\s*只(?:回|給|回答|輸出)[\u4e00-\u9fff]{0,12}名稱[。！]?$', question):
         return None

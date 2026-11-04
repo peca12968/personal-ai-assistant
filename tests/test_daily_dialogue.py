@@ -51,6 +51,28 @@ class DailyDialogueTests(unittest.TestCase):
         self.assertIsNone(dialogue.short_label(self.context('請先解釋。只回展區名稱。'),'青廳。'))
         self.assertIsNone(dialogue.short_label(dict(ctx,recent_conversation=[dict(self.previous[0],truncated=True)]),'青廳。'))
 
+    def test_feasibility_sources_preserve_explicit_capability_and_pending_status(self):
+        fact = '東梯能載這個機台，但今天是否開放還未查到'
+        ctx = self.context(fact+'。能否運送？')
+        focus = dialogue.feasibility_evidence(ctx)
+        self.assertNotIn('通行能力的原話', focus)
+        self.assertIn('未開放', focus['情況核對'])
+        supported = self.context('坡道可讓這個機台直接通過。能否運送？')
+        self.assertEqual(dialogue.feasibility_evidence(supported)['通行能力的原話'], ['坡道可讓這個機台直接通過'])
+        self.assertEqual(focus['尚未核實的原話'], [fact])
+        for q in ('請翻譯：'+ctx['current_request'], '先前有人說過能通過。現在幾點？',
+                  '假設通道能讓車通過。能否運送？', '這台設備不一定能載貨。能否運送？',
+                  '這台設備不能載貨。能否運送？'):
+            self.assertIsNone(dialogue.feasibility_evidence(self.context(q)))
+        self.assertIsNone(dialogue.feasibility_evidence(dict(ctx,documents={'catalog':[1]})))
+        self.assertIsNone(dialogue.feasibility_evidence(self.context('能否通過？')))
+
+    def test_only_a_complete_requested_choice_can_be_shortened(self):
+        ctx = self.context('現在能決定嗎？只回答「通過」、「拒絕」或「待補件」。')
+        self.assertEqual(dialogue.short_label(ctx, '待補件。'), '待補件')
+        for draft in ('待查。', '原則上通過。', '通過或拒絕。'):
+            self.assertIsNone(dialogue.short_label(ctx,draft))
+
     def test_choice_format_preserves_the_model_decision(self):
         ctx=self.context('兩人同意了嗎？只回「同意」或「不同意」。')
         self.assertEqual(dialogue.short_label(ctx,'不同意。'), '不同意')

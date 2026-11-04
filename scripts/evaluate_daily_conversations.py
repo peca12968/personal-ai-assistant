@@ -17,6 +17,7 @@ from scripts.learning.check_gpu_checkpoint import save
 
 SUITE = ROOT / 'evals/daily_conversations.json'
 GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
+FEASIBILITY_SUITE = ROOT / 'evals/daily_feasibility.json'
 PAIR_SUITE = ROOT / 'evals/daily_topic_pairs.json'
 MODEL_ROUTES = ('model', 'general_model')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
@@ -183,12 +184,13 @@ def evaluate(folder, live, suite=SUITE):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
+    group.add_argument('--feasibility', action='store_true', help='Compare possible, impossible and unknown transport conditions')
     group.add_argument('--topic-pair', action='store_true', help='Test contrasting current actors with identical synthetic history')
     group.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--out', help='New run name under local data/evaluations (required for live runs)')
     args = parser.parse_args()
-    if (args.general or args.topic_pair) and not args.live:
+    if (args.general or args.topic_pair or args.feasibility) and not args.live:
         parser.error('dialogue suites require --live')
     if args.live and not args.out:
         parser.error('--live requires --out')
@@ -198,6 +200,8 @@ def main():
         folder = ROOT/'data/evaluations'/args.out
         folder.mkdir(parents=True, exist_ok=False)
         suite = PAIR_SUITE if args.topic_pair else GENERAL_SUITE if args.general else SUITE
+        if args.feasibility:
+            suite = FEASIBILITY_SUITE
         return evaluate(folder, args.live, suite)
     with tempfile.TemporaryDirectory() as tmp:
         return evaluate(Path(tmp),False)

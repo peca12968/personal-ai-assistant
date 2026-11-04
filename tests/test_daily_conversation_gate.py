@@ -24,6 +24,15 @@ class DailyGateTests(unittest.TestCase):
             self.assertTrue(c['answer'].strip())
         self.assertNotEqual(gate.fingerprint(gate.GENERAL_SUITE), gate.fingerprint(gate.SUITE))
 
+    def test_feasibility_controls_cover_each_outcome_in_independent_chats(self):
+        import json
+        from collections import Counter
+        cases = json.loads(gate.FEASIBILITY_SUITE.read_text(encoding='utf8'))
+        gate.check_cases(cases)
+        self.assertEqual(len({c['session'] for c in cases}), len(cases))
+        self.assertTrue(all(c['route'] == 'general_model' for c in cases))
+        self.assertEqual(Counter(c['answer'] for c in cases), {'可行': 2, '不可行': 2, '資料不足': 2})
+
     def test_paired_cases_start_from_identical_history_in_separate_sessions(self):
         from unittest.mock import patch
         from assistant.store import Store

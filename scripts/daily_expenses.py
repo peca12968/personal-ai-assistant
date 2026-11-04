@@ -239,6 +239,9 @@ class DailyAssistant(Assistant):
                 context['resumed_topic'] = resumed
             elif update := daily_dialogue.revision_focus(context):
                 context['current_revision'] = update
+            evidence = daily_dialogue.feasibility_evidence(context)
+            if evidence:
+                context['feasibility_evidence'] = evidence
         return context
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
