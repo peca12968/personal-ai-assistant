@@ -951,3 +951,9 @@ python scripts/evaluate_context.py --live --strategy current --ids followup_proj
 長期規劃見 [ROADMAP](docs/ROADMAP.md)，進度見 [PROGRESS](docs/PROGRESS.md)。
 
 引擎整合依據：[OpenAI 官方非互動模式文件](https://learn.chatgpt.com/docs/non-interactive-mode)。
+
+### 本次使用已驗收的分段學習模型
+
+在 F 槽專案目錄執行 `Start.cmd --qualified-segment` 可開啟圖形助理。也可以用 `Start.cmd --qualified-segment --ask "你的問題"` 單次提問，並以 `--session` 接續對話。這個選項必須放在第一個參數，只對本次啟動有效。切回未微調的本機 Qwen3-4B 請重新執行 `Start.cmd --engine local`；平常直接執行 `Start.cmd` 使用 Codex。
+
+此選項需要該電腦上封存的 128 步訓練證據、仍有效的已確認來源、本機模型與 GPU 環境。選用時重算短題與完整助理驗收，執行時核對載入的權重。另一台電腦只複製 GitHub 程式碼無法載入這份本機權重。聊天資料由平常的助理資料目錄管理，測試可用 `--data-dir` 另指定資料夾。
