@@ -51,21 +51,61 @@ class ExpensesTests(unittest.TestCase):
         sid = self.store.new_session()
         initial = self.app.ask(sid, '封條 16 元待審、封條 16 元待審。核准金額共多少？只回答數字。')
         q = '把上一筆核銷的封條改為已核准，重新加總。'
-        with self.assertRaisesRegex(ValueError, '第1項.*第2項'):
-            self.app.ask(sid, q)
+        prompt = self.app.ask(sid, q)
+        self.assertRegex(prompt['content'], '第1項.*第2項')
+        self.assertEqual(self.store.answer_context(prompt['id'])['expense_source']['answer_id'], initial['id'])
         with self.assertRaisesRegex(ValueError, '第1項.*第2項'):
             self.app.ask(sid, q.replace('的封條', '的第3項封條'))
-        self.assertEqual(len(self.store.messages(sid, 10)), 2)
+        self.assertEqual(len(self.store.messages(sid, 10)), 4)
         with self.assertRaisesRegex(ValueError, '沒有可接續'):
             self.app.ask(self.store.new_session(), q)
-        answer = self.app.ask(sid, q.replace('的封條', '的第2項封條'))
+        answer = self.app.ask(sid, '第 2 項')
         self.assertEqual(answer['content'], '16')
         ctx = self.store.answer_context(answer['id'])
-        self.assertEqual(ctx['expense_source']['answer_id'], initial['id'])
+        self.assertEqual(ctx['expense_source']['answer_id'], prompt['id'])
         self.assertEqual([r['included'] for r in ctx['expense_ledger']['rows']], [False, True])
         self.app.ask(sid, '計算 7+4，只輸出整數')
         with self.assertRaisesRegex(ValueError, '沒有可接續'):
             self.app.ask(sid, q)
+
+    def test_short_choice_only_handles_an_immediate_prompt(self):
+        class Raw:
+            def answer(self, prompt, cancel=None):
+                return '一般對話'
+        app = DailyAssistant(self.store, Raw())
+        sid = self.store.new_session()
+        create = '封條 16 元待審、封條 42 元待審。核准金額共多少？只回答數字。'
+        change = '把上一筆核銷的封條改為已核准，重新加總。'
+        for intervening in ['請換個話題', create]:
+            app.ask(sid, create)
+            app.ask(sid, change)
+            self.assertEqual(app.ask(self.store.new_session(), '第2項')['content'], '一般對話')
+            app.ask(sid, intervening)
+            self.assertEqual(app.ask(sid, '第2項')['content'], '一般對話')
+        app.ask(sid, create)
+        pending = app.ask(sid, change)
+        with self.assertRaisesRegex(ValueError, '請指定'):
+            app.ask(sid, '第0項')
+        answer = app.ask(sid, '把上一筆核銷的第 2 項封條改為已核准，重新加總。')
+        self.assertEqual(answer['content'], '42')
+        self.assertEqual(self.store.answer_context(answer['id'])['expense_source']['answer_id'], pending['id'])
+
+    def test_retry_short_choice_and_reject_tampered_underlying_receipt(self):
+        sid = self.store.new_session()
+        first = self.app.ask(sid, '運費 19 元待審、運費 39 元待審。核准金額共多少？只回答數字。')
+        q = '更正：運費改為已核准，請重算。'
+        self.app.ask(sid, q)
+        with patch('scripts.daily_expenses.expression_math.calculate', side_effect=EngineError('停止', 'cancelled')):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, '第２項')
+        self.assertEqual(self.app.retry(sid)['content'], '39')
+        pending = self.app.ask(sid, q)
+        prior = self.store.answer_context(pending['id'])['expense_source']['answer_id']
+        with self.store.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('0', prior))
+        with self.assertRaises(ValueError):
+            self.app.ask(sid, '第1項')
+        self.assertEqual(self.store.answer_context(first['id'])['expense_ledger']['changes'], [])
 
     def test_changed_tail_refused_after_claiming_run(self):
         from assistant import answer_runs

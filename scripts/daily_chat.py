@@ -23,13 +23,15 @@ def run_daily_window(store, engine):
                 return super().inspect_context()
             ledger = context['expense_ledger']
             lines = [context['current_request'], '', '逐項核對']
+            if context.get('expense_selection'):
+                lines.insert(1, '尚待選列；下方總額沿用更正前的明細。')
             if context.get('expense_source'):
                 lines.insert(1, f"沿用本對話核銷回答 #{context['expense_source']['answer_id']}")
             for i, row in enumerate(ledger['rows'], 1):
                 decision = '計入' if row['included'] else '排除'
                 lines.append(f"第{i}項 · {decision} · {row['source']} · 最終狀態 {row['status']}")
             if ledger['changes']:
-                lines += ['', '歷次更正'] + [change['source'] for change in ledger['changes']]
+                lines += ['', '歷次更正'] + [f"{c['source']} · {c['name']}：{c['before']} → {c['after']}" for c in ledger['changes']]
             lines += ['', describe(context['calculation'])]
             panel = tk.Toplevel(self.root)
             panel.title('本機核銷計算紀錄')

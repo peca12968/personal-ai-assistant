@@ -78,16 +78,26 @@ def parse(question):
                 rows=entries, changes=changes, output='integer' if output[1]=='整數' else 'decimal')
 
 
-TARGET = rf'(?:第(?P<position>[1-9][0-9]?)項)?(?P<name>{NAME})\s*改為(?P<status>{STATUS})'
+TARGET = rf'(?:第\s*(?P<position>[1-9][0-9]?)\s*項\s*)?(?P<name>{NAME})\s*改為(?P<status>{STATUS})'
 PREVIOUS = re.compile(rf'(?:請)?(?:把|將)上一筆核銷的\s*{TARGET}[，,]\s*(?:請)?(?:重新加總|重算)[。！]?')
 CORRECTION = re.compile(rf'更正[：:]\s*{TARGET}[，,]\s*(?:請)?(?:重新加總|重算)(?:上一筆核銷)?[。！]?')
 
 
-def preceding_receipt(store, sid, before=None):
+ROW_REPLY = re.compile(r'第\s*([0-9０-９]{1,3})\s*項[。！]?')
+
+
+def selection_prompt(ledger, pending, total):
+    options = [f'第{i}項（{row["amount"]} {row["currency"]}，{row["status"]}）'
+               for i, row in enumerate(ledger['rows'], 1) if row['name'] == pending['name']]
+    return (f'目前核准總額為 {total}。你要把哪一筆「{pending["name"]}」改為{pending["status"]}？'
+            + '、'.join(options) + '。請回覆列號，例如「' + options[0].split('（')[0] + '」。')
+
+
+def preceding_receipt(store, sid, before=None, *, pending_only=False, allow_pending=True):
     # Do not skip unrelated messages to find an older expense calculation.
     with store.connect() as db:
         row = db.execute(
-            'SELECT a.id,a.content,u.content AS question,r.context_json,c.payload FROM messages a '
+            'SELECT a.id,a.content,u.id AS uid,u.content AS question,r.context_json,c.payload FROM messages a '
             'JOIN answer_runs r ON r.answer_message_id=a.id AND r.session_id=a.session_id '
             "JOIN messages u ON u.id=r.user_message_id AND u.session_id=a.session_id AND u.role='user' "
             'JOIN answer_contexts c ON c.message_id=a.id WHERE a.session_id=? '
@@ -98,24 +108,46 @@ def preceding_receipt(store, sid, before=None):
         ledger = context.get('expense_ledger')
         receipt = context.get('calculation', {})
         initial = json.loads(row['context_json'])
+        pending = context.get('expense_selection')
+        if pending_only and pending is None:
+            return None
         if (isinstance(ledger, dict) and ledger.get('schema') == 'approved_expense_total_v1'
                 and context.get('response_mode') == 'local_calculation'
                 and isinstance(receipt, dict) and receipt.get('schema') == 'approved_expense_calculation_v1'
                 and receipt.get('model_called') is False and receipt.get('status') == 'complete'
-                and row['content'] in (receipt['result']['exact'], receipt['result']['decimal'])
+                and pending == initial.get('expense_selection')
                 and row['question'] == context['current_request'] == initial['current_request']
                 and ledger == initial.get('expense_ledger') and context.get('expense_source') == initial.get('expense_source')):
-            return ledger, dict(answer_id=row['id'], sha256=hashlib.sha256(row['payload'].encode('utf8')).hexdigest())
+            total = receipt['result']['exact']
+            if '/' in total:
+                total = receipt['result']['decimal']
+            expected = total
+            if pending is not None:
+                if not allow_pending:
+                    raise ValueError('核銷選項來源不符，請重新提供明細。')
+                origin, source, _ = preceding_receipt(store, sid, row['uid'], allow_pending=False)
+                request = PREVIOUS.fullmatch(row['question']) or CORRECTION.fullmatch(row['question'])
+                if (source != context.get('expense_source') or origin != ledger or not request
+                        or pending != dict(name=request['name'], status=request['status']) or request['position']
+                        or sum(r['name'] == pending['name'] for r in ledger['rows']) < 2):
+                    raise ValueError('核銷選項或原始明細已變更。')
+                expected = selection_prompt(ledger, pending, total)
+            if row['content'] == expected:
+                return ledger, dict(answer_id=row['id'], sha256=hashlib.sha256(row['payload'].encode('utf8')).hexdigest()), pending
+    elif pending_only:
+        return None
     raise ValueError('請提供本次要更正的核銷明細；這段對話上一則回答沒有可接續的核銷紀錄。')
 
 
-def apply_followup(ledger, target, question):
+def apply_followup(ledger, target, question, *, can_prompt=False):
     name, position = target['name'], target['position']
     named = [(i, row) for i, row in enumerate(ledger['rows'], 1) if row['name'] == name]
     if not named:
         raise ValueError('上一筆核銷沒有「' + name + '」。請確認項目原名或重新提供明細。')
     matches = [(i, row) for i, row in named if position is None or int(position) == i]
     if len(matches) != 1:
+        if can_prompt and not position:
+            return dict(name=name, status=target['status'])
         options = [f'第{i}項{name}（{r["amount"]} {r["currency"]}，{r["status"]}）' for i, r in named]
         raise ValueError('請指定要更正的列：' + '、'.join(options) + '。例如「把上一筆核銷的第'
                          + str(named[0][0]) + '項' + name + '改為' + target['status'] + '，重新加總」。')
@@ -132,25 +164,36 @@ class DailyAssistant(Assistant):
         question = question.strip()
         followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)
         local = self.allow_local_calculation and not image_ids
-        ledger = parse(question) if local and not followup else None
+        choice = ROW_REPLY.fullmatch(question)
+        before = retry['user_message_id'] if retry else None
+        selection = preceding_receipt(self.store, sid, before, pending_only=True) if self.allow_local_calculation and choice else None
+        prior = {}
+        if retry and local:
+            with self.store.connect() as db:
+                original = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?',
+                                      (retry['id'], sid)).fetchone()
+            prior = json.loads(original[0]) if original else {}
+            if choice and not selection and prior.get('expense_source'):
+                raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        ledger = parse(question) if local and not (followup or selection) else None
+        pending = None
         source = None
-        if self.allow_local_calculation and followup and (image_ids or self.store.documents(sid, include_content=False)):
+        if self.allow_local_calculation and (followup or selection) and (image_ids or self.store.documents(sid, include_content=False)):
             raise ValueError('這個更正指令只能接續純文字核銷紀錄。若要核對附件，請說明要採用的明細。')
-        if not local or (ledger is None and not followup) or (not followup and self.store.documents(sid, include_content=False)):
+        if not local or (ledger is None and not (followup or selection)) or (ledger and self.store.documents(sid, include_content=False)):
             return super()._ask(sid, question, cancel, retry=retry, draft=draft, image_ids=image_ids)
         if cancel and cancel.is_set():
             raise EngineError('已停止本機核銷計算。', 'cancelled')
-        if retry:
-            with self.store.connect() as db:
-                previous = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?',
-                                      (retry['id'], sid)).fetchone()
-            prior = json.loads(previous[0]) if previous else {}
-            if 'expense_ledger' not in prior:
-                return super()._ask(sid, question, cancel, retry=retry, draft=draft, image_ids=image_ids)
-        if followup:
-            ledger, source = preceding_receipt(self.store, sid, retry['user_message_id'] if retry else None)
-            apply_followup(ledger, followup, question)
-        if retry and (prior['expense_ledger'] != ledger or prior.get('expense_source') != source):
+        if retry and 'expense_ledger' not in prior:
+            return super()._ask(sid, question, cancel, retry=retry, draft=draft, image_ids=image_ids)
+        if selection:
+            ledger, source, offered = selection
+            apply_followup(ledger, {**offered, 'position': choice[1]}, question)
+        elif followup:
+            ledger, source, offered = preceding_receipt(self.store, sid, before)
+            pending = apply_followup(ledger, followup, question, can_prompt=offered is None)
+        if retry and (prior['expense_ledger'] != ledger or prior.get('expense_source') != source
+                      or prior.get('expense_selection') != pending):
             raise ValueError('原先選取的核銷明細已變更，請重新提交更正。')
         answer_runs.recover(self.store, sid)
         values = [r['amount'] for r in ledger['rows'] if r['included']]
@@ -158,6 +201,8 @@ class DailyAssistant(Assistant):
         context = make_context(question, [], [])
         context.update(response_mode='local_calculation', expense_ledger=ledger, calculation=command,
                        documents={'catalog': [], 'excerpts': []})
+        if pending:
+            context['expense_selection'] = pending
         if source:
             context['expense_source'] = source
         if retry:
@@ -178,6 +223,8 @@ class DailyAssistant(Assistant):
                 context['calculation'] = receipt
                 if cancel and cancel.is_set():
                     raise EngineError('已停止本機核銷計算。', 'cancelled')
+                if pending:
+                    answer = selection_prompt(ledger, pending, answer)
                 mid = answer_runs.finish(self.store, run_id, answer, context, [])
             except Exception as exc:
                 answer_runs.fail(self.store, run_id, getattr(exc, 'code', 'unexpected_error'))
