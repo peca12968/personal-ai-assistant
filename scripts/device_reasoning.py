@@ -53,3 +53,44 @@ def combine(labels):
     if '不能' in (common,available):
         return '不能'
     return '能' if common==available=='能' else '資料不足'
+
+
+STATUS_LABELS = {'已確認成立':'能', '已確認不成立':'不能', '未知':'資料不足'}
+STATUS = '(' + '|'.join(STATUS_LABELS) + ')'
+STATUS_REPLY = re.compile(r'\s*共同[：:]\s*'+STATUS+r'[。]?\s*\n\s*一[：:]\s*'+STATUS+r'[。]?\s*\n\s*二[：:]\s*'+STATUS+r'[。]?\s*')
+
+
+def status_prompt(plan):
+    a, b = plan['devices']
+    return ('只判斷原文能確認什麼，不猜測設備狀態。每一項使用同一組標籤。'
+            '\n已確認成立：原文明確支持共同前提已滿足，或該台本身可操作。'
+            '\n已確認不成立：原文明確支持共同前提受阻，或該台本身不可操作。'
+            '\n未知：這一項的狀態尚未確認。尚未確認不是已確認不成立。條件句只說明規則，不代表條件已成立。'
+            '\n任務：' + plan['question'] + '？'
+            '\n共同前提原文：' + '。'.join(plan['shared']) + '。'
+            '\n第一台自身原文：' + a + '。'
+            '\n第二台自身原文：' + b + '。'
+            '\n各台自身的狀態依各台原文判斷，共同前提只在共同一項判斷。'
+            '\n請填三行「共同：標籤」、「一：標籤」、「二：標籤」。')
+
+
+def decode_status(raw):
+    match = STATUS_REPLY.fullmatch(raw)
+    return [STATUS_LABELS[label] for label in match.groups()] if match else None
+
+
+def isolated_prompts(plan):
+    instructions = ('只根據本段文字判斷指定項目。使用三個標籤之一。'
+                    '「已確認成立」表示原文明說該項目已滿足。'
+                    '「已確認不成立」表示原文明說該項目受阻。'
+                    '「未知」表示未提供足夠資料確認。'
+                    '未查證不能當作已確認不成立。只回標籤，不加其他文字。')
+    common = instructions + '\n指定項目：任務所需的共同前提是否已滿足。' + '\n任務：' + plan['question'] + '？\n原文：' + '。'.join(plan['shared']) + '。'
+    devices = [instructions + '\n指定項目：這台設備自身是否已確認可操作。\n原文：' + fact + '。'
+               for fact in plan['devices']]
+    return [common, *devices]
+
+
+def decode_isolated(raw):
+    label = raw.strip().removesuffix('。')
+    return STATUS_LABELS.get(label)
