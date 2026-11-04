@@ -4,6 +4,18 @@
 
 ## 第4點：真正更新參數
 
+### 本機理解評估與逐項評讀
+
+在專案目錄執行下列命令，可用原始底座回答三組成對問題。每對共用同一份資料與提問，只替換一則使用者前文。報告路徑請選尚未使用的檔名。
+
+```powershell
+.venv\Scripts\python.exe scripts/evaluate_understanding.py --live --local-data-dir data --suite evals/clarification_pairs.json --report data/evaluations/clarification-base.json
+```
+
+測量候選時，改用該批次所在的資料目錄，加上 `--local-batch 批次ID` 並另存報告。每題使用獨立的合成對話，報告保留實際引擎請求、作答背景、引擎回傳及最後顯示的答案。接續收集時會核對案例、程式、提示和本機引擎選擇指紋。
+
+全部收集後使用 `scripts/review_understanding.py`，按每題三項標準分別評讀處理指涉的方式、答案內容、輸出格式。以 `--compare` 對照同題的兩份已評報告，可查看逐項結果、引擎指紋差異及實際提示改變的題目。
+
 ### v0.97 完整前文的顯存檢查
 
 本機推論工作程序依本次輸入長度及最多 512 個輸出 token 配置固定的注意力快取，分段讀取時重用同一份緩衝區。讀取的每一段仍核對累計 token 數。開始生成後沿用已讀取的快取。

@@ -39,6 +39,56 @@ class EvaluationTraceTests(unittest.TestCase):
             ev.main()
         return json.loads(self.report.read_text(encoding='utf-8'))
 
+    def test_local_reports_bind_each_request_and_reject_resume_with_different_weights(self):
+        class Local:
+            def __init__(inner, directory, *, batch=None):
+                inner.selection = {'fingerprint': ('a' if batch is None else 'b') * 64}
+
+            def describe(inner):
+                return {'selection_fingerprint': inner.selection['fingerprint']}
+
+            def answer(inner, request, cancel=None):
+                self.captured.append(request)
+                return '7'
+
+        argv = ['evaluate', '--live', '--suite', str(self.suite), '--report', str(self.report),
+                '--local-data-dir', str(self.folder)]
+        with patch('assistant.local_engine.LocalEngine', Local), patch.object(ev, 'CodexEngine', side_effect=AssertionError), \
+                patch('sys.stdout', io.StringIO()), patch('sys.stderr', io.StringIO()):
+            with patch('sys.argv', argv):
+                ev.main()
+            original = self.report.read_bytes()
+            report = json.loads(original)
+            self.assertEqual(report['mode'], ev.LOCAL_TRACE_MODE)
+            self.assertEqual(report['results'][0]['context']['engine_selection']['selection_fingerprint'], 'a' * 64)
+            with patch('sys.argv', argv + ['--resume', '--local-batch', 'another']), self.assertRaises(SystemExit):
+                ev.main()
+            self.assertEqual(len(self.captured), 1)
+            self.assertEqual(self.report.read_bytes(), original)
+            report['fingerprint']['local_selection_sha256'] = 'b' * 64
+            with self.assertRaisesRegex(ValueError, '引擎'):
+                validate_report(report)
+            wrong_mode = json.loads(original)
+            wrong_mode['mode'] = TRACE_MODE
+            with self.assertRaisesRegex(ValueError, '評估模式'):
+                validate_report(wrong_mode)
+            candidate_argv = argv.copy()
+            candidate_argv[candidate_argv.index('--report') + 1] = str(self.folder/'candidate.json')
+            with patch('sys.argv', candidate_argv + ['--local-batch', 'another']):
+                ev.main()
+            paired = compare(json.loads(original), json.loads((self.folder/'candidate.json').read_bytes()),
+                             suite_bytes=self.suite.read_bytes())
+            self.assertEqual(set(paired['changed_runtime_fingerprints']), {'local_selection_sha256'})
+            self.assertEqual(paired['changed_request_ids'], ['one'])
+
+    def test_local_flags_require_explicit_live_mode_and_data_directory(self):
+        for options in (['--local-data-dir', str(self.folder)], ['--live', '--local-batch', 'candidate']):
+            with self.subTest(options=options), patch('sys.argv', ['evaluate', *options]), \
+                    patch('sys.stderr', io.StringIO()), patch('assistant.local_engine.LocalEngine') as engine:
+                with self.assertRaises(SystemExit):
+                    ev.main()
+                engine.assert_not_called()
+
     def test_one_actual_request_and_persisted_context_not_a_preflight_reconstruction(self):
         calls=[];original=Assistant.prepare_context
         def observed(app,*args,**kwargs):

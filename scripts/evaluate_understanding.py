@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from assistant.engine import Assistant, CodexEngine, render_prompt
 from scripts.evaluation_reports import (index_report, load_json, strict_json, validate_report,
-    verify_suite, canonical_digest, TRACE_MODE, TRACE_CONTEXT_MARKER, MAX_JSON_BYTES)
+    verify_suite, canonical_digest, TRACE_MODE, LOCAL_TRACE_MODE, TRACE_CONTEXT_MARKER, MAX_JSON_BYTES)
 from assistant.store import Store
 from assistant.companion_profile import get_profile, reset_profile, save_profile, validate as validate_profile
 
@@ -144,7 +144,7 @@ def load_report(path, signature, ids, resume, *, mode=None):
     return result
 
 
-def collect_case(store, sid, case, engine, unchanged):
+def collect_case(store, sid, case, engine, unchanged, *, describe=None):
     calls = []
     class Recorded:
         def answer(self, prompt, cancel=None):
@@ -155,7 +155,10 @@ def collect_case(store, sid, case, engine, unchanged):
             result = engine.answer(prompt, cancel)
             calls[0]['engine_answer'] = result
             return result
-    answer = Assistant(store, Recorded()).ask(sid, case['prompt'])
+    recorded = Recorded()
+    if describe is not None:
+        recorded.describe = describe
+    answer = Assistant(store, recorded).ask(sid, case['prompt'])
     unchanged()
     if len(calls) != 1:
         raise ValueError('此案例未呼叫模型（可能是本機命令），不保存為模型回答；請使用對應功能評估器。')
@@ -191,12 +194,18 @@ def save_report(path, report):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--live', action='store_true', help='呼叫真實 Codex；使用帳號額度')
+    parser.add_argument('--live', action='store_true', help='收集真實回答，預設呼叫 Codex')
+    parser.add_argument('--local-data-dir', type=Path, help='改用此資料目錄的本機模型評估合成對話')
+    parser.add_argument('--local-batch', help='本機候選批次 ID，省略時採原始底座')
     parser.add_argument('--suite', type=Path, default=SUITE, help='指定另一組同格式的固定案例')
     parser.add_argument('--ids', nargs='+')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
+    if args.local_data_dir is not None and not args.live:
+        parser.error('--local-data-dir 需搭配 --live。')
+    if args.local_batch is not None and args.local_data_dir is None:
+        parser.error('--local-batch 需搭配 --local-data-dir。')
     try:
         with args.suite.open('rb') as stream:
             suite_bytes = stream.read(MAX_JSON_BYTES+1)
@@ -222,15 +231,24 @@ def main():
             return
         if not args.report:
             raise ValueError('--live 需指定 --report，建議使用 data/evaluations 下的新路徑。')
-        signature = live_fingerprint(args.suite)
+        engine = None
+        selection = {}
+        mode = TRACE_MODE
+        if args.local_data_dir is not None:
+            from assistant.local_engine import LocalEngine
+            engine = LocalEngine(args.local_data_dir, batch=args.local_batch)
+            selection['local_selection_sha256'] = engine.selection['fingerprint']
+            mode = LOCAL_TRACE_MODE
+        signature = {**live_fingerprint(args.suite), **selection}
         if signature['suite_sha256'] != sha(suite_bytes):
             raise ValueError('案例集在讀取後已變更，未開始收集。')
-        report = load_report(args.report, signature, [case['id'] for case in cases], args.resume, mode=TRACE_MODE)
+        report = load_report(args.report, signature, [case['id'] for case in cases], args.resume, mode=mode)
         verify_suite(report, suite_bytes)
         save_report(args.report, report)
-        engine = CodexEngine(ROOT / 'data')
+        if engine is None:
+            engine = CodexEngine(ROOT / 'data')
         def unchanged():
-            if live_fingerprint(args.suite) != signature:
+            if {**live_fingerprint(args.suite), **selection} != signature:
                 raise ValueError('評估期間程式、提示、案例、測試器或驗證器已改變，停止以免混用版本。')
         finished = {row['id'] for row in report['results']}
         for case in cases:
@@ -240,7 +258,10 @@ def main():
             with tempfile.TemporaryDirectory() as tmp:
                 store = Store(Path(tmp) / 'state.sqlite3')
                 sid = prepare_case(store, case)
-                row = collect_case(store, sid, case, engine, unchanged)
+                if selection:
+                    row = collect_case(store, sid, case, engine, unchanged, describe=engine.describe)
+                else:
+                    row = collect_case(store, sid, case, engine, unchanged)
                 report['results'].append(row)
                 validate_report(report)
                 verify_suite(report, suite_bytes)

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.evaluate_understanding import save_report
 from scripts.evaluation_reports import (REVIEWERS, RUNTIME_FINGERPRINTS, MAX_JSON_BYTES,
-    load_json, validate_report, validate_review, verify_suite, evidence_digest, TRACED_MODES)
+    load_json, validate_report, validate_review, verify_suite, evidence_digest, TRACED_MODES, LOCAL_TRACE_MODE)
 
 
 def apply_reviews(report, reviews, reviewer):
@@ -89,9 +89,12 @@ def compare(first, second, *, suite_bytes=None):
     if first.get('mode') != second.get('mode'):
         raise ValueError('對照的評估模式不同。')
     changed_runtime = {}
+    variable_fields = RUNTIME_FINGERPRINTS
+    if first.get('mode') == LOCAL_TRACE_MODE:
+        variable_fields = variable_fields | {'local_selection_sha256'}
     for key in fa.keys() | fb.keys():
         if fa.get(key) != fb.get(key):
-            if key not in RUNTIME_FINGERPRINTS:
+            if key not in variable_fields:
                 raise ValueError('測試腳本、來源產生器或其他固定條件指紋不同，不能直接比較。')
             changed_runtime[key] = {'before': fa.get(key), 'after': fb.get(key)}
     a = {row['id']: row for row in first['results']}
@@ -111,6 +114,7 @@ def compare(first, second, *, suite_bytes=None):
         if before['reviewer'] != after['reviewer']:
             changed_reviewers.append(id)
         transitions.append({'id': id, 'before': before['result'], 'after': after['result'],
+                            'before_criteria_pass': before['criteria_pass'], 'after_criteria_pass': after['criteria_pass'],
                             'before_reviewer': before['reviewer'], 'after_reviewer': after['reviewer'],
                             'before_evidence_bound': 'evidence_sha256' in before,
                             'after_evidence_bound': 'evidence_sha256' in after})

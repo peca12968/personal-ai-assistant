@@ -3,7 +3,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scripts.evaluation_reports import MAX_JSON_BYTES, strict_json
+from scripts.evaluation_reports import LOCAL_TRACE_MODE, MAX_JSON_BYTES, strict_json
 from scripts.review_understanding import summarize, compare
 
 REVIEWERS = {'user':'使用者', 'development_agent':'開發代理', 'independent_reviewer':'獨立評讀者'}
@@ -68,6 +68,12 @@ def summary_text(snapshot):
         lines += [f'報告{"AB"[i]}：當時記錄的程式版本 {clip(report.get("git_head", "未記錄"), 64)}',
                   f'已收集 {summary["collected"]}／{len(report["case_ids"])}；尚未收集 {summary["not_collected"]}；非空答案 {summary["answered"]}；空答案 {summary["empty_answers"]}；錯誤 {summary["collection_errors"]}。',
                   f'最近評讀：通過 {counts["pass"]}、未通過 {counts["fail"]}、待評讀 {counts["pending"]}；已綁定 {len(summary["bound_review_ids"])}、舊評讀未綁定 {len(summary["unbound_review_ids"])}。']
+        if report.get('mode') == LOCAL_TRACE_MODE and report['results']:
+            engine = report['results'][0]['context']['engine_selection']
+            version = engine.get('parameter_version', '未記錄版本')
+            if version == 'unadapted_base':
+                version = '原始底座'
+            lines.append(f'本機模型 {clip(engine.get("model", "未記錄"), 100)} · {clip(version, 100)}')
         for reviewer, counts in summary['by_reviewer'].items():
             lines.append(f'　{REVIEWERS[reviewer]}：通過 {counts["pass"]}、未通過 {counts["fail"]}。')
         lines.append('原案例集：' + ('已核對選取檔案的位元組及已記錄欄位。' if summary['suite_verified'] else '未提供，尚未驗證。'))
@@ -77,7 +83,7 @@ def summary_text(snapshot):
         changed = sum(row['before']=='fail' and row['after']=='pass' for row in paired['transitions'])
         regressed = sum(row['before']=='pass' and row['after']=='fail' for row in paired['transitions'])
         lines += [f'前後評讀對照 {paired["compared"]} 題：未通過→通過 {changed}，通過→未通過 {regressed}，維持 {paired["compared"]-changed-regressed}；待補結果／評讀 {len(paired["pending_ids"])}。',
-                  f'評讀者變動 {len(paired["reviewer_changed_ids"])} 題；程式／提示指紋差異 {len(paired["changed_runtime_fingerprints"])} 項；來源指紋未記錄 {len(paired["missing_source_fingerprint_ids"])} 題。']
+                  f'評讀者變動 {len(paired["reviewer_changed_ids"])} 題；程式、提示或引擎指紋差異 {len(paired["changed_runtime_fingerprints"])} 項；來源指紋未記錄 {len(paired["missing_source_fingerprint_ids"])} 題。']
     lines.append('非空答案可能是提問或停止說明；評讀結果不證明已完成工作。記錄一致性核對不認證模型呼叫、資料真實或評讀者身份。')
     return '\n'.join(lines)
 

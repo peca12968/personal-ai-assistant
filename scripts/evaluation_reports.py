@@ -9,9 +9,10 @@ MAX_JSON_BYTES = 32 * 1024 * 1024
 REVIEWERS = {'user', 'development_agent', 'independent_reviewer'}
 RUNTIME_FINGERPRINTS = {'source_sha256', 'prompt_sha256', 'communication_prompt_sha256'}
 TRACE_MODE = 'understanding_trace_v1'
+LOCAL_TRACE_MODE = 'local_understanding_trace_v1'
 GOAL_TRACE_MODE = 'conversation_goal_trace_v1'
 DRAFT_TRACE_MODE = 'goal_draft_trace_v1'
-TRACED_MODES = (TRACE_MODE, GOAL_TRACE_MODE, DRAFT_TRACE_MODE)
+TRACED_MODES = (TRACE_MODE, LOCAL_TRACE_MODE, GOAL_TRACE_MODE, DRAFT_TRACE_MODE)
 DRAFT_CONTEXT_MARKER = '\n\n整理來源：\n'
 GOAL_CONTEXT_MARKER = '\n\n目標與已觀察資料：\n'
 TRACE_CONTEXT_MARKER = '\n\n以下 JSON 是使用者資料與當前問題：\n'
@@ -158,12 +159,16 @@ def validate_report(report):
             raise ValueError('評估指紋須為具名SHA-256文字。')
     if 'mode' in report and not text(report['mode']):
         raise ValueError('評估模式無效。')
+    if 'local_selection_sha256' in report.get('fingerprint', {}) and report.get('mode') != LOCAL_TRACE_MODE:
+        raise ValueError('本機引擎指紋與指定的評估模式不符。')
     traced = report.get('mode') in TRACED_MODES
     if traced and not all(digest(report.get('fingerprint', {}).get(key)) for key in
                           ('runner_sha256', 'report_validation_sha256', 'suite_sha256')):
         raise ValueError('追蹤報告缺少測試器、驗證器或案例集指紋。')
     if report.get('mode') in (GOAL_TRACE_MODE, DRAFT_TRACE_MODE) and not digest(report.get('fingerprint', {}).get('fixture_builder_sha256')):
         raise ValueError('自主追蹤報告缺少來源建構器指紋。')
+    if report.get('mode') == LOCAL_TRACE_MODE and not digest(report['fingerprint'].get('local_selection_sha256')):
+        raise ValueError('本機理解評估缺少引擎選擇指紋。')
     for row in rows.values():
         if not text(row.get('category')) or not criteria(row.get('criteria')) or not isinstance(row.get('answer'), str):
             raise ValueError('案例需有分類、非空標準與答案文字；空答案另列統計。')
@@ -181,6 +186,10 @@ def validate_report(report):
                 validate_goal_trace(row)
             else:
                 validate_trace(row)
+                if report['mode'] == LOCAL_TRACE_MODE:
+                    selection = row['context'].get('engine_selection')
+                    if not isinstance(selection, dict) or selection.get('selection_fingerprint') != signature['local_selection_sha256']:
+                        raise ValueError('本機評估的作答引擎與報告指紋不符。')
         mechanical = row.get('mechanical_checks', {})
         if not isinstance(mechanical, dict) or any(not text(k) or type(v) is not bool for k, v in mechanical.items()):
             raise ValueError('機械檢查需為具名布林；不能代替語意評讀。')

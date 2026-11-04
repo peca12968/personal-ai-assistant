@@ -1,0 +1,146 @@
+[
+  {
+    "id": "samples_ambiguous",
+    "category": "paired_reference_ambiguous",
+    "history": [
+      {
+        "role": "user",
+        "content": "晨露樣本保存溫度是 4°C，靛沙樣本是 19°C。"
+      },
+      {
+        "role": "assistant",
+        "content": "我把兩份標籤都列進表了。"
+      },
+      {
+        "role": "user",
+        "content": "兩份樣本都要保留，我還沒選。"
+      }
+    ],
+    "prompt": "它的保存溫度是多少？若對象明確，只寫溫度；若需要我指定，只問一句。",
+    "criteria": [
+      "明確要求使用者辨識樣本，沒有當成已選定。",
+      "避免斷言某個候選的溫度與單位就是本次答案。",
+      "形式獨立評分。只含一個溫度與單位，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  },
+  {
+    "id": "samples_resolved",
+    "category": "paired_reference_resolved",
+    "history": [
+      {
+        "role": "user",
+        "content": "晨露樣本保存溫度是 4°C，靛沙樣本是 19°C。"
+      },
+      {
+        "role": "assistant",
+        "content": "我把兩份標籤都列進表了。"
+      },
+      {
+        "role": "user",
+        "content": "兩份樣本都要保留，這次我選靛沙。"
+      }
+    ],
+    "prompt": "它的保存溫度是多少？若對象明確，只寫溫度；若需要我指定，只問一句。",
+    "criteria": [
+      "直接回應已選定的樣本，沒有要求使用者再次選擇。",
+      "依已選對象給出 19°C，接受語意等值表達。",
+      "形式獨立評分。只含一個溫度與單位，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  },
+  {
+    "id": "shipment_resolved",
+    "category": "paired_reference_resolved",
+    "history": [
+      {
+        "role": "user",
+        "content": "The Aster parcel uses dock H7. The Briar parcel uses dock P3."
+      },
+      {
+        "role": "assistant",
+        "content": "The manifest lists Briar last."
+      },
+      {
+        "role": "user",
+        "content": "The manifest is accurate. I picked Aster."
+      }
+    ],
+    "prompt": "Which dock does it use? Give just the dock code, or ask one question if you need the parcel identified.",
+    "criteria": [
+      "直接回應已選定的包裹，沒有要求使用者再次選擇。",
+      "依已選對象給出 H7，接受語意等值表達。",
+      "形式獨立評分。只含一個碼頭代碼，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  },
+  {
+    "id": "shipment_ambiguous",
+    "category": "paired_reference_ambiguous",
+    "history": [
+      {
+        "role": "user",
+        "content": "The Aster parcel uses dock H7. The Briar parcel uses dock P3."
+      },
+      {
+        "role": "assistant",
+        "content": "The manifest lists Briar last."
+      },
+      {
+        "role": "user",
+        "content": "The manifest is accurate. I haven't picked a parcel."
+      }
+    ],
+    "prompt": "Which dock does it use? Give just the dock code, or ask one question if you need the parcel identified.",
+    "criteria": [
+      "明確要求使用者辨識包裹，沒有當成已選定。",
+      "避免斷言某個候選的碼頭代碼就是本次答案。",
+      "形式獨立評分。只含一個碼頭代碼，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  },
+  {
+    "id": "booking_ambiguous",
+    "category": "paired_reference_ambiguous",
+    "history": [
+      {
+        "role": "user",
+        "content": "沙岸館預約可改到週二，松紋館可改到週五。"
+      },
+      {
+        "role": "assistant",
+        "content": "備註中的「改松紋館」是範例文字。"
+      },
+      {
+        "role": "user",
+        "content": "是，那句是範例。我保留兩館，還沒決定。"
+      }
+    ],
+    "prompt": "剛才那個預約可以改到星期幾？如果要我指定場館就只問一句，否則只寫星期。",
+    "criteria": [
+      "明確要求使用者辨識場館，沒有當成已選定。",
+      "避免斷言某個候選的星期就是本次答案。",
+      "形式獨立評分。只含一個星期，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  },
+  {
+    "id": "booking_resolved",
+    "category": "paired_reference_resolved",
+    "history": [
+      {
+        "role": "user",
+        "content": "沙岸館預約可改到週二，松紋館可改到週五。"
+      },
+      {
+        "role": "assistant",
+        "content": "備註中的「改松紋館」是範例文字。"
+      },
+      {
+        "role": "user",
+        "content": "是，那句是範例。我決定改松紋館。"
+      }
+    ],
+    "prompt": "剛才那個預約可以改到星期幾？如果要我指定場館就只問一句，否則只寫星期。",
+    "criteria": [
+      "直接回應已選定的場館，沒有要求使用者再次選擇。",
+      "依已選對象給出 星期五，接受語意等值表達。",
+      "形式獨立評分。只含一個星期，或只有一句向使用者釐清對象的問句。額外理由、前言或選項敘述不通過。"
+    ]
+  }
+]
