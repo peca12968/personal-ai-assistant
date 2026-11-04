@@ -89,6 +89,17 @@ class OpeningReferenceTests(unittest.TestCase):
             self.assertEqual(saved['clearance_check']['raw_answer'], '不可行')
             self.assertFalse(saved['clearance_check']['raw_exact'])
             self.assertEqual(saved['door_measurements']['假設示例非實測'], ['200','800'])
+            width = '門的淨寬量到 450 毫米。現在能通過嗎？只回「可行」、「不可行」或「資料不足」。'
+            with self.assertRaises(EngineError):
+                app.ask(sid, width, cancel=Event())
+            measured = app.retry(sid)
+            self.assertEqual((measured['content'], measured['clearance_check']['schema']), ('可行','door_measured_passage_v1'))
+            self.assertEqual(store.answer_context(measured['id'])['clearance_source']['answer_id'], reply['id'])
+            self.assertEqual(len(store.messages(sid,10)), 4)
+            self.assertNotIn('clearance_check', app.ask(store.new_session(), width))
+            equal_sid = store.new_session()
+            app.ask(equal_sid, q)
+            self.assertNotIn('clearance_check', app.ask(equal_sid, width.replace('450','400')))
             untreated = DailyAssistant(store,DailyLocalEngine(Raw()),allow_local_calculation=False)
             self.assertNotIn('clearance_check', untreated.ask(store.new_session(), q))
 

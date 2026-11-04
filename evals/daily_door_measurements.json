@@ -13,12 +13,13 @@
   {
     "id": "wide",
     "session": "A",
-    "route": "general_model",
+    "route": "verified_clearance",
     "question": "剛量了，門的淨寬是 0.85 公尺。現在能通過嗎？只回「可行」、「不可行」或「資料不足」。",
     "answer": "可行",
     "evidence": {
       "door_measurements.箱邊毫米": "780",
-      "door_measurements.本輪淨寬毫米": "850.00"
+      "door_measurements.本輪淨寬毫米": "850.00",
+      "clearance_check.schema": "door_measured_passage_v1"
     }
   },
   {
@@ -35,12 +36,13 @@
   {
     "id": "narrow",
     "session": "B",
-    "route": "general_model",
+    "route": "verified_clearance",
     "question": "門的淨寬量到 590 毫米。現在能通過嗎？只回「可行」、「不可行」或「資料不足」。",
     "answer": "不可行",
     "evidence": {
       "door_measurements.箱邊毫米": "620.00",
-      "door_measurements.本輪淨寬毫米": "590"
+      "door_measurements.本輪淨寬毫米": "590",
+      "clearance_check.schema": "door_measured_passage_v1"
     }
   },
   {
@@ -58,10 +60,11 @@
     "session": "X",
     "question": "門的淨寬量到 800 毫米。現在能通過嗎？只回「可行」、「不可行」或「資料不足」。",
     "answer": "不可行",
-    "route": "general_model",
+    "route": "verified_clearance",
     "evidence": {
       "door_measurements.阻礙原因": "唯一的門目前無法打開",
-      "door_measurements.本輪淨寬毫米": "800"
+      "door_measurements.本輪淨寬毫米": "800",
+      "clearance_check.schema": "door_passage_blocked_v1"
     }
   },
   {

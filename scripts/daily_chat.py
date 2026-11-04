@@ -22,7 +22,12 @@ def run_daily_window(store, engine):
             if context and 'clearance_check' in context:
                 title = '門寬尺寸核對'
                 ref, receipt = context['door_measurements'], context['clearance_check']
-                proof = [ref['阻礙原因']] if '阻礙原因' in ref else [ref['假設一'], ref['假設二']]
+                if '本輪門寬原文' in ref:
+                    proof = ['本輪實測淨寬：' + ref['本輪門寬原文'], ref.get('阻礙原因') or ref['本輪尺寸比較']]
+                elif '阻礙原因' in ref:
+                    proof = [ref['阻礙原因']]
+                else:
+                    proof = [ref['假設一'], ref['假設二']]
                 lines = [context['current_request'], '', ref['箱邊原文'], ref['門高原文'], ref['原門寬紀錄'],
                          *proof, '', '模型原答：', receipt['raw_answer'], '', '交付：' + receipt['delivered']]
             elif context and 'inventory_check' in context:

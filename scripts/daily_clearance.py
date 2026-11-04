@@ -31,14 +31,25 @@ def proof_format(question):
     return scene['format'] if scene else None
 
 
+def measured_choice(question):
+    return MEASURED.fullmatch(question) and question.rstrip('。！').endswith('只回「可行」、「不可行」或「資料不足」')
+
+
 def verified_answer(context, raw):
     reference = opening_reference(context)
     requested = proof_format(context['current_request'])
-    if not requested or not reference or reference != context.get('door_measurements'):
+    followup = measured_choice(context['current_request']) and context.get('clearance_source')
+    if not (requested or followup) or not reference or reference != context.get('door_measurements'):
         raise ValueError('無法核對門口的通行條件。')
     if '阻礙原因' in reference:
-        answer = '不可行' if requested.startswith('只回') else '不用再量尺寸。' + reference['阻礙原因'] + '。'
+        answer = '不可行' if followup or requested.startswith('只回') else '不用再量尺寸。' + reference['阻礙原因'] + '。'
         schema = 'door_passage_blocked_v1'
+    elif followup:
+        width, side = Decimal(reference['本輪淨寬毫米']), Decimal(reference['箱邊毫米'])
+        if width == side:
+            raise ValueError('門寬剛好等於箱邊，題目未提供搬運所需間隙。')
+        answer = '可行' if width > side else '不可行'
+        schema = 'door_measured_passage_v1'
     else:
         if '尚缺尺寸' not in reference:
             raise ValueError('找不到待量的尺寸。')

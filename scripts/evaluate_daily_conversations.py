@@ -97,7 +97,7 @@ def turn(folder, case, sid, refs, live):
             from assistant.engine import render_prompt
             audit = saved.get('clearance_check', {})
             require(saved.get('response_mode') == initial.get('response_mode') == 'verified_clearance'
-                    and 'clearance_check' not in initial and audit.get('schema') in ('door_width_uncertainty_v1', 'door_passage_blocked_v1')
+                    and 'clearance_check' not in initial and audit.get('schema') in ('door_width_uncertainty_v1', 'door_passage_blocked_v1', 'door_measured_passage_v1')
                     and audit.get('model_called') is True and audit.get('raw_answer') == calls[0]['raw_answer']
                     and audit.get('delivered') == content and audit.get('raw_exact') is (content == audit['raw_answer'])
                     and calls[0].get('prompt_sha256') == hashlib.sha256(render_prompt(initial).encode('utf8')).hexdigest(),

@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import uuid
+from decimal import Decimal
 
 from scripts import daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
@@ -261,13 +262,35 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
-        if (local and hasattr(self.engine, 'answer_raw') and daily_clearance.proof_format(question)
+        measured = daily_clearance.measured_choice(question) if local else None
+        if (local and hasattr(self.engine, 'answer_raw') and (daily_clearance.proof_format(question) or measured)
                 and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'verified_clearance')):
             context = self.prepare_context(sid, question, exclude_message_id=before)
-            if context.get('door_measurements'):
+            source = None
+            if measured:
+                row = previous_answer(self.store, sid, before)
+                if row and daily_clearance.proof_format(row['question']):
+                    saved = json.loads(row['payload'])
+                    if retry:
+                        context['conversation_tail'] = dict(message_id=row['id'], role='assistant')
+                    ref = daily_clearance.opening_reference(context)
+                    if (saved.get('response_mode') == 'verified_clearance' and saved.get('current_request') == row['question']
+                            and saved.get('clearance_check', {}).get('delivered') == row['content'] and ref
+                            and ref.get('來源使用者訊息') == row['uid']
+                            and ('阻礙原因' in ref or Decimal(ref['本輪淨寬毫米']) != Decimal(ref['箱邊毫米']))):
+                        source = source_ref(row)
+                        context.update(door_measurements=ref, clearance_source=source)
+                if retry and (not source or source != prior.get('clearance_source')):
+                    raise ValueError('原先的門口條件已變更，請重新提供尺寸。')
+            if context.get('door_measurements') and (not measured or source):
                 context['response_mode'] = 'verified_clearance'
 
                 def verify_clearance(uid):
+                    if source:
+                        current = previous_answer(self.store, sid, uid)
+                        if (not current or source_ref(current) != source or current['uid'] != row['uid']
+                                or current['content'] != row['content'] or current['question'] != row['question']):
+                            raise ValueError('送出前門口的來源回答已變更，請重新確認。')
                     raw = self.engine.answer_raw(render_prompt(context), cancel)
                     return daily_clearance.verified_answer(context, raw)
 
