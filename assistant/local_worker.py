@@ -44,7 +44,7 @@ def infer(request):
         if {name: importlib.metadata.version(name) for name in EXPECTED_VERSIONS} != EXPECTED_VERSIONS:
             raise Failure('environment')
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, StaticCache
         from peft import PeftModel
     except (ImportError, importlib.metadata.PackageNotFoundError):
         raise Failure('environment') from None
@@ -84,7 +84,9 @@ def infer(request):
         gc.collect(); torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
         tokens = torch.tensor([ids], device='cuda')
         with torch.inference_mode():
-            cache = None
+            # Reuse the same key/value buffers across chunks and decoding steps.
+            # Growing buffers left too little contiguous workspace for long answers.
+            cache = StaticCache(config=model.config, max_cache_len=len(ids) + local_models.MAX_OUTPUT_TOKENS)
             # Every input token is processed exactly once before generation. Full
             # long-sequence SDPA matrices do not fit the supported 16 GiB GPU.
             for start in range(0, len(ids)-1, 256):
@@ -98,7 +100,7 @@ def infer(request):
                 del prefill
             output = model.generate(input_ids=tokens, attention_mask=torch.ones_like(tokens),
                 past_key_values=cache, max_new_tokens=local_models.MAX_OUTPUT_TOKENS,
-                do_sample=False, pad_token_id=tokenizer.eos_token_id, eos_token_id=tokenizer.eos_token_id,
+                disable_compile=True, do_sample=False, pad_token_id=tokenizer.eos_token_id, eos_token_id=tokenizer.eos_token_id,
                 logits_to_keep=1, use_cache=True)
         generated = output[0, len(ids):]
         if len(generated) >= local_models.MAX_OUTPUT_TOKENS and int(generated[-1]) != tokenizer.eos_token_id:
