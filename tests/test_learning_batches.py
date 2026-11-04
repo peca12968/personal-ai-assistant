@@ -15,6 +15,7 @@ from assistant import learning_batches as batches, learning_queue as queue
 from assistant.store import Store
 from scripts.learning.protocol import EXPECTED_VERSIONS
 from scripts.learning.batch_worker import encode
+from scripts.learning.review_batch import review
 from scripts.learning.runtime import gpu_lease
 
 
@@ -99,9 +100,61 @@ if phase=='train':
             receipt=batches.run(self.store,self.bid)
         self.assertEqual(receipt['status'],'candidate'); self.assertTrue(receipt['worker_exit_confirmed'])
         batches.candidate(self.root,self.bid)
+        summary = review(self.root, self.bid)
+        self.assertEqual(summary['groups']['new']['improved_ids'], ['example-' + self.example['id']])
+        self.assertEqual(summary['failed_checks'], [])
         with self.assertRaises(ValueError): batches.run(self.store,self.bid)
         (self.path/'adapter/adapter_model.safetensors').write_bytes(b'changed')
         with self.assertRaises(ValueError): batches.candidate(self.root,self.bid)
+        with self.assertRaisesRegex(ValueError, '參數檔案'): review(self.root, self.bid)
+
+    def test_rejected_batch_review_distinguishes_regression_and_preserves_raw_evidence(self):
+        with self.assertRaisesRegex(ValueError, '已完成'):
+            review(self.root, self.bid)
+        def regress(path, phase):
+            args = self.command(path, phase)
+            fixture = path / (phase + '-fixture.json')
+            value = json.loads(fixture.read_text('utf-8'))
+            if phase != 'baseline':
+                value['rows'][-1]['output'] = 'incorrect'
+                fixture.write_text(json.dumps(value), encoding='utf-8')
+            return args
+        with patch.object(batches, 'phase_command', side_effect=regress):
+            receipt = batches.run(self.store, self.bid)
+        self.assertEqual(receipt['status'], 'rejected')
+        snapshot = (self.path / 'receipt.json').read_bytes()
+        summary = review(self.root, self.bid)
+        guard = summary['groups']['guard']
+        self.assertEqual([guard[key] for key in ('total','baseline','train','reload')], [8,8,7,7])
+        self.assertEqual(guard['regressed_ids'], [batches.evaluation_cases(self.manifest)[-1]['id']])
+        self.assertEqual(guard['regressed_ids'], guard['reload_missed_ids'])
+        self.assertEqual(summary['failed_checks'], ['baseline_guards_retained'])
+        self.assertNotIn(self.example['prompt'], json.dumps(summary, ensure_ascii=False))
+        self.assertEqual((self.path / 'receipt.json').read_bytes(), snapshot)
+        receipt['status'] = 'candidate'
+        batches.save(self.path / 'receipt.json', receipt)
+        with self.assertRaisesRegex(ValueError, '重算結果'): review(self.root, self.bid)
+        (self.path / 'receipt.json').write_bytes(snapshot)
+        with (self.path / 'reload.json').open('ab') as stream:
+            stream.write(b'\n')
+        with self.assertRaisesRegex(ValueError, '階段報告'): review(self.root, self.bid)
+
+    def test_cancelled_progress_only_grades_finished_phases_and_checks_step_sequence(self):
+        receipt = json.loads((self.path / 'receipt.json').read_text('utf-8'))
+        receipt.update(status='cancelled', phase='train')
+        batches.save(self.path / 'receipt.json', receipt)
+        batches.save(self.path / 'baseline.json', report(self.manifest, 'baseline'))
+        batches.save(self.path / 'train-answers.partial.json', ['unfinished'])
+        summary = review(self.root, self.bid)
+        self.assertIsNone(summary['recorded_training_steps'])
+        self.assertEqual(set(summary['completed_phase_files']), {'baseline'})
+        self.assertEqual(summary['completed_phase_files']['baseline']['groups']['guard'], {'total':8,'correct':8})
+        history = [{'step':1, 'loss':0.8}, {'step':2, 'loss':0.6}]
+        batches.save(self.path / 'training.partial.json', history)
+        self.assertEqual(review(self.root, self.bid)['recorded_training_steps'], 2)
+        history[-1]['step'] = 4
+        batches.save(self.path / 'training.partial.json', history)
+        with self.assertRaisesRegex(ValueError, '部分步驟'): review(self.root, self.bid)
 
     def test_already_correct_baseline_skips_training_and_cannot_be_promoted(self):
         called=[]
