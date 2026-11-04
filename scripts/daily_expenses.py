@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 
-from scripts import daily_meeting
+from scripts import daily_identifiers, daily_meeting
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context
 
@@ -187,6 +187,14 @@ def apply_followup(ledger, target, question, *, can_prompt=False):
 
 
 class DailyAssistant(Assistant):
+    def prepare_context(self, sid, question, exclude_message_id=None):
+        context = super().prepare_context(sid, question, exclude_message_id)
+        if self.allow_local_calculation:
+            focus = daily_identifiers.request_focus(question)
+            if focus:
+                context['identifier_request'] = focus
+        return context
+
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         question = question.strip()
         followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)

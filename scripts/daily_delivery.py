@@ -5,6 +5,7 @@ import json
 import re
 
 from assistant.engine import render_prompt
+from scripts.daily_identifiers import missing_literal, supplied_code
 
 SEP = r'(?:^|[。！？；，,;？?\n])\s*'
 ONLY = r'(?:請)?只(?:需|要)?(?:回傳|回覆|回答|輸出|給|填入|填|回)'
@@ -251,4 +252,5 @@ class DailyLocalEngine:
                 or ctx.get('calculation_mode') or not isinstance(ctx.get('documents'), dict) or ctx['documents'].get('excerpts')
                 or ctx.get('engine_selection') != self.describe() or render_prompt(ctx) != prompt):
             return draft
-        return extract(ctx['current_request'], explanation_body(ctx, draft))
+        question = ctx['current_request']
+        return missing_literal(question, draft) or supplied_code(ctx, draft) or extract(question, explanation_body(ctx, draft))
