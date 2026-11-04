@@ -84,6 +84,56 @@ class OptionTests(unittest.TestCase):
             self.assertEqual(answer_runs.runs(store,sid,1)[0]['status'],'failed')
             with self.assertRaisesRegex(ValueError,'核對原先'):app.retry(sid)
 
+    def test_relative_and_absolute_followups_chain_from_latest_accepted_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None)
+            sid = store.new_session()
+            first = app.ask(sid, QUERY)
+            for question, before, after, kind, winner in [
+                    ('預算再加 35 元。', 100, 135, 'relative', '棕袋'),
+                    ('預算再降 20 元。', 135, 115, 'relative', '白袋'),
+                    ('預算降到 20 元。', 115, 20, 'absolute', '無符合方案'),
+                    ('只把預算上限提高至 150 元，其他條件不變。', 20, 150, 'absolute', '灰袋')]:
+                reply = app.ask(sid, question)
+                ctx = store.answer_context(reply['id'])
+                change = ctx['option_plan']['last_adjustment']
+                self.assertEqual((change['before'], change['after'], change['mode']), (before, after, kind))
+                self.assertEqual(ctx['option_plan']['limits']['公斤']['value'], 4)
+                self.assertEqual(reply['content'], winner)
+            self.assertEqual(store.answer_context(first['id'])['option_plan']['limits']['元']['value'],100)
+
+    def test_adjustment_boundaries_do_not_guess_or_round(self):
+        import copy
+        plan = options.parse(QUERY)
+        for q in ('預算降到 160 元。', '預算提高至 90 元。', '預算再降 101 元。', '預算增加 20 公斤。',
+                  '預算上限降低一點。', '預算再降 20。', '預算再降一成。', '預算再降 20%。', '只把預算上限調低 20%，其餘照舊。', '預算再加 9999999 元。'):
+            previous = copy.deepcopy(plan)
+            self.assertTrue(options.revise(plan, options.revision(q)))
+            self.assertEqual(plan, previous)
+        for q in ('甲的價格降 20 元。', '他說「預算再降 20 元」。', '若預算再降 20 元。',
+                  '預算再降 20 元，順便下單。', '想知道預算降 20 元的意思。'):
+            self.assertIsNone(options.revision(q))
+        self.assertIsNone(options.revise(plan, options.revision('預算降低 100 元。')))
+        self.assertEqual(plan['limits']['元']['value'], 0)
+        seats = options.parse('要挑自習室。甲：8 席、30 元；乙：12 席、50 元。人數至少 8 席。合格者挑最便宜。只回答名稱。')
+        self.assertIsNone(options.revise(seats, options.revision('席數下限增加 2 席。')))
+        self.assertEqual(options.resolve(seats)[0], '乙')
+
+    def test_retry_applies_a_relative_change_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None)
+            sid = store.new_session()
+            origin = app.ask(sid, QUERY)
+            with patch.object(options, 'resolve', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+                app.ask(sid, '預算再加 35 元。')
+            result = app.retry(sid)
+            ctx = store.answer_context(result['id'])
+            self.assertEqual(ctx['option_source']['answer_id'], origin['id'])
+            self.assertEqual(ctx['option_plan']['last_adjustment']['after'], 135)
+            self.assertEqual(len(store.messages(sid, 10)), 4)
+
     def test_retry_source_integrity_and_model_only(self):
         class Raw:
             def answer(self,prompt,cancel=None):

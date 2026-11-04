@@ -27,6 +27,9 @@ def run_daily_window(store, engine):
                     lines.insert(1, f"沿用本對話方案回答 #{context['option_source']['answer_id']}")
                 if context.get('option_question'):
                     lines.insert(1, '更正尚待確認，沿用上一份有效條件。')
+                elif change := plan.get('last_adjustment'):
+                    mode = '相對增減' if change['mode'] == 'relative' else '指定新值'
+                    lines.insert(1, f"{change['field']}（{mode}）：{change['before']} → {change['after']} {change['unit']}")
                 lines.extend(rule['source'] for rule in plan['limits'].values())
                 lines += ['', '依序比較（數值較小者優先）：' + '、'.join(plan['ranking']), '逐項核對']
                 for option, check in zip(plan['options'], context['calculation']['checks'], strict=True):

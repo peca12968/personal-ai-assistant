@@ -7,18 +7,29 @@ LABELS = {'預算':'元', '費用':'元', '價格':'元', '人數':'席', '席�
           '重量':'公斤', '送達':'天'}
 LABEL = '(?:'+'|'.join(LABELS)+')'
 NAME = r'[\u4e00-\u9fffA-Za-z]{1,12}'
+UP = ('增加', '提高', '調高', '上調', '延長', '加')
+DOWN = ('減少', '降低', '調低', '下調', '縮短', '減', '降')
+DIRECTION = '(?:' + '|'.join((*UP, *DOWN)) + ')'
+ACTION = rf'(改為|改成|{DIRECTION}(?:到|至)?)'
 REVISION = re.compile(r'(?:(?:再)?更正[，,：:]\s*)?(?:只)?(?:把|將)'
                       rf'({LABEL}?(?:上限|下限|期限)?)'
-                      r'(改為|改成|調低|調高|提高|降低)([^。！？；，,\n]{1,32})[，,；;]\s*'
+                      rf'(?:再)?{ACTION}\s*([^。！？；，,\n]{{1,32}})[，,；;]\s*'
                       r'(?:其他條件不變|其餘條件不變|其餘照舊|其他照舊)'
-                      r'(?:[。！]\s*(?:只(?:回答|輸出|給)(?:方案名稱|名稱|班名|方案名)|沒有符合的只回答「(無符合方案|沒有符合的方案|無)」))?[。！]?')
+                      r'(?:[。！]\s*(?:只(?:回答|輸出|給)(?:方案名稱|名稱|班名|方案名)|沒有符合的只回答「(?P<empty>無符合方案|沒有符合的方案|無)」))?[。！]?')
+
+
+# Shorthand must be a complete request about a limit, not an option's own price.
+SHORT_REVISION = re.compile(rf'(?:請)?(?:把|將)?({LABEL}(?:上限|下限|期限)|預算)\s*(?:再)?{ACTION}\s*'
+                            rf'({NUMBER}\s*(?:{UNIT}|[%％])?|當天|一點|一些|[一二三四五六七八九]成)[。！]?$')
 
 
 def revision(question):
-    m = REVISION.fullmatch(question) if len(question) <= 160 else None
+    if len(question) > 160:
+        return None
+    m = REVISION.fullmatch(question) or SHORT_REVISION.fullmatch(question)
     if not m or not m[1]:
         return None
-    return dict(field=m[1], action=m[2], value=m[3].strip(), empty=m[4])
+    return dict(field=m[1], action=m[2], value=m[3].strip(), empty=m.groupdict().get('empty'))
 
 
 def candidate(text):
@@ -123,9 +134,25 @@ def revise(plan, change):
         return f'請指定要更改哪個限制，以及新的數值和單位。目前的限制有：{labels}。' if numeric else '目前沒有數值限制，請重新提供完整條件。'
     if (field.endswith(('上限', '期限')) and rule['op'] != 'max') or (field.endswith('下限') and rule['op'] != 'min'):
         return f'原條件是「{rule["source"]}」。若要改變限制方向，請重新列出完整條件。'
-    if change['action'] not in ('改成', '改為') or not (days or m and m[2] == key):
+    action = change['action']
+    absolute = action in ('改成', '改為') or action.endswith(('到', '至'))
+    if not (days and absolute or m and m[2] == key):
         return f'原條件是「{rule["source"]}」，請提供更正後的確切數值（{key}）。'
-    rule.update(value=0 if days else int(m[1]), source=field + change['action'] + change['value'])
+    operand = 0 if days else int(m[1])
+    old = rule['value']
+    direction = action.rstrip('到至')
+    if absolute:
+        new = operand
+        if (direction in DOWN and new > old) or (direction in UP and new < old):
+            return f'目前限制是 {old} {key}，指定的新值與調整方向相反。請確認要改為多少{key}。'
+    else:
+        new = old + operand if direction in UP else old - operand
+    if not 0 <= new <= 9_999_999:
+        return f'從 {old} {key} 調整後會變成 {new} {key}，超出可用範圍。請確認新的限制。'
+    bound = '上限' if rule['op'] == 'max' else '下限'
+    rule.update(value=new, source=f'{field}（{bound} {new} {key}）')
+    plan['last_adjustment'] = dict(field=field, unit=key, action=action, operand=operand,
+                                   mode='absolute' if absolute else 'relative', before=old, after=new)
     if change['empty']:
         plan['empty'] = change['empty']
     return None
