@@ -19,22 +19,34 @@ def run_daily_window(store, engine):
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if not context or 'expense_ledger' not in context:
+            if context and 'meeting_plan' in context:
+                title = '本機會議時段計算紀錄'
+                receipt = context['calculation']
+                lines = [context['current_request'], '', '採用的取消條件']
+                lines += [c['source'] for c in context['meeting_plan']['cancelled']] or ['無']
+                lines += ['', '每人剩餘時段']
+                for name, slots in receipt['effective'].items():
+                    lines.append(name + '：' + ('、'.join(slots) or '無'))
+                lines += ['', '共同空檔：' + ('、'.join(receipt['common']) or '無'),
+                          f"所需時間：{receipt['duration']} 分鐘", '結果：' + receipt['result']['exact']]
+            elif context and 'expense_ledger' in context:
+                title = '本機核銷計算紀錄'
+                ledger = context['expense_ledger']
+                lines = [context['current_request'], '', '逐項核對']
+                if context.get('expense_selection'):
+                    lines.insert(1, '尚待選列；下方總額沿用更正前的明細。')
+                if context.get('expense_source'):
+                    lines.insert(1, f"沿用本對話核銷回答 #{context['expense_source']['answer_id']}")
+                for i, row in enumerate(ledger['rows'], 1):
+                    decision = '計入' if row['included'] else '排除'
+                    lines.append(f"第{i}項 · {decision} · {row['source']} · 最終狀態 {row['status']}")
+                if ledger['changes']:
+                    lines += ['', '歷次更正'] + [f"{c['source']} · {c['name']}：{c['before']} → {c['after']}" for c in ledger['changes']]
+                lines += ['', describe(context['calculation'])]
+            else:
                 return super().inspect_context()
-            ledger = context['expense_ledger']
-            lines = [context['current_request'], '', '逐項核對']
-            if context.get('expense_selection'):
-                lines.insert(1, '尚待選列；下方總額沿用更正前的明細。')
-            if context.get('expense_source'):
-                lines.insert(1, f"沿用本對話核銷回答 #{context['expense_source']['answer_id']}")
-            for i, row in enumerate(ledger['rows'], 1):
-                decision = '計入' if row['included'] else '排除'
-                lines.append(f"第{i}項 · {decision} · {row['source']} · 最終狀態 {row['status']}")
-            if ledger['changes']:
-                lines += ['', '歷次更正'] + [f"{c['source']} · {c['name']}：{c['before']} → {c['after']}" for c in ledger['changes']]
-            lines += ['', describe(context['calculation'])]
             panel = tk.Toplevel(self.root)
-            panel.title('本機核銷計算紀錄')
+            panel.title(title)
             panel.geometry('640x460')
             view = scrolledtext.ScrolledText(panel, wrap='word', padx=10, pady=10)
             view.pack(fill='both', expand=True)

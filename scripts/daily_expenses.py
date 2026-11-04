@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 
+from scripts import daily_meeting
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context
 
@@ -175,6 +176,14 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        meeting = daily_meeting.parse(question) if local and not (followup or choice) else None
+        if meeting and not self.store.documents(sid, include_content=False):
+            if not retry or prior.get('meeting_plan') == meeting:
+                context = make_context(question, [], [])
+                context.update(response_mode='local_calculation', meeting_plan=meeting,
+                               documents={'catalog': [], 'excerpts': []})
+                return self._run_local(sid, question, context, lambda uid: daily_meeting.resolve(meeting),
+                                       cancel, retry, draft)
         ledger = parse(question) if local and not (followup or selection) else None
         pending = None
         source = None
@@ -195,7 +204,6 @@ class DailyAssistant(Assistant):
         if retry and (prior['expense_ledger'] != ledger or prior.get('expense_source') != source
                       or prior.get('expense_selection') != pending):
             raise ValueError('原先選取的核銷明細已變更，請重新提交更正。')
-        answer_runs.recover(self.store, sid)
         values = [r['amount'] for r in ledger['rows'] if r['included']]
         command = dict(expression=' + '.join(values) or '0', output=ledger['output'])
         context = make_context(question, [], [])
@@ -205,26 +213,37 @@ class DailyAssistant(Assistant):
             context['expense_selection'] = pending
         if source:
             context['expense_source'] = source
+
+        def calculate(uid):
+            if source and preceding_receipt(self.store, sid, uid)[1] != source:
+                raise ValueError('送出更正前對話或核銷明細已變更，請確認後再提交。')
+            tree = dict(operation='sum', values=values or ['0'])
+            result = expression_math.calculate({'expression': tree}, cancel)
+            if ledger['output'] == 'integer' and '/' in result['exact']:
+                raise EngineError('精確核准金額不是整數，請改為只輸出數字。', 'calculation_invalid')
+            answer = result['decimal'] if '/' in result['exact'] else result['exact']
+            receipt = dict(**command, schema='approved_expense_calculation_v1', status='complete',
+                           tree=tree, result=result, model_called=False)
+            if pending:
+                answer = selection_prompt(ledger, pending, answer)
+            return answer, receipt
+
+        return self._run_local(sid, question, context, calculate, cancel, retry, draft)
+
+    def _run_local(self, sid, question, context, calculate, cancel, retry, draft):
+        if cancel and cancel.is_set():
+            raise EngineError('已停止本機計算。', 'cancelled')
+        answer_runs.recover(self.store, sid)
         if retry:
             context['retry_of'] = dict(run_id=retry['id'], previous_status=retry['status'], uses_current_references=True)
         run_id = uuid.uuid4().hex
         with answer_runs.lease(self.store, run_id):
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
-                if source and preceding_receipt(self.store, sid, uid)[1] != source:
-                    raise ValueError('送出更正前對話或核銷明細已變更，請確認後再提交。')
-                tree = dict(operation='sum', values=values or ['0'])
-                result = expression_math.calculate({'expression': tree}, cancel)
-                if ledger['output'] == 'integer' and '/' in result['exact']:
-                    raise EngineError('精確核准金額不是整數，請改為只輸出數字。', 'calculation_invalid')
-                answer = result['decimal'] if '/' in result['exact'] else result['exact']
-                receipt = dict(**command, schema='approved_expense_calculation_v1', status='complete',
-                               tree=tree, result=result, model_called=False)
+                answer, receipt = calculate(uid)
                 context['calculation'] = receipt
                 if cancel and cancel.is_set():
-                    raise EngineError('已停止本機核銷計算。', 'cancelled')
-                if pending:
-                    answer = selection_prompt(ledger, pending, answer)
+                    raise EngineError('已停止本機計算。', 'cancelled')
                 mid = answer_runs.finish(self.store, run_id, answer, context, [])
             except Exception as exc:
                 answer_runs.fail(self.store, run_id, getattr(exc, 'code', 'unexpected_error'))
