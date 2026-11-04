@@ -9,11 +9,7 @@ if errorlevel 1 (
     ".venv\Scripts\python.exe" -m pip install --only-binary=:all: -r requirements.txt
     if errorlevel 1 goto failed
 )
-if /i "%~1"=="--qualified-segment" (
-    ".venv\Scripts\python.exe" -m scripts.learning.segment_chat %*
-) else (
-    ".venv\Scripts\python.exe" -m assistant %*
-)
+".venv\Scripts\python.exe" -m scripts.daily_chat %*
 if errorlevel 1 goto failed
 exit /b 0
 :failed
