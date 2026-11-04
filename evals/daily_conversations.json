@@ -1,0 +1,140 @@
+[
+  {
+    "id": "options",
+    "session": "A",
+    "question": "要挑場地。溪館：12 席、有插座、360 元；樹館：10 席、有插座、285 元；橋館：15 席、沒有插座、250 元。人數至少 8 席，一定要有插座，費用最多 400 元。合格者挑最便宜。只回答名稱。",
+    "answer": "樹館",
+    "route": "daily_option_selection_v1"
+  },
+  {
+    "id": "more-seats",
+    "session": "A",
+    "question": "席數下限再加 3 席。",
+    "answer": "溪館",
+    "route": "daily_option_selection_v1",
+    "source": "options",
+    "evidence": {
+      "option_plan.limits.席.value": 11,
+      "option_plan.limits.元.value": 400,
+      "calculation.checks.2.rejected": [
+        "插座"
+      ]
+    }
+  },
+  {
+    "id": "expense",
+    "session": "A",
+    "question": "只統計已核准的新台幣支出。紙袋 72 元已核准、運費 34 元待審、運費 34 元待審。只輸出數字。",
+    "answer": "72",
+    "route": "approved_expense_calculation_v1"
+  },
+  {
+    "id": "ask-row",
+    "session": "A",
+    "question": "更正：運費改為已核准，請重新加總。",
+    "route": "approved_expense_calculation_v1",
+    "source": "expense",
+    "contains": [
+      "目前核准總額為 72",
+      "運費",
+      "改為已核准",
+      "第2項",
+      "第3項",
+      "請回覆列號"
+    ],
+    "evidence": {
+      "expense_ledger.rows.1.included": false,
+      "expense_ledger.rows.2.included": false,
+      "expense_selection.name": "運費"
+    }
+  },
+  {
+    "id": "pick-row",
+    "session": "A",
+    "question": "第 3 項",
+    "answer": "106",
+    "route": "approved_expense_calculation_v1",
+    "source": "ask-row",
+    "evidence": {
+      "expense_ledger.rows.1.included": false,
+      "expense_ledger.rows.2.included": true,
+      "expense_ledger.changes.0.position": 3
+    }
+  },
+  {
+    "id": "meeting",
+    "session": "B",
+    "question": "甲 13:10-14:00 有空，乙 13:30-14:20 有空。想開半小時的會，最早什麼時候能開？",
+    "answer": "最早可以排在 13:30-14:00，共 30 分鐘。",
+    "route": "daily_meeting_calculation_v1"
+  },
+  {
+    "id": "shorten-window",
+    "session": "B",
+    "question": "上一場會議，乙的空檔改為 13:42-14:15，請重算。",
+    "answer": "沒有可行時段。最長的共同空檔只有 18 分鐘，會議需要 30 分鐘。",
+    "route": "daily_meeting_calculation_v1",
+    "source": "meeting",
+    "evidence": {
+      "calculation.common": [
+        "13:42-14:00"
+      ],
+      "calculation.duration": 30
+    }
+  },
+  {
+    "id": "wrong-session",
+    "session": "A",
+    "question": "上一場會議，甲取消整個上午，請重算。",
+    "route": "reject",
+    "error": "上一則回答沒有可接續的同日會議紀錄"
+  },
+  {
+    "id": "reopen-a",
+    "session": "A",
+    "question": "把上一筆核銷的紙袋改為已駁回，重算。",
+    "answer": "34",
+    "route": "approved_expense_calculation_v1",
+    "source": "pick-row",
+    "evidence": {
+      "expense_ledger.rows.0.included": false,
+      "expense_ledger.rows.1.included": false,
+      "expense_ledger.rows.2.included": true
+    }
+  },
+  {
+    "id": "shorten-duration",
+    "session": "B",
+    "question": "上一場會議，時長改為 15 分鐘，請重算。",
+    "answer": "最早可以排在 13:42-13:57，共 15 分鐘。",
+    "route": "daily_meeting_calculation_v1",
+    "source": "shorten-window",
+    "evidence": {
+      "calculation.common": [
+        "13:42-14:00"
+      ],
+      "calculation.duration": 15
+    }
+  },
+  {
+    "id": "unseen-inventory",
+    "session": "C",
+    "question": "社團器材櫃開始有 18 本樣本冊。外借了 5 本，之後收到別人捐的 3 本。現在櫃裡有幾本？只回數字。",
+    "answer": "16",
+    "route": "model"
+  },
+  {
+    "id": "inventory-correction",
+    "session": "C",
+    "question": "更正，實際收到的是 8 本，借出的數量照舊。現在櫃裡有幾本？只回數字。",
+    "answer": "21",
+    "route": "model"
+  },
+  {
+    "id": "inventory-unknown",
+    "session": "C",
+    "question": "接著管理員說可能又借出一本，但還沒查到紀錄。僅憑現有資訊，現在的本數能唯一確定嗎？只回答「能」或「不能」。",
+    "answer": "不能",
+    "route": "model"
+  }
+]
