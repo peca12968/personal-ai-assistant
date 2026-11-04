@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
 
@@ -262,6 +262,39 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        if (local and hasattr(self.engine, 'answer_raw') and daily_conditions.COUNT.search(question)
+                and daily_conditions.CHOICE.fullmatch(question)
+                and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'capacity_comparison')):
+            context = self.prepare_context(sid, question, exclude_message_id=before)
+            if retry:
+                # The retried question itself is the current DB tail.
+                context['conversation_tail'] = prior.get('conversation_tail')
+            focus = daily_conditions.capacity_trial(context)
+            if retry and focus != prior.get('capacity_trial'):
+                raise ValueError('可用名額的來源已變更，請重新提供條件。')
+            if focus:
+                context.update(response_mode='capacity_comparison', capacity_trial=focus)
+
+                def compare_capacity(uid):
+                    with self.store.connect() as db:
+                        latest = db.execute('SELECT MAX(id) FROM messages WHERE session_id=? AND id<?', (sid, uid)).fetchone()[0]
+                    if latest != (context.get('conversation_tail') or {}).get('message_id'):
+                        raise ValueError('送出前對話已變更，請重新確認名額條件。')
+                    trial = self.engine.answer_raw(daily_conditions.trial_prompt(focus), cancel)
+                    labels = daily_conditions.branch_labels(trial)
+                    receipt = dict(schema='capacity_comparison_v1', trial_answer=trial, branches=labels)
+                    if labels:
+                        answer = labels[0] if labels[0] == labels[1] else '資料不足'
+                    else:
+                        if cancel and cancel.is_set():
+                            raise EngineError('已停止回答。', 'cancelled')
+                        raw = self.engine.answer_raw(render_prompt(daily_conditions.ordinary_context(context)), cancel)
+                        receipt['fallback_answer'] = raw
+                        answer = daily_dialogue.short_label(context, raw) or raw
+                    receipt['delivered'] = answer
+                    return answer, receipt
+
+                return self._run_recorded(sid, question, context, compare_capacity, cancel, retry, draft, 'capacity_check')
         measured = daily_clearance.measured_choice(question) if local else None
         if (local and hasattr(self.engine, 'answer_raw') and (daily_clearance.proof_format(question) or measured)
                 and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'verified_clearance')):

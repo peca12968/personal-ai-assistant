@@ -20,7 +20,8 @@ GENERAL_SUITE = ROOT / 'evals/daily_general_conversations.json'
 FEASIBILITY_SUITE = ROOT / 'evals/daily_feasibility.json'
 PAIR_SUITE = ROOT / 'evals/daily_topic_pairs.json'
 DOOR_SUITE = ROOT / 'evals/daily_door_measurements.json'
-MODEL_ROUTES = ('model', 'general_model', 'verified_clearance')
+CONDITIONS_SUITE = ROOT / 'evals/daily_decisive_conditions.json'
+MODEL_ROUTES = ('model', 'general_model', 'verified_clearance', 'capacity_comparison')
 SOURCE_KEY = {'approved_expense_calculation_v1': 'expense_source',
               'daily_meeting_calculation_v1': 'meeting_source', 'daily_option_selection_v1': 'option_source'}
 
@@ -84,8 +85,30 @@ def turn(folder, case, sid, refs, live):
         require(saved.get('response_mode') != 'local_calculation' and engine == initial['engine_selection']
                 and engine['kind'] == 'local_qwen' and engine['parameter_version'] == 'unadapted_base',
                 'expected real base-model route')
-        require(len(calls) == 1 and calls[0].get('engine') == engine and 'raw_answer' in calls[0],
-                'real local model answer missing or selection changed')
+        if case['route'] == 'capacity_comparison':
+            from assistant.engine import render_prompt
+            from scripts import daily_conditions
+            focus = daily_conditions.capacity_trial(initial)
+            check = saved.get('capacity_check', {})
+            require(initial.get('response_mode') == saved.get('response_mode') == 'capacity_comparison'
+                    and focus and initial.get('capacity_trial') == saved.get('capacity_trial') == focus
+                    and 'capacity_check' not in initial and check.get('schema') == 'capacity_comparison_v1',
+                    'capacity comparison evidence missing')
+            require(calls and all(c.get('engine') == engine and isinstance(c.get('raw_answer'), str) for c in calls)
+                    and calls[0]['prompt_sha256'] == hashlib.sha256(daily_conditions.trial_prompt(focus).encode()).hexdigest()
+                    and check.get('trial_answer') == calls[0]['raw_answer'], 'capacity comparison model trace mismatch')
+            labels = daily_conditions.branch_labels(calls[0]['raw_answer'])
+            require(check.get('branches') == labels and check.get('delivered') == content, 'comparison receipt mismatch')
+            if labels:
+                require(len(calls) == 1 and 'fallback_answer' not in check
+                        and content == (labels[0] if labels[0] == labels[1] else '資料不足'), 'branch decision mismatch')
+            else:
+                require(len(calls) == 2 and calls[1]['prompt_sha256'] == hashlib.sha256(render_prompt(daily_conditions.ordinary_context(initial)).encode()).hexdigest()
+                        and check.get('fallback_answer') == calls[1]['raw_answer'], 'invalid full question fallback')
+            details.update(delivery='capacity_comparison', branches=labels, model_calls=len(calls))
+        else:
+            require(len(calls) == 1 and calls[0].get('engine') == engine and 'raw_answer' in calls[0],
+                    'real local model answer missing or selection changed')
         if case['route'] == 'general_model':
             from assistant.engine import render_prompt
             require(saved.get('response_mode') in (None, 'model') and 'inventory_check' not in saved
@@ -109,8 +132,9 @@ def turn(folder, case, sid, refs, live):
                     and audit.get('raw_answer') == calls[0]['raw_answer'] and audit.get('delivered') == content
                     and audit.get('raw_exact') is (content == calls[0]['raw_answer']), 'inventory audit mismatch')
             details['delivery'] = 'verified_inventory'
-        details.update(engine=engine['selection_fingerprint'], raw_answer=calls[0]['raw_answer'],
-                       raw_exact=calls[0]['raw_answer'] == case['answer'])
+        details['engine'] = engine['selection_fingerprint']
+        if case['route'] != 'capacity_comparison' or len(calls) == 2:
+            details.update(raw_answer=calls[-1]['raw_answer'], raw_exact=calls[-1]['raw_answer'] == case['answer'])
     else:
         route = case['route']
         calc = saved.get('calculation', {})
@@ -190,7 +214,11 @@ def evaluate(folder, live, suite=SUITE):
         verified = [r for r in results if r.get('delivery') == 'verified_clearance']
         if verified:
             print(f"{len(verified)} answers used the door-width check")
-        print(f"{sum(r['raw_exact'] for r in results)}/{len(cases)} raw model outputs matched exactly")
+        direct = [r for r in results if 'raw_exact' in r]
+        if len(direct) != len(results):
+            print(f"{len(results)-len(direct)} judgments combined two hypothetical labels from a model call")
+        if direct:
+            print(f"{sum(r['raw_exact'] for r in direct)}/{len(direct)} raw model outputs matched exactly")
     print(f'{passed}/{len(cases)} ' + ('visible answers with live model; exact output' if live else 'offline CLI outcomes; model calls blocked'))
     return passed == len(cases)
 
@@ -198,14 +226,16 @@ def evaluate(folder, live, suite=SUITE):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('--clearance', action='store_true', help='Check missing width and measured follow-ups')
-    group.add_argument('--feasibility', action='store_true', help='Compare possible, impossible and unknown transport conditions')
-    group.add_argument('--topic-pair', action='store_true', help='Test contrasting current actors with identical synthetic history')
-    group.add_argument('--general', action='store_true', help='Use the separate general dialogue scenarios with --live')
+    group.add_argument('--clearance', dest='suite', action='store_const', const=DOOR_SUITE, help='Check missing width and measured follow-ups')
+    group.add_argument('--feasibility', dest='suite', action='store_const', const=FEASIBILITY_SUITE, help='Compare possible, impossible and unknown transport conditions')
+    group.add_argument('--topic-pair', dest='suite', action='store_const', const=PAIR_SUITE, help='Test contrasting current actors with identical synthetic history')
+    group.add_argument('--general', dest='suite', action='store_const', const=GENERAL_SUITE, help='Use the separate general dialogue scenarios with --live')
+    group.add_argument('--conditions', dest='suite', action='store_const', const=CONDITIONS_SUITE,
+                       help='Compare decisive and unresolved prerequisites across tasks')
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--out', help='New run name under local data/evaluations (required for live runs)')
     args = parser.parse_args()
-    if (args.general or args.topic_pair or args.feasibility or args.clearance) and not args.live:
+    if args.suite and not args.live:
         parser.error('dialogue suites require --live')
     if args.live and not args.out:
         parser.error('--live requires --out')
@@ -214,12 +244,7 @@ def main():
             parser.error('--out must be a simple run name')
         folder = ROOT/'data/evaluations'/args.out
         folder.mkdir(parents=True, exist_ok=False)
-        suite = PAIR_SUITE if args.topic_pair else GENERAL_SUITE if args.general else SUITE
-        if args.feasibility:
-            suite = FEASIBILITY_SUITE
-        elif args.clearance:
-            suite = DOOR_SUITE
-        return evaluate(folder, args.live, suite)
+        return evaluate(folder, args.live, args.suite or SUITE)
     with tempfile.TemporaryDirectory() as tmp:
         return evaluate(Path(tmp),False)
 

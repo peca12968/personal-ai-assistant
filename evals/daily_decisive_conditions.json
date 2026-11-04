@@ -1,0 +1,44 @@
+[
+  {
+    "id": "cancelled",
+    "session": "cancelled",
+    "route": "capacity_comparison",
+    "question": "公司只有一班接駁車會到展館。今天這一班已停駛，不加開其他班次。小琳沒查到還剩幾個位子。只根據這些資料，她今天能搭這班車到展館嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能"
+  },
+  {
+    "id": "running",
+    "session": "running",
+    "route": "capacity_comparison",
+    "question": "公司只有一班接駁車會到展館。今天這一班照常行駛，必須有空位才能搭車。小琳沒查到還剩幾個位子。只根據這些資料，她今天能搭這班車到展館嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "資料不足"
+  },
+  {
+    "id": "booking-closed",
+    "session": "booking-closed",
+    "route": "capacity_comparison",
+    "question": "工作室今天只接受現場登記。今天工作室已暫停營業，不辦理任何登記。阿哲已在現場。阿哲不知道名額還剩幾個。阿哲今天能在這裡辦理登記嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "不能"
+  },
+  {
+    "id": "booking-open",
+    "session": "booking-open",
+    "route": "capacity_comparison",
+    "question": "工作室今天只接受現場登記。工作室正常營業，現場有名額就能登記。阿哲已在現場。阿哲不知道名額還剩幾個。阿哲今天能在這裡辦理登記嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "資料不足"
+  },
+  {
+    "id": "spare-ready",
+    "session": "spare-ready",
+    "route": "general_model",
+    "question": "小岑能使用兩台掃描器。甲機是否有電還沒確認；乙機已測試正常，小岑有使用權，文件也在手邊。小岑現在能掃描這份文件嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "能"
+  },
+  {
+    "id": "spare-out",
+    "session": "spare-out",
+    "route": "general_model",
+    "question": "小岑能使用兩台掃描器。甲機是否有電還沒確認；乙機今天故障不能用。甲機只要有電就能用。小岑現在能掃描這份文件嗎？只回「能」、「不能」或「資料不足」。",
+    "answer": "資料不足"
+  }
+]

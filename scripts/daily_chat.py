@@ -19,7 +19,16 @@ def run_daily_window(store, engine):
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if context and 'clearance_check' in context:
+            if context and 'capacity_check' in context:
+                title = '名額條件對照'
+                focus, check = context['capacity_trial'], context['capacity_check']
+                lines = [context['current_request'], '', '待查原文：' + focus['待查原文'], '假設情況']
+                lines.extend(focus['對照假設'])
+                lines.extend(['', '模型對兩種情況的原答：', check['trial_answer']])
+                if 'fallback_answer' in check:
+                    lines.extend(['', '重新以原題作答：', check['fallback_answer']])
+                lines.extend(['', '交付：' + check['delivered']])
+            elif context and 'clearance_check' in context:
                 title = '門寬尺寸核對'
                 ref, receipt = context['door_measurements'], context['clearance_check']
                 if '本輪門寬原文' in ref:
