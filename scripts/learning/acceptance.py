@@ -24,7 +24,7 @@ def main():
     if args.id is not None and args.command not in ('run','report'): parser.error('--id只可搭配run/report。')
     try:
         if args.command=='check':
-            print('Full-assistant validation available; no database opened, no model loaded, no training or activation.')
+            print('Full-assistant validation available; no database opened, no model loaded, no training or activation. Model-only comparison: direct local arithmetic routing is disabled.')
             return 0
         if args.command=='prepare':
             data=checks.models.local_models.read_json(args.suite,1024*1024)

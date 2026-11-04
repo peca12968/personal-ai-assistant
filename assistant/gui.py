@@ -406,6 +406,8 @@ class App:
                     ids = ", ".join(map(str, value["memory_ids"])) or "無"
                     if value.get('response_mode') == 'local_memory':
                         self.status.set('本機記憶操作已回覆 · 未呼叫模型 · 可查看本次操作紀錄')
+                    elif value.get('response_mode') == 'local_calculation':
+                        self.status.set('本機精確計算已完成 · 未呼叫模型 ·「查看本次參考」可核對算式與運算紀錄')
                     else:
                         self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個 · 圖片：{value.get("image_count",0)} 張')
                 else:

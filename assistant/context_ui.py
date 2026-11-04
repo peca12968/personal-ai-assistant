@@ -48,10 +48,11 @@ def show_context(parent, store, message_id):
         return
     window = tk.Toplevel(parent)
     local = context.get('response_mode') == 'local_memory'
-    window.title('本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
+    calculated = context.get('response_mode') == 'local_calculation'
+    window.title('本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
     window.geometry("820x640")
     window.minsize(600, 420)
-    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local else
+    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated else
               "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
     ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
@@ -104,6 +105,9 @@ def show_context(parent, store, message_id):
     if local:
         sections = [('本機操作', '當時指令：\n' + context['current_request'] + '\n\n' +
                      json.dumps(context['memory_action'], ensure_ascii=False, indent=2))]
+    if calculated:
+        from .chat_calculation import describe
+        sections = [('計算紀錄', '當時請求：\n' + context['current_request'] + '\n\n' + describe(context['calculation']))]
     for title, content in sections:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)

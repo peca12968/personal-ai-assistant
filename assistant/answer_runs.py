@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 
 ERROR_LABELS = {
+    'calculation_invalid': '本機精確計算的算式、範圍或輸出要求不符，沒有保存完成答案；未呼叫模型。請修正算式或要求後重新提問。',
     'temp_cleanup_failed': '推理暫存資料未能完全清理，沒有保存完成答案；此狀態本身不證明雲端請求已停止。',
     'timeout': '上次回答逾時，沒有保存完成答案。',
     'cancelled': '這次回答已取消，沒有保存完成答案。',

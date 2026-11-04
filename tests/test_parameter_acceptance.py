@@ -96,6 +96,24 @@ class ParameterAcceptanceTests(unittest.TestCase):
         self.assertFalse(receipt['assessment']['checks']['all_candidate_cases_passed'])
         self.assertEqual(checks.report(self.root,uid)['receipt']['assessment'],receipt['assessment'])
 
+    def test_calculator_shaped_case_still_requires_actual_model_evidence(self):
+        cases=copy.deepcopy(CASES); cases['cases'][0].update(question='計算23×4−17，只輸出整數答案。',answer='75')
+        uid,path=self.prepared(cases); observed=[]
+        def wrong_math(engine,prompt,cancel=None):
+            context=json.loads(prompt.rsplit('以下 JSON 是使用者資料與當前問題：\n',1)[1])
+            self.assertEqual(context['calculation_mode'],'model_only_evaluation')
+            cid=engine.destination.name; observed.append(cid)
+            answer='95' if cid=='target' else 'A' if cid=='control_a' else 'B'
+            worker=engine.destination/'worker';worker.mkdir()
+            checks.batches.save(worker/'result.json',{'schema':'local_inference_result_v1','status':'succeeded','answer':answer,
+                'selection_fingerprint':engine.selection['fingerprint'],'input_tokens':100,'output_tokens':2,'peak_gpu_bytes':0})
+            return answer
+        with patch.object(LocalEngine,'answer',wrong_math):receipt=checks.run(self.root,uid)
+        self.assertEqual(receipt['status'],'complete');self.assertEqual(len(observed),6)
+        self.assertFalse(receipt['assessment']['passed'])
+        self.assertFalse(receipt['assessment']['scores']['candidate']['target'])
+        self.assertEqual(checks.report(self.root,uid)['receipt']['assessment'],receipt['assessment'])
+
     def test_tampered_raw_results_or_saved_answers_cannot_reuse_acceptance(self):
         for mode in ('raw','response','database'):
             with self.subTest(mode=mode):

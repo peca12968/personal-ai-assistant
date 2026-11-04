@@ -218,8 +218,9 @@ class CodexEngine:
 
 
 class Assistant:
-    def __init__(self, store, engine):
+    def __init__(self, store, engine, *, allow_local_calculation=True):
         self.store, self.engine = store, engine
+        self.allow_local_calculation = allow_local_calculation
 
     def prepare_context(self, sid, question, exclude_message_id=None):
         history = self.store.messages(sid, 16, exclude_local=True, exclude_message_id=exclude_message_id)
@@ -255,6 +256,8 @@ class Assistant:
             from .idle_learning import capabilities
             learning_help.update(capabilities())
             context['learning_capabilities'] = learning_help
+        if not self.allow_local_calculation:
+            context['calculation_mode'] = 'model_only_evaluation'
         return context
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):
@@ -288,10 +291,19 @@ class Assistant:
                 validate_metadata(historical)
                 image_ids = tuple(item['id'] for item in historical)
         image_metadata, image_payloads = prepare(self.store, sid, image_ids, historical=historical)
+        from . import chat_calculation
+        calculation = chat_calculation.parse_request(question) if self.allow_local_calculation else None
+        if calculation is not None and image_metadata:
+            raise ValueError('本機精確計算指令不能同時附圖；請先取消圖片選取。')
         if image_payloads and not callable(getattr(self.engine, 'answer_images', None)):
             raise ValueError('目前引擎不支援圖片，沒有送出問題或忽略附件。')
         answer_runs.recover(self.store, sid)
-        context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
+        if calculation is not None:
+            context = make_context(question, [], [])
+            context.update(response_mode='local_calculation', calculation=calculation,
+                           documents={'catalog':[], 'excerpts':[]})
+        else:
+            context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
         if image_metadata:
             context['image_inputs'] = image_metadata
             context['image_input_guidance'] = GUIDANCE
@@ -301,8 +313,15 @@ class Assistant:
         with answer_runs.lease(self.store, run_id):
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
-                answer = (self.engine.answer_images(render_prompt(context), image_payloads, cancel) if image_payloads
-                          else self.engine.answer(render_prompt(context), cancel))
+                if calculation is not None:
+                    try:
+                        answer, receipt = chat_calculation.evaluate(calculation, cancel)
+                    except ValueError as exc:
+                        raise EngineError('本機精確計算未完成：' + str(exc), 'calculation_invalid') from None
+                    context['calculation'] = receipt
+                else:
+                    answer = (self.engine.answer_images(render_prompt(context), image_payloads, cancel) if image_payloads
+                              else self.engine.answer(render_prompt(context), cancel))
                 if cancel and cancel.is_set():
                     raise EngineError('已停止這次回答。', 'cancelled')
                 checks = check_citations(answer, context['documents']['excerpts'])
@@ -316,4 +335,5 @@ class Assistant:
                 "excerpt_ids": [row["message_id"] for row in context["earlier_user_excerpts"]],
                 "document_count": len(context["documents"]["catalog"]), "citation_checks": checks,
                 'run_id': run_id, 'user_message_id': uid,
+                **({'response_mode':'local_calculation', 'calculation':receipt} if calculation is not None else {}),
                 **({'image_count': len(image_metadata)} if image_metadata else {})}

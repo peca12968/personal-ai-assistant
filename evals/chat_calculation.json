@@ -1,0 +1,13 @@
+[
+  {"id":"observed_regression","request":"計算23×4−17，只輸出整數答案。","answer":"75","exact":"75"},
+  {"id":"nested_new","request":"請計算 (14+6)*(9-2)，只輸出答案。","answer":"140","exact":"140"},
+  {"id":"negative_new","request":"Calculate -(18+6)/3, answer only","answer":"-8","exact":"-8"},
+  {"id":"fraction_new","request":"算出5/6-1/4，只輸出精確值","answer":"7/12","exact":"7/12"},
+  {"id":"decimal_new","request":"計算0.125*8+0.2，只輸出精確值","answer":"6/5","exact":"6/5"},
+  {"id":"same_precedence_new","request":"計算48/4/3-1，只輸出答案","answer":"3","exact":"3"},
+  {"id":"mixed_new","request":"計算(9-2)*5+6/4，只輸出答案","answer":"73/2","exact":"73/2"},
+  {"id":"wide_new","request":"請幫我計算：（１２＋８）÷５，只輸出整數答案。","answer":"4","exact":"4"},
+  {"id":"divide_zero","request":"計算1/(3-3)，只輸出答案","error":"calculation_invalid"},
+  {"id":"no_implicit_rounding","request":"計算7/2，只輸出整數答案","error":"calculation_invalid"},
+  {"id":"no_implicit_multiplication","request":"計算2(3+4)，只輸出答案","error":"calculation_invalid"}
+]
