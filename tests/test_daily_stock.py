@@ -198,6 +198,47 @@ class StockContextTests(unittest.TestCase):
             self.assertEqual(set(resolved['inventory_check']['possible_totals']), {29})
             self.assertEqual(resolved['inventory_check']['raw_answer'], '999')
 
+    def test_brief_replies_bind_only_to_a_saved_adjacent_clarification(self):
+        from threading import Event
+        from assistant.engine import EngineError
+        from scripts.daily_delivery import DailyLocalEngine
+
+        class Raw:
+            display_name = 'fixture'
+            def describe(self):
+                return {'kind': 'fixture'}
+            def answer(self, prompt, cancel=None):
+                if cancel is not None:
+                    cancel.set()
+                return '一般回答'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            app = DailyAssistant(store, DailyLocalEngine(Raw()))
+            opening = BASE.replace('原有 27', '原有約 27').replace('發出了 6', '發出了約 6')
+            sid = store.new_session()
+            seed = app.ask(sid, opening)
+            follow = app.ask(sid, '兩支')
+            self.assertEqual(follow['content'], '請確認第1筆發出了幾支蠟筆？')
+            with self.assertRaises(EngineError):
+                app.ask(sid, '0 支。', cancel=Event())
+            accepted = app.retry(sid)
+            self.assertEqual(accepted['content'], '6')
+            self.assertEqual(store.answer_context(accepted['id'])['stock_clarification_ids'], [seed['id'], follow['id']])
+            self.assertNotIn('inventory_check', app.ask(sid, '8 支'))
+            for question in ('約 2 支', '2 盒', '2', '2 支或 3 支', '「2 支」'):
+                self.assertNotIn('inventory_reasoning', app.prepare_context(sid, question))
+            sid = store.new_session()
+            genuine = app.ask(sid, opening)
+            for question in ('約 2 支', '2 盒', '2', '2 支或 3 支'):
+                self.assertNotIn('inventory_reasoning', app.prepare_context(sid, question))
+            app.ask(sid, '換個話題')
+            self.assertNotIn('inventory_check', app.ask(sid, '8 支'))
+            sid = store.new_session()
+            store.add_message(sid, 'user', opening)
+            store.add_message(sid, 'assistant', genuine['content'])
+            self.assertNotIn('inventory_check', app.ask(sid, '8 支'))
+
     def test_audit_is_saved_in_daily_context_and_skipped_for_unassisted_evaluation(self):
         class Raw:
             def answer(self,prompt,cancel=None):

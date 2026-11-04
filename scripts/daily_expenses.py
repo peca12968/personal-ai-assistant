@@ -198,6 +198,28 @@ def option_source_valid(row, saved):
             and calc.get('status') == 'complete' and row['content'] == calc.get('result', {}).get('exact'))
 
 
+def stock_clarification_ids(db, sid, context, before):
+    """Identify saved clarification answers immediately preceding a quantity-only user turn."""
+    history = context['recent_conversation']
+    current = dict(role='user', content=context['current_request'], message_id=before)
+    checked = []
+    for previous, reply in zip(history, [*history[1:], current]):
+        if (previous['role'] != 'assistant' or previous['truncated'] or reply['role'] != 'user'
+                or not daily_stock.BRIEF_COUNT.fullmatch(reply['content'])):
+            continue
+        row = db.execute("""SELECT m.id FROM messages m JOIN answer_contexts c ON c.message_id=m.id
+            JOIN answer_runs r ON r.answer_message_id=m.id AND r.session_id=m.session_id
+            WHERE m.id=? AND m.session_id=? AND m.role='assistant' AND m.content=? AND r.status='succeeded'
+            AND json_extract(c.payload,'$.response_mode')='verified_inventory'
+            AND json_extract(c.payload,'$.inventory_check.schema') IN ('stock_opening_clarification_v1','stock_event_clarification_v1')
+            AND json_extract(c.payload,'$.inventory_check.delivered')=m.content
+            AND NOT EXISTS (SELECT 1 FROM messages n WHERE n.session_id=m.session_id AND n.id>m.id AND (? IS NULL OR n.id<?))""",
+            (previous['message_id'], sid, previous['content'], reply['message_id'], reply['message_id'])).fetchone()
+        if row:
+            checked.append(row['id'])
+    return checked
+
+
 class DailyAssistant(Assistant):
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
@@ -205,6 +227,11 @@ class DailyAssistant(Assistant):
             focus = daily_identifiers.context_focus(context)
             if focus:
                 context['identifier_request'] = focus
+            if daily_stock.candidate(question):
+                with self.store.connect() as db:
+                    checked = stock_clarification_ids(db, sid, context, exclude_message_id)
+                if checked:
+                    context['stock_clarification_ids'] = checked
             inventory = daily_stock.context_hint(context)
             if inventory:
                 context['inventory_reasoning'] = inventory
@@ -246,6 +273,8 @@ class DailyAssistant(Assistant):
                     ids = context['inventory_reasoning']['來源訊息編號']
                     if ids:
                         with self.store.connect() as db:
+                            if context.get('stock_clarification_ids', []) != stock_clarification_ids(db, sid, context, uid):
+                                raise ValueError('庫存追問已變更，請重新確認數量。')
                             latest = db.execute('SELECT id FROM messages WHERE session_id=? AND id<? ORDER BY id DESC LIMIT 1',
                                                 (sid, uid)).fetchone()
                             if not latest or latest['id'] != context['conversation_tail']['message_id']:

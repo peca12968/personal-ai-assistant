@@ -168,5 +168,35 @@
       "inventory_check.expression": "31 - 7 - 0",
       "inventory_check.confirmed_total": 24
     }
+  },
+  {
+    "id": "brief-opening",
+    "session": "E",
+    "route": "model",
+    "question": "倉庫原有約 40 包棉花。領走了約 9 包，再補進了 2 包。現在倉庫有幾包？只給數字。",
+    "answer": "請確認倉庫原有幾包棉花？",
+    "evidence": {
+      "inventory_check.schema": "stock_opening_clarification_v1"
+    }
+  },
+  {
+    "id": "brief-event",
+    "session": "E",
+    "route": "model",
+    "question": "38 包。",
+    "answer": "請確認第1筆領走了幾包棉花？",
+    "evidence": {
+      "inventory_check.pending_events.0.異動": "領走"
+    }
+  },
+  {
+    "id": "brief-balance",
+    "session": "E",
+    "route": "model",
+    "question": "8 包",
+    "answer": "32",
+    "evidence": {
+      "inventory_check.expression": "38 - 8 + 2"
+    }
   }
 ]

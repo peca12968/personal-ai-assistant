@@ -16,6 +16,7 @@ SHORT_CONFIRM = re.compile(rf'(?:已清點|已盤點|清點過了|盤點過了)[
 COUNT_ESTIMATE = r'據估計|粗估|估計|估算|推估|大概|大約|約'
 EVENT = re.compile(rf'(?:先|再|之後|後來)?(?:又)?(?P<verb>{VERB})(?:了)?(?:別人捐的)?\s*'
                    rf'(?P<estimate>{COUNT_ESTIMATE})?\s*(?P<count>{QTY})\s*(?P<unit>{UNIT})')
+BRIEF_COUNT = re.compile(rf'({QTY})\s*({UNIT})[。！]?$')
 EVENT_CONFIRM = re.compile(rf'(?:已核對|已清點|已盤點|查過紀錄)[，,]\s*(?:第\s*({QTY})\s*筆)?'
                            rf'(?:實際)?({VERB})(?:了)?\s*({QTY})\s*({UNIT})[。！]?$')
 EDIT = re.compile(rf'更正[，,]\s*(?:實際)?({VERB})(?:的)?是\s*({QTY})\s*({UNIT})[，,]\s*'
@@ -93,7 +94,26 @@ def start(q):
                 opening_qualifier=qualifier[0] if qualifier else initial['estimate'], events=events)
 
 
-def correct(state, q):
+def pending_question(state):
+    if state['opening_qualifier']:
+        return f"請確認{state['place']}原有幾{state['unit']}{state['item']}？"
+    for index, event in enumerate(state['events'], 1):
+        if event.estimate:
+            return f"請確認第{index}筆{event.verb}了幾{state['unit']}{state['item']}？"
+    return None
+
+
+def correct(state, q, previous_answer, checked_ids):
+    brief = BRIEF_COUNT.fullmatch(q)
+    if brief:
+        if (brief[2] != state['unit'] or previous_answer['message_id'] not in checked_ids
+                or previous_answer.get('truncated') or previous_answer['content'] != pending_question(state)):
+            return False
+        if state['opening_qualifier']:
+            state.update(initial=number(brief[1]), opening_qualifier=None)
+        else:
+            next(event for event in state['events'] if event.estimate).confirm(brief[1])
+        return True
     body, asked, unit = parts(q)
     confirmation = OPENING_CONFIRM.fullmatch(body) if body else SHORT_CONFIRM.fullmatch(q)
     if confirmation:
@@ -147,10 +167,15 @@ def grounded_state(context):
             state = start(user['content'])
             if state:
                 break
-            changes.insert(0,user['content'])
-        if not state or not all(correct(state, previous) for previous in changes):
+            changes.insert(0, (user['content'], answer))
+        if not state:
             return None
-        if not maybe and not correct(state,q):
+        checked_ids = context.get('stock_clarification_ids', [])
+        for previous, following_answer in changes:
+            if not correct(state, previous, answer, checked_ids):
+                return None
+            answer = following_answer
+        if not maybe and not correct(state, q, answer, checked_ids):
             return None
     if state['opening_qualifier'] or any(event.estimate for event in state['events']):
         return None if maybe else (state, ids, None, None)
@@ -172,7 +197,7 @@ def grounded_state(context):
 def is_revision(question, body):
     if body:
         return EDIT.fullmatch(body) or OPENING_CONFIRM.fullmatch(body)
-    return SHORT_CONFIRM.fullmatch(question) or EVENT_CONFIRM.fullmatch(question)
+    return SHORT_CONFIRM.fullmatch(question) or EVENT_CONFIRM.fullmatch(question) or BRIEF_COUNT.fullmatch(question)
 
 
 def candidate(question):
@@ -188,14 +213,13 @@ def verified_answer(context, raw):
         raise ValueError('庫存核對來源已變更。')
     state, ids, total, delta = grounded
     if state['opening_qualifier']:
-        answer = f"請確認{state['place']}原有幾{state['unit']}{state['item']}？"
+        answer = pending_question(state)
         return answer, dict(schema='stock_opening_clarification_v1', model_called=True, raw_answer=raw,
                             reported_opening=state['initial'], qualifier=state['opening_qualifier'], unit=state['unit'],
                             source_user_ids=ids, delivered=answer, raw_exact=raw == answer)
     if total is None:
         pending = context['inventory_reasoning']['待核實異動']
-        first = pending[0]
-        answer = f"請確認第{first['筆次']}筆{first['異動']}了幾{state['unit']}{state['item']}？"
+        answer = pending_question(state)
         return answer, dict(schema='stock_event_clarification_v1', model_called=True, raw_answer=raw,
                             pending_events=pending, unit=state['unit'], source_user_ids=ids,
                             delivered=answer, raw_exact=raw == answer)
@@ -255,7 +279,7 @@ def concise(context, draft):
         return None
     last = re.split(r'[。\n]', draft.strip().rstrip('。'))[-1].strip()
     asked = parts(context['current_request'])[1]
-    places = {state['place'], state['asked_place'], asked, ''}
+    places = {state['place'], state['asked_place'], asked or '', ''}
     place = '(?:' + '|'.join(re.escape(p) for p in sorted(places, key=len, reverse=True)) + ')'
     m = re.fullmatch(rf'(?:(?:因此|所以)[，,]\s*)?(?:現在|目前)?{place}(?:裡|內)?(?:現在|目前)?'
                      rf'(?:有|還剩|剩下|剩)\s*([0-9]+)\s*{state["unit"]}', last)
