@@ -1,0 +1,77 @@
+from pathlib import Path
+import tempfile
+import unittest
+
+from assistant.engine import Assistant
+from assistant.response_delivery import read
+from assistant.store import Store
+from scripts.daily_delivery import extract
+
+
+class MissingDeliveryTests(unittest.TestCase):
+    def test_explicit_label_and_same_subject_unknown(self):
+        for literal in ('資料不足', '資訊不足', '無法確定'):
+            q = f'外箱編號是多少？若無法確定，只輸出 {literal}。'
+            for text in ('外箱編號未提供，無法得知', '外箱編號尚未提供，因此無法確定',
+                         '外箱編號不詳'):
+                raw = literal + '。' + text + '。'
+                self.assertEqual(extract(q, raw), literal)
+
+    def test_only_remove_punctuation_from_selected_missing_label(self):
+        q = '樣品盒重量是多少？若無法得知，只輸出 資料不足。'
+        for raw in ('資料不足', '資料不足。', '資料不足！'):
+            self.assertEqual(extract(q, raw), '資料不足')
+        for raw in ('資訊不足。', '也許資料不足。', '「資料不足」。'):
+            self.assertEqual(extract(q, raw), raw)
+
+    def test_unknown_must_match_complete_requested_subject(self):
+        q = '大樣品盒重量是多少？若無法得知，只輸出 資料不足。'
+        for raw in ('無法得知樣品盒重量。', '資料不足。樣品盒重量未提供，無法得知。',
+                    '資料不足。大樣品盒編號未提供，無法得知。'):
+            self.assertEqual(extract(q, raw), raw)
+        self.assertEqual(extract(q, '無法得知大樣品盒重量。'), '資料不足')
+
+    def test_do_not_hide_later_answer_or_extra_qualifications(self):
+        q = '樣品盒重量是多少？若無法得知，只輸出 資料不足。'
+        for raw in ('資料不足。樣品盒重量未提供，但其實已量到5公斤。',
+                    '資料不足。樣品盒重量未提供。現在已有紀錄為5公斤。',
+                    '資料不足。樣品盒重量可能未提供，無法得知。',
+                    '資料不足。若樣品盒重量未提供，無法得知。',
+                    '資料不足。引文說樣品盒重量未提供，無法得知。'):
+            self.assertEqual(extract(q, raw), raw)
+
+    def test_multiple_questions_and_quoted_requests_remain_unshortened(self):
+        raw = '無法得知大樣品盒重量。'
+        for q in ('大樣品盒重量是多少？小樣品盒重量是多少？若無法得知，只輸出 資料不足。',
+                  '翻譯「大樣品盒重量是多少？若無法得知，只輸出 資料不足。」'):
+            self.assertEqual(extract(q, raw), raw)
+
+    def test_legacy_complete_field_and_optional_document_category(self):
+        q = '依唯一資料回答。問：Q28 的含稅金額是多少？若無法得知，只輸出 資料不足。'
+        raw = '根據現有資料，無法得知報價單 Q28 的含稅金額。請提供相關文件以進行查詢。'
+        self.assertEqual(extract(q, raw), '資料不足')
+        q = '資料表 Q28 的含稅金額是多少？若無法得知，只輸出 資料不足。'
+        self.assertEqual(extract(q, raw), raw)
+
+    def test_new_delivery_saves_real_raw_without_extra_call(self):
+        class Engine:
+            display_name = 'fixture'
+            calls = 0
+            raw = '資料不足。外箱編號未提供，無法得知。'
+            def describe(self): return {'kind':'fixture'}
+            def answer(self, prompt, cancel=None):
+                self.calls += 1
+                return self.raw
+        from scripts.daily_delivery import DailyLocalEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            raw = Engine()
+            engine = DailyLocalEngine(raw)
+            q = '外箱編號是多少？若無法得知，只輸出 資料不足。'
+            answer = Assistant(store, engine).ask(store.new_session(), q)
+            self.assertEqual(answer['content'], '資料不足')
+            self.assertEqual(raw.calls, 1)
+            self.assertEqual(read(store, answer['id'])['raw_answer'], raw.raw)
+            result = Assistant(store, engine, allow_local_calculation=False).ask(store.new_session(), q)
+            self.assertEqual(result['content'], raw.raw)
+            self.assertIsNone(read(store, result['id']))

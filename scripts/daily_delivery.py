@@ -143,6 +143,26 @@ def numeric_delivery(question, draft, sentences):
     return result
 
 
+def missing_field_matches(question, field):
+    """Bind one complete asked-about field, rather than a name substring."""
+    requests = []
+    for clause in re.split(r'問[：:]|[。！？?；\n]', QUOTES.sub('■', question)):
+        request = re.fullmatch(r'(?:請問)?([^，,：:]{2,70}?)(?:是多少|為多少|是什麼|多少|為何)', clause.strip())
+        if request:
+            requests.append(request[1].strip())
+    if len(requests) != 1:
+        return False
+    target = requests[0]
+    field = field.strip()
+    if field == target:
+        return True
+    # An unqualified document ID can be answered with its category. Never
+    # strip a category explicitly requested by the user (a table is not a quote).
+    if re.match(r'[A-Za-z]+[0-9]', target):
+        return re.sub(r'^(?:報價單|訂單|資料表)\s+(?=[A-Za-z]+[0-9])', '', field) == target
+    return False
+
+
 def extract(question, draft):
     wanted = contract(question)
     if not wanted or len(draft) > 16000 or re.search(r'\x60|\[D\d|【|https?://', draft):
@@ -155,16 +175,21 @@ def extract(question, draft):
         return draft
     last = sentences[-1]
     if kind == 'missing':
+        if re.fullmatch(re.escape(literal) + r'[。！]?', draft.strip()):
+            return literal
+        if len(sentences) == 2 and sentences[0] == literal:
+            absence = re.fullmatch(r'([^，,。；！？]{2,70}?)(?:目前)?'
+                                   r'(?:尚未提供|未提供|未登記|不詳|沒有資料|沒有紀錄)'
+                                   r'(?:[，,]\s*(?:因此)?(?:無法得知|無法確定))?', last)
+            if absence and missing_field_matches(question, absence[1]):
+                return literal
         # Bind the missing field to the subject actually asked about. A generic
         # caveat, an unrelated unknown, or a later positive conclusion is insufficient.
         if re.fullmatch(r'請(?:提供|補充)[^。！？]{1,50}(?:資訊|資料|文件|查詢|確認)', last) and len(sentences) > 1:
             last = sentences[-2]
         m = re.fullmatch(r'(?:根據[^，。]{1,28}[，,]\s*)?(?:目前)?(?:無法得知|無法確定|無從得知)([^，。；！？]{2,70})', last)
-        if m:
-            field = re.sub(r'^(?:報價單|訂單|資料表)\s+(?=[A-Za-z]+[0-9])', '', m[1].strip())
-            request = re.split(r'(?:問[：:]|[。！？])', QUOTES.sub('', question))
-            if any(field in clause and re.search(r'多少|為何|是什麼|為多少', clause) for clause in request):
-                return literal
+        if m and missing_field_matches(question, m[1]):
+            return literal
         return draft
     if re.search(r'取決於|假設|可能|估算|不一定|尚未確認|無法確認|候選|暫定|僅供參考|不保證|[?？]', draft):
         return draft
