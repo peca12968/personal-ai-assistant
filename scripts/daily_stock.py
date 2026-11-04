@@ -116,6 +116,26 @@ def grounded_state(context):
     return state, ids, total, delta
 
 
+def candidate(question):
+    if len(question) > 1000:
+        return False
+    body = parts(question)[0]
+    return bool(start(question) or (body and EDIT.fullmatch(body)) or MAYBE.fullmatch(question))
+
+
+def verified_answer(context, raw):
+    grounded = grounded_state(context)
+    if not grounded or context.get('inventory_reasoning') != context_hint(context):
+        raise ValueError('庫存核對來源已變更。')
+    state, ids, total, delta = grounded
+    answer = str(total) if delta is None else ('能' if delta == 0 else '不能')
+    receipt = dict(schema='verified_stock_answer_v1', model_called=True, raw_answer=raw,
+                   confirmed_total=total, unit=state['unit'], expression=context['inventory_reasoning']['確認異動後的算式'],
+                   possible_totals=[total] if delta is None else [total, total + delta],
+                   source_user_ids=ids, delivered=answer, raw_exact=raw == answer)
+    return answer, receipt
+
+
 def context_hint(context):
     grounded = grounded_state(context)
     if not grounded:

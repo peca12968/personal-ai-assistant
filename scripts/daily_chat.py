@@ -19,7 +19,15 @@ def run_daily_window(store, engine):
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if context and 'option_plan' in context:
+            if context and 'inventory_check' in context:
+                title = '庫存回答核對紀錄'
+                check = context['inventory_check']
+                possible = '、'.join(str(n) for n in dict.fromkeys(check['possible_totals']))
+                lines = [context['current_request'], '', '物品：' + context['inventory_reasoning']['物品'],
+                         f"已確認的數量：{check['expression']} = {check['confirmed_total']} {check['unit']}",
+                         f"可能數量：{possible} {check['unit']}", '', '模型原答：', check['raw_answer'],
+                         '', '按本機核對交付：' + check['delivered']]
+            elif context and 'option_plan' in context:
                 title = '本機方案比較紀錄'
                 plan = context['option_plan']
                 lines = [context['current_request'], '', '有效限制']

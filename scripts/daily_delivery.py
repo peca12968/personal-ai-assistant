@@ -239,6 +239,9 @@ class DailyLocalEngine:
     def describe(self):
         return self.engine.describe()
 
+    def answer_raw(self, prompt, cancel=None):
+        return self.engine.answer(prompt, cancel)
+
     def answer(self, prompt, cancel=None):
         draft = self.engine.answer(prompt, cancel)
         marker = '\n\n以下 JSON 是使用者資料與當前問題：\n'

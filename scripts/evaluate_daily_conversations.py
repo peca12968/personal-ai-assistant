@@ -81,6 +81,12 @@ def turn(folder, case, sid, refs, live):
                 'expected real base-model route')
         require(len(calls) == 1 and calls[0].get('engine') == engine and 'raw_answer' in calls[0],
                 'real local model answer missing or selection changed')
+        if saved.get('response_mode') == 'verified_inventory':
+            audit = saved.get('inventory_check', {})
+            require('inventory_check' not in initial and audit.get('model_called') is True
+                    and audit.get('raw_answer') == calls[0]['raw_answer'] and audit.get('delivered') == content
+                    and audit.get('raw_exact') is (content == calls[0]['raw_answer']), 'inventory audit mismatch')
+            details['delivery'] = 'verified_inventory'
         details.update(engine=engine['selection_fingerprint'], raw_answer=calls[0]['raw_answer'],
                        raw_exact=calls[0]['raw_answer'] == case['answer'])
     else:

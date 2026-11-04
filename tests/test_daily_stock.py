@@ -92,9 +92,52 @@ class StockContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'assistant.sqlite3')
             result = DailyAssistant(store,DailyLocalEngine(Raw())).ask(store.new_session(),BASE)
-            self.assertEqual(result['content'], '本機核對：27 - 6 + 4 = 25 支。模型原答為 37 支。')
+            self.assertEqual(result['content'], '25')
+            self.assertEqual(result['inventory_check']['raw_answer'], '27 + 6 + 4 = 37')
+            self.assertFalse(result['inventory_check']['raw_exact'])
+            from assistant.feedback_improvement import example_from_source
+            with self.assertRaisesRegex(ValueError, '庫存核對'):
+                example_from_source(dict(rating=-1, correction='測試更正', context=store.answer_context(result['id'])))
+            self.assertEqual(store.answer_context(result['id'])['inventory_check'], result['inventory_check'])
             self.assertEqual(store.answer_context(result['id'])['inventory_reasoning']['確認異動後的算式'],
                              '27 - 6 + 4')
+
+    def test_cancelled_correction_can_retry_without_duplicate_messages_or_receipts(self):
+        from threading import Event
+        from assistant import answer_runs
+        from assistant.engine import EngineError
+        from scripts.daily_delivery import DailyLocalEngine
+
+        class Raw:
+            display_name = 'fixture'
+            def describe(self):
+                return {'kind': 'fixture'}
+            def answer(self, prompt, cancel=None):
+                if cancel is not None:
+                    cancel.set()
+                return '999'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, DailyLocalEngine(Raw()))
+            seed = app.ask(sid, BASE)
+            with self.assertRaises(EngineError):
+                app.ask(sid, EDIT, cancel=Event())
+            failed = answer_runs.retry_target(store, sid)
+            self.assertEqual(failed['status'], 'cancelled')
+            with store.connect() as db:
+                snapshot = db.execute('SELECT context_json FROM answer_runs WHERE id=?', (failed['id'],)).fetchone()[0]
+            self.assertNotIn('inventory_check', snapshot)
+            corrected = app.retry(sid)
+            self.assertEqual(corrected['user_message_id'], failed['user_message_id'])
+            self.assertEqual(corrected['content'], '29')
+            self.assertEqual(corrected['inventory_check']['source_user_ids'], [seed['user_message_id']])
+            self.assertEqual(len(store.messages(sid, 10)), 4)
+            resolved = app.ask(sid, UNKNOWN)
+            self.assertEqual(resolved['content'], '能')
+            self.assertEqual(set(resolved['inventory_check']['possible_totals']), {29})
+            self.assertEqual(resolved['inventory_check']['raw_answer'], '999')
 
     def test_audit_is_saved_in_daily_context_and_skipped_for_unassisted_evaluation(self):
         class Raw:

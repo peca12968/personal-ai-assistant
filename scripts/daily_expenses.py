@@ -6,7 +6,7 @@ import uuid
 
 from scripts import daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
-from assistant.engine import Assistant, EngineError, make_context
+from assistant.engine import Assistant, EngineError, make_context, render_prompt
 
 NAME = r'[\u4e00-\u9fff]{1,12}'
 AMOUNT = r'(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,2})?'
@@ -225,6 +225,41 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        if (local and daily_stock.candidate(question) and hasattr(self.engine, 'answer_raw')
+                and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'verified_inventory')):
+            context = self.prepare_context(sid, question, exclude_message_id=before)
+            if retry:
+                with self.store.connect() as db:
+                    tail = db.execute('SELECT id,role FROM messages WHERE session_id=? AND id<? ORDER BY id DESC LIMIT 1',
+                                      (sid, before)).fetchone()
+                context['conversation_tail'] = dict(message_id=tail['id'],role=tail['role']) if tail else None
+                context.pop('inventory_reasoning', None)
+                hint = daily_stock.context_hint(context)
+                if hint:
+                    context['inventory_reasoning'] = hint
+                if prior.get('inventory_reasoning') != hint:
+                    raise ValueError('庫存來源已變更，請重新提供異動明細。')
+            if 'inventory_reasoning' in context:
+                context['response_mode'] = 'verified_inventory'
+
+                def verify_stock(uid):
+                    ids = context['inventory_reasoning']['來源訊息編號']
+                    if ids:
+                        with self.store.connect() as db:
+                            latest = db.execute('SELECT id FROM messages WHERE session_id=? AND id<? ORDER BY id DESC LIMIT 1',
+                                                (sid, uid)).fetchone()
+                            if not latest or latest['id'] != context['conversation_tail']['message_id']:
+                                raise ValueError('送出前庫存對話已變更，請重新確認異動明細。')
+                            for entry in context['recent_conversation']:
+                                if entry['message_id'] in ids:
+                                    source = db.execute("SELECT content FROM messages WHERE session_id=? AND id=? AND role='user'",
+                                                        (sid,entry['message_id'])).fetchone()
+                                    if not source or source['content'] != entry['content']:
+                                        raise ValueError('庫存異動來源已變更。')
+                    raw = self.engine.answer_raw(render_prompt(context), cancel)
+                    return daily_stock.verified_answer(context, raw)
+
+                return self._run_recorded(sid, question, context, verify_stock, cancel, retry, draft, 'inventory_check')
         selection_change = daily_criteria.revision(question) if local else None
         option_plan = daily_criteria.parse(question) if local else None
         if (option_plan or selection_change) and not self.store.documents(sid, include_content=False):
@@ -260,7 +295,7 @@ class DailyAssistant(Assistant):
                             raise ValueError('提交前方案來源已變更，請重新核對。')
                     return daily_criteria.resolve(option_plan, clarification)
 
-                return self._run_local(sid, question, context, resolve_options, cancel, retry, draft)
+                return self._run_recorded(sid, question, context, resolve_options, cancel, retry, draft)
         change = daily_meeting.FOLLOWUP.fullmatch(question) if self.allow_local_calculation else None
         meeting = daily_meeting.parse(question) if local and not (followup or choice or change) else None
         if change or meeting:
@@ -285,7 +320,7 @@ class DailyAssistant(Assistant):
                         raise ValueError('提交前會議來源已變更，請核對後再更正。')
                     return daily_meeting.resolve(meeting)
 
-                return self._run_local(sid, question, context, resolve_meeting, cancel, retry, draft)
+                return self._run_recorded(sid, question, context, resolve_meeting, cancel, retry, draft)
         ledger = parse(question) if local and not (followup or selection) else None
         pending = None
         source = None
@@ -330,9 +365,9 @@ class DailyAssistant(Assistant):
                 answer = selection_prompt(ledger, pending, answer)
             return answer, receipt
 
-        return self._run_local(sid, question, context, calculate, cancel, retry, draft)
+        return self._run_recorded(sid, question, context, calculate, cancel, retry, draft)
 
-    def _run_local(self, sid, question, context, calculate, cancel, retry, draft):
+    def _run_recorded(self, sid, question, context, calculate, cancel, retry, draft, receipt_key='calculation'):
         if cancel and cancel.is_set():
             raise EngineError('已停止本機計算。', 'cancelled')
         answer_runs.recover(self.store, sid)
@@ -343,13 +378,14 @@ class DailyAssistant(Assistant):
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
                 answer, receipt = calculate(uid)
-                context['calculation'] = receipt
+                context[receipt_key] = receipt
                 if cancel and cancel.is_set():
                     raise EngineError('已停止本機計算。', 'cancelled')
                 mid = answer_runs.finish(self.store, run_id, answer, context, [])
             except Exception as exc:
                 answer_runs.fail(self.store, run_id, getattr(exc, 'code', 'unexpected_error'))
                 raise
-        return dict(id=mid, content=answer, memory_ids=[], excerpt_ids=[], document_count=0,
-                    citation_checks=[], run_id=run_id, user_message_id=uid, response_mode='local_calculation',
-                    calculation=receipt)
+        return dict(id=mid, content=answer, memory_ids=[r['id'] for r in context['memories']],
+                    excerpt_ids=[r['message_id'] for r in context['earlier_user_excerpts']], document_count=0,
+                    citation_checks=[], run_id=run_id, user_message_id=uid, response_mode=context['response_mode'],
+                    **{receipt_key:receipt})
