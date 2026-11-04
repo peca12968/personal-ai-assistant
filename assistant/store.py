@@ -128,6 +128,8 @@ class Store:
                     imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, path_key));
                 CREATE TABLE IF NOT EXISTS answer_checks (
                     message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS answer_deliveries (
+                    message_id INTEGER PRIMARY KEY REFERENCES messages(id), payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS task_runs (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     status TEXT NOT NULL CHECK(status IN ('planned','running','succeeded','failed','cancelled')),

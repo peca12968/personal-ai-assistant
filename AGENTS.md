@@ -9,6 +9,7 @@ Private repository: `peca12968/personal-ai-assistant`.
 - Preserve local data. Never commit conversations, personal memory, exports, auth files, tokens, or logs.
 - Exclude learning-batches and local-engine-workspace at any nesting level from Git/publishing, including nondefault data directories under source folders; small private manifests/prompts are private even when no large model file is present. Keep SQLite choice history local.
 - Keep changes focused on understanding requests and solving problems accurately.
+- Daily delivery must bind complete identifier object/field names and retain recognizable contradictory conclusions. Optional answer_deliveries stores raw/delivered hashes and raw model text in the same transaction as the successful answer, separate from immutable model input. Keep changed/unchanged answers and raw parameter evaluations distinct; do not replay receipts into prompts or retrofit historical raw text. Validate bounded strict receipts and their saved answer/run links in local backup/restore; legacy backups may omit the table. The reference window may show both texts, without claiming a new model call, parameter learning or correctness proof.
 - After a bug or misunderstanding, add a meaningful regression case when feasible.
 - Validate with `python -m unittest discover -s tests -v`, `python scripts/evaluate.py`, `python scripts/evaluate_context.py`, `python scripts/evaluate_documents.py`, and `python scripts/evaluate_search.py`.
 - Record material progress and evidence in `docs/PROGRESS.md`.

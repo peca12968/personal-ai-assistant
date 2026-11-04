@@ -24,6 +24,8 @@ RANGE = rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})'
 LABEL = r'(?:合計|總計|總額|總數|答案|結果|總金額|最終金額|金額|數量)'
 IS = r'\s*(?:為|是|等於|[:：=])\s*[:：]?\s*'
 CODE = r'[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*'
+IDENTIFIER_FIELD = r'(?:代碼|編號|序號|型號)'
+IDENTIFIER_TARGET = r'[\u4e00-\u9fffA-Za-z0-9]{1,24}?'
 QUOTES = re.compile(r'「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"|\x60[^\x60]*\x60', re.S)
 
 
@@ -188,12 +190,39 @@ def extract(question, draft):
             boxed = boxed[0]
         if isinstance(boxed, str) and re.fullmatch(CODE, boxed):
             return boxed
-        m = re.fullmatch(rf'([^。！？；，,]{{1,36}}?)(?:上)?的(?:代碼|編號){IS}({CODE})', last)
-        clauses = re.split(r'[。！？；，,\n]', QUOTES.sub('', question))
-        targets = [c for c in clauses if re.search(r'請問|是什麼|為何|哪個|多少', c)]
-        if m and targets and m[1].strip() in targets[-1]:
-            return m[2]
+        return identifier_conclusion(question, sentences) or draft
     return draft
+
+
+def identifier_conclusion(question, sentences):
+    # Parse a complete short question, not a substring of a different object's name.
+    requests = []
+    for clause in re.split(r'[。！？?；，,\n]', QUOTES.sub('■', question)):
+        clause = clause.strip()
+        if re.match(ONLY, clause):
+            continue
+        match = re.fullmatch(rf'(?:請問|請查|我想查)?({IDENTIFIER_TARGET})(?:的)?'
+                             rf'({IDENTIFIER_FIELD})(?:是多少|是什麼|為何|是哪個)?', clause)
+        if match:
+            requests.append(match.groups())
+    if len(requests) != 1:
+        return None
+    target, field = requests[0]
+    output_field = re.search(ONLY + r'(?:單一|一個)?(代碼|編號)' + END, question)
+    if not output_field or output_field[1] != field:
+        return None
+    if re.search(r'或|和|與|跟|上述|這個|那個|不要|不是|更正|改查|改問', target):
+        return None
+    assertion = re.compile(rf'({IDENTIFIER_TARGET})(?:上的|的)?({IDENTIFIER_FIELD}){IS}({CODE})')
+    last = assertion.fullmatch(sentences[-1])
+    if not last or last.groups()[:2] != (target, field) or len(last[3]) > 128:
+        return None
+    # Do not conceal contradictory assertions about the same object and field.
+    for sentence in sentences[:-1]:
+        prior = assertion.fullmatch(sentence)
+        if prior and prior.groups()[:2] == (target, field) and prior[3] != last[3]:
+            return None
+    return last[3]
 
 
 # An echoed paragraph is sometimes part of the requested deliverable.
@@ -243,7 +272,15 @@ class DailyLocalEngine:
         return self.engine.answer(prompt, cancel)
 
     def answer(self, prompt, cancel=None):
+        return self.answer_with_delivery(prompt, cancel)[0]
+
+    def answer_with_delivery(self, prompt, cancel=None):
+        from assistant.response_delivery import make_receipt
         draft = self.engine.answer(prompt, cancel)
+        delivered = self.deliver(prompt, draft)
+        return delivered, make_receipt(draft, delivered)
+
+    def deliver(self, prompt, draft):
         marker = '\n\n以下 JSON 是使用者資料與當前問題：\n'
         _, found, payload = prompt.partition(marker)
         if not found:

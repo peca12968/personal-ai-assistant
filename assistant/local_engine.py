@@ -12,6 +12,7 @@ from . import local_models, learned_models
 from .learning_batches import PhaseExit
 
 ERRORS = {
+    'system_memory': 'Windows 回報記憶體／分頁檔可用額度不足（1455），本機模型未完成作答；請先釋放記憶體或檢查分頁檔設定。沒有自動重試或改送其他引擎。',
     'gpu_busy': '本機模型正在被另一個推理或學習程序使用，這次沒有送到其他引擎。',
     'model_changed': '本機模型或研究參數的檔案／驗證記錄已變更，沒有使用未核對的版本。',
     'environment': '本機模型環境尚未就緒或版本不符，請依本機學習研究說明安裝。',

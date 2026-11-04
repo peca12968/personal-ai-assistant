@@ -314,6 +314,7 @@ class Assistant:
         with answer_runs.lease(self.store, run_id):
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
+                delivery = None
                 if calculation is not None:
                     try:
                         answer, receipt = chat_calculation.evaluate(calculation, cancel)
@@ -321,14 +322,19 @@ class Assistant:
                         raise EngineError('本機精確計算未完成：' + str(exc), 'calculation_invalid') from None
                     context['calculation'] = receipt
                 else:
-                    answer = (self.engine.answer_images(render_prompt(context), image_payloads, cancel) if image_payloads
-                              else self.engine.answer(render_prompt(context), cancel))
+                    if (self.allow_local_calculation and not image_payloads
+                            and callable(getattr(self.engine, 'answer_with_delivery', None))):
+                        answer, delivery = self.engine.answer_with_delivery(render_prompt(context), cancel)
+                    else:
+                        answer = (self.engine.answer_images(render_prompt(context), image_payloads, cancel) if image_payloads
+                                  else self.engine.answer(render_prompt(context), cancel))
                 if cancel and cancel.is_set():
                     raise EngineError('已停止這次回答。', 'cancelled')
                 checks = check_citations(answer, context['documents']['excerpts'])
                 if any(not check['range_valid'] for check in checks):
                     answer += '\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
-                mid = answer_runs.finish(self.store, run_id, answer, context, checks)
+                mid = answer_runs.finish(self.store, run_id, answer, context, checks,
+                                         **({'delivery': delivery} if delivery is not None else {}))
             except Exception as exc:
                 answer_runs.fail(self.store, run_id, getattr(exc, 'code', 'unexpected_error'))
                 raise

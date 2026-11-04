@@ -154,8 +154,11 @@ def main():
     except Failure as exc:
         result = {'schema': 'local_inference_result_v1', 'status': 'failed', 'code': exc.code}
         code = 1
-    except Exception:
-        result = {'schema': 'local_inference_result_v1', 'status': 'failed', 'code': 'inference_failed'}
+    except Exception as exc:
+        # Windows can reject the CUDA DLL import before model/GPU allocation.
+        # Distinguish the observed OS commit-limit failure from a bad answer.
+        reason = 'system_memory' if isinstance(exc, OSError) and getattr(exc, 'winerror', None) == 1455 else 'inference_failed'
+        result = {'schema': 'local_inference_result_v1', 'status': 'failed', 'code': reason}
         code = 1
     with args.output.open('x', encoding='utf-8') as stream:
         json.dump(result, stream, ensure_ascii=False)
