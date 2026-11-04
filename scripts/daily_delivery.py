@@ -99,6 +99,40 @@ def extract(question, draft):
     return draft
 
 
+# An echoed paragraph is sometimes part of the requested deliverable.
+KEEP_QUESTION = re.compile(
+    r'題目放在|問題放在|原題開頭|原題起頭|先讀題|說一遍|抄題|重述|複述|復述|覆述|重複|複誦|逐字|原文|照抄|引述|引用|回顯|回聲|翻譯|改寫|'
+    r'(?:保留|列出|寫出|寫下|附上|貼出|包含|顯示|印出|抄寫|朗讀|先寫|先列|放上|先放|先印|唸出)'
+    r'.{0,12}(?:題|問|原句|輸入)|repeat|restate|verbatim|echo|quote', re.I)
+
+
+OMIT_QUESTION = re.compile(
+    r'(?:^|(?<=[，,。；;！？\n]))\s*(?:請)?(?:不要|不用|不必|不需|無須|無需|別)(?:先|再)?'
+    r'(?:重述|複述|復述|重複|抄寫)(?:我(?:的)?|本次|原)?(?:問題|題目|提問)\s*(?=[，,。；;！？\n]|$)')
+
+
+def explanation_body(context, draft):
+    question = context['current_request']
+    if ('\n' in question or not re.search(r'請(?:解釋|說明)|為什麼|為何', question)
+            or not draft.startswith(question)):
+        return draft
+    boundary = re.match(r'(?:\r?\n){2}', draft[len(question):])
+    if not boundary:
+        return draft
+    body = draft[len(question) + boundary.end():]
+    directives = QUOTES.sub('', question)
+    remaining, omit = OMIT_QUESTION.subn('', directives)
+    if not body.strip() or KEEP_QUESTION.search(remaining if omit else question):
+        return draft
+    if omit:
+        return body
+    for key in ('recent_conversation', 'earlier_user_excerpts', 'memories', 'session_brief',
+                'answer_feedback', 'earlier_user_corrections', 'companion_profile'):
+        if KEEP_QUESTION.search(json.dumps(context.get(key), ensure_ascii=False)):
+            return draft
+    return body
+
+
 class DailyLocalEngine:
     """Wrap ordinary local chat; other model jobs and raw evaluations pass through."""
     def __init__(self, engine):
@@ -122,4 +156,4 @@ class DailyLocalEngine:
                 or ctx.get('calculation_mode') or not isinstance(ctx.get('documents'), dict) or ctx['documents'].get('excerpts')
                 or ctx.get('engine_selection') != self.describe() or render_prompt(ctx) != prompt):
             return draft
-        return extract(ctx['current_request'], draft)
+        return extract(ctx['current_request'], explanation_body(ctx, draft))

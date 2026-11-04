@@ -8,7 +8,7 @@ from unittest.mock import patch
 from assistant.engine import Assistant
 from assistant.store import Store
 from scripts import daily_chat
-from scripts.daily_delivery import DailyLocalEngine, extract
+from scripts.daily_delivery import DailyLocalEngine, explanation_body, extract
 
 
 class Raw:
@@ -58,6 +58,44 @@ class DeliveryTests(unittest.TestCase):
             with self.subTest(q=q):
                 self.assertEqual(extract(q, draft), draft)
 
+    def test_exact_echo_only_and_keep_requested_wording(self):
+        question = '請解釋為什麼冰會浮起來。'
+        body = '相同體積的冰比液態水輕。\n\n因此冰會浮起來。'
+        ctx = {'current_request': question}
+        for separator in ('\n\n', '\r\n\r\n'):
+            self.assertEqual(explanation_body(ctx, question + separator + body), body)
+        for draft in (question, question + '\n\n ', question + '\n' + body, body,
+                      '問題：' + question + '\n\n' + body):
+            self.assertEqual(explanation_body(ctx, draft), draft)
+        for q in ('先寫出我的問題，再請解釋原因。', '請解釋並逐字保留題目。', '請翻譯這一段。'):
+            draft = q + '\n\n' + body
+            self.assertEqual(explanation_body({'current_request': q}, draft), draft)
+        draft = question + '\n\n' + body
+        self.assertEqual(explanation_body({**ctx, 'memories': [{'content': '每次請先重述問題'}]}, draft), draft)
+
+        q = '請解釋浮力，不要重複我的問題。'
+        self.assertEqual(explanation_body({'current_request': q, 'memories': ['請先重述問題']},
+                                          q + '\n\n' + body), body)
+        q = '請先複述題目，再請解釋「不要複述題目」這句話。'
+        self.assertEqual(explanation_body({'current_request': q}, q + '\n\n' + body), q + '\n\n' + body)
+
+    def test_saved_explanation_and_requested_restatement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            for q, keep in [('請解釋為什麼尺上的陰影位置會變。', False),
+                            ('請先重述題目，再請解釋為什麼尺上的陰影位置會變。', True)]:
+                body = '光源和物體的相對位置改變了。'
+                draft = q + '\n\n' + body
+                raw = Raw(draft)
+                wrapped = DailyLocalEngine(raw)
+                sid = store.new_session()
+                expected = draft if keep else body
+                self.assertEqual(Assistant(store, wrapped).ask(sid, q)['content'], expected)
+                self.assertEqual(store.messages(sid, 2)[-1]['content'], expected)
+                self.assertEqual(raw.calls, 1)
+                self.assertEqual(Assistant(store, wrapped, allow_local_calculation=False).ask(
+                    store.new_session(), q)['content'], draft)
+
     def test_desktop_command_saves_delivered_reply_but_raw_eval_keeps_draft(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw = Raw('答案是 472。')
@@ -74,4 +112,3 @@ class DeliveryTests(unittest.TestCase):
             baseline = Assistant(store, DailyLocalEngine(raw), allow_local_calculation=False)
             self.assertEqual(baseline.ask(store.new_session(), question)['content'], raw.draft)
             self.assertEqual(DailyLocalEngine(raw).answer('其他模型任務'), raw.draft)
-
