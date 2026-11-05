@@ -60,6 +60,52 @@ class DailyMeetingTests(unittest.TestCase):
                         q + '順便寄通知。', q.replace('有空', '沒空'), q.replace('7:05', '27:05')):
             self.assertIsNone(meeting.parse(invalid))
 
+    def test_natural_availability_binds_attendees_and_cancels_morning_before_overlap(self):
+        q = ('安禾今天可談 08:10–09:30 和 13:50–15:30，'
+             '佳瑜可碰面的時間原是 08:40–09:25 或 14:05–14:50。'
+             '安禾的上午時段已取消，兩人要談 30 分鐘。' + FORMAT)
+        plan = meeting.parse(q)
+        result, receipt = meeting.resolve(plan)
+        self.assertEqual(list(plan['available']), ['安禾', '佳瑜'])
+        self.assertEqual(plan['cancelled'], [
+            {'name': '安禾', 'interval': [0, 720], 'source': '安禾的上午時段已取消'}])
+        self.assertEqual(result, '14:05-14:35')
+        self.assertEqual(receipt['common'], ['14:05-14:50'])
+        self.assertFalse(receipt['model_called'])
+        self.assertEqual(receipt['effective']['佳瑜'], ['08:40-09:25', '14:05-14:50'])
+
+    def test_ambiguous_natural_meeting_clauses_stay_in_chat(self):
+        q = ('子清可碰面 09:00–09:30 或 13:20–14:00，亞林可談 09:10–09:55 和 13:25–14:05。'
+             '子清取消早上的安排。碰面需要連續 20 分鐘。' + FORMAT)
+        self.assertEqual(meeting.resolve(meeting.parse(q))[0], '13:25-13:45')
+        for question in (
+            q.replace('子清可碰面', '若子清可碰面'), q.replace('亞林可談', '亞林未可談'),
+            q.replace('亞林可談', '亞林明天可談'), q.replace('亞林可談', '亞林或珮如可談'),
+            q.replace('亞林可談', '對方可談'), q.replace('子清取消', '子清可能取消'),
+            q.replace('子清取消', '子菁取消'), q.replace('子清取消', '子清不取消'),
+            q.replace('09:00–09:30 或 13:20–14:00', '13:20–13:30 或 13:30–14:00'),
+            q.replace('09:00–09:30 或 13:20–14:00', '09:00–09:30 或 13:20–14:00 和 16:10–17:00'),
+            q.replace('碰面需要連續', '三人要碰面'), q + '再寄出邀請。',
+        ):
+            with self.subTest(question=question):
+                self.assertIsNone(meeting.parse(question))
+
+    def test_natural_meeting_followup_reuses_exact_participant_name(self):
+        q = ('怡君今天可談 09:10-10:00 和 14:20-15:30，冠宇可談 09:25-10:00 和 14:35-15:20。'
+             '怡君剛取消早上的安排。兩人想談 20 分鐘。' + FORMAT)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'assistant.sqlite3'
+            store = Store(path)
+            sid = store.new_session()
+            first = DailyAssistant(store, None).ask(sid, q)
+            self.assertEqual(first['content'], '14:35-14:55')
+            reopened = DailyAssistant(Store(path), None)
+            answer = reopened.ask(sid, '上一場會議，怡君的空檔改為 09:00-09:50，重算。')
+            self.assertEqual(answer['content'], '09:25-09:45')
+            ctx = store.answer_context(answer['id'])
+            self.assertEqual(ctx['meeting_source']['answer_id'], first['id'])
+            self.assertEqual(ctx['meeting_plan']['cancelled'], [])
+
     def test_conversation_can_revise_a_prose_answer_after_reopening(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'assistant.sqlite3'

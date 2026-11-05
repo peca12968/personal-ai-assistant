@@ -6,9 +6,19 @@ SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
 # Explicit aliases keep dates, qualifications and partial instructions out of the ledger.
 NAME = r'(?:「[\u4e00-\u9fffA-Za-z0-9]{1,16}」|小[\u4e00-\u9fff]|[甲乙丙丁戊己庚辛]|[A-Za-z]{1,20})'
 AVAILABILITY = re.compile(rf'({NAME})(原本)?(可開會的時段為|可開會[：:]|可用時段[為：:]|有空[：:]|為)\s*(.+)')
-CANCEL = re.compile(rf'({NAME})(?:剛)?取消\s*(.+)')
-DURATION = re.compile(r'(?:(兩|二|三|四|五|六|七|八|[2-8])人)?(?:需要(?:連續)?|想開)\s*'
-                      r'(半小時|一小時|一刻鐘|[1-9][0-9]{0,3}\s*分鐘)(?:的會議?)?')
+NATURAL_NAME = rf'(?:{NAME}|[\u4e00-\u9fff]{{2,3}}?)'
+NATURAL_AVAILABILITY = re.compile(
+    rf'({NATURAL_NAME})(?:今天)?(?:原本)?(?:可碰面|可談)(?:的(?:時段|時間)原?(?:是|為))?\s*([0-9].*)')
+UNBOUND_NAME = re.compile(r'^(?:大家|我們|你們|他們|她們|對方|其他|某人|所有|其中|兩人|三人)$'
+                          r'|^(?:若|如|假設|假如|如果|聽說|據說|或者)'
+                          r'|今天|昨天|明天|後天|本週|下週|週末|上午|下午|早上|晚上|可能|大概|[和與或跟及]'
+                          r'|[不未也都只暫尚]$')
+MORNING = r'(?:整個上午|(?:上午|早上)的?(?:時段|安排))'
+CANCEL = re.compile(rf'({NATURAL_NAME})(?:(?:剛|已)?取消\s*(.+)|的({MORNING})(?:已經|已|剛)取消)')
+PEOPLE = r'(兩|二|三|四|五|六|七|八|[2-8])人'
+LENGTH = r'(半小時|一小時|一刻鐘|[1-9][0-9]{0,3}\s*分鐘)'
+DURATION = re.compile(rf'(?:{PEOPLE})?(?:需要(?:連續)?|想開)\s*{LENGTH}(?:的會議?)?')
+NATURAL_DURATION = re.compile(rf'(?:{PEOPLE}(?:想|要)(?:談|碰面)|(?:碰面|談話)需要(?:連續)?)\s*{LENGTH}')
 LENGTHS = {'半小時': 30, '一小時': 60, '一刻鐘': 15}
 FREE = re.compile(rf'({NAME})\s*([0-9].*)')
 OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:開始及結束時間|時段|時間區間)[，,]\s*格式\s*HH:MM-HH:MM')
@@ -28,9 +38,23 @@ def span(text):
     return None
 
 
-def slot_list(text):
-    slots = [span(s.strip()) for s in re.split(r'[和與、]', text)]
-    return slots if len(slots) <= 12 and all(slots) else None
+def slot_list(text, *, allow_alternatives=False):
+    alternatives = allow_alternatives and '或' in text
+    slots = [span(s.strip()) for s in re.split('或' if alternatives else r'[和與、]', text)]
+    if len(slots) > 12 or not all(slots):
+        return None
+    # An adjacent or overlapping pair of alternatives does not establish a
+    # longer continuous window. Leave the interpretation to ordinary chat.
+    if alternatives:
+        ordered = sorted(slots)
+        if any(left[1] >= right[0] for left, right in zip(ordered, ordered[1:])):
+            return None
+    return slots
+
+
+def cancelled_interval(removal):
+    text = removal[2] or removal[3]
+    return [0, 720] if re.fullmatch(MORNING, text) else span(text)
 
 
 def parse(question):
@@ -44,7 +68,10 @@ def parse(question):
         if not lines or not OUTPUT.fullmatch(lines.pop().strip()):
             return None
     clauses = [part.strip() for line in lines for part in re.split(r'[，,；;]', line)]
-    duration = DURATION.fullmatch(clauses.pop()) if clauses else None
+    if not clauses:
+        return None
+    last = clauses.pop()
+    duration = DURATION.fullmatch(last) or NATURAL_DURATION.fullmatch(last)
     if not duration:
         return None
     length_text = duration[2]
@@ -57,23 +84,28 @@ def parse(question):
             clause = clause.removeprefix('今天')
         removal = CANCEL.fullmatch(clause)
         if removal:
-            cut = [0, 720] if removal[2] == '整個上午' else span(removal[2])
+            cut = cancelled_interval(removal)
             name = removal[1].strip('「」')
             if name not in available or not cut or len(cancelled) >= 24:
                 return None
             cancelled.append(dict(name=name, interval=cut, source=clause))
             continue
         entry = AVAILABILITY.fullmatch(clause)
+        natural = NATURAL_AVAILABILITY.fullmatch(clause)
         if entry and (entry[3] != '為' or available):
             alias, intervals = entry[1], entry[4]
         elif clause.endswith('有空') and (match := FREE.fullmatch(clause[:-2].rstrip())):
             alias, intervals = match.groups()
+        elif natural:
+            alias, intervals = natural.groups()
+            if not alias.startswith('「') and UNBOUND_NAME.search(alias):
+                return None
         else:
             return None
         name = alias.strip('「」')
         if len(available) >= 8 or name in available:
             return None
-        slots = slot_list(intervals)
+        slots = slot_list(intervals, allow_alternatives=natural is not None)
         if not slots:
             return None
         available[name] = slots
@@ -91,7 +123,7 @@ FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:�
 
 def revise(plan, clause):
     """Change the detached prior snapshot, retaining unaffected attendees and constraints."""
-    replacement = re.fullmatch(rf'({NAME})的(?:空檔|可用時段)改為\s*(.+)', clause)
+    replacement = re.fullmatch(rf'({NATURAL_NAME})的(?:空檔|可用時段)改為\s*(.+)', clause)
     removal = CANCEL.fullmatch(clause)
     duration = re.fullmatch(r'(?:會議)?時長改為\s*([1-9][0-9]{0,3})\s*分鐘', clause)
     if duration:
@@ -113,7 +145,7 @@ def revise(plan, clause):
         plan['available'][name] = slots
         plan['cancelled'] = [c for c in plan['cancelled'] if c['name'] != name]
     else:
-        cut = [0, 720] if removal[2] == '整個上午' else span(removal[2])
+        cut = cancelled_interval(removal)
         if not cut or len(plan['cancelled']) >= 24:
             raise ValueError('請提供有效的同日取消時段；累計超過 24 筆時，請重新列出空檔。')
         plan['cancelled'].append(dict(name=name, interval=cut, source=clause))
