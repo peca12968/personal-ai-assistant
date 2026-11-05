@@ -10,7 +10,7 @@ from pathlib import Path
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from assistant import local_models, learned_models
-from assistant import local_chat_budget
+from assistant import document_partial, local_chat_budget
 from scripts.learning.runtime import gpu_lease
 from scripts.learning.protocol import EXPECTED_VERSIONS
 
@@ -73,19 +73,19 @@ def _check_role_content(tokenizer, messages):
 def _encode_request(tokenizer, request, messages):
     if request['schema'] == 'local_inference_request_v2':
         _check_role_content(tokenizer, messages)
-    excerpts = None
+    excerpts = partial = None
     ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
     if len(ids) > local_models.MAX_INPUT_TOKENS and request['schema'] == local_chat_budget.REQUEST_SCHEMA:
         plan = local_chat_budget.recovery_plan(request['prompt'])
         if plan is not None:
-            recovery, excerpts = plan
+            recovery, excerpts, partial = plan
             recovered = request_messages({**request, 'prompt': recovery})
             _check_role_content(tokenizer, recovered)
             ids = tokenizer.apply_chat_template(recovered, tokenize=True, add_generation_prompt=True,
                                                 enable_thinking=False)
     if not ids or len(ids) > local_models.MAX_INPUT_TOKENS:
         raise Failure('input_too_large')
-    return ids, excerpts
+    return ids, excerpts, partial
 
 
 def encode_request(tokenizer, request, messages):
@@ -130,7 +130,7 @@ def infer(request):
         except (OSError, ValueError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise Failure('model_changed') from None
         tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True, trust_remote_code=False)
-        ids, excerpts = _encode_request(tokenizer, request, request_messages(request))
+        ids, excerpts, partial = _encode_request(tokenizer, request, request_messages(request))
         model = AutoModelForCausalLM.from_pretrained(base, local_files_only=True, trust_remote_code=False,
             use_safetensors=True, torch_dtype=torch.bfloat16, device_map={'': 0}, attn_implementation='sdpa')
         if adapter is not None:
@@ -167,7 +167,8 @@ def infer(request):
         answer = tokenizer.decode(generated, skip_special_tokens=True).strip()
         if not answer:
             raise Failure('empty_response')
-        validate_document_citations(answer, excerpts)
+        if partial is None:
+            validate_document_citations(answer, excerpts)
         # Recheck selection metadata after inference; never relabel an answer if
         # another process changed the selected research evidence during the call.
         try:
@@ -177,10 +178,13 @@ def infer(request):
             unchanged = False
         if not unchanged:
             raise Failure('model_changed')
-        return {'schema': 'local_inference_result_v1', 'status': 'succeeded', 'answer': answer,
-                'selection_fingerprint': request['selection']['fingerprint'],
-                'input_tokens': len(ids), 'output_tokens': len(generated),
-                'peak_gpu_bytes': torch.cuda.max_memory_allocated()}
+        result = {'schema': 'local_inference_result_v1', 'status': 'succeeded', 'answer': answer,
+                  'selection_fingerprint': request['selection']['fingerprint'],
+                  'input_tokens': len(ids), 'output_tokens': len(generated),
+                  'peak_gpu_bytes': torch.cuda.max_memory_allocated()}
+        if partial is not None:
+            result['format'] = document_partial.METHOD
+        return result
     except torch.OutOfMemoryError:
         raise Failure('gpu_memory') from None
     finally:

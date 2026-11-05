@@ -8,9 +8,8 @@ import time
 from pathlib import Path
 
 from .engine import EngineError, CodexEngine, MAX_PROMPT_BYTES, MAX_ANSWER_BYTES, answer_directory
-from . import local_models, learned_models
+from . import document_partial, local_chat_budget, local_models, learned_models
 from .learning_batches import PhaseExit
-from .local_chat_budget import REQUEST_SCHEMA as CHAT_BUDGET_REQUEST
 
 ERRORS = {
     'system_memory': 'Windows 回報記憶體／分頁檔可用額度不足（1455），本機模型未完成作答；請先釋放記憶體或檢查分頁檔設定。沒有自動重試或改送其他引擎。',
@@ -21,6 +20,7 @@ ERRORS = {
     'gpu_memory': '本機推理顯存不足，這次沒有保存答案；請縮短內容或釋放顯存後重試。',
     'input_too_large': '完整提示超過本機模型的24576 token上限，未裁切或改送其他引擎。',
     'document_citation_invalid': '本機文件問答的引用超出這次提供的範圍，沒有保存完成答案。可核對來源編號與行號後再提問。',
+    'document_partial_invalid': '本機文件部分回答的內容或來源代號無法核對，沒有保存完成答案。',
     'generation_limit': '本機回答達到512 token上限仍未結束，未把截斷內容保存為完成答案。',
     'empty_response': '本機模型沒有傳回有效答案。',
     'invalid_request': '本機推理請求格式不符，沒有執行。',
@@ -63,14 +63,21 @@ class LocalEngine:
         return answer_directory(self.workdir)
 
     def answer(self, prompt, cancel=None):
-        schema = CHAT_BUDGET_REQUEST if self.recover_chat_budget else 'local_inference_request_v1'
+        return self._answer_with_delivery(prompt, cancel)[0]
+
+    @property
+    def answer_with_delivery(self):
+        return self._answer_with_delivery if self.recover_chat_budget else None
+
+    def _answer_with_delivery(self, prompt, cancel=None):
+        schema = local_chat_budget.REQUEST_SCHEMA if self.recover_chat_budget else 'local_inference_request_v1'
         return self._answer({'schema': schema, 'prompt': prompt}, (prompt,), cancel)
 
     def answer_roles(self, guide, data, cancel=None):
         """Explicit research entry point. The caller supplies the host-rendered guide."""
         if not guide or not data:
             raise EngineError('角色分離需要完整的指引與資料。', 'invalid_input')
-        return self._answer({'schema': 'local_inference_request_v2', 'guide': guide, 'data': data}, (guide, data), cancel)
+        return self._answer({'schema': 'local_inference_request_v2', 'guide': guide, 'data': data}, (guide, data), cancel)[0]
 
     def _answer(self, payload, texts, cancel):
         deadline = time.monotonic() + self.timeout
@@ -137,6 +144,10 @@ class LocalEngine:
                                 raise EngineError('本機引擎錯誤格式無效。', 'invalid_response')
                             raise EngineError(ERRORS[code], 'local_'+code)
                         keys = {'schema', 'status', 'answer', 'selection_fingerprint', 'input_tokens', 'output_tokens', 'peak_gpu_bytes'}
+                        partial_format = (payload['schema'] == local_chat_budget.REQUEST_SCHEMA
+                                          and result.get('format') == document_partial.METHOD)
+                        if partial_format:
+                            keys.add('format')
                         if (process.returncode != 0 or set(result) != keys or result['status'] != 'succeeded'
                                 or result['selection_fingerprint'] != selection['fingerprint']
                                 or type(result['input_tokens']) is not int or not 1 <= result['input_tokens'] <= local_models.MAX_INPUT_TOKENS
@@ -152,7 +163,18 @@ class LocalEngine:
                             raise EngineError('本機回覆超過大小上限。', 'output_too_large')
                         check()
                         verify_selection(full=True)
-                        return result['answer'].strip()
+                        raw = result['answer'].strip()
+                        if not partial_format:
+                            return raw, None
+                        recovery = local_chat_budget.recovery_plan(payload['prompt'])
+                        if recovery is None or recovery[2] is None:
+                            raise EngineError(ERRORS['document_partial_invalid'], 'local_document_partial_invalid')
+                        try:
+                            delivered = document_partial.render(raw, recovery[2])
+                            from .response_delivery import make_receipt
+                            return delivered, make_receipt(raw, delivered, method=document_partial.METHOD)
+                        except (ValueError, RecursionError):
+                            raise EngineError(ERRORS['document_partial_invalid'], 'local_document_partial_invalid') from None
                     finally:
                         try:
                             try: actual.observe()

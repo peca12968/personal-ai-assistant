@@ -301,7 +301,13 @@ class DailyLocalEngine:
 
     def answer_with_delivery(self, prompt, cancel=None):
         from assistant.response_delivery import make_receipt
-        draft = self.engine.answer(prompt, cancel)
+        native_delivery = getattr(self.engine, 'answer_with_delivery', None)
+        if callable(native_delivery):
+            draft, receipt = native_delivery(prompt, cancel)
+            if receipt is not None:
+                return draft, receipt
+        else:
+            draft = self.engine.answer(prompt, cancel)
         delivered = self.deliver(prompt, draft)
         return delivered, make_receipt(draft, delivered)
 

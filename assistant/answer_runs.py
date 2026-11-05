@@ -12,6 +12,7 @@ ERROR_LABELS = {
     'local_gpu_busy': '本機顯示卡推理鎖由其他工作持有，這次沒有保存完成答案。',
     'local_input_too_large': '本機引擎輸入超過 token 上限，這次沒有保存完成答案。',
     'local_document_citation_invalid': '本機文件問答有無法核對的引用範圍，沒有保存完成答案。',
+    'local_document_partial_invalid': '本機文件部分回答的內容或來源代號無法核對，沒有保存完成答案。',
     'calculation_invalid': '本機精確計算的算式、範圍或輸出要求不符，沒有保存完成答案；未呼叫模型。請修正算式或要求後重新提問。',
     'temp_cleanup_failed': '推理暫存資料未能完全清理，沒有保存完成答案；此狀態本身不證明雲端請求已停止。',
     'timeout': '上次回答逾時，沒有保存完成答案。',

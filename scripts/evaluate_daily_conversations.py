@@ -309,7 +309,7 @@ if __name__ == '__main__':
         mode, trace = sys.argv[2], Path(sys.argv[3])
         del sys.argv[1:4]
         calls = []
-        original = LocalEngine.answer
+        original = LocalEngine._answer_with_delivery
 
         def observe(engine, prompt, cancel=None):
             call = dict(engine=engine.describe(), prompt_sha256=hashlib.sha256(prompt.encode('utf8')).hexdigest())
@@ -317,12 +317,13 @@ if __name__ == '__main__':
             save(trace,calls)
             if mode != 'live':
                 raise AssertionError('offline case reached model inference')
-            call['raw_answer'] = original(engine,prompt,cancel)
+            answer, receipt = original(engine,prompt,cancel)
+            call['raw_answer'] = receipt['raw_answer'] if receipt is not None else answer
             save(trace,calls)
-            return call['raw_answer']
+            return answer, receipt
 
         save(trace,calls)
-        with patch.object(LocalEngine,'answer',observe):
+        with patch.object(LocalEngine,'_answer_with_delivery',observe):
             daily_chat.main()
     else:
         sys.exit(0 if main() else 1)

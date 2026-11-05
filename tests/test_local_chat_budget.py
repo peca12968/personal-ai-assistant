@@ -199,7 +199,8 @@ class LocalChatBudgetTests(unittest.TestCase):
         context['documents'] = {'catalog': [{'document_id': 1}], 'excerpts': excerpts}
         request = {**current, 'prompt': render_prompt(context)}
         tokenizer = FramingTokenizer(local_models.MAX_INPUT_TOKENS + 1, 18)
-        ids, evidence = _encode_request(tokenizer, request, request_messages(request))
+        ids, evidence, partial = _encode_request(tokenizer, request, request_messages(request))
+        self.assertIsNone(partial)
         self.assertEqual(len(ids), 18)
         self.assertEqual(evidence, excerpts)
         validate_document_citations('提供的原文。[D1:L2]', evidence)

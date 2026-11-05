@@ -68,6 +68,7 @@ def main():
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/local_chat_budget.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/local_chat_continuity.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/local_document_budget.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/document_partial.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/topic_context.json")
     run(sys.executable, "scripts/evaluate_goal_drafts.py")
     run(sys.executable, "scripts/evaluate_goal_drafts.py", "--suite", "evals/goal_draft_inputs.json")

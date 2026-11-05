@@ -5,6 +5,7 @@ import re
 import unicodedata
 
 from .acceptance import strict_json
+from . import document_partial
 
 SCHEMA = 'answer_delivery_v1'
 MAX_TEXT_BYTES = 2 * 1024 * 1024
@@ -128,10 +129,10 @@ def digest(text):
     return hashlib.sha256(raw).hexdigest()
 
 
-def make_receipt(raw, delivered):
+def make_receipt(raw, delivered, *, method='daily_format_v1'):
     if raw == delivered:
         return None
-    receipt = dict(schema=SCHEMA, method='daily_format_v1', raw_answer=raw,
+    receipt = dict(schema=SCHEMA, method=method, raw_answer=raw,
                    raw_sha256=digest(raw), delivered_sha256=digest(delivered))
     validate(receipt, delivered)
     return receipt
@@ -140,7 +141,7 @@ def make_receipt(raw, delivered):
 def validate(receipt, delivered):
     if (not isinstance(receipt, dict) or set(receipt) != {
             'schema', 'method', 'raw_answer', 'raw_sha256', 'delivered_sha256'}
-            or receipt['schema'] != SCHEMA or receipt['method'] != 'daily_format_v1'
+            or receipt['schema'] != SCHEMA or receipt['method'] not in ('daily_format_v1', document_partial.METHOD)
             or receipt['raw_sha256'] != digest(receipt['raw_answer'])
             or receipt['delivered_sha256'] != digest(delivered)
             or receipt['raw_answer'] == delivered):
@@ -165,7 +166,17 @@ def read_db(db, message_id):
     if (row[2] != 'assistant' or row[3] != 'succeeded' or not isinstance(row[0], str)
             or len(row[0]) > MAX_RECEIPT_BYTES or len(row[0].encode('utf8')) > MAX_RECEIPT_BYTES):
         raise ValueError('答案整理紀錄不屬於已完成回答或超過上限。')
-    return validate(strict_json(row[0]), row[1])
+    receipt = validate(strict_json(row[0]), row[1])
+    if receipt['method'] == document_partial.METHOD:
+        context = db.execute('''SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END
+                              FROM answer_contexts WHERE message_id=?''', (MAX_TEXT_BYTES, message_id)).fetchone()
+        try:
+            plan = document_partial.build_plan(strict_json(context[0])['documents'])
+            if plan is None or document_partial.render(receipt['raw_answer'], plan) != row[1]:
+                raise ValueError
+        except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
+            raise ValueError('文件部分回答與保存的來源及原答不符。') from None
+    return receipt
 
 
 def read(store, message_id):
@@ -179,7 +190,9 @@ def describe(store, message_id):
         if receipt is None:
             return None
         delivered = db.execute('SELECT content FROM messages WHERE id=?', (message_id,)).fetchone()[0]
-        return ('這是本機格式整理，沒有重新呼叫模型，不代表模型權重或正確率改善。\n\n' +
+        description = ('程式依本輪來源狀態填入引用與缺漏說明。' if receipt['method'] == document_partial.METHOD
+                       else '這是本機格式整理，沒有重新呼叫模型，不代表模型權重或正確率改善。')
+        return (description + '\n\n' +
                 VIEW_FIELDS[0] + '：\n' + receipt['raw_answer'] + '\n\n' + VIEW_FIELDS[1] + '：\n' + delivered)
 
 

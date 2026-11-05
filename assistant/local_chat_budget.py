@@ -3,6 +3,7 @@ import re
 import unicodedata
 
 from .acceptance import strict_json
+from . import document_partial
 from .document_ranges import MAX_RANGES, STATUS_TEXT, range_status_text
 
 
@@ -176,7 +177,7 @@ def _text_guide(context):
 
 
 def recovery_plan(prompt):
-    """Return recovered prompt text and document excerpts for final range validation."""
+    """Return recovered text, evidence excerpts, and an optional partial-answer plan."""
     from .engine import render_prompt
 
     _, boundary, payload = prompt.rpartition(DATA_BOUNDARY)
@@ -191,11 +192,14 @@ def recovery_plan(prompt):
         return None
     if guide is None:
         return None
-    if 'retry_of' in context:
-        guide += RETRY_GUIDANCE
     documents = context.get('documents', {})
     excerpts = documents.get('excerpts', []) if documents.get('catalog') else None
-    return guide + boundary + payload, excerpts
+    partial = document_partial.build_plan(documents) if excerpts is not None else None
+    if partial is not None:
+        guide = GUIDANCE + document_partial.guidance(partial)
+    if 'retry_of' in context:
+        guide += RETRY_GUIDANCE
+    return guide + boundary + payload, excerpts, partial
 
 
 def recovery_prompt(prompt):
