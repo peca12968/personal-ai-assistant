@@ -10,6 +10,7 @@ from pathlib import Path
 from .engine import EngineError, CodexEngine, MAX_PROMPT_BYTES, MAX_ANSWER_BYTES, answer_directory
 from . import local_models, learned_models
 from .learning_batches import PhaseExit
+from .local_chat_budget import REQUEST_SCHEMA as CHAT_BUDGET_REQUEST
 
 ERRORS = {
     'system_memory': 'Windows 回報記憶體／分頁檔可用額度不足（1455），本機模型未完成作答；請先釋放記憶體或檢查分頁檔設定。沒有自動重試或改送其他引擎。',
@@ -27,14 +28,18 @@ ERRORS = {
 
 
 class LocalEngine:
-    def __init__(self, data_dir, *, experiment=None, batch=None, active=False, timeout=240):
+    def __init__(self, data_dir, *, experiment=None, batch=None, active=False, timeout=240,
+                 recover_chat_budget=False):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 900:
             raise ValueError('本機引擎逾時需為大於0且不超過900秒的有限值。')
+        if type(recover_chat_budget) is not bool:
+            raise ValueError('本機聊天提示排版開關需為布林值。')
         try:
             self._selection_json = json.dumps(learned_models.select(data_dir,experiment=experiment,batch=batch,active=active), ensure_ascii=False)
         except (ValueError, OSError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise EngineError(ERRORS['model_changed'], 'local_model_changed') from None
         self.timeout = timeout
+        self.recover_chat_budget = recover_chat_budget
         self.workdir = Path(data_dir).resolve()/'local-engine-workspace'
         self.workdir.mkdir(parents=True, exist_ok=True)
         folder = local_models.ROOT/'data/learning/runtime'
@@ -57,7 +62,8 @@ class LocalEngine:
         return answer_directory(self.workdir)
 
     def answer(self, prompt, cancel=None):
-        return self._answer({'schema': 'local_inference_request_v1', 'prompt': prompt}, (prompt,), cancel)
+        schema = CHAT_BUDGET_REQUEST if self.recover_chat_budget else 'local_inference_request_v1'
+        return self._answer({'schema': schema, 'prompt': prompt}, (prompt,), cancel)
 
     def answer_roles(self, guide, data, cancel=None):
         """Explicit research entry point. The caller supplies the host-rendered guide."""

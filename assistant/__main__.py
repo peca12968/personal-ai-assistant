@@ -86,10 +86,11 @@ def main():
         parser.error('--local-experiment、--local-batch與--local-active只能選一個。')
     if args.engine == 'local' and (args.improve or args.rollback_improvement):
         parser.error('程式自我改進目前使用Codex；本機參數學習是另一個流程，不能混用--engine local。')
-    def make_engine():
+    def make_engine(*, recover_chat_budget=False):
         if args.engine == 'local':
             from .local_engine import LocalEngine
-            return LocalEngine(args.data_dir, experiment=args.local_experiment,batch=args.local_batch,active=args.local_active)
+            return LocalEngine(args.data_dir, experiment=args.local_experiment, batch=args.local_batch,
+                               active=args.local_active, recover_chat_budget=recover_chat_budget)
         return CodexEngine(args.data_dir)
     if args.image and (not args.ask or len(args.image) > 4):
         parser.error('--image需搭配--ask，最多4張；重試沿用原題圖片。')
@@ -344,7 +345,7 @@ def main():
             parser.exit(1, '自主工作未完成：' + str(exc) + '\n')
         return
     try:
-        engine = make_engine()
+        engine = make_engine(recover_chat_budget=True)
         store = Store(args.data_dir / "assistant.sqlite3")
     except (ValueError, OSError, RuntimeError) as exc:
         parser.exit(1, '助理未啟動：' + str(exc) + '\n')

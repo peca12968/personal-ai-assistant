@@ -10,6 +10,7 @@ from pathlib import Path
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from assistant import local_models, learned_models
+from assistant import local_chat_budget
 from scripts.learning.runtime import gpu_lease
 from scripts.learning.protocol import EXPECTED_VERSIONS
 
@@ -32,7 +33,8 @@ def request_text(request):
     if not isinstance(request, dict) or not isinstance(request.get('selection'), dict):
         raise Failure('invalid_request')
     schema = request.get('schema')
-    if schema == 'local_inference_request_v1' and set(request) == {'schema', 'prompt', 'selection'}:
+    if schema in ('local_inference_request_v1', local_chat_budget.REQUEST_SCHEMA) and set(request) == {
+            'schema', 'prompt', 'selection'}:
         guide, data = '', request['prompt']
     elif schema == 'local_inference_request_v2' and set(request) == {'schema', 'guide', 'data', 'selection'}:
         guide, data = request['guide'], request['data']
@@ -60,16 +62,25 @@ def request_messages(request):
     return [{'role': 'system', 'content': system}, {'role': 'user', 'content': data}]
 
 
+def _check_role_content(tokenizer, messages):
+    # Role delimiters belong to the template, not message content.
+    reserved = set(tokenizer.all_special_ids)
+    for message in messages:
+        if not reserved.isdisjoint(tokenizer.encode(message['content'], add_special_tokens=False)):
+            raise Failure('invalid_request')
+
+
 def encode_request(tokenizer, request, messages):
     if request['schema'] == 'local_inference_request_v2':
-        # The template adds its own delimiters. Content must not encode another
-        # special token that changes how the model interprets either role.
-        reserved = set(tokenizer.all_special_ids)
-        for message in messages:
-            ids = tokenizer.encode(message['content'], add_special_tokens=False)
-            if not reserved.isdisjoint(ids):
-                raise Failure('invalid_request')
+        _check_role_content(tokenizer, messages)
     ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
+    if len(ids) > local_models.MAX_INPUT_TOKENS and request['schema'] == local_chat_budget.REQUEST_SCHEMA:
+        recovery = local_chat_budget.recovery_prompt(request['prompt'])
+        if recovery is not None:
+            recovered = request_messages({**request, 'prompt': recovery})
+            _check_role_content(tokenizer, recovered)
+            ids = tokenizer.apply_chat_template(recovered, tokenize=True, add_generation_prompt=True,
+                                                enable_thinking=False)
     if not ids or len(ids) > local_models.MAX_INPUT_TOKENS:
         raise Failure('input_too_large')
     return ids

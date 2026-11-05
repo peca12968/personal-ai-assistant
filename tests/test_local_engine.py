@@ -70,6 +70,14 @@ class LocalEngineTests(unittest.TestCase):
             self.assertEqual(json.loads(self.engine.answer_roles(guide, data)),
                              ['local_inference_request_v2', guide, data])
 
+    def test_chat_budget_opt_in_reaches_owned_worker_without_changing_wire_text(self):
+        from assistant.local_chat_budget import REQUEST_SCHEMA
+        code = SUCCESS + "\nresult['answer']=json.dumps([request['schema'],request['prompt']],ensure_ascii=False)\n" + WRITE
+        prompt = '使用者資料🙂\n'
+        self.assertEqual(json.loads(self.invoke(code, prompt)), ['local_inference_request_v1', prompt])
+        self.engine = LocalEngine(self.root, timeout=3, recover_chat_budget=True)
+        self.assertEqual(json.loads(self.invoke(code, prompt)), [REQUEST_SCHEMA, prompt])
+
     def test_role_control_tokens_are_rejected_before_applying_template(self):
         from assistant.local_worker import Failure, encode_request, request_messages
         class Tokenizer:

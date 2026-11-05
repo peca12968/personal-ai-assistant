@@ -155,7 +155,8 @@ def main():
             from scripts.learning.segment_chat import SegmentEngine
             raw = SegmentEngine(args.data_dir)
         else:
-            raw = LocalEngine(args.data_dir, experiment=args.local_experiment, batch=args.local_batch, active=args.local_active)
+            raw = LocalEngine(args.data_dir, experiment=args.local_experiment, batch=args.local_batch,
+                              active=args.local_active, recover_chat_budget=True)
         engine = DailyLocalEngine(raw)
         store = Store(args.data_dir / 'assistant.sqlite3')
         if args.ask or args.retry_answer:
