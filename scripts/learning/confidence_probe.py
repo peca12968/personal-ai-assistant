@@ -156,7 +156,7 @@ def collect(corpus):
     save(folder / 'plan.json', plan)
     print(folder.name, signature, flush=True)
     store = Store(folder / 'assistant.sqlite3')
-    app = Assistant(store, engine, allow_local_calculation=False)
+    app = Assistant(store, engine, allow_local_calculation=False, allow_local_transcription=False)
     rows = []
     for n, case in enumerate(corpus, 1):
         if digest(read(folder / 'plan.json')) != signature or sources() != plan['sources']:

@@ -46,7 +46,7 @@ def main():
             directory = Path(tmp)
             store = Store(directory / "state.sqlite3")
             sid = prepare_case(store, directory, case)
-            app = Assistant(store, engine)
+            app = Assistant(store, engine, allow_local_transcription=False)
             context = app.prepare_context(sid, case["prompt"])
             selected_text = "\n".join(row["text"] for row in context["documents"]["excerpts"])
             passed = all(text in selected_text for text in case["evidence"])

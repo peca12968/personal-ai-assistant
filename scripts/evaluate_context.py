@@ -57,7 +57,7 @@ def main():
                     # Same current instructions; isolate the old context-selection strategy.
                     answer = engine.answer(build_prompt(case["prompt"], store.messages(sid, 16), store.retrieve(case["prompt"])))
                 else:
-                    answer = Assistant(store, engine).ask(sid, case["prompt"])["content"]
+                    answer = Assistant(store, engine, allow_local_transcription=False).ask(sid, case["prompt"])["content"]
                 results.append({"id": case["id"], "strategy": args.strategy, "answer": answer,
                                 "expected_information": case.get("must_include", []), "human_grade": None})
                 path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -69,7 +69,7 @@ def main():
             store = Store(Path(tmp) / "context.sqlite3")
             sid = prepare_case(store, case)
             engine = CaptureEngine()
-            Assistant(store, engine).ask(sid, case["prompt"])
+            Assistant(store, engine, allow_local_transcription=False).ask(sid, case["prompt"])
             ok = all(text in engine.prompt for text in case.get("must_include", [])) and all(
                 text not in engine.prompt for text in case.get("must_exclude", []))
             results.append({"id": case["id"], "passed": ok})

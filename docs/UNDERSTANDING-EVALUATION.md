@@ -519,3 +519,12 @@ prompt_scope只判斷明確、單一引文文字任務，沒有抽出答案交�
 日常交付另以回歸確認：純轉錄不經一般格式縮短器，原文字元區中的同名輸入標記不攔截真正最後JSON邊界；引用樣式文字在純轉錄中是資料，普通文件主張仍驗證引用。引用保護是模型收集後的程式修改；以保存的十七份API原答離線重放完整Assistant，核對當前請求、背景和交付都相同，保存新來源指紋而保留模型報告原指紋。這項回放不認證新的模型推論。
 
 引擎API目前仍strip首尾空白，因此本節原答是API字串，不是裁切前的token解碼字串；本輪沒有修改此邊界。反斜線n及首尾空白仍待改善，摘要控制的用語也未變。這些是已供開發的資料，不是獨立驗收、任意文本保真度或IQ／權重學習證明。
+
+
+## 本機逐字轉錄：工具驗證與模型測量分離
+
+scripts/evaluate_chat_transcription.py以真實Assistant及SQLite驗證evals/chat_transcription.json：12個精確本機操作、8個只驗證分流的模擬引擎控制，以及完成紀錄／備份還原。沒有模型呼叫或模型品質分數。可加--report data/evaluations/新目錄/report.json保存獨立來源指紋與逐案紀錄，不覆寫舊報告。首份合成報告local-transcription-20261105-001留本機；既有模型轉義題1/2的失敗仍保留。
+
+本機操作在模型入口之前，按凍結literal_request_v1語法選取原始字元，保存local_transcription計畫與完成收據，不假裝是模型原答。保存與備份重新核對來源範圍、UTF-8／字元雜湊及原問題／成功流程／交付文字連結；還原不執行，不產生訓練例子。UI的JSON檢視只是不可見字元表示，不是額外輸出引號或跳脫修補。
+
+scripts/evaluate_understanding.py及其他原答收集入口、信心探查與ParameterAcceptance明確使用allow_local_transcription=False，故純轉錄題仍呼叫原引擎並保存原答與實際請求。transcription_mode=model_only_evaluation只說明停用工具，不提供正確答案。當前收集器、提示及脈絡來源改變，後續實機須新報告；不能接續舊來源綁定研究或追溯改寫其指紋。普通工作工具測試與原始模型評讀維持分開，不把本機逐字保真當成參數學習、陌生題能力或IQ增幅。

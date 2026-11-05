@@ -56,7 +56,7 @@ def main():
             if args.live:
                 before = store.memories()
                 try:
-                    response = Assistant(store, engine).ask(sid, case['question'])
+                    response = Assistant(store, engine, allow_local_transcription=False).ask(sid, case['question'])
                     row['answer'] = response['content']
                     row['context'] = store.answer_context(response['id'])
                     row['model_did_not_mutate_memories'] = store.memories() == before

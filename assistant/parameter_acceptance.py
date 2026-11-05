@@ -83,7 +83,7 @@ def prepare(data_dir,candidate,cases,*,baseline=None):
         target=path/(phase+'.sqlite3')
         with fixture.connect() as source,closing(sqlite3.connect(target)) as destination: source.backup(destination)
         store=Store(target); engine=make_engine(manifest,phase)
-        contexts={case['id']:Assistant(store,engine,allow_local_calculation=False).prepare_context(sessions[case['id']],case['question'].strip()) for case in cases['cases']}
+        contexts={case['id']:Assistant(store,engine,allow_local_calculation=False,allow_local_transcription=False).prepare_context(sessions[case['id']],case['question'].strip()) for case in cases['cases']}
         manifest['contexts'][phase]=contexts
         manifest['prompts'][phase]={key:render_prompt(value) for key,value in contexts.items()}
         manifest['database_files'][phase]=models.file_hash(target)
@@ -171,12 +171,12 @@ def run(data_dir,check_id,*,cancel=None,timeout=1800):
                     check(); engine=make_engine(manifest,phase,TracedEngine,timeout=min(240,deadline-time.monotonic()))
                     engine.destination=path/phase/case['id']; engine.destination.mkdir(parents=True,exist_ok=False)
                     engine.expected_prompt=manifest['prompts'][phase][case['id']]
-                    context=Assistant(store,engine,allow_local_calculation=False).prepare_context(manifest['sessions'][case['id']],case['question'].strip())
+                    context=Assistant(store,engine,allow_local_calculation=False,allow_local_transcription=False).prepare_context(manifest['sessions'][case['id']],case['question'].strip())
                     if context!=manifest['contexts'][phase][case['id']]: raise batches.Stale('驗收資料背景已變更。')
                     row={'phase':phase,'id':case['id'],'started':time.time(),'status':'running'}
                     receipt.update(phase=phase,case_id=case['id']); batches.save(path/'receipt.json',receipt)
                     try:
-                        answer=Assistant(store,engine,allow_local_calculation=False).ask(manifest['sessions'][case['id']],case['question'],cancel=cancel)
+                        answer=Assistant(store,engine,allow_local_calculation=False,allow_local_transcription=False).ask(manifest['sessions'][case['id']],case['question'],cancel=cancel)
                         row.update(status='complete',answer=answer['content'],message_id=answer['id'],run_id=answer['run_id'])
                     except Exception as exc:
                         row.update(status='failed',error_type=type(exc).__name__,error_code=getattr(exc,'code',None),error=str(exc)[:2000])

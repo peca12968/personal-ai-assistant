@@ -85,7 +85,7 @@ def collect(store,case,engine,unchanged):
             calls[0]['answer']=result
             save_report(trace,{**calls[0],'status':'returned'})
             unchanged();return result
-    answer=Assistant(store,Recorded()).ask(sid,case['prompt'],image_ids=ids)
+    answer=Assistant(store,Recorded(),allow_local_transcription=False).ask(sid,case['prompt'],image_ids=ids)
     unchanged();context=store.answer_context(answer['id']);request=calls[0]['request']
     assert request==render_prompt(context)
     assert calls[0]['sha256']==[item['sha256'] for item in context['image_inputs']]

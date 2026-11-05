@@ -43,7 +43,7 @@ def main():
             sid = store.new_session()
             for row in selected:
                 attach_result(store, sid, report, row)
-            app = Assistant(store, engine)
+            app = Assistant(store, engine, allow_local_transcription=False)
             context = app.prepare_context(sid, case['prompt'])
             text = '\n'.join(row['text'] for row in context['documents']['excerpts'])
             passed = set(found) == set(case['expected']) and all(term in text for term in case['evidence'])

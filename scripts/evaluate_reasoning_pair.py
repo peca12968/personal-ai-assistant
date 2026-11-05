@@ -153,7 +153,7 @@ def perform(folder,arm,prompt,protocol):
         else:
             store=Store(folder/'synthetic.sqlite3')
             save_profile(store,{**DEFAULTS,'tone':'direct'},expected_revision=0)
-            answer=Assistant(store,engine).ask(store.new_session(),prompt)['content']
+            answer=Assistant(store,engine,allow_local_transcription=False).ask(store.new_session(),prompt)['content']
     except (EngineError,ValueError,OSError) as exc:error=str(exc)
     return {'arm':arm,'elapsed_seconds':time.perf_counter()-started,'answer':answer,'error':error,
             'cli_reported':engine.metadata,'request':engine.request,

@@ -249,6 +249,10 @@ class DailyAssistant(Assistant):
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         question = question.strip()
+        if self.allow_local_transcription and not image_ids:
+            from assistant.chat_transcription import parse_request
+            if parse_request(question) is not None:
+                return super()._ask(sid,question,cancel=cancel,retry=retry,draft=draft,image_ids=image_ids)
         followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)
         local = self.allow_local_calculation and not image_ids
         choice = ROW_REPLY.fullmatch(question)

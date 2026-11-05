@@ -184,7 +184,7 @@ def collect_case(store, sid, case, engine, unchanged, *, describe=None, journal=
     recorded = Recorded()
     if describe is not None:
         recorded.describe = describe
-    answer = Assistant(store, recorded).ask(sid, case['prompt'])
+    answer = Assistant(store, recorded, allow_local_transcription=False).ask(sid, case['prompt'])
     unchanged()
     if len(calls) != 1:
         raise ValueError('此案例未呼叫模型（可能是本機命令），不保存為模型回答；請使用對應功能評估器。')
@@ -249,7 +249,7 @@ def main():
                 with tempfile.TemporaryDirectory() as tmp:
                     store = Store(Path(tmp) / 'state.sqlite3')
                     sid = prepare_case(store, case)
-                    context = Assistant(store, None).prepare_context(sid, case['prompt'])
+                    context = Assistant(store, None, allow_local_transcription=False).prepare_context(sid, case['prompt'])
                     assert context['current_request'] == case['prompt']
                     if 'companion_profile' in case:
                         assert context['companion_profile']['settings'] == validate_profile(case['companion_profile'])

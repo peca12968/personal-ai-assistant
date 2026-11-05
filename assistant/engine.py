@@ -243,9 +243,12 @@ class CodexEngine:
 
 
 class Assistant:
-    def __init__(self, store, engine, *, allow_local_calculation=True):
+    def __init__(self, store, engine, *, allow_local_calculation=True, allow_local_transcription=True):
         self.store, self.engine = store, engine
         self.allow_local_calculation = allow_local_calculation
+        if type(allow_local_transcription) is not bool:
+            raise ValueError('本機轉錄開關需為布林值。')
+        self.allow_local_transcription = allow_local_transcription
 
     def prepare_context(self, sid, question, exclude_message_id=None):
         history = self.store.messages(sid, 16, exclude_local=True, exclude_message_id=exclude_message_id)
@@ -287,6 +290,8 @@ class Assistant:
             context['delivery_capabilities'] = delivery_help
         if not self.allow_local_calculation:
             context['calculation_mode'] = 'model_only_evaluation'
+        if not self.allow_local_transcription:
+            context['transcription_mode'] = 'model_only_evaluation'
         from .prompt_scope import transcription_format, transcription_source
         if copy_format := transcription_format(context):
             context['transcription_format'] = copy_format
@@ -327,12 +332,19 @@ class Assistant:
         image_metadata, image_payloads = prepare(self.store, sid, image_ids, historical=historical)
         from . import chat_calculation
         calculation = chat_calculation.parse_request(question) if self.allow_local_calculation else None
+        from . import chat_transcription
+        transcription = (chat_transcription.parse_request(question)
+                         if self.allow_local_transcription and not image_metadata else None)
         if calculation is not None and image_metadata:
             raise ValueError('本機精確計算指令不能同時附圖；請先取消圖片選取。')
         if image_payloads and not callable(getattr(self.engine, 'answer_images', None)):
             raise ValueError('目前引擎不支援圖片，沒有送出問題或忽略附件。')
         answer_runs.recover(self.store, sid)
-        if calculation is not None:
+        if transcription is not None:
+            context = make_context(question, [], [])
+            context.update(response_mode=chat_transcription.MODE,transcription=transcription,
+                           documents={'catalog':[],'excerpts':[]})
+        elif calculation is not None:
             context = make_context(question, [], [])
             context.update(response_mode='local_calculation', calculation=calculation,
                            documents={'catalog':[], 'excerpts':[]})
@@ -348,7 +360,14 @@ class Assistant:
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
                 delivery = None
-                if calculation is not None:
+                if transcription is not None:
+                    try:
+                        answer,receipt = chat_transcription.evaluate(transcription,cancel)
+                        chat_transcription.validate(receipt,answer,question)
+                    except ValueError as exc:
+                        raise EngineError('本機逐字轉錄未完成：'+str(exc),'transcription_invalid') from None
+                    context['transcription'] = receipt
+                elif calculation is not None:
                     try:
                         answer, receipt = chat_calculation.evaluate(calculation, cancel)
                     except ValueError as exc:
@@ -366,7 +385,7 @@ class Assistant:
                 from .prompt_scope import transcription_focus
                 # A citation-looking fragment in an explicit literal is data,
                 # not a claim of support from an imported document.
-                checks = [] if transcription_focus(context) else check_citations(answer, context['documents']['excerpts'])
+                checks = [] if transcription is not None or transcription_focus(context) else check_citations(answer, context['documents']['excerpts'])
                 if any(not check['range_valid'] for check in checks):
                     answer += '\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
                 mid = answer_runs.finish(self.store, run_id, answer, context, checks,
@@ -379,4 +398,5 @@ class Assistant:
                 "document_count": len(context["documents"]["catalog"]), "citation_checks": checks,
                 'run_id': run_id, 'user_message_id': uid,
                 **({'response_mode':'local_calculation', 'calculation':receipt} if calculation is not None else {}),
+                **({'response_mode':chat_transcription.MODE, 'transcription':receipt} if transcription is not None else {}),
                 **({'image_count': len(image_metadata)} if image_metadata else {})}

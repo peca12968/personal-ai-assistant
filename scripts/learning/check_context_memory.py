@@ -33,7 +33,7 @@ def main():
     store = Store(folder / 'synthetic.sqlite3')
     sid = prepare_case(store, case)
     model = TracedEngine(args.data_dir, batch=args.batch)
-    app = Assistant(store, model)
+    app = Assistant(store, model, allow_local_transcription=False)
     model.destination = folder
     model.expected_prompt = render_prompt(app.prepare_context(sid, case['prompt']))
     report = {'case': case['id'], 'expected': case['expected_answer'], 'minimum_input_tokens': MIN_TEST_TOKENS,

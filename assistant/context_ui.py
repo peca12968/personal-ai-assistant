@@ -1,5 +1,6 @@
 import tkinter as tk
 import json
+import sqlite3
 from tkinter import messagebox, ttk
 from .document_ranges import range_status_text
 from .companion_profile import describe as describe_profile
@@ -49,10 +50,19 @@ def show_context(parent, store, message_id):
     window = tk.Toplevel(parent)
     local = context.get('response_mode') == 'local_memory'
     calculated = context.get('response_mode') == 'local_calculation'
-    window.title('本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
+    transcribed = context.get('response_mode') == 'local_transcription'
+    if transcribed:
+        from .chat_transcription import read,describe as describe_transcription
+        try:
+            transcription_receipt = read(store,message_id)
+        except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
+            window.destroy()
+            messagebox.showerror('本機轉錄紀錄無法核對',str(exc),parent=parent)
+            return
+    window.title('本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
     window.geometry("820x640")
     window.minsize(600, 420)
-    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated else
+    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed else
               "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
     ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
@@ -108,6 +118,8 @@ def show_context(parent, store, message_id):
     if calculated:
         from .chat_calculation import describe
         sections = [('計算紀錄', '當時請求：\n' + context['current_request'] + '\n\n' + describe(context['calculation']))]
+    if transcribed:
+        sections = [('轉錄紀錄','當時請求：\n'+context['current_request']+'\n\n'+describe_transcription(transcription_receipt))]
     from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):
         sections.insert(0, (VIEW_TAB, delivery_text))

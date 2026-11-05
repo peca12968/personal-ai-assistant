@@ -116,6 +116,8 @@ def validate_database(path):
         if 'answer_deliveries' in actual_tables:
             from .response_delivery import validate_saved
             validate_saved(db)
+        from .chat_transcription import validate_saved as validate_transcription
+        validate_transcription(db)
         if draft_tables <= actual_tables:
             from .chat_drafts import validate_saved
             validate_saved(db)

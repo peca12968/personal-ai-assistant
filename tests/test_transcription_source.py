@@ -124,7 +124,7 @@ class TranscriptionSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp)/'state.sqlite3')
             engine = Engine()
-            answer = Assistant(store, engine).ask(store.new_session(), '請照抄「原文」，不加引號。')
+            answer = Assistant(store, engine, allow_local_transcription=False).ask(store.new_session(), '請照抄「原文」，不加引號。')
             self.assertEqual(answer['content'], '模型仍回錯整個問題')
             self.assertEqual(len(engine.calls), 1)
             self.assertIn(SOURCE_GUIDANCE, engine.calls[0])
@@ -141,7 +141,7 @@ class TranscriptionSourceTests(unittest.TestCase):
             store = Store(Path(temp)/'state.sqlite3')
             with patch('scripts.daily_delivery.extract', side_effect=AssertionError('must not format')), \
                     patch('scripts.daily_delivery.missing_literal', side_effect=AssertionError('must not shorten')):
-                answer = Assistant(store, DailyLocalEngine(Engine())).ask(store.new_session(), '請照抄「答案是42」，不加引號。')
+                answer = Assistant(store, DailyLocalEngine(Engine()), allow_local_transcription=False).ask(store.new_session(), '請照抄「答案是42」，不加引號。')
             self.assertEqual(answer['content'], '模型回錯的整個問題。')
             self.assertIsNone(read(store, answer['id']))
 
@@ -186,7 +186,7 @@ class TranscriptionSourceTests(unittest.TestCase):
             def answer(self, request, cancel=None): return '原文 [D1:L7] 不代表文件證據'
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp)/'state.sqlite3')
-            answer = Assistant(store,Engine()).ask(store.new_session(),
+            answer = Assistant(store,Engine(),allow_local_transcription=False).ask(store.new_session(),
                 '請逐字照抄「原文 [D1:L7] 不代表文件證據」，不加引號。')
             self.assertEqual(answer['content'],'原文 [D1:L7] 不代表文件證據')
             self.assertEqual(answer['citation_checks'],[])

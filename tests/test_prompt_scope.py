@@ -105,7 +105,7 @@ class PromptScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp)/'state.sqlite3')
             engine = Engine()
-            answer = Assistant(store, engine).ask(store.new_session(), '請照抄「原文」，不加引號。')
+            answer = Assistant(store, engine, allow_local_transcription=False).ask(store.new_session(), '請照抄「原文」，不加引號。')
             self.assertEqual(answer['content'], '「模型仍可能加錯引號」')
             self.assertEqual(len(engine.calls), 1)
             self.assertIn(TRANSCRIPTION_GUIDANCE, engine.calls[0])
