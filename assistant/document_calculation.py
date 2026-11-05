@@ -4,7 +4,7 @@ import re
 import unicodedata
 from decimal import Decimal
 
-from . import document_units, exact_math, local_answer_receipts
+from . import document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
 from .expression_math import check_cancel
 from .response_delivery import digest
@@ -63,17 +63,21 @@ def _parse_conversion(question):
 
 
 def parse_live_request(question):
-    return parse_request(question) or _parse_conversion(question)
+    return (parse_request(question) or _parse_conversion(question)
+            or document_table.parse_request(question, _UNIT, document_units.SCALES))
 
 
 def snapshot(store, sid, plan):
-    ids = {operand['document_id'] for operand in plan['operands']}
+    operands = plan['operands']
+    ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
-    excerpts, ranges, limited = select_ranges(plan['request'], sources, max_excerpts=2, max_chars=14000)
+    query = document_table.query(operands) if plan['schema'] == document_table.PLAN else plan['request']
+    excerpts, ranges, limited = select_ranges(query, sources, max_excerpts=2, max_chars=14000)
     catalog = [dict(document_id=row['id'], name=row['name'], sha256=row['sha256'],
                     total_lines=len(row['content'].splitlines())) for row in sources]
+    covered = {(row['document_id'], line) for row in excerpts for line in range(row['start_line'], row['end_line'] + 1)}
     return dict(catalog=catalog, excerpts=excerpts, requested_ranges=ranges, requested_ranges_limited=limited,
-                coverage_limited=sum(row['total_lines'] for row in catalog) > len(excerpts))
+                coverage_limited=sum(row['total_lines'] for row in catalog) > len(covered))
 
 
 def _number(value):
@@ -139,13 +143,18 @@ def _read_sources(plan, request):
             or len(documents['excerpts']) != sum(row['status'] == 'provided' for row in documents['requested_ranges'])):
         raise ValueError('文件計算計畫與原問不符。')
     operands = request['operands']
+    catalog = _catalog(documents, operands)
+    return [_observe_line(operand, row, catalog, documents['excerpts'])
+            for operand, row in zip(operands, documents['requested_ranges'], strict=True)]
+
+
+def _catalog(documents, operands):
     catalog = {row['document_id']: row for row in documents['catalog']}
     if (len(catalog) != len(documents['catalog']) or catalog.keys() - {row['document_id'] for row in operands}
             or any(type(row['total_lines']) is not int or row['total_lines'] < 0
                    or not re.fullmatch(r'[0-9a-f]{64}', row['sha256']) for row in catalog.values())):
         raise ValueError('保存的文件來源清單無法核對。')
-    return [_observe_line(operand, row, catalog, documents['excerpts'])
-            for operand, row in zip(operands, documents['requested_ranges'], strict=True)]
+    return catalog
 
 
 def _observe_v1(operand, row, unit):
@@ -159,6 +168,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == document_table.PLAN:
+        return _evaluate_table(plan, cancel)
     if plan.get('schema') == CONVERSION_PLAN:
         return _evaluate_conversion(plan, cancel)
     request = parse_request(plan['request'])
@@ -204,6 +215,10 @@ def _convert(operand, row, target):
     if scale is None:
         return {**row, 'status': 'unit_unsupported', 'source_unit': unit}
     observed = {**row, 'value': _number(match[1]), 'source_unit': unit}
+    return _scaled_quantity(observed, scale, target)
+
+
+def _scaled_quantity(observed, scale, target):
     if scale[0] != target[0]:
         return {**observed, 'status': 'unit_incompatible'}
     factor = str(scale[1] / target[1])
@@ -252,6 +267,75 @@ def _evaluate_conversion(plan, cancel):
                         observations=observed, result=result, output=answer, output_sha256=digest(answer))
 
 
+def _same_unit(first, second):
+    scales = document_units.SCALES
+    return first == second or (first in scales and scales[first] == scales.get(second))
+
+
+def _table_quantity(operand, source, target, convert):
+    row = document_table.lookup(operand, source, _UNIT)
+    if row['status'] != 'selected':
+        return row
+    value = unicodedata.normalize('NFKC', row['cell']).strip()
+    match = re.fullmatch(rf'({_NUMBER}) *(?:({_UNIT}))?', value)
+    if match is None:
+        return {**row, 'status': 'value_unconfirmed'}
+    header_unit, cell_unit = row['header_unit'], match[2]
+    if header_unit and cell_unit and not _same_unit(header_unit, cell_unit):
+        return {**row, 'status': 'unit_conflict', 'cell_unit': cell_unit}
+    unit = cell_unit or header_unit
+    if unit is None:
+        return {**row, 'status': 'unit_missing'}
+    observed = {**row, 'value': _number(match[1]), 'source_unit': unit}
+    if convert:
+        scale = document_units.SCALES.get(unit)
+        return (_scaled_quantity(observed, scale, document_units.SCALES[target]) if scale is not None
+                else {**observed, 'status': 'unit_unsupported'})
+    return {**observed, 'status': 'confirmed' if _same_unit(unit, target) else 'unit_incompatible'}
+
+
+def _table_line(operand, row, unit):
+    label = f'「{operand["key_column"]}={operand["key_value"]}」的「{operand["value_column"]}」'
+    if 'row_citation' in row:
+        location = f'{row["header_citation"]} {row["row_citation"]}'
+    else:
+        location = f'D{operand["document_id"]} 第{operand["start_line"]}到{operand["end_line"]}行'
+    if row['status'] != 'confirmed':
+        reason = document_table.reason(row['status'])
+        if matches := row.get('matching_lines'):
+            numbers = '、'.join(map(str, matches[:8]))
+            reason += f'符合的行號為 {numbers}。' if len(matches) <= 8 else f'前八個符合的行號為 {numbers}。'
+        return f'{label}（{location}）無法取值。{reason}'
+    line = f'{label}為 {row["value"]} {row["source_unit"]}。 {location}'
+    if 'converted' in row and row['source_unit'] != unit:
+        line += f' 換算為 {_display_exact(row["converted"])} {unit}。'
+    return line
+
+
+def _evaluate_table(plan, cancel):
+    request = document_table.parse_request(plan['request'], _UNIT, document_units.SCALES)
+    documents = plan['documents']
+    if request is None or plan != {**request, 'documents': documents} or len(documents['catalog']) > 2:
+        raise ValueError('表格計算計畫與原問不符。')
+    operands, unit, convert = request['operands'], request['unit'], request['convert']
+    sources = document_table.lines_for_requests(documents, _catalog(documents, operands), operands)
+    observed = [_table_quantity(operand, source, unit, convert)
+                for operand, source in zip(operands, sources, strict=True)]
+    result = None
+    summary = '目前無法計算。請核對以下表格欄位、資料列或單位。'
+    if all(row['status'] == 'confirmed' for row in observed):
+        values = [row['converted']['exact'] if convert else row['value'] for row in observed]
+        result = exact_math.calculate({'operation': request['operation'], 'values': values})
+        sign = '+' if request['operation'] == 'sum' else '−'
+        left, right = [_display_exact(row['converted']) if convert else row['value'] for row in observed]
+        summary = f'結果為 {_display_exact(result)} {unit}（({left}) {sign} ({right})）。'
+    check_cancel(cancel)
+    answer = '\n'.join([summary, *(_table_line(operand, row, unit)
+                                  for operand, row in zip(operands, observed, strict=True))])
+    return answer, dict(schema=document_table.RECEIPT, plan=plan, model_called=False,
+                        observations=observed, result=result, output=answer, output_sha256=digest(answer))
+
+
 def validate(receipt, delivered, question=None):
     try:
         answer, expected = evaluate(receipt['plan'])
@@ -269,7 +353,7 @@ def read(store, mid):
 
 def describe(receipt):
     plan = receipt['plan']
-    factors = [f'{operand["citation"]} 1 {row["source_unit"]} = {row["factor_exact"]} {plan["unit"]}'
+    factors = [f'{row.get("row_citation", operand["citation"])} 1 {row["source_unit"]} = {row["factor_exact"]} {plan["unit"]}'
                for operand, row in zip(plan['operands'], receipt['observations'], strict=True)
                if 'factor_exact' in row and row['source_unit'] != plan['unit']]
     return receipt['output'] + ('\n\n換算係數\n' + '\n'.join(factors) if factors else '')
