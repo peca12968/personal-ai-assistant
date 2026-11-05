@@ -136,10 +136,13 @@ class DocumentTableTests(unittest.TestCase):
                 '[D1:L1-L3] 中「批次」為「乙」的「重量」，')
         aggregate = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」的「重量」，換算成公斤。'
         multi = '文件問答：加總 [D1:L1-L3]、[D2:L1-L3] 的「重量」，換算成公斤。'
+        filtered = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」且「狀態」為「完成」的「重量」，換算成公斤。'
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
                              (aggregate, True), (aggregate + '接著上傳原始文件。', False),
-                             (multi, True), (multi + '接著上傳原始文件。', False)):
+                             (multi, True), (multi + '接著上傳原始文件。', False),
+                             (filtered, True), (filtered + '接著上傳原始文件。', False),
+                             (filtered.replace('且', '或'), False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -276,3 +279,68 @@ class DocumentTableTests(unittest.TestCase):
             db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             create_backup(self.store.path, self.root / 'tampered-multi.paibackup')
+
+    def test_multi_column_filters_use_exact_unicode_and_all_conditions(self):
+        self.attach('weights.csv', '倉別,狀態,區域,品項,重量\nＡ,已完成,東,木且紙,3kg\nA,已完成,東,木且紙,99kg\nＡ,取消,東,木且紙,未知')
+        question = ('文件問答：加總 [D1:L1-L4] 中「倉別」為「Ａ」且「狀態」不為「取消」'
+                    '且「區域」為「東」且「品項」為「木且紙」的「重量」，換算成公斤。')
+        answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '3')
+        self.assertEqual(len(receipt['plan']['filters']), 4)
+        group, = receipt['groups']
+        self.assertEqual([row['status'] for row in group['decisions']], ['matched', 'excluded', 'excluded'])
+        self.assertEqual([test['status'] for test in group['decisions'][2]['tests']], ['true', 'false', 'true', 'true'])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L2]'])
+        self.assertIn('第 3 行 · 排除', document_calculation.describe(receipt))
+
+    def test_false_condition_excludes_blank_rows_but_potential_matches_block_result(self):
+        self.attach('shipment.csv', '倉別,狀態,箱數(箱)\n北,完成,5\n南,,未知\n北,,9')
+        stem = '文件問答：合計 [D1:L1-L{}] 中「狀態」不為「取消」且「倉別」為「北」的「箱數」，單位為箱。'
+        _, ready = self.ask(stem.format(3), schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        self.assertEqual(ready['result']['exact'], '5')
+        self.assertEqual(ready['groups'][0]['decisions'][1]['status'], 'excluded')
+        answer, blocked = self.ask(stem.format(4), schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        self.assertIsNone(blocked['total_exact'])
+        group, = blocked['groups']
+        self.assertEqual(group['selection_status'], 'filter_unknown')
+        self.assertEqual([row['status'] for row in group['decisions']], ['matched', 'excluded', 'unknown'])
+        self.assertIn('[D1:L4] 「狀態」空白', answer['content'])
+        self.assertEqual(answer['citation_checks'], [{'citation': '[D1:L4]', 'range_valid': True}])
+
+    def test_multi_filter_cross_table_mean_preserves_each_source_and_denominator(self):
+        self.attach('first.csv', '班別,狀態,時長(秒)\n早,完成,1\n早,完成,3\n早,取消,100')
+        self.attach('second.tsv', '時長\t狀態\t班別\n1 min\t完成\t早\n10秒\t完成\t晚')
+        question = ('文件問答：計算 [D1:L1-L4] 與 [D2:L1-L3] 中「班別」為「早」'
+                    '且「狀態」不為「取消」的「時長」平均，換算成秒。')
+        answer, receipt = self.ask(question, schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '64/3')
+        self.assertEqual([len(group['observations']) for group in receipt['groups']], [2, 1])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']],
+                         ['[D1:L1]', '[D1:L2-L3]', '[D2:L1]', '[D2:L2]'])
+        self.assertIn('精確總和 64 秒 ÷ 3', document_calculation.describe(receipt))
+
+    def test_missing_condition_column_blocks_cross_table_result(self):
+        self.attach('first.csv', '倉別,狀態,箱數(箱)\n北,完成,5')
+        self.attach('second.csv', '倉別,箱數(箱)\n南,99')
+        question = ('文件問答：合計 [D1:L1-L2]、[D2:L1-L2] 中「倉別」為「北」'
+                    '且「狀態」為「完成」的「箱數」，單位為箱。')
+        _, receipt = self.ask(question, schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['status'], 'source_blocked')
+        self.assertEqual(receipt['groups'][1]['selection_status'], 'column_missing')
+        self.assertEqual(receipt['groups'][1]['decisions'], [])
+        self.assertIsNone(receipt['result'])
+
+    def test_filter_backup_rechecks_excluded_rows_and_raw_evidence(self):
+        self.attach('table.csv', '倉別,狀態,箱數(箱)\n北,完成,5\n南,完成,99')
+        question = ('文件問答：合計 [D1:L1-L3] 中「倉別」為「北」'
+                    '且「狀態」為「完成」的「箱數」，單位為箱。')
+        answer, receipt = self.ask(question, schema=document_table.FILTER_AGGREGATE_RECEIPT)
+        archive = create_backup(self.store.path, self.root / 'filtered.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['groups'][0]['decisions'][1]['tests'][0]['value'] = '北'
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-filter.paibackup')

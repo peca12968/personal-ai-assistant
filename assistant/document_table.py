@@ -14,11 +14,14 @@ AGGREGATE_PLAN = 'document_calculation_plan_v4'
 AGGREGATE_RECEIPT = 'document_calculation_receipt_v4'
 MULTI_AGGREGATE_PLAN = 'document_calculation_plan_v5'
 MULTI_AGGREGATE_RECEIPT = 'document_calculation_receipt_v5'
+FILTER_AGGREGATE_PLAN = 'document_calculation_plan_v6'
+FILTER_AGGREGATE_RECEIPT = 'document_calculation_receipt_v6'
 MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
 _SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
 _REF = rf'({_SPAN})'
-_TOKEN = r'「([^「」\[\]\x00-\x1f\x7f]{1,48})」'
+_TOKEN_TEXT = r'[^「」\[\]\x00-\x1f\x7f]{1,48}'
+_TOKEN = rf'「({_TOKEN_TEXT})」'
 _OPERAND = rf'{_REF} *中 *{_TOKEN} *為 *{_TOKEN} *的 *{_TOKEN}'
 _REQUEST = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_OPERAND} *(加上|減去|[+＋\-－]) *{_OPERAND}'
                       r' *[,，] *(單位為|(?:統一)?換算成) *([^。?？\s]{1,8})[。?？]?')
@@ -28,6 +31,14 @@ _AGG_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(加總|合計|平均) *
 _AGG_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_AGG_SOURCE} *(?:的 *)?(總和|合計|平均值?){_AGG_UNIT}')
 _MULTI_SOURCE = re.compile(rf'(文件問答[:：] *(?:請)?(?:加總|合計|平均|計算) *)'
                            rf'({_SPAN}(?: *(?:、|與|和) *{_SPAN}){{1,{MAX_AGGREGATE_RANGES - 1}}})(.*)')
+_CONDITION = rf'「{_TOKEN_TEXT}」 *(?:不為|為) *「{_TOKEN_TEXT}」'
+_CONDITION_PARTS = re.compile(rf'{_TOKEN} *(不為|為) *{_TOKEN}')
+_FILTER_SOURCE = (rf'(?P<scope>{_SPAN}(?: *(?:、|與|和) *{_SPAN}){{0,{MAX_AGGREGATE_RANGES - 1}}})'
+                  rf' *中 *(?P<conditions>{_CONDITION}(?: *且 *{_CONDITION}){{1,3}}) *的 *「(?P<column>{_TOKEN_TEXT})」')
+_FILTER_UNIT = r' *[,，] *(?P<mode>單位為|(?:統一)?換算成) *(?P<unit>[^。?？\s]{1,8})[。?？]?'
+_FILTER_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(?P<operation>加總|合計|平均) *{_FILTER_SOURCE}{_FILTER_UNIT}')
+_FILTER_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_FILTER_SOURCE} *(?:的 *)?'
+                            rf'(?P<operation>總和|合計|平均值?){_FILTER_UNIT}')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -37,6 +48,7 @@ _REASONS = {
     'column_missing': '表頭沒有指定的查找欄或數值欄。',
     'row_missing': '指定範圍內找不到符合鍵值的資料列。',
     'row_ambiguous': '指定範圍內有多筆符合鍵值的資料列，請縮小範圍或改用唯一鍵值。',
+    'filter_unknown': '部分資料列的條件欄位空白，無法確定是否符合。',
     'value_unconfirmed': '儲存格沒有可核對的確定數值。',
     'unit_missing': '表頭與儲存格都沒有明示單位。',
     'unit_conflict': '表頭與儲存格宣告的單位不一致。',
@@ -112,6 +124,32 @@ def parse_multi_aggregate(question, unit_pattern, supported_units):
         ranges, _ = requested_ranges(citation)
         operands.append({**first, **ranges[0], 'citation': citation})
     return {**base, 'schema': MULTI_AGGREGATE_PLAN, 'request': question, 'operands': operands}
+
+
+def parse_filter_aggregate(question, unit_pattern, supported_units):
+    if not isinstance(question, str) or len(question) > 820 or len(question.splitlines()) != 1:
+        return None
+    text = question.strip()
+    match = _FILTER_PREFIX.fullmatch(text) or _FILTER_SUFFIX.fullmatch(text)
+    if not match:
+        return None
+    convert = match['mode'] != '單位為'
+    unit = _target_unit(match['unit'], convert, unit_pattern, supported_units)
+    column = match['column'].strip()
+    if unit is None or not column:
+        return None
+    filters = [dict(column=name.strip(), operator='ne' if operator == '不為' else 'eq', value=value.strip())
+               for name, operator, value in _CONDITION_PARTS.findall(match['conditions'])]
+    if (any(not row['column'] or not row['value'] for row in filters)
+            or len({row['column'] for row in filters}) != len(filters)):
+        return None
+    operands = []
+    for citation in re.findall(_SPAN, match['scope']):
+        ranges, _ = requested_ranges(citation)
+        operands.append({**ranges[0], 'citation': citation, 'value_column': column})
+    return dict(schema=FILTER_AGGREGATE_PLAN, request=question,
+                operation='mean' if match['operation'].startswith('平均') else 'sum',
+                unit=unit, convert=convert, operands=operands, filters=filters)
 
 
 def query(operands):
@@ -232,14 +270,27 @@ def lookup(operand, source, unit_pattern):
 
 def lookup_rows(operand, source, unit_pattern):
     """Return status, total data-row count, and matching cells in physical order."""
+    key_column = operand['key_column']
+    names = [] if key_column is None else [key_column]
+    status, total_rows, bound = _bind_table(operand, source, unit_pattern, names)
+    if bound is None:
+        return status, total_rows, []
+    key = bound['key_indexes'][0] if names else None
+    matches = [(line, _selected_cell(operand, source, bound, line, row))
+               for line, row in enumerate(bound['rows'], bound['first_row'])
+               if key is None or row[key].strip() == operand['key_value']]
+    return ('selected' if matches else 'row_missing'), total_rows, matches
+
+
+def _bind_table(operand, source, unit_pattern, key_columns):
     if source['status'] != 'provided':
-        return source['status'], None, []
+        return source['status'], None, None
     table = _table_rows(source)
     if table is None:
-        return 'table_invalid', None, []
+        return 'table_invalid', None, None
     header, rows, offset = table
     if not 2 <= len(header) <= 80 or not rows or any(len(row) != len(header) for row in rows):
-        return 'table_invalid', None, []
+        return 'table_invalid', None, None
     columns, units = [], []
     for cell in header:
         match = _HEADER_UNIT.fullmatch(cell)
@@ -248,17 +299,54 @@ def lookup_rows(operand, source, unit_pattern):
         columns.append(match[1].strip() if explicit_unit else cell)
         units.append(unit if explicit_unit else None)
     if not all(columns) or len(set(columns)) != len(columns):
-        return 'header_ambiguous', None, []
-    key_column = operand['key_column']
-    if (key_column is not None and key_column not in header) or operand['value_column'] not in columns:
-        return 'column_missing', len(rows), []
-    key = header.index(key_column) if key_column is not None else None
+        return 'header_ambiguous', None, None
+    if any(name not in header for name in key_columns) or operand['value_column'] not in columns:
+        return 'column_missing', len(rows), None
     value = columns.index(operand['value_column'])
-    start, document = operand['start_line'], operand['document_id']
-    matches = [(line, dict(status='selected', header_unit=units[value], cell=row[value], sha256=source['sha256'],
-                           header_citation=f'[D{document}:L{start}]', row_citation=f'[D{document}:L{line}]'))
-               for line, row in enumerate(rows, start + offset) if key is None or row[key].strip() == operand['key_value']]
-    return ('selected' if matches else 'row_missing'), len(rows), matches
+    return 'selected', len(rows), dict(rows=rows, first_row=operand['start_line'] + offset,
+                                      key_indexes=[header.index(name) for name in key_columns],
+                                      value_index=value, header_unit=units[value])
+
+
+def _selected_cell(operand, source, bound, line, row):
+    document, start = operand['document_id'], operand['start_line']
+    return dict(status='selected', header_unit=bound['header_unit'], cell=row[bound['value_index']], sha256=source['sha256'],
+                header_citation=f'[D{document}:L{start}]', row_citation=f'[D{document}:L{line}]')
+
+
+def _test_cell(raw, condition):
+    value = raw.strip()
+    if not value:
+        return dict(value=raw, status='unknown')
+    matches = (value == condition['value']) == (condition['operator'] == 'eq')
+    return dict(value=raw, status='true' if matches else 'false')
+
+
+def filter_rows(operand, source, unit_pattern, filters):
+    """Apply exact AND tests and retain evidence for every physical data row."""
+    names = [condition['column'] for condition in filters]
+    status, total_rows, bound = _bind_table(operand, source, unit_pattern, names)
+    if bound is None:
+        return status, total_rows, [], []
+    matches, decisions = [], []
+    has_unknown = False
+    for line, row in enumerate(bound['rows'], bound['first_row']):
+        tests = [_test_cell(row[index], condition) for index, condition in zip(bound['key_indexes'], filters, strict=True)]
+        outcomes = {test['status'] for test in tests}
+        if 'false' in outcomes:
+            decision = 'excluded'
+        elif 'unknown' in outcomes:
+            decision = 'unknown'
+            has_unknown = True
+        else:
+            decision = 'matched'
+            matches.append((line, _selected_cell(operand, source, bound, line, row)))
+        decisions.append(dict(line_number=line, status=decision, tests=tests))
+    if has_unknown:
+        status = 'filter_unknown'
+    elif not matches:
+        status = 'row_missing'
+    return status, total_rows, matches, decisions
 
 
 def reason(status):
