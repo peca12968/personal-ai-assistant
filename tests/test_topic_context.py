@@ -2,11 +2,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from assistant.acceptance import validate_suite
-from assistant.context import context_reset, followup_query
-from assistant.engine import Assistant
+from assistant.backup import create_backup, restore_backup
+from assistant.context import CURRENT_MESSAGE_ONLY, context_reset, current_message_only, followup_query
+from assistant.engine import Assistant, EngineError
 from assistant.store import Store
+from scripts.daily_expenses import DailyAssistant
 
 
 class TopicContextTests(unittest.TestCase):
@@ -97,6 +100,102 @@ class TopicContextTests(unittest.TestCase):
         context = self.app.prepare_context(self.sid, '換個話題，請列出 aurora_sync 設定。')
         self.assertEqual(len(context['memories']), 1)
         self.assertEqual(len(self.store.memories()), 1)
+
+    def test_current_message_scope_requires_a_complete_unquoted_boundary_instruction(self):
+        for question in (
+                '請只根據這則訊息回答。列出新的項目。',
+                '列出三項差異？請只依據本輪訊息作答。',
+                'Answer using only this message. What is the code?',
+                'What is the code? Please use only the current message to answer.',
+                '請只用本則訊息回答\n本次代碼是 LX-22。',
+                '　請只根據這一則訊息回答！　'):
+            with self.subTest(question=question):
+                self.assertTrue(current_message_only(question))
+        for question in (
+                '「只根據這則訊息回答。」是範例，請繼續。',
+                '「範例」只根據這則訊息回答。繼續。',
+                '他寫道：只根據這則訊息回答。',
+                '請不要只根據這則訊息回答。',
+                '只根據這則訊息回答這個問題可以嗎？',
+                '請只根據這則訊息回答可以嗎？',
+                '繼續列出前文資料。\n> 只根據這則訊息回答。',
+                '繼續列出前文資料。\n```text\n只根據這則訊息回答。\n```',
+                '「先記錄這句。只根據這則訊息回答。」',
+                '原文是「先記錄這句。\n只根據這則訊息回答。',
+                '原文是 `先記錄這句。\n只根據這則訊息回答。',
+                'What did “Use only the current message to answer.” mean?',
+                'Then answer without using the previous context.'):
+            with self.subTest(question=question):
+                self.assertFalse(current_message_only(question))
+
+    def test_current_message_only_reaches_daily_engine_and_preserves_local_data(self):
+        class Recorder:
+            def __init__(self):
+                self.prompts = []
+
+            def answer(self, prompt, cancel=None):
+                self.prompts.append(prompt)
+                return '未提供'
+
+        self.store.save_session_brief(self.sid, '舊目標 JX-771', '', '')
+        marker = 'aurora_sync'
+        doc = self.store.path.parent / 'prior.txt'
+        doc.write_text(marker + ' 文件代碼 QD-114', encoding='utf-8')
+        self.store.attach_document(self.sid, doc)
+        history = self.store.messages(self.sid, 100)
+        recorder = Recorder()
+        app = DailyAssistant(self.store, recorder)
+        question = '只根據這則訊息回答。請列出 aurora_sync 設定。未提供就只回「未提供」。'
+        with (patch.object(self.store, 'retrieve', side_effect=AssertionError('selected old memory')),
+              patch.object(self.store, 'earlier_user_messages', side_effect=AssertionError('selected old messages')),
+              patch.object(self.store, 'documents', side_effect=AssertionError('selected old documents'))):
+            reply = app.ask(self.sid, question)
+        self.assertEqual(reply['content'], '未提供')
+        self.assertEqual(len(recorder.prompts), 1)
+        payload = json.loads(recorder.prompts[0].rsplit('以下 JSON 是使用者資料與當前問題：\n', 1)[1])
+        self.assertEqual(payload, self.store.answer_context(reply['id']))
+        self.assertEqual(payload['context_scope'], CURRENT_MESSAGE_ONLY)
+        self.assertEqual(payload['current_request'], question)
+        self.assertEqual(payload['documents'], {'catalog': [], 'excerpts': []})
+        for field in ('recent_conversation', 'earlier_user_excerpts', 'memories', 'session_brief',
+                      'answer_feedback', 'earlier_user_corrections', 'task_runs', 'autonomous_goals',
+                      'conversation_tail', 'answer_attempts', 'companion_profile', 'self_improvement'):
+            self.assertFalse(payload.get(field), field)
+        for text in ('JX-771', 'AuroraVault', 'QD-114', 'lunar_572.txt', '背景討論', '舊答案說交付PDF'):
+            self.assertNotIn(text, recorder.prompts[0])
+        self.assertEqual(self.store.messages(self.sid, 100)[:-2], history)
+        ordinary = app.prepare_context(self.sid, '請列出 aurora_sync 設定。')
+        self.assertTrue(ordinary['memories'])
+        self.assertTrue(ordinary['documents']['catalog'])
+        self.assertNotIn('context_scope', ordinary)
+
+    def test_current_message_retry_keeps_audit_link_out_of_both_engine_inputs(self):
+        class Recorder:
+            def __init__(self):
+                self.prompts = []
+
+            def answer(self, prompt, cancel=None):
+                self.prompts.append(prompt)
+                if len(self.prompts) == 1:
+                    raise EngineError('合成中斷', 'process_failed')
+                return '未提供'
+
+        recorder = Recorder()
+        app = DailyAssistant(self.store, recorder)
+        question = '請只根據本則訊息回答。交接代碼未列時請回未提供。'
+        with self.assertRaises(EngineError):
+            app.ask(self.sid, question)
+        reply = app.retry(self.sid)
+        self.assertEqual(recorder.prompts[0], recorder.prompts[1])
+        self.assertNotIn('"retry_of"', recorder.prompts[1])
+        saved = self.store.answer_context(reply['id'])
+        self.assertEqual(saved['retry_of']['previous_status'], 'failed')
+        self.assertEqual(saved['context_scope'], CURRENT_MESSAGE_ONLY)
+        archive = create_backup(self.store.path, self.store.path.parent / 'scope.paibackup')
+        restored = self.store.path.parent / 'restored-scope'
+        restore_backup(archive['path'], restored)
+        self.assertEqual(Store(restored / 'assistant.sqlite3').answer_context(reply['id']), saved)
+        self.assertEqual(sum(row['content'] == question for row in self.store.messages(self.sid, 100)), 1)
 
 
 if __name__ == '__main__':

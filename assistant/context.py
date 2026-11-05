@@ -11,6 +11,7 @@ FOLLOWUP = re.compile(
 IMPORTANT = re.compile(r"目標|限制|必須|不能|不要|更正|改為|改用|改成|決定|取消|預算|期限|\b(?:goal|must|never|instead|decision|budget|deadline)\b", re.I)
 
 MAX_EARLIER_CORRECTIONS = 6
+CURRENT_MESSAGE_ONLY = 'current_message_only'
 CORRECTION_PREFIX = re.compile(
     r"^(?:(?:請|我|讓我)?(?:更正|修正|補充更正)(?:一下)?\s*[:,。]|"
     r"(?:(?:a\s+)?(?:quick|small)\s+)?correction\s*[:,]|"
@@ -172,7 +173,7 @@ NO_PREVIOUS = re.compile(
     r"(?:the\s+)?(?:previous|prior|earlier|above)\s+(?:context|conversation|messages?|answers?)\b", re.I)
 
 
-def _instruction_text(question):
+def _instruction_text(question, *, mask_unclosed=False):
     """Mask quoted/code spans with spaces, keeping offsets and line breaks."""
     text = unicodedata.normalize('NFKC', question)
     chars = list(text)
@@ -213,6 +214,9 @@ def _instruction_text(question):
         if closing:
             end += closing.end()
             hide(index, end)
+        elif mask_unclosed:
+            hide(index, len(visible))
+            break
         index = end
 
     # Directional openers are unambiguous even beside Chinese text. A right
@@ -268,6 +272,8 @@ def _instruction_text(question):
             hide(start, index + 1)
         elif char in pairs:
             stack.append((pairs[char], index))
+    if mask_unclosed and stack:
+        hide(stack[0][1], len(visible))
     return ''.join(chars)
 
 
@@ -292,6 +298,30 @@ _NOMINAL_RESET_PREFIX = re.compile(
     r"另外問個|另外问个)\s*|"
     r"(?:ok(?:ay)?|then|now|please|a|an|start|begin|let's|let’s|"
     r"i\s+have|i\s+have\s+an?)\s+)*", re.I)
+
+
+_CURRENT_MESSAGE_INSTRUCTION = re.compile(
+    r'(?:^|(?<=[。.!！?\n]))[ \t]*(?P<clause>'
+    r'(?:這題[ \t]*)?(?:請[ \t]*)?只(?:根據|依據|用)[ \t]*(?:這一則|這則|本則|本輪)'
+    r'(?:訊息|消息)[ \t]*(?:回答|作答)'
+    r'|(?:please[ \t]+)?(?:answer[ \t]+(?:using|based on)[ \t]+only[ \t]+'
+    r'(?:this|the current)[ \t]+message|use[ \t]+only[ \t]+(?:this|the current)'
+    r'[ \t]+message[ \t]+to answer))'
+    r'[ \t]*(?=$|[。.!！\r\n])', re.I)
+
+
+def current_message_only(question):
+    """Recognize an explicit first or last sentence without masking its neighbors."""
+    text = unicodedata.normalize('NFKC', question).strip()
+    for match in _CURRENT_MESSAGE_INSTRUCTION.finditer(text):
+        before = text[:match.start()].strip()
+        after = text[match.end():].strip('。.!！ \t\r\n')
+        if before and after:
+            continue
+        start, end = match.span('clause')
+        if _instruction_text(text, mask_unclosed=True)[start:end] == match['clause']:
+            return True
+    return False
 
 
 def context_reset(question):

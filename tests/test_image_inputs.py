@@ -74,6 +74,20 @@ class ImageInputTests(unittest.TestCase):
         self.app.ask(self.sid,'接著只用文字。')
         self.assertEqual(self.engine.calls[-1][1],())
 
+    def test_current_message_only_keeps_selected_images_without_other_sources(self):
+        self.store.add_message(self.sid, 'user', '上輪影像的內部標籤是 XF-501。')
+        selected = self.attach()
+        self.attach('未選.png', pixels('blue'))
+        reply = self.app.ask(self.sid, '只根據這則訊息回答。描述附圖。', image_ids=[selected])
+        prompt, images = self.engine.calls[-1]
+        context = self.store.answer_context(reply['id'])
+        self.assertEqual(len(images), 1)
+        self.assertEqual([item['id'] for item in context['image_inputs']], [selected])
+        self.assertEqual(hashlib.sha256(images[0]).hexdigest(), context['image_inputs'][0]['sha256'])
+        self.assertNotIn('XF-501', prompt)
+        self.assertNotIn('未選.png', prompt)
+        self.assertEqual(context['recent_conversation'], [])
+
     def test_wrong_session_duplicates_unsupported_engine_and_local_command_are_not_sent(self):
         image=self.attach();other=self.store.new_session()
         for ids in ([image,image],[image]*5,[1],image):

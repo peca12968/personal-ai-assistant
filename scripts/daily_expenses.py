@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from scripts import daily_conditions, daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
 from assistant import answer_runs, expression_math
+from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
 
 NAME = r'[\u4e00-\u9fff]{1,12}'
@@ -224,7 +225,7 @@ def stock_clarification_ids(db, sid, context, before):
 class DailyAssistant(Assistant):
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
-        if self.allow_local_calculation:
+        if self.allow_local_calculation and context.get('context_scope') != CURRENT_MESSAGE_ONLY:
             focus = daily_identifiers.context_focus(context)
             if focus:
                 context['identifier_request'] = focus
@@ -249,6 +250,8 @@ class DailyAssistant(Assistant):
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         question = question.strip()
+        if current_message_only(question):
+            return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         if self.allow_local_calculation and not image_ids:
             from assistant.document_calculation import parse_live_request
             if parse_live_request(question) is not None:

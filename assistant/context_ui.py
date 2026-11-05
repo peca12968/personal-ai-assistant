@@ -4,6 +4,7 @@ import sqlite3
 from tkinter import messagebox, ttk
 from .document_ranges import range_status_text
 from .companion_profile import describe as describe_profile
+from .context import CURRENT_MESSAGE_ONLY
 
 
 class BriefWindow:
@@ -86,6 +87,8 @@ def show_context(parent, store, message_id):
     window.minsize(600, 420)
     notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed or evidence or document_math else
               "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
+    if context.get('context_scope') == CURRENT_MESSAGE_ONLY:
+        notice = '本次只提供這則訊息和隨本輪送出的圖片。'
     ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
     notebook = ttk.Notebook(window)

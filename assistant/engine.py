@@ -12,7 +12,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .context import correction_context, followup_query, make_context, select_excerpts
+from .context import (CURRENT_MESSAGE_ONLY, correction_context, current_message_only, followup_query,
+                      make_context, select_excerpts)
 from .documents import check_citations, retrieve_documents
 from .tasks import task_context
 from .communication import conversation_style
@@ -74,6 +75,10 @@ def find_codex():
 
 
 def render_prompt_parts(context):
+    isolated = context.get('context_scope') == CURRENT_MESSAGE_ONLY
+    if isolated and 'retry_of' in context:
+        # This is local run provenance, not a source for a standalone answer.
+        context = {key: value for key, value in context.items() if key != 'retry_of'}
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, POLICY_MARKER, focused_help, policy_reference
     from .prompt_scope import (TRANSCRIPTION_GUIDANCE, transcription_focus, transcription_format,
@@ -98,6 +103,9 @@ def render_prompt_parts(context):
         instructions += POLICY_MARKER + json.dumps(policy, ensure_ascii=False)
     instructions += ('\n交付檢查：遵守本輪明確格式；逐字照抄或轉錄只輸出指定內容，界定範圍的引號不算內容。'
                      '精簡仍須回答各個所問部分，包括適用範圍與判斷所需證據。')
+    if isolated:
+        instructions += ('\n本輪依這則訊息和本輪實際提供的圖片回答。'
+                         '所需資料未在本輪提供時，按使用者指定的格式指出缺漏。')
     if copy_focus and copy_format is not None:
         instructions += '\n' + OUTER_GUIDANCE[copy_format['outer_quotes']]
     literal_data = ''
@@ -260,6 +268,38 @@ class Assistant:
         self.allow_local_evidence = allow_local_evidence
 
     def prepare_context(self, sid, question, exclude_message_id=None):
+        isolated = current_message_only(question)
+        if isolated:
+            context = make_context(question, [], [])
+            context.update(context_scope=CURRENT_MESSAGE_ONLY, documents={'catalog': [], 'excerpts': []},
+                           communication=conversation_style(question, []))
+        else:
+            context, followup = self._conversation_context(sid, question, exclude_message_id)
+        describe = getattr(self.engine, 'describe', None)
+        if callable(describe):
+            context['engine_selection'] = describe()
+        if not isolated:
+            from .learning_queue import help_context
+            learning_help = help_context(question + ('\n' + followup if followup else ''))
+            if learning_help is not None:
+                from .idle_learning import capabilities
+                learning_help.update(capabilities())
+                context['learning_capabilities'] = learning_help
+            from .response_delivery import help_context as delivery_help_context
+            if delivery_help := delivery_help_context(question):
+                context['delivery_capabilities'] = delivery_help
+        if not self.allow_local_calculation:
+            context['calculation_mode'] = 'model_only_evaluation'
+        if not self.allow_local_transcription:
+            context['transcription_mode'] = 'model_only_evaluation'
+        from .prompt_scope import transcription_format, transcription_source
+        if copy_format := transcription_format(context):
+            context['transcription_format'] = copy_format
+        if copy_source := transcription_source(context):
+            context['transcription_source'] = copy_source
+        return context
+
+    def _conversation_context(self, sid, question, exclude_message_id):
         history = self.store.messages(sid, 16, exclude_local=True, exclude_message_id=exclude_message_id)
         memories = self.store.retrieve(question)
         followup = followup_query(question, history)
@@ -285,28 +325,7 @@ class Assistant:
         context['self_improvement'] = improvement_context(ROOT, question)
         context['answer_attempts'] = answer_runs.context_status(self.store, sid)
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
-        describe = getattr(self.engine, 'describe', None)
-        if callable(describe):
-            context['engine_selection'] = describe()
-        from .learning_queue import help_context
-        learning_help = help_context(question + ('\n' + followup if followup else ''))
-        if learning_help is not None:
-            from .idle_learning import capabilities
-            learning_help.update(capabilities())
-            context['learning_capabilities'] = learning_help
-        from .response_delivery import help_context as delivery_help_context
-        if delivery_help := delivery_help_context(question):
-            context['delivery_capabilities'] = delivery_help
-        if not self.allow_local_calculation:
-            context['calculation_mode'] = 'model_only_evaluation'
-        if not self.allow_local_transcription:
-            context['transcription_mode'] = 'model_only_evaluation'
-        from .prompt_scope import transcription_format, transcription_source
-        if copy_format := transcription_format(context):
-            context['transcription_format'] = copy_format
-        if copy_source := transcription_source(context):
-            context['transcription_source'] = copy_source
-        return context
+        return context, followup
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):
         return self._ask(sid, question, cancel, draft=draft, image_ids=image_ids)
