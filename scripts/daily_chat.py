@@ -15,11 +15,21 @@ def run_daily_window(store, engine):
     from tkinter import scrolledtext
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
+    from scripts import daily_necessary
 
     class DailyWindow(App):
         def inspect_context(self):
             context = self.store.answer_context(self.last_answer) if self.last_answer else None
-            if context and 'capacity_check' in context:
+            if context and daily_necessary.FIELD in context:
+                title = '本機必要條件核對'
+                try:
+                    receipt = daily_necessary.read(self.store, self.last_answer)
+                    if receipt is None:
+                        raise ValueError
+                    lines = daily_necessary.describe(receipt).splitlines()
+                except (KeyError, TypeError, ValueError):
+                    lines = ['無法核對這次必要條件紀錄與原始問題。']
+            elif context and 'capacity_check' in context:
                 title = '名額條件對照'
                 focus, check = context['capacity_trial'], context['capacity_check']
                 lines = [context['current_request'], '', '待查原文：' + focus['待查原文'], '假設情況']

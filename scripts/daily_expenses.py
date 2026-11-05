@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_conditions, daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_necessary, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
@@ -276,6 +276,20 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
+        if local and self.allow_local_evidence and (not retry or daily_necessary.FIELD in prior):
+            necessary = daily_necessary.parse(question)
+            if necessary and not self.store.documents(sid, include_content=False):
+                if retry and prior[daily_necessary.FIELD] != necessary:
+                    raise EngineError('必要條件的原始規約已變更。', 'evidence_invalid')
+                context = make_context(question, [], [])
+                context.update(response_mode=daily_necessary.MODE,
+                               documents={'catalog': [], 'excerpts': []},
+                               **{daily_necessary.FIELD: necessary})
+                return self._run_recorded(sid, question, context,
+                                          lambda uid: daily_necessary.evaluate(necessary, cancel),
+                                          cancel, retry, draft, daily_necessary.FIELD)
+            if daily_necessary.FIELD in prior:
+                raise EngineError('目前無法核對原先的必要條件，請重新提供純文字條件。', 'evidence_invalid')
         if (local and hasattr(self.engine, 'answer_raw') and daily_conditions.COUNT.search(question)
                 and daily_conditions.CHOICE.fullmatch(question)
                 and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'capacity_comparison')):
