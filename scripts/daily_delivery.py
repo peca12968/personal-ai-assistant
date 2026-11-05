@@ -4,6 +4,7 @@ from fractions import Fraction
 import json
 import re
 
+from assistant.context import CURRENT_MESSAGE_ONLY, _instruction_text, current_message_only
 from assistant.engine import render_prompt
 from scripts import daily_dialogue, daily_stock
 from scripts.daily_identifiers import missing_literal, omit_unrelated_identifier, supplied_code
@@ -27,6 +28,48 @@ CODE = r'[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*'
 IDENTIFIER_FIELD = r'(?:代碼|編號|序號|型號)'
 IDENTIFIER_TARGET = r'[\u4e00-\u9fffA-Za-z0-9]{1,24}?'
 QUOTES = re.compile(r'「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"|\x60[^\x60]*\x60', re.S)
+_SCOPE_SENTENCE = r'([^。.!！．\r\n]{1,110})'
+_LEADING_SCOPE = re.compile(_SCOPE_SENTENCE + r'[。.!！．\r\n]\s*')
+_TRAILING_SCOPE = re.compile(r'(?<=[。.!！．\n])\s*' + _SCOPE_SENTENCE + r'[。.!！．]?$')
+_SCOPED_QUESTION = re.compile(r'[^。.!！？?；;\x00-\x1f]{2,600}[？?]\s*([^\x00-\x1f]{1,180})')
+_LABEL_QUOTES = {'「': '」', '『': '』', '"': '"', '“': '”', "'": "'", '‘': '’'}
+_QUOTED_FALLBACK = r"""[「『"'“‘][^「」『』"'“”‘’\[\]【】\x00-\x1f\x60\x7f]{1,64}[」』"'”’]"""
+_ENGLISH_FALLBACK = rf'(?:{_QUOTED_FALLBACK}|[A-Za-z]+(?: +[A-Za-z]+){{0,5}})'
+_ENGLISH_MISSING = r'the [A-Za-z]+(?: +[A-Za-z]+){0,5} is (?:missing|not provided)'
+_SCOPED_FALLBACKS = (
+    re.compile(r'(?:資料不足時|沒有資料時|(?:若|如果)(?:無法確定|無法得知|資料不足|沒有資料))'
+               rf'[，,]?\s*{ONLY}\s*(?P<label>{_QUOTED_FALLBACK})[。.]?'),
+    re.compile(rf'If {_ENGLISH_MISSING}, +reply with exactly +(?P<label>{_ENGLISH_FALLBACK})\.?', re.I),
+    re.compile(rf'Reply with exactly +(?P<label>{_ENGLISH_FALLBACK}) +if {_ENGLISH_MISSING}\.?', re.I),
+)
+
+
+def _scoped_missing_label(question, draft):
+    """Remove one extra full stop from an already selected literal."""
+    if not draft.endswith(('.', '。')) or len(draft) > 65:
+        return None
+    if (leading := _LEADING_SCOPE.match(question)) and current_message_only(leading[1]):
+        body = question[leading.end():]
+    elif (trailing := _TRAILING_SCOPE.search(question)) and current_message_only(trailing[1]):
+        body = question[:trailing.start()].rstrip()
+    else:
+        return None
+    single = _SCOPED_QUESTION.fullmatch(body)
+    if not single or _instruction_text(body, mask_unclosed=True).count('?') != 1:
+        return None
+    for pattern in _SCOPED_FALLBACKS:
+        match = pattern.fullmatch(single[1])
+        if not match:
+            continue
+        label = match['label']
+        if closing := _LABEL_QUOTES.get(label[0]):
+            if label[-1] != closing:
+                return None
+            label = label[1:-1]
+        if (label == label.strip() and draft[:-1] == label and any(char.isalnum() for char in label)
+                and not re.search(r'https?://', label, re.I)):
+            return label
+    return None
 
 
 NUMERIC_CONCLUSION = re.compile(
@@ -328,6 +371,9 @@ class DailyLocalEngine:
         from assistant.prompt_scope import transcription_focus
         if transcription_focus(ctx):
             return draft
+        if ctx.get('context_scope') == CURRENT_MESSAGE_ONLY and not ctx.get('image_inputs'):
+            if (label := _scoped_missing_label(question, draft)) is not None:
+                return label
         concise = missing_literal(question, draft) or supplied_code(ctx, draft) or daily_dialogue.short_label(ctx, draft)
         if concise is not None:
             return concise

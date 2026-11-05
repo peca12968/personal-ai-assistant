@@ -2,10 +2,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from assistant.engine import Assistant
+from assistant.engine import Assistant, render_prompt
 from assistant.response_delivery import read
 from assistant.store import Store
-from scripts.daily_delivery import extract
+from scripts.daily_delivery import DailyLocalEngine, _scoped_missing_label, extract
+from scripts.daily_expenses import DailyAssistant
 
 
 class MissingDeliveryTests(unittest.TestCase):
@@ -62,7 +63,6 @@ class MissingDeliveryTests(unittest.TestCase):
             def answer(self, prompt, cancel=None):
                 self.calls += 1
                 return self.raw
-        from scripts.daily_delivery import DailyLocalEngine
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'assistant.sqlite3')
             raw = Engine()
@@ -75,3 +75,64 @@ class MissingDeliveryTests(unittest.TestCase):
             result = Assistant(store, engine, allow_local_calculation=False).ask(store.new_session(), q)
             self.assertEqual(result['content'], raw.raw)
             self.assertIsNone(read(store, result['id']))
+
+    def test_standalone_fallback_preserves_exact_literal_in_both_languages(self):
+        examples = (
+            ('只根據這則訊息回答。外箱編號是什麼？資料不足時只回「未提供」。', '未提供。', '未提供'),
+            ('外箱編號是多少？若無法得知，只回「Ｎ／Ａ」。請只根據本則訊息回答。', 'Ｎ／Ａ。', 'Ｎ／Ａ'),
+            ('Answer using only this message. Is the layout specified? Reply with exactly Not specified if the layout is missing.',
+             'Not specified.', 'Not specified'),
+            ('What is the room number? If the room number is missing, reply with exactly "Unavailable". '
+             'Use only the current message to answer.', 'Unavailable.', 'Unavailable'),
+            ('只根據這則訊息回答。外箱編號是什麼？資料不足時只回「未提供！」。', '未提供！。', '未提供！'),
+        )
+        for question, raw, literal in examples:
+            with self.subTest(question=question):
+                self.assertEqual(_scoped_missing_label(question, raw), literal)
+
+    def test_standalone_fallback_preserves_other_text_and_ambiguous_contracts(self):
+        question = '只根據這則訊息回答。外箱編號是什麼？資料不足時只回「未提供」。'
+        for raw in ('未提供', '未提供！', '未提供。。', '「未提供」。', '也許未提供。',
+                    '未提供。後來確認是 ZA-42。', '未提供。 因為查不到。', ' 未提供。'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(_scoped_missing_label(question, raw))
+        for other in (
+                question.replace('只根據這則訊息回答。', ''),
+                question.replace('外箱編號是什麼？', '外箱編號是什麼？日期呢？'),
+                question.replace('外箱編號是什麼？', '「外箱編號是什麼？'),
+                question.replace('資料不足時', '不要在資料不足時'),
+                question.replace('資料不足時只回「未提供」。', '「資料不足時只回『未提供』。」'),
+                question.replace('「未提供」', '「未提供』'),
+                question.replace('「未提供」', '「未提供。」'),
+                question + '並解釋原因。'):
+            with self.subTest(question=other):
+                self.assertIsNone(_scoped_missing_label(other, '未提供。'))
+
+    def test_daily_standalone_delivery_records_raw_and_model_only_stays_raw(self):
+        class Engine:
+            display_name = 'fixture'
+
+            def __init__(self):
+                self.prompts = []
+
+            def describe(self):
+                return {'kind': 'fixture'}
+
+            def answer(self, prompt, cancel=None):
+                self.prompts.append(prompt)
+                return 'Not specified.'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            raw = Engine()
+            engine = DailyLocalEngine(raw)
+            question = ('Answer using only this message. Is the layout specified? '
+                        'Reply with exactly Not specified if the layout is missing.')
+            result = DailyAssistant(store, engine).ask(store.new_session(), question)
+            self.assertEqual(result['content'], 'Not specified')
+            self.assertEqual(read(store, result['id'])['raw_answer'], 'Not specified.')
+            self.assertEqual(raw.prompts, [render_prompt(store.answer_context(result['id']))])
+            model_only = DailyAssistant(store, engine, allow_local_calculation=False)
+            untouched = model_only.ask(store.new_session(), question)
+            self.assertEqual(untouched['content'], 'Not specified.')
+            self.assertIsNone(read(store, untouched['id']))
