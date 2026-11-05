@@ -70,6 +70,38 @@ class MissingDeliveryTests(unittest.TestCase):
         q = '資料表 Q28 的含稅金額是多少？若無法得知，只輸出 資料不足。'
         self.assertEqual(extract(q, raw), raw)
 
+    def test_unqualified_document_id_uses_the_category_in_current_source(self):
+        question = '原文：「收據 C31 已留存。」問：C31 的核准日期是什麼？若無法得知，只輸出 資料不足。'
+        raw = '依記錄，無法得知收據 C31 的核准日期。請提供相關資料。'
+        self.assertEqual(extract(question, raw), '資料不足')
+        self.assertEqual(extract(question.replace('收據', '發票'), raw.replace('收據', '發票')), '資料不足')
+        for q, reply in (
+                (question.replace('收據', '發票'), raw),
+                (question.replace('收據 C31', '收據 C310'), raw),
+                (question.replace('收據 C31', 'C31'), raw),
+                (question.replace('已留存。', '已留存。發票 C31 已寄出。'), raw),
+                (question.replace('問：C31', '問：資料表 C31'), raw),
+                (question, raw.replace('C31', 'C310')),
+                (question, raw.replace('核准', '申請')),
+                (question, raw.replace('收據', '報價單'))):
+            with self.subTest(question=q, raw=reply):
+                self.assertEqual(extract(q, reply), reply)
+
+    def test_final_fallback_can_follow_two_absence_statements_for_the_same_field(self):
+        q = '原文：「發票 C32 已留存。」問：C32 的核准日期是什麼？若無法得知，只輸出 資料不足。'
+        initial = '根據提供的記錄，資料中未提及發票 C32 的核准日期。'
+        raw = initial + '因此，無法確定 C32 的核准日期。\n資料不足。'
+        self.assertEqual(extract(q, raw), '資料不足')
+        self.assertEqual(extract(q, initial + '資料不足。'), '資料不足')
+        for other in (raw.replace('因此，無法確定', '因此，已確認'),
+                      raw.replace('C32 的核准日期。\n', 'C32 的申請日期。\n'),
+                      raw.replace('發票 C32', '收據 C32'),
+                      raw.replace('提供的記錄', '已確定五月核准的記錄'),
+                      raw.replace('未提及', '可能未提及'),
+                      raw + '不過已查到是五月。'):
+            with self.subTest(raw=other):
+                self.assertEqual(extract(q, other), other)
+
     def test_new_delivery_saves_real_raw_without_extra_call(self):
         class Engine:
             display_name = 'fixture'

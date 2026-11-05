@@ -101,6 +101,23 @@ class DeliveryTests(unittest.TestCase):
             self.assertIsNone(read(store, answer['id']))
             self.assertEqual(raw.calls, 1)
 
+    def test_explicit_start_and_end_can_be_delivered_as_a_range(self):
+        question = '兩人最早何時能碰面？只輸出時段，格式 HH:MM-HH:MM。'
+        pair = '最早可行的開始時間為 10:30，結束時間為 11:00。'
+        for raw in (pair, pair.replace('，', '。'),
+                    '上午已取消。考慮到討論需要 30 分鐘，' + pair,
+                    '最早可行時段為 10:30–11:00。' + pair):
+            with self.subTest(raw=raw):
+                self.assertEqual(extract(question, raw), '10:30-11:00')
+        for raw in ('原有兩個時段，最早可行時段是 09:00–09:30。' + pair,
+                    '開始時間為 09:00。' + pair, '結束時間為 09:30。' + pair,
+                    pair.replace('11:00', '24:00'), pair.replace('11:00', '09:00'),
+                    pair.replace('結束時間為', '結束時間可能為'),
+                    pair.replace('結束時間為 11:00', '大約 11:00')):
+            with self.subTest(raw=raw):
+                self.assertEqual(extract(question, raw), raw)
+        self.assertEqual(extract(question.replace('？', '？下一天呢？'), pair), pair)
+
     def test_mismatched_equation_keeps_workings_in_chat_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'assistant.sqlite3')

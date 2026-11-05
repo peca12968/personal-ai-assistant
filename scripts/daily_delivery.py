@@ -80,6 +80,17 @@ TIME_ASSERTION = (r'(?:最早可行|最早|可行)(?:的)?(?:連續\s*[0-9]+\s*�
                   r'(?:開始及結束時間|時間區間|時間|時段)')
 TIME_CONCLUSION = re.compile(rf'(?:(?:因此|所以)[，,]\s*)?(?:{TIME_ASSERTION}{IS})?{RANGE}')
 PRIOR_TIME_CONCLUSION = re.compile(rf'(?:(?:因此|所以)[，,]\s*)?(?:{TIME_ASSERTION}|答案|結果){IS}{RANGE}')
+TIME_POINT = re.compile(rf'(?:(?:最早可行|最早|可行)的?)?(開始|結束)時間{IS}({CLOCK})')
+SPLIT_TIME_CONCLUSION = re.compile(
+    r'(?:(?:因此|所以|考慮到[^，,。；！？：:\r\n0-9]{1,32}需要\s*[0-9]{1,3}\s*分鐘)[，,]\s*)?'
+    rf'(?:最早可行|最早|可行)的?開始時間{IS}({CLOCK})'
+    rf'\s*[，,。]\s*結束時間{IS}({CLOCK})')
+LEGACY_DOCUMENT_CATEGORY = r'報價單|訂單|資料表'
+DOCUMENT_CATEGORY = rf'{LEGACY_DOCUMENT_CATEGORY}|收據|發票|合約|契約'
+REPEATED_ABSENCE = re.compile(
+    r'(?:(?:根據(?:提供的|現有的?)?(?:資料|記錄|紀錄)|依(?:據)?(?:資料|記錄|紀錄)|因此|所以)[，,]\s*)?'
+    r'(?:(?:目前)?(?:無法得知|無法確定|無從得知)|(?:資料|記錄|紀錄|來源)中(?:未提及|未記載|未提供))'
+    r'([^，,。；！？]{2,70})')
 MISSING_FOLLOWUP = re.compile(r'請(?:提供|補充)[^，,。；;！？：:\n]{1,50}(?:資訊|資料|文件|查詢|確認)')
 
 
@@ -192,6 +203,32 @@ def numeric_delivery(question, draft, sentences):
     return result
 
 
+def time_delivery(question, draft, sentences):
+    last = sentences[-1]
+    prior = sentences[:-1]
+    match = TIME_CONCLUSION.fullmatch(last)
+    if not (match and (not prior or '可行' in last or '最早' in last)):
+        if _instruction_text(question, mask_unclosed=True).count('?') > 1:
+            return draft
+        match = SPLIT_TIME_CONCLUSION.fullmatch(last)
+        if not match and prior:
+            match = SPLIT_TIME_CONCLUSION.fullmatch(prior[-1] + '。' + last)
+            prior = prior[:-1]
+        if not match or match[1] >= match[2]:
+            return draft
+
+    start, end = match.groups()
+    for sentence in prior:
+        for text in re.split(r'[，,；;]', sentence):
+            clause = text.strip()
+            if (earlier := PRIOR_TIME_CONCLUSION.fullmatch(clause)) and earlier.groups() != (start, end):
+                return draft
+            # An explicit endpoint can conflict with either form of final conclusion.
+            if (point := TIME_POINT.fullmatch(clause)) and point[2] != (start if point[1] == '開始' else end):
+                return draft
+    return f'{start}-{end}'
+
+
 def missing_field_matches(question, field):
     """Bind one complete asked-about field, rather than a name substring."""
     requests = []
@@ -205,11 +242,18 @@ def missing_field_matches(question, field):
     field = field.strip()
     if field == target:
         return True
-    # An unqualified document ID can be answered with its category. Never
-    # strip a category explicitly requested by the user (a table is not a quote).
-    if re.match(r'[A-Za-z]+[0-9]', target):
-        return re.sub(r'^(?:報價單|訂單|資料表)\s+(?=[A-Za-z]+[0-9])', '', field) == target
-    return False
+    # Keep the complete ID and field. A supplied category takes precedence
+    # over the legacy implicit categories for unqualified document IDs.
+    identifier = re.match(r'[A-Za-z]+[0-9]+(?=\s|的)', target)
+    qualified = re.fullmatch(rf'({DOCUMENT_CATEGORY})[ \t]+{re.escape(target)}', field)
+    if not identifier or not qualified:
+        return False
+    categories = set(re.findall(
+        rf'(?:^|[「『“"：:。；\n])[ \t]*({DOCUMENT_CATEGORY})[ \t]+'
+        rf'{identifier[0]}(?=[ \t。；，！？、」』”"\n]|$)', question))
+    if categories:
+        return categories == {qualified[1]}
+    return re.fullmatch(LEGACY_DOCUMENT_CATEGORY, qualified[1]) is not None
 
 
 def extract(question, draft):
@@ -234,13 +278,18 @@ def extract(question, draft):
                                    r'(?:[，,]\s*(?:因此)?(?:無法得知|無法確定))?', last)
             if absence and missing_field_matches(question, absence[1]):
                 return literal
+        if 2 <= len(sentences) <= 3 and last == literal and all(
+                (absence := REPEATED_ABSENCE.fullmatch(sentence))
+                and missing_field_matches(question, absence[1]) for sentence in sentences[:-1]):
+            return literal
         # Bind the missing field to the subject actually asked about. A generic
         # caveat, an unrelated unknown, or a later positive conclusion is insufficient.
         if len(sentences) == 2 and MISSING_FOLLOWUP.fullmatch(last):
             last = sentences[0]
         elif len(sentences) != 1:
             return draft
-        m = re.fullmatch(r'(?:根據[^，。]{1,28}[，,]\s*)?(?:目前)?(?:無法得知|無法確定|無從得知)([^，。；！？]{2,70})', last)
+        m = re.fullmatch(r'(?:(?:根據[^，。]{1,28}|依(?:據)?(?:記錄|紀錄|資料|現有資料))[，,]\s*)?'
+                         r'(?:目前)?(?:無法得知|無法確定|無從得知)([^，。；！？]{2,70})', last)
         if m and missing_field_matches(question, m[1]):
             return literal
         return draft
@@ -251,13 +300,7 @@ def extract(question, draft):
     if kind == 'number':
         return numeric_delivery(question, draft, sentences)
     if kind == 'time':
-        m = TIME_CONCLUSION.fullmatch(last)
-        if m and (len(sentences) == 1 or '可行' in last or '最早' in last):
-            for sentence in sentences[:-1]:
-                prior = PRIOR_TIME_CONCLUSION.fullmatch(sentence)
-                if prior and prior.groups() != m.groups():
-                    return draft
-            return m[1] + '-' + m[2]
+        return time_delivery(question, draft, sentences)
     if kind == 'choice':
         m = re.fullmatch(r'(?:答案[為是：:]\s*)?([A-Z])(?:[、.：:]?\s+([^\s，。！？]{1,24}))?', last)
         if m and re.search(r'(?<![A-Za-z])' + m[1] + r'(?![A-Za-z])', question):
