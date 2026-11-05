@@ -6,7 +6,7 @@ from decimal import Decimal
 from itertools import groupby
 from operator import eq, ge, gt, le, lt, ne
 
-from . import document_table, document_units, exact_math, local_answer_receipts
+from . import document_boolean, document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
 from .expression_math import check_cancel
 from .response_delivery import digest
@@ -31,7 +31,7 @@ _DIGITS = '零一二三四五六七八九'
 _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七八九]|[一二三四五六七八九]?十[一二三四五六七八九]?)'
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
-                  document_table.NUMERIC_AGGREGATE_PLAN)
+                  document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN)
 
 
 def parse_request(question):
@@ -73,11 +73,16 @@ def parse_live_request(question):
             or document_table.parse_aggregate(question, _UNIT, document_units.SCALES)
             or document_table.parse_multi_aggregate(question, _UNIT, document_units.SCALES)
             or document_table.parse_filter_aggregate(question, _UNIT, document_units.SCALES)
-            or _parse_numeric_aggregate(question))
+            or _parse_numeric_aggregate(question)
+            or _parse_logic_aggregate(question))
 
 
 def _parse_numeric_aggregate(question):
     return document_table.parse_numeric_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
+
+
+def _parse_logic_aggregate(question):
+    return document_table.parse_logic_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
 
 def snapshot(store, sid, plan):
@@ -461,8 +466,9 @@ def _unknown_filter_lines(operand, group, filters):
     label = _range_label(operand)
     lines = [f'{label}，{len(unknown)} 列無法判定是否符合。']
     for row in unknown[:8]:
-        unresolved = [(condition, test) for condition, test in zip(filters, row['tests'], strict=True)
-                      if test['status'] == 'unknown']
+        indexes = row.get('unresolved', range(len(filters)))
+        unresolved = [(filters[index], row['tests'][index]) for index in indexes
+                      if row['tests'][index]['status'] == 'unknown']
         if any('reason' in test for _, test in unresolved):
             details = ' '.join(f'「{condition["column"]}」{document_table.reason(test.get("reason", "filter_blank"))}'
                                for condition, test in unresolved)
@@ -499,9 +505,13 @@ def _multi_source_lines(operand, source, group, complete, filters=None):
 
 
 def _evaluate_grouped_aggregate(plan, cancel):
-    numeric = plan['schema'] == document_table.NUMERIC_AGGREGATE_PLAN
+    logical = plan['schema'] == document_table.LOGIC_AGGREGATE_PLAN
+    numeric = logical or plan['schema'] == document_table.NUMERIC_AGGREGATE_PLAN
     filtered = numeric or plan['schema'] == document_table.FILTER_AGGREGATE_PLAN
-    if numeric:
+    if logical:
+        request = _parse_logic_aggregate(plan['request'])
+        schema = document_table.LOGIC_AGGREGATE_RECEIPT
+    elif numeric:
         request = _parse_numeric_aggregate(plan['request'])
         schema = document_table.NUMERIC_AGGREGATE_RECEIPT
     else:
@@ -513,6 +523,7 @@ def _evaluate_grouped_aggregate(plan, cancel):
         raise ValueError('跨表彙總計畫與原問不符。')
     operands, unit, convert = request['operands'], request['unit'], request['convert']
     filters = request.get('filters')
+    logic = request.get('logic')
     catalog = _catalog(documents, operands)
     sources = document_table.lines_for_requests(documents, catalog, operands)
     overlaps = document_table.overlaps(operands, catalog)
@@ -526,8 +537,8 @@ def _evaluate_grouped_aggregate(plan, cancel):
         for operand, source in zip(operands, sources, strict=True):
             check_cancel(cancel)
             if filtered:
-                selected, total, matches, decisions = document_table.filter_rows(operand, source, _UNIT, filters,
-                                                                                _test_numeric_filter if numeric else None)
+                selected, total, matches, decisions = document_table.filter_rows(
+                    operand, source, _UNIT, filters, _test_numeric_filter if numeric else None, logic)
                 rows = _quantities_from_matches(matches, unit, convert, cancel)
                 groups.append(dict(selection_status=selected, total_rows=total, observations=rows, decisions=decisions))
             else:
@@ -576,8 +587,10 @@ def read(store, mid):
 def describe(receipt):
     plan = receipt['plan']
     if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT,
-                             document_table.NUMERIC_AGGREGATE_RECEIPT):
+                             document_table.NUMERIC_AGGREGATE_RECEIPT, document_table.LOGIC_AGGREGATE_RECEIPT):
         lines = [receipt['output']]
+        if 'logic' in plan:
+            lines.append('\n條件結構 ' + document_boolean.describe(plan['logic']))
         groups = receipt['groups']
         if plan['operation'] == 'mean' and receipt['total_exact'] is not None:
             count = sum(len(group['observations']) for group in groups)
@@ -627,4 +640,7 @@ def _describe_filter_decisions(group, filters):
             elif 'normalized_exact' in test:
                 outcome += f'，比較值 {test["normalized_exact"]} {condition["unit"]}'
             details.append(f'「{condition["column"]}」{raw}（{outcome}）')
+        if row.get('unresolved'):
+            names = '、'.join(f'「{filters[index]["column"]}」' for index in row['unresolved'])
+            details.append(f'仍需核對 {names}')
         yield f'第 {row["line_number"]} 行 · {labels[row["status"]]} · ' + '、'.join(details)

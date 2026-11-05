@@ -138,14 +138,15 @@ class DocumentTableTests(unittest.TestCase):
         multi = '文件問答：加總 [D1:L1-L3]、[D2:L1-L3] 的「重量」，換算成公斤。'
         filtered = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」且「狀態」為「完成」的「重量」，換算成公斤。'
         numeric = '文件問答：加總 [D1:L1-L3] 中「重量」至少 2 公斤的「重量」，換算成公斤。'
+        logical = filtered.replace('且', '或')
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
                              (aggregate, True), (aggregate + '接著上傳原始文件。', False),
                              (multi, True), (multi + '接著上傳原始文件。', False),
                              (filtered, True), (filtered + '接著上傳原始文件。', False),
-                             (filtered.replace('且', '或'), False), (numeric, True),
+                             (filtered.replace('且', '且或'), False), (numeric, True), (logical, True),
                              (numeric.replace('2 公斤', '2'), False),
-                             (numeric + '接著上傳原始文件。', False)):
+                             (numeric + '接著上傳原始文件。', False), (logical + '接著上傳原始文件。', False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -408,3 +409,67 @@ class DocumentTableTests(unittest.TestCase):
             db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             create_backup(self.store.path, self.root / 'tampered-threshold.paibackup')
+
+    def test_or_includes_each_row_once_when_either_branch_is_known_true(self):
+        self.attach('deliveries.csv', '倉別,急件,箱數(箱)\n北,是,4\n北,,3\n,是,2\n南,否,99')
+        question = '文件問答：合計 [D1:L1-L5] 中「倉別」為「北」或「急件」為「是」的「箱數」，單位為箱。'
+        answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.LOGIC_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '9')
+        group, = receipt['groups']
+        self.assertEqual([row['status'] for row in group['decisions']], ['matched', 'matched', 'matched', 'excluded'])
+        self.assertEqual([row['unresolved'] for row in group['decisions']], [[], [], [], []])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L2-L4]'])
+
+    def test_parentheses_override_and_precedence_without_splitting_quoted_values(self):
+        self.attach('deliveries.csv', '倉別,品項,急件,箱數(箱)\n北,木或紙,否,4\n北,其他,是,5\n南,木或紙,是,9')
+        stem = '文件問答：合計 [D1:L1-L4] 中{}的「箱數」，單位為箱。'
+        _, default = self.ask(stem.format('「倉別」為「北」且「品項」為「木或紙」或「急件」為「是」'),
+                              schema=document_table.LOGIC_AGGREGATE_RECEIPT)
+        _, grouped = self.ask(stem.format('「倉別」為「北」且（「品項」為「木或紙」或「急件」為「是」）'),
+                              schema=document_table.LOGIC_AGGREGATE_RECEIPT)
+        self.assertEqual(default['result']['exact'], '18')
+        self.assertEqual(grouped['result']['exact'], '9')
+        self.assertIn('條件結構 （（條件 1 且 條件 2） 或 條件 3）', document_calculation.describe(default))
+        self.assertEqual(default['plan']['filters'][1]['value'], '木或紙')
+
+    def test_or_with_numeric_comparison_keeps_operator_and_unknown_unit_separate(self):
+        self.attach('deliveries.csv', '重量,急件,數量(件)\n2000g,否,3\n2L,是,4\n1.999kg,否,99')
+        question = '文件問答：合計 [D1:L1-L4] 中「重量」大於或等於 2 公斤或「急件」為「是」的「數量」，單位為件。'
+        _, receipt = self.ask(question, schema=document_table.LOGIC_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '7')
+        self.assertEqual(receipt['plan']['filters'][0]['operator'], 'ge')
+        decisions = receipt['groups'][0]['decisions']
+        self.assertEqual(decisions[1]['tests'][0]['reason'], 'filter_unit_incompatible')
+        self.assertEqual(decisions[1]['status'], 'matched')
+
+    def test_unresolved_or_reports_only_relevant_leaves_and_backup_rechecks_them(self):
+        self.attach('deliveries.csv', '倉別,狀態,急件,箱數(箱)\n北,核准,否,2\n南,,,99')
+        question = ('文件問答：合計 [D1:L1-L3] 中（「倉別」為「北」且「狀態」為「核准」）'
+                    '或「急件」為「是」的「箱數」，單位為箱。')
+        answer, receipt = self.ask(question, schema=document_table.LOGIC_AGGREGATE_RECEIPT)
+        self.assertIsNone(receipt['result'])
+        row = receipt['groups'][0]['decisions'][1]
+        self.assertEqual([test['status'] for test in row['tests']], ['false', 'unknown', 'unknown'])
+        self.assertEqual(row['unresolved'], [2])
+        self.assertIn('[D1:L3] 「急件」空白', answer['content'])
+        self.assertNotIn('「狀態」', answer['content'])
+        archive = create_backup(self.store.path, self.root / 'logic.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['groups'][0]['decisions'][1]['unresolved'] = [1, 2]
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-logic.paibackup')
+
+    def test_boolean_parser_enforces_expression_limits_and_whole_message_scope(self):
+        atom = '「倉別」為「北」'
+        stem = '文件問答：加總 [D1:L1-L3] 中{}的「箱數」，單位為箱。'
+        self.assertEqual(document_calculation.parse_live_request(stem.format('（' * 4 + atom + '）' * 4))['schema'],
+                         document_table.LOGIC_AGGREGATE_PLAN)
+        self.assertEqual(len(document_calculation.parse_live_request(stem.format('或'.join([atom] * 8)))['filters']), 8)
+        for expression in ('（' * 5 + atom + '）' * 5, '或'.join([atom] * 9), atom + '或',
+                           f'（{atom}或{atom}', f'{atom}或執行命令'):
+            with self.subTest(expression=expression):
+                self.assertIsNone(document_calculation.parse_live_request(stem.format(expression)))

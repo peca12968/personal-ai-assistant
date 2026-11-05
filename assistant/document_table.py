@@ -5,6 +5,7 @@ import unicodedata
 from itertools import combinations
 from pathlib import PurePath
 
+from . import document_boolean
 from .document_ranges import MAX_LINES, STATUS_TEXT, requested_ranges
 
 
@@ -18,6 +19,8 @@ FILTER_AGGREGATE_PLAN = 'document_calculation_plan_v6'
 FILTER_AGGREGATE_RECEIPT = 'document_calculation_receipt_v6'
 NUMERIC_AGGREGATE_PLAN = 'document_calculation_plan_v7'
 NUMERIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v7'
+LOGIC_AGGREGATE_PLAN = 'document_calculation_plan_v8'
+LOGIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v8'
 MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
 _SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
@@ -168,7 +171,7 @@ def parse_filter_aggregate(question, unit_pattern, supported_units):
                 unit=unit, convert=convert, operands=operands, filters=filters)
 
 
-def parse_numeric_aggregate(question, unit_pattern, supported_units, parse_quantity):
+def _threshold_envelope(question, unit_pattern, supported_units):
     if not isinstance(question, str) or len(question) > 820 or len(question.splitlines()) != 1:
         return None
     text = question.strip()
@@ -178,37 +181,55 @@ def parse_numeric_aggregate(question, unit_pattern, supported_units, parse_quant
     convert = match['mode'] != '單位為'
     unit = _target_unit(match['unit'], convert, unit_pattern, supported_units)
     column = match['column'].strip()
-    parts = re.split(r' *且 *(?=「)', match['conditions'])
-    if unit is None or not column or not 1 <= len(parts) <= 4:
-        return None
-    filters = []
-    for part in parts:
-        if condition := _CONDITION_PARTS.fullmatch(part.strip()):
-            name, operator, value = (value.strip() for value in condition.groups())
-            if not name or not value:
-                return None
-            filters.append(dict(column=name, operator='ne' if operator == '不為' else 'eq', value=value))
-        elif condition := _NUMERIC_PARTS.fullmatch(part.strip()):
-            name, operator, raw = condition.groups()
-            quantity = parse_quantity(raw)
-            if not name.strip() or quantity is None or quantity[1] is None:
-                return None
-            value, threshold_unit = quantity
-            if _target_unit(threshold_unit, False, unit_pattern, supported_units) is None:
-                return None
-            filters.append(dict(column=name.strip(), operator=_NUMERIC_OPERATORS[operator],
-                                value=value, unit=threshold_unit))
-        else:
-            return None
-    if not any('unit' in condition for condition in filters):
+    if unit is None or not column:
         return None
     operands = []
     for citation in re.findall(_SPAN, match['scope']):
         ranges, _ = requested_ranges(citation)
         operands.append({**ranges[0], 'citation': citation, 'value_column': column})
-    return dict(schema=NUMERIC_AGGREGATE_PLAN, request=question,
-                operation='mean' if match['operation'].startswith('平均') else 'sum',
-                unit=unit, convert=convert, operands=operands, filters=filters)
+    return match['conditions'], dict(request=question, operation='mean' if match['operation'].startswith('平均') else 'sum',
+                                     unit=unit, convert=convert, operands=operands)
+
+
+def _threshold_condition(part, unit_pattern, supported_units, parse_quantity):
+    if condition := _CONDITION_PARTS.fullmatch(part.strip()):
+        name, operator, value = (value.strip() for value in condition.groups())
+        if name and value:
+            return dict(column=name, operator='ne' if operator == '不為' else 'eq', value=value)
+    elif condition := _NUMERIC_PARTS.fullmatch(part.strip()):
+        name, operator, raw = condition.groups()
+        quantity = parse_quantity(raw)
+        if name.strip() and quantity is not None and quantity[1] is not None:
+            value, threshold_unit = quantity
+            if _target_unit(threshold_unit, False, unit_pattern, supported_units) is not None:
+                return dict(column=name.strip(), operator=_NUMERIC_OPERATORS[operator], value=value, unit=threshold_unit)
+    return None
+
+
+def parse_numeric_aggregate(question, unit_pattern, supported_units, parse_quantity):
+    envelope = _threshold_envelope(question, unit_pattern, supported_units)
+    if envelope is None:
+        return None
+    expression, plan = envelope
+    parts = re.split(r' *且 *(?=「)', expression)
+    if not 1 <= len(parts) <= 4:
+        return None
+    filters = [_threshold_condition(part, unit_pattern, supported_units, parse_quantity) for part in parts]
+    if any(condition is None for condition in filters) or not any('unit' in condition for condition in filters):
+        return None
+    return dict(schema=NUMERIC_AGGREGATE_PLAN, **plan, filters=filters)
+
+
+def parse_logic_aggregate(question, unit_pattern, supported_units, parse_quantity):
+    envelope = _threshold_envelope(question, unit_pattern, supported_units)
+    if envelope is None:
+        return None
+    expression, plan = envelope
+    parsed = document_boolean.parse(expression, lambda part: _threshold_condition(part, unit_pattern, supported_units, parse_quantity))
+    if parsed is None:
+        return None
+    filters, logic = parsed
+    return dict(schema=LOGIC_AGGREGATE_PLAN, **plan, filters=filters, logic=logic)
 
 
 def query(operands):
@@ -384,8 +405,8 @@ def _test_cell(raw, condition):
     return dict(value=raw, status='true' if matches else 'false')
 
 
-def filter_rows(operand, source, unit_pattern, filters, test_numeric=None):
-    """Apply exact AND tests and retain evidence for every physical data row."""
+def filter_rows(operand, source, unit_pattern, filters, test_numeric=None, logic=None):
+    """Apply the exact condition and retain evidence for every physical data row."""
     names = [condition['column'] for condition in filters]
     numeric_indexes = {index for index, condition in enumerate(filters) if 'unit' in condition}
     status, total_rows, bound = _bind_table(operand, source, unit_pattern, names, numeric_indexes)
@@ -396,16 +417,23 @@ def filter_rows(operand, source, unit_pattern, filters, test_numeric=None):
     for line, row in enumerate(bound['rows'], bound['first_row']):
         tests = [(test_numeric(row[index], header_unit, condition) if 'unit' in condition else _test_cell(row[index], condition))
                  for index, header_unit, condition in zip(bound['key_indexes'], bound['key_units'], filters, strict=True)]
-        outcomes = {test['status'] for test in tests}
-        if 'false' in outcomes:
+        outcomes = [test['status'] for test in tests]
+        if logic is None:
+            outcome = 'false' if 'false' in outcomes else 'unknown' if 'unknown' in outcomes else 'true'
+        else:
+            outcome, unresolved = document_boolean.evaluate(logic, outcomes)
+        if outcome == 'false':
             decision = 'excluded'
-        elif 'unknown' in outcomes:
+        elif outcome == 'unknown':
             decision = 'unknown'
             has_unknown = True
         else:
             decision = 'matched'
             matches.append((line, _selected_cell(operand, source, bound, line, row)))
-        decisions.append(dict(line_number=line, status=decision, tests=tests))
+        evidence = dict(line_number=line, status=decision, tests=tests)
+        if logic is not None:
+            evidence['unresolved'] = unresolved
+        decisions.append(evidence)
     if has_unknown:
         status = 'filter_unknown'
     elif not matches:
