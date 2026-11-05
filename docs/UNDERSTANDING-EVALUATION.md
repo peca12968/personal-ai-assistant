@@ -528,3 +528,12 @@ scripts/evaluate_chat_transcription.py以真實Assistant及SQLite驗證evals/cha
 本機操作在模型入口之前，按凍結literal_request_v1語法選取原始字元，保存local_transcription計畫與完成收據，不假裝是模型原答。保存與備份重新核對來源範圍、UTF-8／字元雜湊及原問題／成功流程／交付文字連結；還原不執行，不產生訓練例子。UI的JSON檢視只是不可見字元表示，不是額外輸出引號或跳脫修補。
 
 scripts/evaluate_understanding.py及其他原答收集入口、信心探查與ParameterAcceptance明確使用allow_local_transcription=False，故純轉錄題仍呼叫原引擎並保存原答與實際請求。transcription_mode=model_only_evaluation只說明停用工具，不提供正確答案。當前收集器、提示及脈絡來源改變，後續實機須新報告；不能接續舊來源綁定研究或追溯改寫其指紋。普通工作工具測試與原始模型評讀維持分開，不把本機逐字保真當成參數學習、陌生題能力或IQ增幅。
+
+
+## 一般工作與輸入餘裕：保留語意退步與未採用候選
+
+`evals/work_comprehension.json` 固定八題工作順序、因果、程式、來源權威、需求更正與功能控制；`evals/work_context_budget.json` 是同一場地任務的延長輸入，單獨檢查輸入接納，不能混進八題正確率。兩組都可用 `python scripts/evaluate_understanding.py --suite 檔名` 離線核對；離線不呼叫模型或評分。實機另用 `--live --local-data-dir data --report data/evaluations/新目錄/報告.json`，在完整指引、所有動態背景、實際system資訊與原生chat template加框後先做token預檢。超限案例的原生拒絕不記成錯答，不自動重送。
+
+同一原始本機參數、固定案例與測試協定下，基準八題5/8；兩次精簡指引全收集均4/8，較長案例各答對但因果控制退步。第三個候選的來源綁定行數提示仍只輸出一行，因果退步也持續；只收集預定兩題0/2，不能當成八題完整分數。先前單純預檢的版本也不是模型結果。完整原答、已拒絕的候選、固定評讀、未送出的案例與源碼副本只存本機，沒有套用失敗指引、調整事後標準或用宿主排版修補模型答案。
+
+正式候選只收緊自我改進背景查詢：原完整指引與其餘動態資料保持相同，Python題不再誤帶三筆歷史摘要，24389降到23953 tokens，另有一份實際原答與固定評讀。其他七題的逐字請求等價是離線核對，沒有重新執行或重綁舊模型證據；超限延長題原狀保留。共29份實際模型原答與一份原生超限錯誤留在本機work-comprehension-20261105-001。這是開發對照、來源相關性修正及拒絕退步候選的證據，沒有獨立盲測或參數學習結論。

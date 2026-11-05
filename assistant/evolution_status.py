@@ -4,11 +4,44 @@ import json
 import os
 import re
 import subprocess
+import unicodedata
 from pathlib import Path
 
 
+def status_request(question):
+    """Do not retrieve private self-edit history for arbitrary source-code work."""
+    if not isinstance(question,str) or not 1<=len(question)<=16000:
+        return False
+    # Code and quoted examples are data, not requests for the assistant's history.
+    lines=[];fence=None
+    for line in question.splitlines(keepends=True):
+        marker=re.match(r'^[ \t]*(`{3,}|~{3,})([^\r\n]*)',line)
+        if fence is not None:
+            if marker and marker[1][0]==fence[0] and len(marker[1])>=fence[1] and not marker[2].strip():
+                fence=None
+            lines.append('\n')
+        elif marker:
+            fence=(marker[1][0],len(marker[1]));lines.append('\n')
+        elif line.lstrip().startswith('>'):
+            lines.append('\n')
+        else:
+            lines.append(line)
+    view=''.join(lines)
+    view=re.sub(r'「[^「」]*」|『[^『』]*』|“[^“”]*”|"[^"\r\n]*"|`[^`\r\n]*`',' ',view)
+    if any(symbol in view for symbol in '「」『』“”"`'):
+        return False
+    view=unicodedata.normalize('NFKC',view)
+    if re.search(r'自我改|自改|改碼|變聰明|self.improv',view,re.I):
+        return True
+    return bool(re.search(
+        r'(?:你|妳|本助理|本助手|這個助理|這個助手)'
+        r'(?:(?:是不是|是否|有沒有|剛剛|剛才|最近|已經|曾經|自己|又|已|有|真的|目前)){0,4}'
+        r'(?:改了|修改了|修改過|改過)(?:自己的?)?程式'
+        r'|修改(?:你|妳|本助理|本助手|這個助理|這個助手)(?:自己)?的程式',view))
+
+
 def improvement_context(root, question):
-    if not re.search(r'自我改|自改|改碼|改了程式|修改.{0,8}程式|變聰明|self.improv', question, re.I):
+    if not status_request(question):
         return []
     root = Path(root).resolve()
     folder = root / 'data/evolution'
