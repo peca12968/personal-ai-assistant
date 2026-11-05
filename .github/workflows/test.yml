@@ -41,6 +41,7 @@ jobs:
       - run: python scripts/evaluate_understanding.py --suite evals/work_context_budget.json
       - run: python scripts/evaluate_understanding.py --suite evals/local_chat_budget.json
       - run: python scripts/evaluate_understanding.py --suite evals/local_chat_continuity.json
+      - run: python scripts/evaluate_understanding.py --suite evals/local_document_budget.json
       - run: python scripts/evaluate_understanding.py --suite evals/topic_context.json
       - run: python scripts/evaluate_goal_drafts.py
       - run: python scripts/evaluate_goal_drafts.py --suite evals/goal_draft_inputs.json

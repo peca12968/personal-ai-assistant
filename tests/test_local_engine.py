@@ -103,6 +103,8 @@ class LocalEngineTests(unittest.TestCase):
             ("import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(b'x'*(3*1024*1024))", 'invalid_response'),
             (SUCCESS+WRITE+"sys.exit(5)\n", 'invalid_response'),
             (SUCCESS+"result={'schema':'local_inference_result_v1','status':'failed','code':'gpu_busy'}\n"+WRITE+"sys.exit(1)\n", 'local_gpu_busy'),
+            (SUCCESS+"result={'schema':'local_inference_result_v1','status':'failed','code':'document_citation_invalid'}\n"+WRITE+"sys.exit(1)\n",
+             'local_document_citation_invalid'),
             (SUCCESS+"result={'schema':'local_inference_result_v1','status':'failed','code':'unknown'}\n"+WRITE, 'invalid_response'),
             (SUCCESS+"result={'schema':'local_inference_result_v1','status':'failed','code':[]}\n"+WRITE, 'invalid_response'),
         )

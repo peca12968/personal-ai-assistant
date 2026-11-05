@@ -70,20 +70,33 @@ def _check_role_content(tokenizer, messages):
             raise Failure('invalid_request')
 
 
-def encode_request(tokenizer, request, messages):
+def _encode_request(tokenizer, request, messages):
     if request['schema'] == 'local_inference_request_v2':
         _check_role_content(tokenizer, messages)
+    excerpts = None
     ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
     if len(ids) > local_models.MAX_INPUT_TOKENS and request['schema'] == local_chat_budget.REQUEST_SCHEMA:
-        recovery = local_chat_budget.recovery_prompt(request['prompt'])
-        if recovery is not None:
+        plan = local_chat_budget.recovery_plan(request['prompt'])
+        if plan is not None:
+            recovery, excerpts = plan
             recovered = request_messages({**request, 'prompt': recovery})
             _check_role_content(tokenizer, recovered)
             ids = tokenizer.apply_chat_template(recovered, tokenize=True, add_generation_prompt=True,
                                                 enable_thinking=False)
     if not ids or len(ids) > local_models.MAX_INPUT_TOKENS:
         raise Failure('input_too_large')
-    return ids
+    return ids, excerpts
+
+
+def encode_request(tokenizer, request, messages):
+    return _encode_request(tokenizer, request, messages)[0]
+
+
+def validate_document_citations(answer, excerpts):
+    if excerpts is not None:
+        from assistant.documents import check_citations
+        if any(not check['range_valid'] for check in check_citations(answer, excerpts)):
+            raise Failure('document_citation_invalid')
 
 
 def infer(request):
@@ -117,7 +130,7 @@ def infer(request):
         except (OSError, ValueError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise Failure('model_changed') from None
         tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True, trust_remote_code=False)
-        ids = encode_request(tokenizer, request, request_messages(request))
+        ids, excerpts = _encode_request(tokenizer, request, request_messages(request))
         model = AutoModelForCausalLM.from_pretrained(base, local_files_only=True, trust_remote_code=False,
             use_safetensors=True, torch_dtype=torch.bfloat16, device_map={'': 0}, attn_implementation='sdpa')
         if adapter is not None:
@@ -154,6 +167,7 @@ def infer(request):
         answer = tokenizer.decode(generated, skip_special_tokens=True).strip()
         if not answer:
             raise Failure('empty_response')
+        validate_document_citations(answer, excerpts)
         # Recheck selection metadata after inference; never relabel an answer if
         # another process changed the selected research evidence during the call.
         try:

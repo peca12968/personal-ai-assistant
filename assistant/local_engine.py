@@ -20,6 +20,7 @@ ERRORS = {
     'gpu_unavailable': '目前沒有可用且支援BF16的CUDA顯示卡。',
     'gpu_memory': '本機推理顯存不足，這次沒有保存答案；請縮短內容或釋放顯存後重試。',
     'input_too_large': '完整提示超過本機模型的24576 token上限，未裁切或改送其他引擎。',
+    'document_citation_invalid': '本機文件問答的引用超出這次提供的範圍，沒有保存完成答案。可核對來源編號與行號後再提問。',
     'generation_limit': '本機回答達到512 token上限仍未結束，未把截斷內容保存為完成答案。',
     'empty_response': '本機模型沒有傳回有效答案。',
     'invalid_request': '本機推理請求格式不符，沒有執行。',
