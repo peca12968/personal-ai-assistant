@@ -20,7 +20,7 @@ from .communication import conversation_style
 from .evolution_status import improvement_context
 from .memory_commands import handle_command, parse_command
 from . import answer_feedback
-from . import answer_runs
+from . import answer_runs, named_topics
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from .autonomy_status import goal_context
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -106,6 +106,8 @@ def render_prompt_parts(context):
     if isolated:
         instructions += ('\n本輪依這則訊息和本輪實際提供的圖片回答。'
                          '所需資料未在本輪提供時，按使用者指定的格式指出缺漏。')
+    if named_topics.valid_reference(context.get('current_request'), context.get('named_topic')):
+        instructions += named_topics.GUIDANCE
     if copy_focus and copy_format is not None:
         instructions += '\n' + OUTER_GUIDANCE[copy_format['outer_quotes']]
     literal_data = ''
@@ -325,6 +327,9 @@ class Assistant:
         context['self_improvement'] = improvement_context(ROOT, question)
         context['answer_attempts'] = answer_runs.context_status(self.store, sid)
         context['conversation_tail'] = answer_runs.conversation_tail(self.store, sid)
+        topic = named_topics.reference(self.store, sid, question, context['conversation_tail'], exclude_message_id)
+        if topic is not None:
+            context['named_topic'] = topic
         return context, followup
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):

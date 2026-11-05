@@ -3,7 +3,7 @@ import re
 import unicodedata
 
 from .acceptance import strict_json
-from . import document_partial
+from . import document_partial, named_topics
 from .document_ranges import MAX_RANGES, STATUS_TEXT, range_status_text
 
 
@@ -149,9 +149,13 @@ def _text_guide(context):
         return None
     normalized = unicodedata.normalize('NFKC', question).strip()
     document_work = _DOCUMENT_REQUEST.match(normalized)
+    topic = context.get('named_topic')
     if document_work:
         body = normalized[document_work.end():].strip()
         if not body or _DOCUMENT_ACTION.search(body):
+            return None
+    elif topic is not None:
+        if not named_topics.valid_reference(question, topic) or _DOCUMENT_ACTION.search(normalized):
             return None
     elif not _WORK.match(normalized):
         return None
@@ -171,8 +175,12 @@ def _text_guide(context):
     rows.extend(corrections.get('excerpts', []))
     brief = context.get('session_brief') or {}
     texts = [question, *brief.values(), *(row['content'] for row in rows)]
+    if topic is not None and not document_work:
+        texts.extend(row['content'] for row in topic['sources'])
     if any(not isinstance(text, str) or _PRODUCT.search(unicodedata.normalize('NFKC', text)) for text in texts):
         return None
+    if topic is not None and not document_work:
+        return GUIDANCE + named_topics.GUIDANCE
     return _document_guide(documents) if document_work else GUIDANCE
 
 

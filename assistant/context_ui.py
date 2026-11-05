@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 from .document_ranges import range_status_text
 from .companion_profile import describe as describe_profile
 from .context import CURRENT_MESSAGE_ONLY
+from . import named_topics
 
 
 class BriefWindow:
@@ -101,6 +102,8 @@ def show_context(parent, store, message_id):
         ("早期摘錄", "\n\n".join(f'使用者訊息 #{r["message_id"]}\n{r["content"]}' for r in context["earlier_user_excerpts"]) or "本次沒有早期摘錄。"),
         ("最近對話", "\n\n".join(f'{"你" if r["role"] == "user" else "助理"} · #{r["message_id"]}\n{r["content"]}' for r in context["recent_conversation"]) or "本次沒有前文。"),
     ]
+    if named_topics.valid_reference(context['current_request'], context.get('named_topic')):
+        sections.append(('具名話題', named_topics.describe(context['named_topic'])))
     documents = context.get("documents", {})
     if context.get('image_inputs'):
         sections.append(('本次圖片', '以下是本次實際附件的順序與本機副本指紋；不是辨識正確性的保證。\n\n' +
