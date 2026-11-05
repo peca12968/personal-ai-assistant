@@ -34,8 +34,8 @@ def example_from_source(source):
     if source['rating'] != -1 or not source['correction'].strip():
         raise ValueError('請先為需要改進的回答填寫具體更正。')
     context = source['context']
-    if not context or context.get('response_mode') in ('local_memory', 'local_calculation', 'local_transcription', 'local_evidence', 'verified_inventory', 'verified_clearance', 'capacity_comparison'):
-        raise ValueError('此入口需要模型回答的原始快照。本機記憶操作、精確計算、逐字轉錄、條件核對、庫存核對、門寬核對、名額對照或舊版無快照回答不適用。')
+    if not context or context.get('response_mode') in ('local_memory', 'local_calculation', 'local_document_calculation', 'local_transcription', 'local_evidence', 'verified_inventory', 'verified_clearance', 'capacity_comparison'):
+        raise ValueError('此入口需要模型回答的原始快照。本機記憶操作、精確計算、文件計算、逐字轉錄、條件核對、庫存核對、門寬核對、名額對照或舊版無快照回答不適用。')
     history = context.get('recent_conversation', [])
     if any(row.get('truncated') for row in history):
         raise ValueError('原回答的近期前文有截斷，無法直接轉成完整驗收例子；請在自我改進另填可重現的例子。')

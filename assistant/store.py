@@ -392,10 +392,18 @@ class Store:
             check_cancel()
             return db.execute("SELECT id FROM documents WHERE session_id=? AND path_key=?", (sid, document["path_key"])).fetchone()[0]
 
-    def documents(self, sid, include_content=False):
+    def documents(self, sid, include_content=False, *, document_ids=None):
         columns = "*" if include_content else "id, name, source_path, sha256, encoding, size_bytes, imported_at"
+        sql = f"SELECT {columns} FROM documents WHERE session_id=?"
+        params = (sid,)
+        if document_ids is not None:
+            ids = tuple(document_ids)
+            if not ids:
+                return []
+            sql += " AND id IN (" + ",".join("?" for _ in ids) + ")"
+            params += ids
         with self.connect() as db:
-            return [dict(row) for row in db.execute(f"SELECT {columns} FROM documents WHERE session_id=? ORDER BY id", (sid,))]
+            return [dict(row) for row in db.execute(sql + " ORDER BY id", params)]
 
     def detach_document(self, sid, document_id):
         with self.connect() as db:

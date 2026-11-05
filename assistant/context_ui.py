@@ -52,6 +52,17 @@ def show_context(parent, store, message_id):
     calculated = context.get('response_mode') == 'local_calculation'
     transcribed = context.get('response_mode') == 'local_transcription'
     evidence = context.get('response_mode') == 'local_evidence'
+    from . import document_calculation
+    document_math = context.get('response_mode') == document_calculation.MODE
+    if document_math:
+        try:
+            math_receipt = document_calculation.read(store, message_id)
+            if math_receipt is None:
+                raise ValueError('找不到本機文件計算紀錄。')
+        except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            window.destroy()
+            messagebox.showerror('本機文件計算紀錄無法核對', str(exc), parent=parent)
+            return
     if evidence:
         from . import chat_evidence
         try:
@@ -70,10 +81,10 @@ def show_context(parent, store, message_id):
             window.destroy()
             messagebox.showerror('本機轉錄紀錄無法核對',str(exc),parent=parent)
             return
-    window.title('本機條件核對紀錄' if evidence else '本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
+    window.title('本機文件計算紀錄' if document_math else '本機條件核對紀錄' if evidence else '本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
     window.geometry("820x640")
     window.minsize(600, 420)
-    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed or evidence else
+    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed or evidence or document_math else
               "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
     ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
@@ -107,7 +118,9 @@ def show_context(parent, store, message_id):
                                   for r in corrections.get('excerpts', [])) or '本次沒有選取早期更正。')))
     checks = store.answer_checks(message_id)
     citation_text = "\n".join(check["citation"] + ("：範圍存在" if check["range_valid"] else "：無法對照") for check in checks) or "沒有可檢查的文件引用。"
-    doc_text = ("僅檢查來源編號、行號與字元範圍，未驗證結論的語意或正確性。\n" + citation_text + "\n\n" +
+    doc_notice = ('本機計算從下方指定行核對欄位與單位，依文件記載的數值運算。' if document_math else
+                  '僅檢查來源編號、行號與字元範圍，未驗證結論的語意或正確性。')
+    doc_text = (doc_notice + '\n' + citation_text + "\n\n" +
                 range_status_text(documents) + '\n\n' +
                 ("只提供部分文件片段，不能據此視為讀完整份文件。\n\n" if documents.get("coverage_limited") else "") +
                 "\n\n".join(f'D{row["document_id"]} · {row["name"]} · L{row["start_line"]}-L{row["end_line"]}' +
@@ -133,6 +146,9 @@ def show_context(parent, store, message_id):
         sections = [('轉錄紀錄','當時請求：\n'+context['current_request']+'\n\n'+describe_transcription(transcription_receipt))]
     if evidence:
         sections = [('條件核對', '當時請求：\n' + context['current_request'] + '\n\n' + chat_evidence.describe(evidence_receipt))]
+    if document_math:
+        sections = [('文件計算', '當時請求：\n' + context['current_request'] + '\n\n' + math_receipt['output']),
+                    ('文件來源', doc_text)]
     from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):
         sections.insert(0, (VIEW_TAB, delivery_text))

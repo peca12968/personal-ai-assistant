@@ -341,6 +341,9 @@ class Assistant:
         image_metadata, image_payloads = prepare(self.store, sid, image_ids, historical=historical)
         from . import chat_calculation
         calculation = chat_calculation.parse_request(question) if self.allow_local_calculation else None
+        from . import document_calculation
+        document_plan = (document_calculation.parse_request(question)
+                         if self.allow_local_calculation and not image_metadata else None)
         from . import chat_transcription
         transcription = (chat_transcription.parse_request(question)
                          if self.allow_local_transcription and not image_metadata else None)
@@ -365,6 +368,11 @@ class Assistant:
             context = make_context(question, [], [])
             context.update(response_mode='local_calculation', calculation=calculation,
                            documents={'catalog':[], 'excerpts':[]})
+        elif document_plan is not None:
+            sources = document_calculation.snapshot(self.store, sid, document_plan)
+            document_plan['documents'] = sources
+            context = make_context(question, [], [])
+            context.update(response_mode=document_calculation.MODE, document_calculation=document_plan, documents=sources)
         else:
             context = self.prepare_context(sid, question, exclude_message_id=retry['user_message_id'] if retry else None)
         if image_metadata:
@@ -396,6 +404,12 @@ class Assistant:
                     except ValueError as exc:
                         raise EngineError('本機精確計算未完成：' + str(exc), 'calculation_invalid') from None
                     context['calculation'] = receipt
+                elif document_plan is not None:
+                    try:
+                        answer, receipt = document_calculation.evaluate(document_plan, cancel)
+                    except ValueError as exc:
+                        raise EngineError('本機文件計算未完成：' + str(exc), 'document_calculation_invalid') from None
+                    context[document_calculation.FIELD] = receipt
                 else:
                     if (self.allow_local_calculation and not image_payloads
                             and callable(getattr(self.engine, 'answer_with_delivery', None))):
@@ -421,6 +435,7 @@ class Assistant:
                 "document_count": len(context["documents"]["catalog"]), "citation_checks": checks,
                 'run_id': run_id, 'user_message_id': uid,
                 **({'response_mode':'local_calculation', 'calculation':receipt} if calculation is not None else {}),
+                **({'response_mode': document_calculation.MODE, document_calculation.FIELD: receipt} if document_plan is not None else {}),
                 **({'response_mode':chat_transcription.MODE, 'transcription':receipt} if transcription is not None else {}),
                 **({'response_mode': chat_evidence.MODE, 'evidence': receipt} if evidence is not None else {}),
                 **({'image_count': len(image_metadata)} if image_metadata else {})}
