@@ -27,14 +27,56 @@ class Failure(RuntimeError):
         self.code = code
 
 
-def infer(request):
-    if (not isinstance(request, dict) or set(request) != {'schema', 'prompt', 'selection'}
-            or request['schema'] != 'local_inference_request_v1' or not isinstance(request['prompt'], str)
-            or not isinstance(request['selection'], dict)):
-        raise Failure('invalid_request')
+def request_text(request):
     from assistant.engine import MAX_PROMPT_BYTES
-    if len(request['prompt'].encode('utf-8')) > MAX_PROMPT_BYTES:
+    if not isinstance(request, dict) or not isinstance(request.get('selection'), dict):
         raise Failure('invalid_request')
+    schema = request.get('schema')
+    if schema == 'local_inference_request_v1' and set(request) == {'schema', 'prompt', 'selection'}:
+        guide, data = '', request['prompt']
+    elif schema == 'local_inference_request_v2' and set(request) == {'schema', 'guide', 'data', 'selection'}:
+        guide, data = request['guide'], request['data']
+        if not guide or not data:
+            raise Failure('invalid_request')
+    else:
+        raise Failure('invalid_request')
+    if not isinstance(guide, str) or not isinstance(data, str):
+        raise Failure('invalid_request')
+    try:
+        if len(guide.encode('utf-8')) + len(data.encode('utf-8')) > MAX_PROMPT_BYTES:
+            raise Failure('invalid_request')
+    except UnicodeError:
+        raise Failure('invalid_request') from None
+    return guide, data
+
+
+def request_messages(request):
+    guide, data = request_text(request)
+    provenance = json.dumps(learned_models.description(request['selection']), ensure_ascii=False)
+    system = (SYSTEM_GUIDANCE + '\n以下是程式提供的本次實際選用引擎資訊。回答引擎相關問題時以此為準；其他問題不需重述。\n'
+              + provenance)
+    if guide:
+        system += '\n' + guide
+    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': data}]
+
+
+def encode_request(tokenizer, request, messages):
+    if request['schema'] == 'local_inference_request_v2':
+        # The template adds its own delimiters. Content must not encode another
+        # special token that changes how the model interprets either role.
+        reserved = set(tokenizer.all_special_ids)
+        for message in messages:
+            ids = tokenizer.encode(message['content'], add_special_tokens=False)
+            if not reserved.isdisjoint(ids):
+                raise Failure('invalid_request')
+    ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
+    if not ids or len(ids) > local_models.MAX_INPUT_TOKENS:
+        raise Failure('input_too_large')
+    return ids
+
+
+def infer(request):
+    request_text(request)
     os.environ['HF_HOME'] = str(local_models.ROOT/'data/learning/huggingface')
     os.environ['HF_HUB_OFFLINE'] = '1'
     os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
@@ -64,14 +106,7 @@ def infer(request):
         except (OSError, ValueError, KeyError, TypeError, learned_models.sqlite3.Error):
             raise Failure('model_changed') from None
         tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True, trust_remote_code=False)
-        provenance = json.dumps(learned_models.description(request['selection']), ensure_ascii=False)
-        messages = [
-            {'role': 'system', 'content': SYSTEM_GUIDANCE+'\n以下是程式提供的本次實際選用引擎資訊。回答引擎相關問題時以此為準；其他問題不需重述。\n'+provenance},
-            {'role': 'user', 'content': request['prompt']},
-        ]
-        ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
-        if not ids or len(ids) > local_models.MAX_INPUT_TOKENS:
-            raise Failure('input_too_large')
+        ids = encode_request(tokenizer, request, request_messages(request))
         model = AutoModelForCausalLM.from_pretrained(base, local_files_only=True, trust_remote_code=False,
             use_safetensors=True, torch_dtype=torch.bfloat16, device_map={'': 0}, attn_implementation='sdpa')
         if adapter is not None:

@@ -57,6 +57,15 @@ class LocalEngine:
         return answer_directory(self.workdir)
 
     def answer(self, prompt, cancel=None):
+        return self._answer({'schema': 'local_inference_request_v1', 'prompt': prompt}, (prompt,), cancel)
+
+    def answer_roles(self, guide, data, cancel=None):
+        """Explicit research entry point. The caller supplies the host-rendered guide."""
+        if not guide or not data:
+            raise EngineError('角色分離需要完整的指引與資料。', 'invalid_input')
+        return self._answer({'schema': 'local_inference_request_v2', 'guide': guide, 'data': data}, (guide, data), cancel)
+
+    def _answer(self, payload, texts, cancel):
         deadline = time.monotonic() + self.timeout
         def check():
             if cancel and cancel.is_set():
@@ -72,13 +81,12 @@ class LocalEngine:
                 raise EngineError(ERRORS['model_changed'], 'local_model_changed') from None
         verify_selection(full=True)
         check()
-        if not isinstance(prompt, str):
+        if any(not isinstance(text, str) for text in texts):
             raise EngineError('推理輸入必須是文字。', 'invalid_input')
         try:
-            if len(prompt.encode('utf-8')) > MAX_PROMPT_BYTES:
+            if sum(len(text.encode('utf-8')) for text in texts) > MAX_PROMPT_BYTES:
                 raise EngineError('本機推理輸入超過2MiB。', 'input_too_large')
-            request = json.dumps({'schema': 'local_inference_request_v1', 'prompt': prompt,
-                                  'selection': selection}, ensure_ascii=False).encode('utf-8')
+            request = json.dumps({**payload, 'selection': selection}, ensure_ascii=False).encode('utf-8')
         except UnicodeError:
             raise EngineError('推理輸入包含無效文字。', 'invalid_input') from None
         if len(request) > local_models.MAX_REQUEST_BYTES:

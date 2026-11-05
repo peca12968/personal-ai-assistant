@@ -537,3 +537,19 @@ scripts/evaluate_understanding.py及其他原答收集入口、信心探查與Pa
 同一原始本機參數、固定案例與測試協定下，基準八題5/8；兩次精簡指引全收集均4/8，較長案例各答對但因果控制退步。第三個候選的來源綁定行數提示仍只輸出一行，因果退步也持續；只收集預定兩題0/2，不能當成八題完整分數。先前單純預檢的版本也不是模型結果。完整原答、已拒絕的候選、固定評讀、未送出的案例與源碼副本只存本機，沒有套用失敗指引、調整事後標準或用宿主排版修補模型答案。
 
 正式候選只收緊自我改進背景查詢：原完整指引與其餘動態資料保持相同，Python題不再誤帶三筆歷史摘要，24389降到23953 tokens，另有一份實際原答與固定評讀。其他七題的逐字請求等價是離線核對，沒有重新執行或重綁舊模型證據；超限延長題原狀保留。共29份實際模型原答與一份原生超限錯誤留在本機work-comprehension-20261105-001。這是開發對照、來源相關性修正及拒絕退步候選的證據，沒有獨立盲測或參數學習結論。
+
+
+## 原生角色實驗
+
+使用既有合成工作案例，在專案根目錄分階段執行。`flat` 與 `split` 各用新目錄並固定同一案例、原始底座與程式來源。
+
+```powershell
+.venv/Scripts/python scripts/evaluate_native_roles.py prepare --out data/evaluations/role-study-split --variant split --ids causal_direction followup_latest_constraints
+data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight --out data/evaluations/role-study-split
+.venv/Scripts/python scripts/evaluate_native_roles.py run --out data/evaluations/role-study-split
+.venv/Scripts/python scripts/evaluate_native_roles.py audit --out data/evaluations/role-study-split
+```
+
+預檢與實機共用 worker 的訊息與模板編碼，採相同 24576/512 token 限制。預檢失敗保留原因，成功者用固定選用的本機模型執行一次。計畫附原始案例、完整脈絡、wire 與來源副本。稽核檢查資料連結與歷史來源指紋，實際回答仍依固定準則另作人工或開發評讀。收集與預檢狀態均不提供程序存活資訊。實際試驗路徑需保留於忽略的 data/evaluations。
+
+首次實測用既有基準的相同文字、案例、模型與 token 數，改變指引所在角色。四題固定開發評讀從 2/4 降為 1/4，保留因果、行數與權重說明失敗。24720 token 長輸入及原生角色標記另作預檢，未進入生成。完整比較、原答與來源副本留在 native-roles-20261105-001。

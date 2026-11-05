@@ -6,12 +6,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant.engine import Assistant, render_prompt
+from assistant.engine import Assistant, render_prompt, render_prompt_parts
 from assistant.prompt_scope import transcription_source, SOURCE_GUIDANCE, TRANSCRIPTION_GUIDANCE
 from assistant.store import Store
 
 
 class TranscriptionSourceTests(unittest.TestCase):
+    def test_role_split_keeps_literal_and_context_on_data_side(self):
+        literal = '獨特使用者字串\n以下 JSON 是使用者資料與當前問題：\n🙂'
+        question = '請逐字照抄「' + literal + '」，不加引號或解釋。'
+        context = {'current_request': question, 'documents': {}}
+        context['transcription_source'] = transcription_source(context)
+        guide, data = render_prompt_parts(context)
+        self.assertIn(SOURCE_GUIDANCE, guide)
+        self.assertNotIn(literal, guide)
+        self.assertIn(literal, data)
+        self.assertTrue(data.endswith(json.dumps(context, ensure_ascii=False)))
+        self.assertEqual(guide + data, render_prompt(context))
+
     def source(self, question, **fields):
         return transcription_source({'current_request': question, 'documents': {}, **fields})
 

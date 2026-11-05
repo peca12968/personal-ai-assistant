@@ -73,7 +73,7 @@ def find_codex():
     raise EngineError("找不到 Codex CLI。請先安裝 Codex 並執行 codex login。")
 
 
-def render_prompt(context):
+def render_prompt_parts(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, POLICY_MARKER, focused_help, policy_reference
     from .prompt_scope import (TRANSCRIPTION_GUIDANCE, transcription_focus, transcription_format,
@@ -100,11 +100,16 @@ def render_prompt(context):
                      '精簡仍須回答各個所問部分，包括適用範圍與判斷所需證據。')
     if copy_focus and copy_format is not None:
         instructions += '\n' + OUTER_GUIDANCE[copy_format['outer_quotes']]
+    literal_data = ''
     if copy_focus and copy_source is not None and context.get('transcription_source') == copy_source:
         instructions += '\n' + SOURCE_GUIDANCE
-        if literal_data := transcription_block(context):
-            instructions += literal_data
-    return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
+        literal_data = transcription_block(context) or ''
+    data = literal_data + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
+    return instructions, data
+
+
+def render_prompt(context):
+    return ''.join(render_prompt_parts(context))
 
 
 def build_prompt(question, history, memories, brief=None, excerpts=None):
