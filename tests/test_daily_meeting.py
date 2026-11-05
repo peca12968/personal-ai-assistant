@@ -1,9 +1,11 @@
+import json
 import random
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from assistant.backup import create_backup, restore_backup
 from assistant.engine import EngineError
 from assistant.store import Store
 from scripts import daily_meeting as meeting
@@ -192,7 +194,14 @@ class DailyMeetingTests(unittest.TestCase):
             sid = store.new_session()
             app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
             q = '上一場會議，甲取消整個上午，重算。'
-            with patch.object(meeting, 'resolve', side_effect=EngineError('stop', 'cancelled')), self.assertRaises(EngineError):
+            resolve = meeting.resolve
+
+            def cancelled(plan):
+                if plan['cancelled']:
+                    raise EngineError('stop', 'cancelled')
+                return resolve(plan)
+
+            with patch.object(meeting, 'resolve', side_effect=cancelled), self.assertRaises(EngineError):
                 app.ask(sid, q)
             self.assertEqual(app.retry(sid)['content'], '12:00-12:20')
             self.assertEqual(len(store.messages(sid, 20)), 4)
@@ -229,3 +238,49 @@ class DailyMeetingTests(unittest.TestCase):
             doc.write_text('另外的時間限制', encoding='utf-8')
             store.attach_document(sid, doc)
             self.assertEqual(app.ask(sid, q)['content'], '模型原答')
+
+    def test_read_rebuilds_original_and_followup_after_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            store = Store(folder / 'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            first = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            latest = app.ask(sid, '上一場會議，甲取消整個上午，重算。')
+            root = meeting.read(store, first['id'])
+            current = meeting.read(store, latest['id'])
+            self.assertEqual(current['meeting_source']['answer_id'], first['id'])
+            backup = create_backup(store.path, folder / 'meetings.paibackup')
+            restore_backup(backup['path'], folder / 'restored')
+            restored = Store(folder / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(meeting.read(restored, latest['id']), current)
+            self.assertEqual(meeting.read(restored, first['id']), root)
+            current['calculation']['common'] = ['12:00-12:29']
+            with restored.connect() as db:
+                db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                           (json.dumps(current, ensure_ascii=False), latest['id']))
+            with self.assertRaisesRegex(ValueError, '重算結果不符'):
+                meeting.read(restored, latest['id'])
+
+    def test_rebuilt_original_rejects_a_consistently_edited_plan_and_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            answer = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            snapshot = store.answer_context(answer['id'])
+            snapshot['meeting_plan']['available']['乙'] = [[540, 600]]
+            text, snapshot['calculation'] = meeting.resolve(snapshot['meeting_plan'])
+            with store.connect() as db:
+                initial = json.loads(db.execute('SELECT context_json FROM answer_runs WHERE id=?',
+                                                (answer['run_id'],)).fetchone()[0])
+                initial['meeting_plan'] = snapshot['meeting_plan']
+                db.execute('UPDATE answer_runs SET context_json=? WHERE id=?',
+                           (json.dumps(initial, ensure_ascii=False), answer['run_id']))
+                db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                           (json.dumps(snapshot, ensure_ascii=False), answer['id']))
+                db.execute('UPDATE messages SET content=? WHERE id=?', (text, answer['id']))
+            with self.assertRaisesRegex(ValueError, '重算結果不符'):
+                meeting.read(store, answer['id'])
+            with self.assertRaisesRegex(ValueError, '沒有可接續'):
+                app.ask(sid, '上一場會議，甲取消整個上午，重算。')

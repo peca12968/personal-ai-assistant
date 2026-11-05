@@ -1,5 +1,9 @@
 """Read-only earliest common slot in explicitly listed, same-day availability."""
+import hashlib
+import json
 import re
+
+from assistant.local_answer_receipts import MAX_JSON_BYTES, load_context
 
 CLOCK = r'(?:(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|24:00)'
 SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
@@ -202,3 +206,106 @@ def visible_answer(plan, receipt):
         return '沒有可行時段，當天沒有共同空檔。'
     longest = max(b-a for a, b in map(span, receipt['common']))
     return f'沒有可行時段。最長的共同空檔只有 {longest} 分鐘，會議需要 {length} 分鐘。'
+
+
+def previous_id(db, sid, before):
+    row = db.execute('SELECT id FROM messages WHERE session_id=? AND (? IS NULL OR id<?) '
+                     'ORDER BY id DESC LIMIT 1', (sid, before, before)).fetchone()
+    return row['id'] if row else None
+
+
+def same_json(left, right):
+    return (json.dumps(left, sort_keys=True, allow_nan=False)
+            == json.dumps(right, sort_keys=True, allow_nan=False))
+
+
+def saved_meeting(db, mid):
+    rows = db.execute('''SELECT a.session_id,a.role,a.content,u.id AS uid,u.role AS user_role,
+        u.session_id AS user_session,u.content AS question,r.session_id AS run_session,r.status,
+        CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS payload,
+        CASE WHEN length(CAST(r.context_json AS BLOB))<=? THEN r.context_json END AS initial,
+        CASE WHEN length(CAST(k.payload AS BLOB))<=? THEN k.payload END AS checks
+        FROM messages a JOIN answer_runs r ON r.answer_message_id=a.id
+        JOIN messages u ON u.id=r.user_message_id JOIN answer_contexts c ON c.message_id=a.id
+        LEFT JOIN answer_checks k ON k.message_id=a.id WHERE a.id=? LIMIT 2''',
+        (MAX_JSON_BYTES, MAX_JSON_BYTES, MAX_JSON_BYTES, mid)).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError('會議缺少唯一的回答流程。')
+    row = rows[0]
+    saved, initial = load_context(row['payload']), load_context(row['initial'])
+    if not isinstance(saved, dict) or not isinstance(initial, dict):
+        raise ValueError('會議的回答紀錄格式有誤。')
+    if 'meeting_plan' not in saved and 'meeting_plan' not in initial:
+        return None
+    if (row['role'] != 'assistant' or row['user_role'] != 'user' or row['status'] != 'succeeded'
+            or not row['session_id'] == row['user_session'] == row['run_session']
+            or not 0 < row['uid'] < mid
+            or not row['question'] == saved.get('current_request') == initial.get('current_request')
+            or saved.get('response_mode') != 'local_calculation'
+            or initial.get('response_mode') != 'local_calculation'
+            or not same_json(saved.get('meeting_source'), initial.get('meeting_source'))
+            or not same_json(saved.get('meeting_plan'), initial.get('meeting_plan'))
+            or saved.get('image_inputs') or saved.get('engine_selection') is not None
+            or saved.get('documents') != {'catalog': [], 'excerpts': []}
+            or load_context(row['checks']) != []):
+        raise ValueError('會議來源與已完成的回答流程不符。')
+    ref = dict(answer_id=mid, sha256=hashlib.sha256(row['payload'].encode('utf-8')).hexdigest())
+    return row, saved, ref
+
+
+def verified_meeting(db, mid):
+    tip = saved_meeting(db, mid)
+    if tip is None:
+        return None
+    history = [tip]
+    while 'meeting_source' in history[-1][1]:
+        row, saved, _ = history[-1]
+        parent = saved_meeting(db, previous_id(db, row['session_id'], row['uid']))
+        if parent is None or saved['meeting_source'] != parent[2]:
+            raise ValueError('會議的上一筆來源已變更。')
+        history.append(parent)
+    original = history.pop()
+    plan = parse(original[0]['question'])
+    if plan is None:
+        raise ValueError('會議紀錄缺少可核對的原始時段。')
+
+    def check(record, effective):
+        row, saved, _ = record
+        answer, calculation = resolve(effective)
+        if (not same_json(saved.get('meeting_plan'), effective)
+                or not same_json(saved.get('calculation'), calculation)):
+            raise ValueError('會議紀錄與重算結果不符。')
+        if answer != row['content']:
+            raise ValueError('會議回答與重算結果不符。')
+
+    check(original, plan)
+    for record in reversed(history):
+        revision = FOLLOWUP.fullmatch(record[0]['question'])
+        if not revision:
+            raise ValueError('會議更正與原問不符。')
+        revise(plan, revision[1])
+        check(record, plan)
+    return tip
+
+
+def read(store, mid):
+    with store.connect() as db:
+        db.execute('BEGIN')
+        verified = verified_meeting(db, mid)
+        return verified[1] if verified else None
+
+
+def previous(store, sid, before=None, *, required=True):
+    message = '上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。'
+    try:
+        with store.connect() as db:
+            db.execute('BEGIN')
+            verified = verified_meeting(db, previous_id(db, sid, before))
+            if verified:
+                return verified[1]['meeting_plan'], verified[2]
+    except ValueError as exc:
+        raise ValueError(message) from exc
+    if required:
+        raise ValueError(message)

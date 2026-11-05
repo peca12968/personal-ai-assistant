@@ -112,24 +112,6 @@ def source_ref(row):
     return dict(answer_id=row['id'], sha256=hashlib.sha256(row['payload'].encode('utf8')).hexdigest())
 
 
-def previous_meeting(store, sid, before):
-    row = previous_answer(store, sid, before)
-    if row:
-        saved = json.loads(row['payload'])
-        initial = json.loads(row['context_json'])
-        plan = saved.get('meeting_plan')
-        calc = saved.get('calculation', {})
-        if (isinstance(plan, dict) and plan.get('schema') == 'daily_availability_v1'
-                and plan == initial.get('meeting_plan') and saved.get('meeting_source') == initial.get('meeting_source')
-                and row['question'] == initial.get('current_request') == saved.get('current_request')
-                and saved.get('response_mode') == 'local_calculation' and isinstance(calc, dict)
-                and isinstance(calc.get('result'), dict) and calc.get('model_called') is False
-                and calc.get('schema') == 'daily_meeting_calculation_v1' and calc.get('status') == 'complete'
-                and row['content'] == daily_meeting.visible_answer(plan, calc)):
-            return plan, source_ref(row)
-    raise ValueError('上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。')
-
-
 def preceding_receipt(store, sid, before=None, *, pending_only=False, allow_pending=True):
     row = previous_answer(store, sid, before)
     if row:
@@ -223,13 +205,13 @@ def stock_clarification_ids(db, sid, context, before):
 
 
 class DailyAssistant(Assistant):
-    def __init__(self, store, engine, *, prerequisites_only=False, **options):
+    def __init__(self, store, engine, *, default_chat=False, **options):
         super().__init__(store, engine, **options)
-        self.prerequisites_only = prerequisites_only
+        self.default_chat = default_chat
 
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
-        if (not self.prerequisites_only and self.allow_local_calculation
+        if (not self.default_chat and self.allow_local_calculation
                 and context.get('context_scope') != CURRENT_MESSAGE_ONLY):
             focus = daily_identifiers.context_focus(context)
             if focus:
@@ -283,7 +265,7 @@ class DailyAssistant(Assistant):
             required = explicit_conditions or daily_necessary.FIELD in prior
             try:
                 if image_ids or prior.get('image_inputs') or self.store.documents(sid, include_content=False):
-                    if required and (not self.prerequisites_only or daily_necessary.FIELD in prior):
+                    if required and (not self.default_chat or daily_necessary.FIELD in prior):
                         raise ValueError('沿用必要條件只接受純文字，請重新列出本輪需要的條件。')
                 elif not retry or required:
                     anchor = daily_necessary.previous(self.store, sid, before, required=required)
@@ -325,7 +307,10 @@ class DailyAssistant(Assistant):
                                           cancel, retry, draft, daily_necessary.FIELD)
             if daily_necessary.FIELD in prior:
                 raise EngineError('目前無法核對原先的必要條件，請重新提供純文字條件。', 'evidence_invalid')
-        if self.prerequisites_only:
+        if self.default_chat:
+            result = self._meeting_answer(sid, question, cancel, retry, draft, image_ids, prior)
+            if result is not None:
+                return result
             return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)
         choice = ROW_REPLY.fullmatch(question)
@@ -471,31 +456,10 @@ class DailyAssistant(Assistant):
                     return daily_criteria.resolve(option_plan, clarification)
 
                 return self._run_recorded(sid, question, context, resolve_options, cancel, retry, draft)
-        change = daily_meeting.FOLLOWUP.fullmatch(question) if self.allow_local_calculation else None
-        meeting = daily_meeting.parse(question) if local and not (followup or choice or change) else None
-        if change or meeting:
-            attached = image_ids or self.store.documents(sid, include_content=False)
-            if change and attached:
-                raise ValueError('會議更正需要純文字的原始時段；若要參考附件，請重新提供完整條件。')
-            if not attached and (not retry or prior.get('meeting_plan')):
-                origin = None
-                if change:
-                    meeting, origin = previous_meeting(self.store, sid, before)
-                    daily_meeting.revise(meeting, change[1])
-                if retry and (prior.get('meeting_plan') != meeting or prior.get('meeting_source') != origin):
-                    raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
-                context = make_context(question, [], [])
-                context.update(response_mode='local_calculation', meeting_plan=meeting,
-                               documents={'catalog': [], 'excerpts': []})
-                if origin:
-                    context['meeting_source'] = origin
-
-                def resolve_meeting(uid):
-                    if origin and previous_meeting(self.store, sid, uid)[1] != origin:
-                        raise ValueError('提交前會議來源已變更，請核對後再更正。')
-                    return daily_meeting.resolve(meeting)
-
-                return self._run_recorded(sid, question, context, resolve_meeting, cancel, retry, draft)
+        if not (followup or choice):
+            result = self._meeting_answer(sid, question, cancel, retry, draft, image_ids, prior)
+            if result is not None:
+                return result
         ledger = parse(question) if local and not (followup or selection) else None
         pending = None
         source = None
@@ -541,6 +505,42 @@ class DailyAssistant(Assistant):
             return answer, receipt
 
         return self._run_recorded(sid, question, context, calculate, cancel, retry, draft)
+
+    def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
+        if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):
+            return None
+        change = daily_meeting.FOLLOWUP.fullmatch(question)
+        meeting = daily_meeting.parse(question) if not change and not image_ids else None
+        if not change and not meeting:
+            return None
+        if image_ids or prior.get('image_inputs') or self.store.documents(sid, include_content=False):
+            if (change and not self.default_chat) or 'meeting_plan' in prior:
+                raise ValueError('會議更正需要純文字的原始時段；若要參考附件，請重新提供完整條件。')
+            return None
+        origin = None
+        if change:
+            before = retry['user_message_id'] if retry else None
+            previous = daily_meeting.previous(self.store, sid, before, required=not self.default_chat or bool(retry))
+            if previous is None:
+                return None
+            meeting, origin = previous
+            daily_meeting.revise(meeting, change[1])
+        if retry and (prior.get('meeting_plan') != meeting or prior.get('meeting_source') != origin):
+            raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
+        context = make_context(question, [], [])
+        context.update(response_mode='local_calculation', meeting_plan=meeting, documents={'catalog': [], 'excerpts': []})
+        if origin:
+            context['meeting_source'] = origin
+
+        def resolve_meeting(uid):
+            result = daily_meeting.resolve(meeting)
+            if origin and daily_meeting.previous(self.store, sid, uid)[1] != origin:
+                raise ValueError('提交前會議來源已變更，請核對後再更正。')
+            if self.store.documents(sid, include_content=False):
+                raise ValueError('提交前已加入會議附件，請重新提供本輪要採用的資料。')
+            return result
+
+        return self._run_recorded(sid, question, context, resolve_meeting, cancel, retry, draft)
 
     def _run_recorded(self, sid, question, context, calculate, cancel, retry, draft, receipt_key='calculation'):
         if cancel and cancel.is_set():

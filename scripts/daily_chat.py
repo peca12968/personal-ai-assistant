@@ -11,11 +11,11 @@ from scripts.daily_delivery import DailyLocalEngine
 from scripts.daily_expenses import DailyAssistant
 
 
-def run_daily_window(store, engine, *, prerequisites_only=False):
+def run_daily_window(store, engine, *, default_chat=False):
     from tkinter import scrolledtext
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_necessary
+    from scripts import daily_meeting, daily_necessary
 
     class DailyWindow(App):
         def inspect_context(self):
@@ -86,16 +86,22 @@ def run_daily_window(store, engine, *, prerequisites_only=False):
                 lines += ['', context['calculation']['result']['exact']]
             elif context and 'meeting_plan' in context:
                 title = '本機會議時段計算紀錄'
-                receipt = context['calculation']
-                lines = [context['current_request'], '', '採用的取消條件']
-                if context.get('meeting_source'):
-                    lines.insert(1, f"沿用本對話會議回答 #{context['meeting_source']['answer_id']} 的日期與條件")
-                lines += [c['source'] for c in context['meeting_plan']['cancelled']] or ['無']
-                lines += ['', '每人剩餘時段']
-                for name, slots in receipt['effective'].items():
-                    lines.append(name + '：' + ('、'.join(slots) or '無'))
-                lines += ['', '共同空檔：' + ('、'.join(receipt['common']) or '無'),
-                          f"所需時間：{receipt['duration']} 分鐘", '結果：' + receipt['result']['exact']]
+                try:
+                    verified = daily_meeting.read(self.store, self.last_answer)
+                    if verified is None:
+                        raise ValueError
+                    receipt = verified['calculation']
+                    lines = [verified['current_request'], '', '採用的取消條件']
+                    if verified.get('meeting_source'):
+                        lines.insert(1, f"沿用本對話會議回答 #{verified['meeting_source']['answer_id']} 的同日時段與條件")
+                    lines += [c['source'] for c in verified['meeting_plan']['cancelled']] or ['無']
+                    lines += ['', '每人剩餘時段']
+                    for name, slots in receipt['effective'].items():
+                        lines.append(name + '：' + ('、'.join(slots) or '無'))
+                    lines += ['', '共同空檔：' + ('、'.join(receipt['common']) or '無'),
+                              f"所需時間：{receipt['duration']} 分鐘", '結果：' + receipt['result']['exact']]
+                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                    lines = ['無法依原始時段與更正重算這筆會議紀錄。']
             elif context and 'expense_ledger' in context:
                 title = '本機核銷計算紀錄'
                 ledger = context['expense_ledger']
@@ -122,7 +128,7 @@ def run_daily_window(store, engine, *, prerequisites_only=False):
 
     root = tk.Tk()
     window = DailyWindow(root, store, engine)
-    window.assistant = DailyAssistant(store, engine, prerequisites_only=prerequisites_only)
+    window.assistant = DailyAssistant(store, engine, default_chat=default_chat)
     root.mainloop()
 
 
@@ -187,12 +193,12 @@ def main():
             sid = args.session or store.new_session()
             for path in args.file:
                 store.attach_document(sid, path)
-            app = DailyAssistant(store, engine, prerequisites_only=use_codex)
+            app = DailyAssistant(store, engine, default_chat=use_codex)
             reply = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
             print(reply['content'])
             print('\nSession:', sid)
         else:
-            run_daily_window(store, engine, prerequisites_only=use_codex)
+            run_daily_window(store, engine, default_chat=use_codex)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, sqlite3.Error) as exc:
         label = '助理未完成' if use_codex else '本機助理未完成'
         parser.exit(1, label + '：' + str(exc) + '\n')

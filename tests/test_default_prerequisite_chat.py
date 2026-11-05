@@ -10,7 +10,7 @@ from PIL import Image
 from assistant.__main__ import main as assistant_main
 from assistant.engine import Assistant, EngineError, render_prompt
 from assistant.store import Store
-from scripts import daily_chat, daily_necessary
+from scripts import daily_chat, daily_meeting, daily_necessary
 
 
 class DefaultPrerequisiteChatTests(unittest.TestCase):
@@ -96,7 +96,7 @@ class DefaultPrerequisiteChatTests(unittest.TestCase):
     def test_default_desktop_and_non_chat_commands_keep_distinct_paths(self):
         with patch.object(daily_chat, 'run_daily_window') as run:
             self.run_cli()
-            self.assertEqual(run.call_args.kwargs, {'prerequisites_only': True})
+            self.assertEqual(run.call_args.kwargs, {'default_chat': True})
             self.assertIs(run.call_args.args[1], self.engine)
             self.assertIn('revision', self.run_cli('--show-companion'))
             run.assert_called_once()
@@ -108,3 +108,20 @@ class DefaultPrerequisiteChatTests(unittest.TestCase):
         answer = self.store.messages(sid, 1)[0]
         self.assertIsNone(daily_necessary.read(self.store, answer['id']))
         self.engine.answer.assert_called_once()
+
+    def test_default_meeting_uses_saved_same_day_slots_and_keeps_model_fallback(self):
+        sid = self.store.new_session()
+        question = ('安禾可談 11:20-12:40 和 14:00-14:50，佳瑜可談 11:40-12:30 或 14:20-15:00。'
+                    '安禾的上午時段已取消。兩人要談 20 分鐘。只輸出最早可行時段，格式 HH:MM-HH:MM。')
+        followup = '上一場會議，佳瑜取消 12:00-12:15，重算。'
+        self.assertIn('12:00-12:20', self.run_cli('--ask', question, '--session', sid))
+        first = self.store.messages(sid, 1)[0]
+        self.assertIn('14:20-14:40', self.run_cli('--ask', followup, '--session', sid))
+        latest = self.store.messages(sid, 1)[0]
+        self.assertEqual(daily_meeting.read(self.store, latest['id'])['meeting_source']['answer_id'], first['id'])
+        self.engine.answer.assert_not_called()
+        self.assertIn('一般文字回答', self.run_cli('--ask', followup, '--session', self.store.new_session()))
+        document = self.path / 'calendar.txt'
+        document.write_text('額外時段限制。', encoding='utf-8')
+        self.assertIn('一般文字回答', self.run_cli('--ask', followup, '--session', sid, '--file', str(document)))
+        self.assertEqual(self.engine.answer.call_count, 2)
