@@ -365,3 +365,16 @@ v0.88已將實際選用引擎與版本資訊提供給本機模型，並以真實
 ### 反轉代碼的信心對照
 
 以 `.venv\Scripts\python.exe -m scripts.learning.confidence_codes collect 原實驗ID 原規約指紋` 讀取已核對的數字信心實驗。對每份有原答的題目各開兩次新對話，固定「甲、乙」的呈現順序並對調高低含義，相鄰題輪替先用哪套映射。高信心定為至少八成。模型只看到原題、完整原答及本輪對照表，不會收到數字自評、正解或另一輪的選擇。只接受單一甲或乙。每次實驗有獨立的本機 ID 及規約指紋，`review 新實驗ID 新規約指紋` 核對原始來源、各次保存的提問和回答，再重算可解碼數、對調後一致數與數字分組相符數。兩輪都有效才能算入一致性分母；兩次皆輸出相同字母會解成相反判斷。此對照單獨無法辨別對代碼的偏好和對呈現位置的偏好。
+
+## 底座分段候選的完整助理對照
+
+需要已提交的最後檢查點、通過的短題驗收、原始底座與核對過的適配器。準備階段只建立獨立合成會話與本機規約。題目不得與訓練或短題的正規化文字相同。兩組的對話條件一致，引擎資訊依各自實際參數呈現。預檢用固定 tokenizer 核對完整輸入。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant.py prepare <研究名稱> --assay <已完成的短題名稱> --suite evals/base_assistant_transfer.json
+data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assistant.py preflight <研究名稱>
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant.py run <研究名稱>
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant.py verify <研究名稱>
+```
+
+以同一規約執行一次。Windows 輸入閒置達門檻後，逐題在獨立程序使用相同聊天推論程式。恢復輸入、來源異動或逾時會停止，保留已保存的證據。完整驗收核對模型原答、正式會話與已退出的工作程序。候選需要全數答對、保留底座已答對的題目，並至少改善一道目標題，底座也須通過至少一道控制題。資料、原答、權重和規約留在本機研究目錄，日常引擎依使用者原選擇啟動。

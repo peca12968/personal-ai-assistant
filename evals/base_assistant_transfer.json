@@ -1,0 +1,42 @@
+{
+  "schema": "full_assistant_cases_v1",
+  "cases": [
+    {
+      "id": "required_credential_revoked",
+      "group": "target",
+      "history": [
+        {"role": "user", "content": "昨天標記暫存，測試櫃的解鎖鍵和入場憑證當時都正常。"},
+        {"role": "assistant", "content": "昨天的測試櫃可以解鎖。"}
+      ],
+      "question": "請按今天的紀錄判斷測試櫃能否解鎖。解鎖需要同時有正常的解鎖鍵和有效的入場憑證。今天解鎖鍵還沒有檢查，唯一的入場憑證已確定作廢，沒有其他憑證。可以解鎖回「可解鎖」，確定不能回「不可解鎖」，證據不足回「尚無法判定」。只回指定的結論。",
+      "answer": "不可解鎖"
+    },
+    {
+      "id": "unknown_after_replacement",
+      "group": "target",
+      "history": [
+        {"role": "user", "content": "舊的北倉告警器昨天壞了，不能發出警報。"},
+        {"role": "assistant", "content": "昨天確認舊告警器無法發出警報。"}
+      ],
+      "question": "今天北倉已換上一台不同的告警器，還沒通電或測試。只判斷這台新告警器目前能不能發出警報。已確認能回「已確認成立」，已確認不能回「已確認不成立」，尚未有測試結論回「未知」。請只輸出標籤。",
+      "answer": "未知"
+    },
+    {
+      "id": "short_numeric_control",
+      "group": "control",
+      "question": "每盒有 6 個束帶，現有 4 盒完整未開封。只輸出束帶總數的阿拉伯數字。",
+      "answer": "24"
+    },
+    {
+      "id": "latest_identifier_control",
+      "group": "control",
+      "history": [
+        {"role": "user", "content": "訪客文件放在藍色盒子，標籤是 V52。"},
+        {"role": "assistant", "content": "先前資料顯示訪客文件標籤為 V52。"},
+        {"role": "user", "content": "我更正：訪客文件已移到紅盒，紅盒標籤為 M64。"}
+      ],
+      "question": "依最新更正，只輸出訪客文件所在盒子的標籤，不要引號或句號。",
+      "answer": "M64"
+    }
+  ]
+}
