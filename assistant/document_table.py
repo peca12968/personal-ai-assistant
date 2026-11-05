@@ -2,6 +2,7 @@
 import csv
 import re
 import unicodedata
+from itertools import combinations
 from pathlib import PurePath
 
 from .document_ranges import MAX_LINES, STATUS_TEXT, requested_ranges
@@ -11,8 +12,12 @@ PLAN = 'document_calculation_plan_v3'
 RECEIPT = 'document_calculation_receipt_v3'
 AGGREGATE_PLAN = 'document_calculation_plan_v4'
 AGGREGATE_RECEIPT = 'document_calculation_receipt_v4'
+MULTI_AGGREGATE_PLAN = 'document_calculation_plan_v5'
+MULTI_AGGREGATE_RECEIPT = 'document_calculation_receipt_v5'
+MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
-_REF = rf'(\[D{_INDEX}:L{_INDEX}-L{_INDEX}\])'
+_SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
+_REF = rf'({_SPAN})'
 _TOKEN = r'「([^「」\[\]\x00-\x1f\x7f]{1,48})」'
 _OPERAND = rf'{_REF} *中 *{_TOKEN} *為 *{_TOKEN} *的 *{_TOKEN}'
 _REQUEST = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_OPERAND} *(加上|減去|[+＋\-－]) *{_OPERAND}'
@@ -21,6 +26,8 @@ _AGG_SOURCE = rf'{_REF} *(?:中 *{_TOKEN} *為 *{_TOKEN} *|中 *(?:所有資料�
 _AGG_UNIT = r' *[,，] *(單位為|(?:統一)?換算成) *([^。?？\s]{1,8})[。?？]?'
 _AGG_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(加總|合計|平均) *{_AGG_SOURCE}{_AGG_UNIT}')
 _AGG_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_AGG_SOURCE} *(?:的 *)?(總和|合計|平均值?){_AGG_UNIT}')
+_MULTI_SOURCE = re.compile(rf'(文件問答[:：] *(?:請)?(?:加總|合計|平均|計算) *)'
+                           rf'({_SPAN}(?: *(?:、|與|和) *{_SPAN}){{1,{MAX_AGGREGATE_RANGES - 1}}})(.*)')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -88,6 +95,25 @@ def parse_aggregate(question, unit_pattern, supported_units):
                 unit=unit, convert=convert, operands=[operand])
 
 
+def parse_multi_aggregate(question, unit_pattern, supported_units):
+    if not isinstance(question, str) or len(question) > 620 or len(question.splitlines()) != 1:
+        return None
+    match = _MULTI_SOURCE.fullmatch(question.strip())
+    if not match:
+        return None
+    prefix, scope, suffix = match.groups()
+    citations = re.findall(_SPAN, scope)
+    base = parse_aggregate(prefix + citations[0] + suffix, unit_pattern, supported_units)
+    if base is None:
+        return None
+    first, = base['operands']
+    operands = []
+    for citation in citations:
+        ranges, _ = requested_ranges(citation)
+        operands.append({**first, **ranges[0], 'citation': citation})
+    return {**base, 'schema': MULTI_AGGREGATE_PLAN, 'request': question, 'operands': operands}
+
+
 def query(operands):
     return '\n'.join(operand['citation'] for operand in operands)
 
@@ -97,6 +123,19 @@ def _span(row):
     if any(type(value) is not int or not 1 <= value < 10**12 for value in span):
         raise ValueError('表格來源與行號必須是有效的正整數。')
     return span
+
+
+def overlaps(operands, catalog):
+    """Return range indexes with shared lines in the same snapshot bytes."""
+    shared = []
+    for (left_index, left), (right_index, right) in combinations(enumerate(operands), 2):
+        left_id, left_start, left_end = _span(left)
+        right_id, right_start, right_end = _span(right)
+        same_bytes = (left_id in catalog and right_id in catalog
+                      and catalog[left_id]['sha256'] == catalog[right_id]['sha256'])
+        if (left_id == right_id or same_bytes) and max(left_start, right_start) <= min(left_end, right_end):
+            shared.append([left_index, right_index])
+    return shared
 
 
 def lines_for_requests(documents, catalog, operands):

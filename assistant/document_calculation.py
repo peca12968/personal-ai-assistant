@@ -66,16 +66,19 @@ def _parse_conversion(question):
 def parse_live_request(question):
     return (parse_request(question) or _parse_conversion(question)
             or document_table.parse_request(question, _UNIT, document_units.SCALES)
-            or document_table.parse_aggregate(question, _UNIT, document_units.SCALES))
+            or document_table.parse_aggregate(question, _UNIT, document_units.SCALES)
+            or document_table.parse_multi_aggregate(question, _UNIT, document_units.SCALES))
 
 
 def snapshot(store, sid, plan):
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
-    table_plan = plan['schema'] in (document_table.PLAN, document_table.AGGREGATE_PLAN)
+    multi_plan = plan['schema'] == document_table.MULTI_AGGREGATE_PLAN
+    table_plan = multi_plan or plan['schema'] in (document_table.PLAN, document_table.AGGREGATE_PLAN)
     query = document_table.query(operands) if table_plan else plan['request']
-    excerpts, ranges, limited = select_ranges(query, sources, max_excerpts=2, max_chars=14000)
+    excerpts, ranges, limited = select_ranges(query, sources, max_excerpts=len(operands) if multi_plan else 2,
+                                               max_chars=14000)
     catalog = [dict(document_id=row['id'], name=row['name'], sha256=row['sha256'],
                     total_lines=len(row['content'].splitlines())) for row in sources]
     covered = {(row['document_id'], line) for row in excerpts for line in range(row['start_line'], row['end_line'] + 1)}
@@ -171,6 +174,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == document_table.MULTI_AGGREGATE_PLAN:
+        return _evaluate_multi_aggregate(plan, cancel)
     if plan.get('schema') == document_table.AGGREGATE_PLAN:
         return _evaluate_aggregate(plan, cancel)
     if plan.get('schema') == document_table.PLAN:
@@ -364,6 +369,15 @@ def _aggregate_result(observations, convert, operation):
     return exact_math.calculate(args), str(total)
 
 
+def _selected_quantities(operand, source, unit, convert, cancel):
+    status, total_rows, matches = document_table.lookup_rows(operand, source, _UNIT)
+    observations = []
+    for line, row in matches:
+        check_cancel(cancel)
+        observations.append({**_cell_quantity(row, unit, convert), 'line_number': line})
+    return status, total_rows, observations
+
+
 def _evaluate_aggregate(plan, cancel):
     request = document_table.parse_aggregate(plan['request'], _UNIT, document_units.SCALES)
     documents = plan['documents']
@@ -372,11 +386,7 @@ def _evaluate_aggregate(plan, cancel):
     operands, unit, convert = request['operands'], request['unit'], request['convert']
     operand, = operands
     source, = document_table.lines_for_requests(documents, _catalog(documents, operands), operands)
-    status, total_rows, matches = document_table.lookup_rows(operand, source, _UNIT)
-    observations = []
-    for line, row in matches:
-        check_cancel(cancel)
-        observations.append({**_cell_quantity(row, unit, convert), 'line_number': line})
+    status, total_rows, observations = _selected_quantities(operand, source, unit, convert, cancel)
     result = total_exact = None
     count = len(observations)
     if status != 'selected':
@@ -405,6 +415,73 @@ def _evaluate_aggregate(plan, cancel):
                         total_exact=total_exact, result=result, output=answer, output_sha256=digest(answer))
 
 
+def _range_label(operand):
+    return f'D{operand["document_id"]} 第{operand["start_line"]}到{operand["end_line"]}行'
+
+
+def _multi_source_lines(operand, source, group, complete):
+    label = _range_label(operand)
+    status, rows = group['selection_status'], group['observations']
+    if status != 'selected':
+        citation = f' {operand["citation"]}' if source['status'] == 'provided' else ''
+        return [f'{label}，{document_table.reason(status)}{citation}']
+    header = rows[0]['header_citation']
+    invalid = [row for row in rows if row['status'] != 'confirmed']
+    if invalid:
+        lines = [f'{label}，符合 {len(rows)} 列，其中 {len(invalid)} 列無法核對。表頭 {header}']
+        lines.extend(f'{row["row_citation"]} {document_table.reason(row["status"])}' for row in invalid[:8])
+        if len(invalid) > 8:
+            lines.append('其餘無法核對的列可在「查看本次參考」查閱。')
+        return lines
+    verb = '計入' if complete else '符合'
+    citations = ' '.join(_row_citations(operand['document_id'], rows))
+    return [f'{label}，表頭 {header}，{verb} {len(rows)} 列。 {citations}']
+
+
+def _evaluate_multi_aggregate(plan, cancel):
+    request = document_table.parse_multi_aggregate(plan['request'], _UNIT, document_units.SCALES)
+    documents = plan['documents']
+    if request is None or plan != {**request, 'documents': documents}:
+        raise ValueError('跨表彙總計畫與原問不符。')
+    operands, unit, convert = request['operands'], request['unit'], request['convert']
+    catalog = _catalog(documents, operands)
+    sources = document_table.lines_for_requests(documents, catalog, operands)
+    overlaps = document_table.overlaps(operands, catalog)
+    result = total_exact = None
+    groups = []
+    if overlaps:
+        status = 'range_overlap'
+        lines = ['目前無法計算。下列範圍來自相同內容且行號重疊，請選擇互不重疊的範圍。']
+        lines.extend(f'{_range_label(operands[a])} 與 {_range_label(operands[b])}。' for a, b in overlaps)
+    else:
+        for operand, source in zip(operands, sources, strict=True):
+            check_cancel(cancel)
+            selected, total, rows = _selected_quantities(operand, source, unit, convert, cancel)
+            groups.append(dict(selection_status=selected, total_rows=total, observations=rows))
+        rows = [row for group in groups for row in group['observations']]
+        if (any(group['selection_status'] not in ('selected', 'row_missing') for group in groups)
+                or any(row['status'] != 'confirmed' for row in rows)):
+            status = 'source_blocked'
+            lines = ['目前無法完成跨表計算。請核對以下來源。']
+        elif not rows:
+            status = 'no_match'
+            lines = ['指定範圍內都沒有符合條件的資料列，無法計算。']
+        else:
+            status = 'complete'
+            operation = request['operation']
+            result, total_exact = _aggregate_result(rows, convert, operation)
+            label = '平均值' if operation == 'mean' else '總和'
+            column = operands[0]['value_column']
+            lines = [f'「{column}」的跨表{label}為 {_display_exact(result)} {unit}，共 {len(rows)} 列。']
+        for operand, source, group in zip(operands, sources, groups, strict=True):
+            lines.extend(_multi_source_lines(operand, source, group, status == 'complete'))
+    check_cancel(cancel)
+    answer = '\n'.join(lines)
+    return answer, dict(schema=document_table.MULTI_AGGREGATE_RECEIPT, plan=plan, model_called=False,
+                        status=status, overlaps=overlaps, groups=groups, total_exact=total_exact,
+                        result=result, output=answer, output_sha256=digest(answer))
+
+
 def validate(receipt, delivered, question=None):
     try:
         answer, expected = evaluate(receipt['plan'])
@@ -422,23 +499,37 @@ def read(store, mid):
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == document_table.MULTI_AGGREGATE_RECEIPT:
+        lines = [receipt['output']]
+        groups = receipt['groups']
+        if plan['operation'] == 'mean' and receipt['total_exact'] is not None:
+            count = sum(len(group['observations']) for group in groups)
+            lines.append(f'\n精確總和 {receipt["total_exact"]} {plan["unit"]} ÷ {count}')
+        for operand, group in zip(plan['operands'], groups):
+            lines.append('\n' + _range_label(operand))
+            lines.extend(_describe_quantities(group, plan['unit']))
+        return '\n'.join(lines)
     if receipt['schema'] == document_table.AGGREGATE_RECEIPT:
         lines = [receipt['output']]
         if receipt['total_rows'] is not None:
             lines.append(f'\n範圍內有 {receipt["total_rows"]} 筆資料列，符合條件 {len(receipt["observations"])} 筆。')
         if plan['operation'] == 'mean' and receipt['total_exact'] is not None:
             lines.append(f'精確總和 {receipt["total_exact"]} {plan["unit"]} ÷ {len(receipt["observations"])}')
-        for row in receipt['observations']:
-            citation = row['row_citation']
-            if row['status'] != 'confirmed':
-                lines.append(f'{citation} {document_table.reason(row["status"])}')
-            else:
-                line = f'{citation} {row["value"]} {row["source_unit"]}'
-                if 'converted' in row and row['source_unit'] != plan['unit']:
-                    line += f' × {row["factor_exact"]} = {_display_exact(row["converted"])} {plan["unit"]}'
-                lines.append(line)
+        lines.extend(_describe_quantities(receipt, plan['unit']))
         return '\n'.join(lines)
     factors = [f'{row.get("row_citation", operand["citation"])} 1 {row["source_unit"]} = {row["factor_exact"]} {plan["unit"]}'
                for operand, row in zip(plan['operands'], receipt['observations'], strict=True)
                if 'factor_exact' in row and row['source_unit'] != plan['unit']]
     return receipt['output'] + ('\n\n換算係數\n' + '\n'.join(factors) if factors else '')
+
+
+def _describe_quantities(group, unit):
+    for row in group['observations']:
+        citation = row['row_citation']
+        if row['status'] != 'confirmed':
+            yield f'{citation} {document_table.reason(row["status"])}'
+            continue
+        line = f'{citation} {row["value"]} {row["source_unit"]}'
+        if 'converted' in row and row['source_unit'] != unit:
+            line += f' × {row["factor_exact"]} = {_display_exact(row["converted"])} {unit}'
+        yield line

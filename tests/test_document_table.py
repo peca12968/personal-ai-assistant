@@ -135,9 +135,11 @@ class DocumentTableTests(unittest.TestCase):
         stem = ('文件問答：計算 [D1:L1-L3] 中「批次」為「甲」的「重量」 加上 '
                 '[D1:L1-L3] 中「批次」為「乙」的「重量」，')
         aggregate = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」的「重量」，換算成公斤。'
+        multi = '文件問答：加總 [D1:L1-L3]、[D2:L1-L3] 的「重量」，換算成公斤。'
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
-                             (aggregate, True), (aggregate + '接著上傳原始文件。', False)):
+                             (aggregate, True), (aggregate + '接著上傳原始文件。', False),
+                             (multi, True), (multi + '接著上傳原始文件。', False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -203,3 +205,74 @@ class DocumentTableTests(unittest.TestCase):
             db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             create_backup(self.store.path, self.root / 'tampered-aggregate.paibackup')
+
+    def test_cross_table_mean_weights_rows_and_converts_before_calculation(self):
+        self.attach('left.csv', '批次,時長(秒)\n甲,1\n乙,2\n丙,2')
+        self.attach('right.md', '| 批次 | 時長 |\n| --- | --- |\n| 丁 | 1 min |')
+        question = '文件問答：計算 [D1:L1-L4] 和 [D2:L1-L3] 的「時長」平均，換算成秒。'
+        answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '65/4')
+        self.assertEqual(receipt['total_exact'], '65')
+        self.assertEqual([len(group['observations']) for group in receipt['groups']], [3, 1])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']],
+                         ['[D1:L1]', '[D1:L2-L4]', '[D2:L1]', '[D2:L3]'])
+        self.assertIn('精確總和 65 秒 ÷ 4', document_calculation.describe(receipt))
+        self.assertIn('[D2:L3] 1 min × 60 = 60 秒', document_calculation.describe(receipt))
+
+    def test_cross_table_allows_an_empty_filter_and_distinguishes_global_no_match(self):
+        self.attach('left.csv', '倉別,重量(kg)\n北,0\n北,2\nＡ,11')
+        self.attach('right.tsv', '重量(kg)\t倉別\n100\tＡ\n900\t南')
+        stem = '文件問答：加總 [D1:L1-L4]、[D2:L1-L3] 中「倉別」為「{}」的「重量」，換算成公斤。'
+        _, receipt = self.ask(stem.format('北'), schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '2')
+        self.assertEqual([group['selection_status'] for group in receipt['groups']], ['selected', 'row_missing'])
+        _, missing = self.ask(stem.format('A'), schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(missing['status'], 'no_match')
+        self.assertIsNone(missing['result'])
+
+    def test_cross_table_invalid_or_missing_sources_never_yield_partial_totals(self):
+        self.attach('left.csv', '倉別,重量(kg)\n北,3')
+        stem = '文件問答：合計 [D1:L1-L2]、[D2:L1-L2] 的「重量」，換算成公斤。'
+        answer, missing = self.ask(stem, schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(missing['groups'][1]['selection_status'], 'document_not_attached')
+        self.assertEqual(missing['status'], 'source_blocked')
+        self.assertIsNone(missing['total_exact'])
+        self.assertNotIn('[D2:', answer['content'])
+        self.attach('right.csv', '倉別,重量(kg)\n北,375g')
+        answer, conflict = self.ask(stem, schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(conflict['groups'][1]['observations'][0]['status'], 'unit_conflict')
+        self.assertIsNone(conflict['result'])
+        self.assertIn('[D2:L2]', answer['content'])
+
+    def test_cross_table_rejects_overlapping_physical_rows_including_identical_copies(self):
+        table = '樣本,金額(元)\n甲,2\n乙,3\n樣本,金額(元)\n丙,7'
+        self.attach('a.csv', table)
+        self.attach('copy.csv', table)
+        stem = '文件問答：加總 [D1:L1-L3]、{} 的「金額」，單位為元。'
+        for citation in ('[D1:L1-L2]', '[D1:L1-L3]', '[D2:L1-L3]'):
+            with self.subTest(citation=citation):
+                _, receipt = self.ask(stem.format(citation), schema=document_table.MULTI_AGGREGATE_RECEIPT)
+                self.assertEqual(receipt['status'], 'range_overlap')
+                self.assertEqual(receipt['overlaps'], [[0, 1]])
+                self.assertIsNone(receipt['result'])
+        _, disjoint = self.ask(stem.format('[D1:L4-L5]'), schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(disjoint['result']['exact'], '12')
+
+    def test_cross_table_verifies_four_ranges_and_rejects_dropped_group_in_backup(self):
+        for number in range(1, 5):
+            self.attach(f'{number}.csv', f'項目,費用(元)\n第{number}份,{number}.5')
+        question = '文件問答：合計 [D4:L1-L2]、[D2:L1-L2] 與 [D1:L1-L2] 和 [D3:L1-L2] 的「費用」，單位為元。'
+        answer, receipt = self.ask(question, schema=document_table.MULTI_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '12')
+        self.assertEqual([group['observations'][0]['row_citation'] for group in receipt['groups']],
+                         ['[D4:L2]', '[D2:L2]', '[D1:L2]', '[D3:L2]'])
+        self.assertIsNone(document_calculation.parse_live_request(question.replace('[D3:L1-L2]', '[D3:L1-L2]、[D5:L1-L2]')))
+        archive = create_backup(self.store.path, self.root / 'multi.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['groups'].pop()
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-multi.paibackup')
