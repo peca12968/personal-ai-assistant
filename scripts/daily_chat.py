@@ -1,17 +1,17 @@
-"""Desktop entry point for local daily chat. Keep raw benchmark engines available."""
+"""Desktop entry point and local evidence viewer for daily chat."""
 import argparse
 from pathlib import Path
 import sqlite3
 import sys
 
-from assistant.engine import ROOT
+from assistant.engine import CodexEngine, ROOT
 from assistant.local_engine import LocalEngine
 from assistant.store import Store
 from scripts.daily_delivery import DailyLocalEngine
 from scripts.daily_expenses import DailyAssistant
 
 
-def run_daily_window(store, engine):
+def run_daily_window(store, engine, *, prerequisites_only=False):
     from tkinter import scrolledtext
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
@@ -122,7 +122,7 @@ def run_daily_window(store, engine):
 
     root = tk.Tk()
     window = DailyWindow(root, store, engine)
-    window.assistant = DailyAssistant(store, engine)
+    window.assistant = DailyAssistant(store, engine, prerequisites_only=prerequisites_only)
     root.mainloop()
 
 
@@ -146,6 +146,7 @@ def main():
     mode.add_argument('--retry-answer', action='store_true')
     args, other = parser.parse_known_args()
 
+    use_codex = False
     if args.qualified_base_assay is not None:
         if args.engine or args.qualified_segment or other:
             parser.error('--qualified-base-assay 需單獨選用本機驗收模型。')
@@ -156,8 +157,11 @@ def main():
             from scripts.learning.segment_chat import main as segment_main
             return segment_main()
     elif args.engine != 'local' or other:
-        from assistant.__main__ import main as ordinary_main
-        return ordinary_main()
+        if (other or args.file or args.local_experiment is not None
+                or args.local_batch is not None or args.local_active):
+            from assistant.__main__ import main as ordinary_main
+            return ordinary_main()
+        use_codex = True
     if args.retry_answer and (not args.session or args.file):
         parser.error('--retry-answer 需要 --session，且不能再附加文件。')
     if args.file and not args.ask:
@@ -165,29 +169,33 @@ def main():
     if (args.qualified_segment or args.qualified_base_assay is not None) and args.session and not (args.ask or args.retry_answer):
         parser.error('--session 需搭配 --ask 或 --retry-answer。')
     try:
-        if args.qualified_base_assay is not None:
-            from scripts.learning.qualified_base_chat import QualifiedBaseEngine
-            raw = QualifiedBaseEngine(args.data_dir, args.qualified_base_assay)
-        elif args.qualified_segment:
-            from scripts.learning.segment_chat import SegmentEngine
-            raw = SegmentEngine(args.data_dir)
+        if use_codex:
+            engine = CodexEngine(args.data_dir)
         else:
-            raw = LocalEngine(args.data_dir, experiment=args.local_experiment, batch=args.local_batch,
-                              active=args.local_active, recover_chat_budget=True)
-        engine = DailyLocalEngine(raw)
+            if args.qualified_base_assay is not None:
+                from scripts.learning.qualified_base_chat import QualifiedBaseEngine
+                raw = QualifiedBaseEngine(args.data_dir, args.qualified_base_assay)
+            elif args.qualified_segment:
+                from scripts.learning.segment_chat import SegmentEngine
+                raw = SegmentEngine(args.data_dir)
+            else:
+                raw = LocalEngine(args.data_dir, experiment=args.local_experiment, batch=args.local_batch,
+                                  active=args.local_active, recover_chat_budget=True)
+            engine = DailyLocalEngine(raw)
         store = Store(args.data_dir / 'assistant.sqlite3')
         if args.ask or args.retry_answer:
             sid = args.session or store.new_session()
             for path in args.file:
                 store.attach_document(sid, path)
-            app = DailyAssistant(store, engine)
+            app = DailyAssistant(store, engine, prerequisites_only=use_codex)
             reply = app.retry(sid) if args.retry_answer else app.ask(sid, args.ask)
             print(reply['content'])
             print('\nSession:', sid)
         else:
-            run_daily_window(store, engine)
+            run_daily_window(store, engine, prerequisites_only=use_codex)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, sqlite3.Error) as exc:
-        parser.exit(1, '本機助理未完成：' + str(exc) + '\n')
+        label = '助理未完成' if use_codex else '本機助理未完成'
+        parser.exit(1, label + '：' + str(exc) + '\n')
 
 
 if __name__ == '__main__':

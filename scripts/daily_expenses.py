@@ -223,9 +223,14 @@ def stock_clarification_ids(db, sid, context, before):
 
 
 class DailyAssistant(Assistant):
+    def __init__(self, store, engine, *, prerequisites_only=False, **options):
+        super().__init__(store, engine, **options)
+        self.prerequisites_only = prerequisites_only
+
     def prepare_context(self, sid, question, exclude_message_id=None):
         context = super().prepare_context(sid, question, exclude_message_id)
-        if self.allow_local_calculation and context.get('context_scope') != CURRENT_MESSAGE_ONLY:
+        if (not self.prerequisites_only and self.allow_local_calculation
+                and context.get('context_scope') != CURRENT_MESSAGE_ONLY):
             focus = daily_identifiers.context_focus(context)
             if focus:
                 context['identifier_request'] = focus
@@ -263,27 +268,22 @@ class DailyAssistant(Assistant):
             from assistant.chat_transcription import parse_request
             if parse_request(question) is not None:
                 return super()._ask(sid,question,cancel=cancel,retry=retry,draft=draft,image_ids=image_ids)
-        followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)
         local = self.allow_local_calculation and not image_ids
-        choice = ROW_REPLY.fullmatch(question)
         before = retry['user_message_id'] if retry else None
-        selection = preceding_receipt(self.store, sid, before, pending_only=True) if self.allow_local_calculation and choice else None
         prior = {}
         if retry and local:
             with self.store.connect() as db:
                 original = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?',
                                       (retry['id'], sid)).fetchone()
             prior = json.loads(original[0]) if original else {}
-            if choice and not selection and prior.get('expense_source'):
-                raise ValueError('原先的核銷選項已變更，請重新提供明細。')
         anchor = None
         explicit_conditions = daily_necessary.matches_revision(question)
         if (self.allow_local_calculation and self.allow_local_evidence
                 and (explicit_conditions or (local and daily_necessary.matches_inquiry(question)))):
             required = explicit_conditions or daily_necessary.FIELD in prior
             try:
-                if image_ids or self.store.documents(sid, include_content=False):
-                    if required:
+                if image_ids or prior.get('image_inputs') or self.store.documents(sid, include_content=False):
+                    if required and (not self.prerequisites_only or daily_necessary.FIELD in prior):
                         raise ValueError('沿用必要條件只接受純文字，請重新列出本輪需要的條件。')
                 elif not retry or required:
                     anchor = daily_necessary.previous(self.store, sid, before, required=required)
@@ -325,6 +325,13 @@ class DailyAssistant(Assistant):
                                           cancel, retry, draft, daily_necessary.FIELD)
             if daily_necessary.FIELD in prior:
                 raise EngineError('目前無法核對原先的必要條件，請重新提供純文字條件。', 'evidence_invalid')
+        if self.prerequisites_only:
+            return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
+        followup = PREVIOUS.fullmatch(question) or CORRECTION.fullmatch(question)
+        choice = ROW_REPLY.fullmatch(question)
+        selection = preceding_receipt(self.store, sid, before, pending_only=True) if self.allow_local_calculation and choice else None
+        if retry and local and choice and not selection and prior.get('expense_source'):
+            raise ValueError('原先的核銷選項已變更，請重新提供明細。')
         if (local and hasattr(self.engine, 'answer_raw') and daily_conditions.COUNT.search(question)
                 and daily_conditions.CHOICE.fullmatch(question)
                 and not prior.get('image_inputs') and (not retry or prior.get('response_mode') == 'capacity_comparison')):
