@@ -1,0 +1,44 @@
+[
+  {
+    "id": "causal_direction",
+    "category": "evidence_reasoning",
+    "prompt": "請分析這項規則：在這個虛構系統中，只要主電源中斷，紅燈就會亮；感應器故障也可能使紅燈亮。現在只知道紅燈亮，能否確定主電源中斷？先用一句話回答，再提出一項能區分兩種原因的檢查，不要假稱已經檢查。",
+    "expected_status": "undetermined",
+    "criteria": ["保留主電源中斷推出紅燈亮，感應器故障仍為可能原因。", "已觀察紅燈亮，主電源狀態有兩種相容情況。檢查主電源狀態有區分力，感應器是否故障本身無法決定。"]
+  },
+  {
+    "id": "necessary_lock",
+    "category": "evidence_reasoning",
+    "prompt": "只有安全鎖閉合，設備才會運轉。已知安全鎖閉合。依這些資訊，能否確定設備會運轉？",
+    "expected_status": "undetermined",
+    "criteria": ["規則方向為設備運轉推出安全鎖閉合。", "觀察閉合仍容許設備運轉或不運轉，不能把必要條件當充分條件。"]
+  },
+  {
+    "id": "negative_chain",
+    "category": "evidence_reasoning",
+    "prompt": "只要系統過熱，保護就會動作。只要保護動作，出貨就會暫停。已確認出貨沒有暫停。問系統過熱這個命題能否成立？",
+    "expected_status": "refuted",
+    "criteria": ["完整保留兩段正向規則及出貨沒有暫停這項否定觀察。", "由兩段規則與觀察排除系統過熱。"]
+  },
+  {
+    "id": "joint_conditions",
+    "category": "evidence_reasoning",
+    "prompt": "如果已掃描而且批次有效，輸出標記就會出現。已知已掃描，且批次有效。依規則，能否確定輸出標記會出現？",
+    "expected_status": "supported",
+    "criteria": ["同時滿足兩項才推出輸出標記，保留兩項觀察。", "所有相容情況都支持輸出標記出現。"]
+  },
+  {
+    "id": "conflicting_switch",
+    "category": "evidence_reasoning",
+    "prompt": "開關閉合就會讓指示燈亮。同一時刻的兩份紀錄分別說開關閉合，以及開關沒有閉合。兩份都列為觀察，目前可以由這組條件確定指示燈亮嗎？",
+    "expected_status": "inconsistent",
+    "criteria": ["兩個相反觀察綁定同一時刻的同一開關。", "條件無相容情況，指出衝突而不任選一份紀錄或把衝突當成確定亮燈。"]
+  },
+  {
+    "id": "competing_observed",
+    "category": "evidence_reasoning",
+    "prompt": "如果水泵停止，水流警示就會亮。漏水也可能讓水流警示亮。已觀察到漏水及水流警示亮。這些資訊能確定「水泵沒有停止」嗎？",
+    "expected_status": "undetermined",
+    "criteria": ["規則為水泵停止推出警示亮，保留兩項觀察，待判命題為水泵沒有停止。", "漏水和水泵停止可能並存，對否定待判命題提供正反兩個相容情況。"]
+  }
+]

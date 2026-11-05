@@ -553,3 +553,20 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 預檢與實機共用 worker 的訊息與模板編碼，採相同 24576/512 token 限制。預檢失敗保留原因，成功者用固定選用的本機模型執行一次。計畫附原始案例、完整脈絡、wire 與來源副本。稽核檢查資料連結與歷史來源指紋，實際回答仍依固定準則另作人工或開發評讀。收集與預檢狀態均不提供程序存活資訊。實際試驗路徑需保留於忽略的 data/evaluations。
 
 首次實測用既有基準的相同文字、案例、模型與 token 數，改變指引所在角色。四題固定開發評讀從 2/4 降為 1/4，保留因果、行數與權重說明失敗。24720 token 長輸入及原生角色標記另作預檢，未進入生成。完整比較、原答與來源副本留在 native-roles-20261105-001。
+
+
+## 條件證據核對
+
+使用固定合成題目準備一次本機抽取，完整收集後執行 analyse。保留的原答是模型產生的條件 JSON，分析檔保存經核對的規則、已知觀察、待判命題、相容情況數、正反見證與追加觀察的兩個分支。
+
+```powershell
+.venv/Scripts/python scripts/evaluate_native_roles.py prepare --out data/evaluations/evidence-new --suite evals/evidence_reasoning.json --variant evidence-indexed --ids causal_direction necessary_lock
+data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight --out data/evaluations/evidence-new
+.venv/Scripts/python scripts/evaluate_native_roles.py run --out data/evaluations/evidence-new
+.venv/Scripts/python scripts/evaluate_native_roles.py analyse --out data/evaluations/evidence-new
+.venv/Scripts/python scripts/evaluate_native_roles.py audit --out data/evaluations/evidence-new
+```
+
+數字命題版本為 evidence，命名及逐字引文版本為 evidence-names，來源片段版本為 evidence-indexed。第三版使用可還原原問的 Unicode 位置切片，模型填整數片段編號，程式帶回原文。可能原因保留供評讀，確定規則及明確觀察才限制相容情況。每項追加觀察分開列出成立與不成立的結果，與已有觀察衝突的分支標為不相容。此處的追加觀察是條件推論，沒有執行檢查或改變事實。
+
+評讀逐項核對命題對應、正負方向、規則強度、觀察內容及片段是否支持該項。格式不符、語意抽取不符及機械結論分開保存。來源編號可以核對實際文字，語意仍須評讀。每個版本使用新目錄，舊來源及失敗紀錄留在 F 槽。正式聊天使用既有回覆路徑，條件抽取由實驗指令啟動。

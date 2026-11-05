@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in (None, ''):
     sys.path.insert(0, str(ROOT))
 
-from assistant import learned_models, local_models
+from assistant import evidence_logic, learned_models, local_models
 from assistant.engine import Assistant, EngineError, render_prompt_parts
 from assistant.local_engine import LocalEngine
 from assistant.local_worker import Failure, encode_request, request_messages
@@ -21,6 +21,13 @@ from scripts import evaluate_understanding as understanding
 from scripts.evaluation_attempts import exclusive_json, report_lease
 from scripts.evaluation_reports import canonical_digest, load_json
 from scripts.learning.protocol import EXPECTED_VERSIONS
+
+EXTRACTORS = {
+    'evidence': (evidence_logic.EXTRACTION_GUIDE, evidence_logic.analyse),
+    'evidence-names': (evidence_logic.NAMED_GUIDE, evidence_logic.analyse_named),
+    'evidence-indexed': (evidence_logic.INDEXED_GUIDE, evidence_logic.analyse_indexed),
+}
+VARIANTS = ('flat', 'split', *EXTRACTORS)
 
 
 def source_paths(suite):
@@ -41,7 +48,12 @@ def sources(suite):
 
 def wire(variant, selection, context):
     guide, data = render_prompt_parts(context)
-    if variant == 'split':
+    if variant in EXTRACTORS:
+        guide = EXTRACTORS[variant][0]
+    if variant == 'evidence-indexed':
+        segments = evidence_logic.source_segments(context['current_request'])
+        data = '本輪原文片段（資料）\n' + json.dumps(segments, ensure_ascii=False) + data
+    if variant != 'flat':
         return {'schema': 'local_inference_request_v2', 'guide': guide, 'data': data, 'selection': selection}
     return {'schema': 'local_inference_request_v1', 'prompt': guide + data, 'selection': selection}
 
@@ -78,7 +90,7 @@ def prepare(folder, suite, ids, variant):
 
 
 def case_ids(plan):
-    if plan['schema'] != 'native_roles_plan_v1' or plan['variant'] not in ('flat', 'split'):
+    if plan['schema'] != 'native_roles_plan_v1' or plan['variant'] not in VARIANTS:
         raise ValueError('原生訊息實驗計畫格式無效。')
     ids = [row['case']['id'] for row in plan['rows']]
     if not 1 <= len(ids) <= 32 or len(ids) != len(set(ids)):
@@ -161,7 +173,7 @@ def run(folder, plan):
         exclusive_json(folder / f'{index}.request.json', attempt)
         request = row['wire']
         try:
-            if plan['variant'] == 'split':
+            if request['schema'] == 'local_inference_request_v2':
                 answer = engine.answer_roles(request['guide'], request['data'])
             else:
                 answer = engine.answer(request['prompt'])
@@ -227,13 +239,41 @@ def audit(folder, plan):
     return {'plan_sha256': plan_hash, 'collected': completion.exists(), 'rows': rows}
 
 
+def analyse_evidence(folder, plan):
+    if plan['variant'] not in EXTRACTORS:
+        raise ValueError('條件核對需要 evidence 實驗計畫。')
+    checked = audit(folder, plan)
+    for name in ('evidence_logic.py', 'acceptance.py'):
+        source = ROOT / 'assistant' / name
+        if understanding.sha(source.read_bytes()) != plan['sources'].get(str(source)):
+            raise ValueError('條件核對程式已變更，請保留原實驗邊界。')
+    analyse = EXTRACTORS[plan['variant']][1]
+    rows = []
+    for index, row in enumerate(checked['rows']):
+        result = {'id': row['id'], 'status': row['status']}
+        if row['status'] == 'answered':
+            outcome = load_json(folder / f'{index}.outcome.json')
+            result['outcome_sha256'] = canonical_digest(outcome)
+            try:
+                result['analysis'] = analyse(plan['rows'][index]['case']['prompt'], outcome['answer'])
+            except ValueError as exc:
+                result.update(status='invalid_extraction', detail=str(exc))
+            else:
+                result['status'] = result['analysis']['status']
+        rows.append(result)
+    record = {'schema': 'native_evidence_analysis_v1', 'plan_sha256': checked['plan_sha256'],
+              'collected': checked['collected'], 'rows': rows}
+    exclusive_json(folder / 'analysis.json', record)
+    print(json.dumps([{key: row[key] for key in ('id', 'status')} for row in rows], ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('prepare', 'preflight', 'run', 'audit'))
+    parser.add_argument('phase', choices=('prepare', 'preflight', 'run', 'audit', 'analyse'))
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--suite', type=Path, default=ROOT / 'evals/work_comprehension.json')
     parser.add_argument('--ids', nargs='+')
-    parser.add_argument('--variant', choices=('flat', 'split'), default='split')
+    parser.add_argument('--variant', choices=VARIANTS, default='split')
     args = parser.parse_args()
     folder = args.out.resolve()
     private_root = ROOT / 'data/evaluations'
@@ -253,6 +293,8 @@ def main():
                     preflight(folder, plan)
                 elif args.phase == 'audit':
                     print(json.dumps(audit(folder, plan), ensure_ascii=False, indent=2))
+                elif args.phase == 'analyse':
+                    analyse_evidence(folder, plan)
                 else:
                     run(folder, plan)
     except (ValueError, OSError, KeyError, IndexError, TypeError, EngineError, Failure) as exc:

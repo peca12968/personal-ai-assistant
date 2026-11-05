@@ -1,0 +1,16 @@
+[
+  {
+    "id": "negative_verdict",
+    "category": "evidence_reasoning_holdout",
+    "prompt": "若倉門打開，系統一定留下紀錄。已確認系統沒有留下紀錄。能否確定倉門沒有打開？",
+    "expected_status": "supported",
+    "criteria": ["倉門打開推出留下紀錄，保留未留紀錄的否定觀察。", "待判是倉門沒有打開。所有相容情況均支持這個否定。"]
+  },
+  {
+    "id": "compound_necessary",
+    "category": "evidence_reasoning_holdout",
+    "prompt": "只有證件有效而且已完成驗證，閘門才會放行。已確認閘門放行。能否確定已完成驗證？",
+    "expected_status": "supported",
+    "criteria": ["放行推出證件有效及完成驗證，兩項必要條件都要保留。", "已觀察到放行，待判是完成驗證，所有相容情況均支持。"]
+  }
+]
