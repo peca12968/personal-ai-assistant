@@ -276,24 +276,34 @@ class DailyAssistant(Assistant):
             prior = json.loads(original[0]) if original else {}
             if choice and not selection and prior.get('expense_source'):
                 raise ValueError('原先的核銷選項已變更，請重新提供明細。')
-        if self.allow_local_calculation and self.allow_local_evidence and daily_necessary.matches_revision(question):
-            if image_ids or self.store.documents(sid, include_content=False):
-                raise EngineError('沿用必要條件只接受純文字，請重新列出本輪需要的條件。', 'evidence_invalid')
+        anchor = None
+        explicit_conditions = daily_necessary.matches_revision(question)
+        if (self.allow_local_calculation and self.allow_local_evidence
+                and (explicit_conditions or (local and daily_necessary.matches_inquiry(question)))):
+            required = explicit_conditions or daily_necessary.FIELD in prior
             try:
-                source_plan, source = daily_necessary.previous(self.store, sid, before)
-                revised = daily_necessary.revise(question, source_plan, source)
-                if retry and prior.get(daily_necessary.FIELD) != revised:
-                    raise ValueError('重試的來源或必要條件更正已變更。')
+                if image_ids or self.store.documents(sid, include_content=False):
+                    if required:
+                        raise ValueError('沿用必要條件只接受純文字，請重新列出本輪需要的條件。')
+                elif not retry or required:
+                    anchor = daily_necessary.previous(self.store, sid, before, required=required)
+            except ValueError as exc:
+                raise EngineError(str(exc), 'evidence_invalid') from None
+        if anchor is not None:
+            try:
+                plan = daily_necessary.carry_forward(question, *anchor)
+                if retry and prior.get(daily_necessary.FIELD) != plan:
+                    raise ValueError('重試的來源或必要條件請求已變更。')
             except ValueError as exc:
                 raise EngineError(str(exc), 'evidence_invalid') from None
             context = make_context(question, [], [])
             context.update(response_mode=daily_necessary.MODE, documents={'catalog': [], 'excerpts': []},
-                           **{daily_necessary.FIELD: revised})
+                           **{daily_necessary.FIELD: plan})
 
             def recalculate(uid):
                 try:
-                    result = daily_necessary.evaluate(revised, cancel)
-                    if (daily_necessary.previous(self.store, sid, uid) != (source_plan, source)
+                    result = daily_necessary.evaluate(plan, cancel)
+                    if (daily_necessary.previous(self.store, sid, uid) != anchor
                             or self.store.documents(sid, include_content=False)):
                         raise ValueError('提交前的必要條件來源已變更。')
                     return result

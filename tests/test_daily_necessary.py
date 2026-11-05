@@ -265,3 +265,154 @@ class DailyNecessaryRevisionTests(unittest.TestCase):
             daily_necessary.read(restored, newest['id'])
         with self.assertRaisesRegex(ValueError, '來源已變更'):
             daily_necessary.read(restored, revised['id'])
+
+
+class DailyNecessaryInquiryTests(unittest.TestCase):
+    ASK = '還要核對什麼？'
+    EXPLICIT = '沿用上一輪條件：還要核對什麼？'
+    START = ('啟用量測台的必要且充分條件是同時具備有效的操作證和（可用的北機或可用的南機）。'
+             '操作證尚未確認，北機尚未檢查，南機尚未檢查。' + LABELS)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.sid = self.store.new_session()
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '普通模型回答'
+        self.app = DailyAssistant(self.store, self.engine)
+
+    def test_pending_groups_describe_all_minimal_decisive_observations(self):
+        groups = [['甲', '乙'], ['丙', '丁'], ['戊']]
+        names = sum(groups, [])
+        index_groups = [(0, 1), (2, 3), (4,)]
+        worlds = list(product((False, True), repeat=5))
+        valid = {world for world in worlds if all(any(world[i] for i in group) for group in index_groups)}
+
+        def verdict(known, sufficient):
+            possible = {world for world in worlds if all(value is None or value == world[i]
+                                                          for i, value in enumerate(known))}
+            if not possible & valid:
+                return 'refuted'
+            if sufficient and possible <= valid:
+                return 'supported'
+            return 'undetermined'
+
+        for known in product((None, False, True), repeat=5):
+            unknown = [i for i, value in enumerate(known) if value is None]
+            conditions = [dict(name=name, state={None: 'unknown', False: 'false', True: 'true'}[value])
+                          for name, value in zip(names, known, strict=True)]
+            for sufficient in (False, True):
+                current = verdict(known, sufficient)
+                state = dict(groups=groups, conditions=conditions, sufficient=sufficient)
+                result = daily_necessary.inquiry_result(state, current)
+                with self.subTest(known=known, sufficient=sufficient):
+                    self.assertEqual(result['needs_sufficiency'], not sufficient and current == 'undetermined')
+                    if current != 'undetermined':
+                        self.assertEqual(result['support'], [])
+                        self.assertEqual(result['refute'], [])
+                        self.assertEqual(bool(result['blockers']), current == 'refuted')
+                        continue
+                    minimal = {'refuted': set(), 'supported': set()}
+                    for checks in product((None, False, True), repeat=len(unknown)):
+                        updated = list(known)
+                        changes = {i: value for i, value in zip(unknown, checks, strict=True) if value is not None}
+                        for i, value in changes.items():
+                            updated[i] = value
+                        outcome = verdict(updated, sufficient)
+                        if outcome == 'undetermined':
+                            continue
+                        for i in changes:
+                            reduced = updated.copy()
+                            reduced[i] = None
+                            if verdict(reduced, sufficient) == outcome:
+                                break
+                        else:
+                            minimal[outcome].add(frozenset((names[i], value) for i, value in changes.items()))
+                    reported_refute = {frozenset((name, False) for name in group) for group in result['refute']}
+                    reported_support = {frozenset((name, True) for name in choice)
+                                        for choice in product(*result['support'])} if result['support'] else set()
+                    self.assertEqual(reported_refute, minimal['refuted'])
+                    self.assertEqual(reported_support, minimal['supported'])
+
+    def test_read_only_inquiry_can_be_followed_by_correction_and_another_inquiry(self):
+        first = self.app.ask(self.sid, self.START)
+        asked = self.app.ask(self.sid, self.ASK)
+        receipt = daily_necessary.read(self.store, asked['id'])
+        self.assertEqual(receipt['plan']['source']['answer_id'], first['id'])
+        self.assertEqual(receipt['inquiry']['refute'], [['操作證'], ['北機', '南機']])
+        self.assertIn('可用的北機 或 可用的南機', asked['content'])
+        self.assertIn('沿用上一則回答', daily_necessary.describe(receipt))
+        with self.assertRaisesRegex(EngineError, '上一則已列出'):
+            self.app.ask(self.sid, self.EXPLICIT)
+        revised = self.app.ask(self.sid, '沿用上一輪條件：操作證已確認有效。重算。')
+        self.assertEqual(revised['content'], '待查')
+        self.assertEqual(daily_necessary.read(self.store, revised['id'])['plan']['source']['answer_id'], asked['id'])
+        newest = self.app.ask(self.sid, self.EXPLICIT)
+        latest = daily_necessary.read(self.store, newest['id'])
+        self.assertEqual(latest['inquiry']['support'], [['北機', '南機']])
+        self.assertEqual(daily_necessary.read(self.store, asked['id']), receipt)
+        bundle = create_backup(self.store.path, self.path / 'inquiries.paibackup')
+        restore_backup(bundle['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, newest['id']), latest)
+        prior = restored.answer_context(asked['id'])
+        prior['unrelated_change'] = True
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(prior, ensure_ascii=False), asked['id']))
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily_necessary.read(restored, newest['id'])
+        self.engine.answer.assert_not_called()
+
+    def test_chain_at_the_revision_limit_still_verifies_last_inquiry(self):
+        self.app.ask(self.sid, self.START)
+        self.app.ask(self.sid, self.ASK)
+        correction = '沿用上一輪條件：操作證已確認有效。重算。'
+        for _ in range(daily_necessary.MAX_REVISIONS):
+            self.app.ask(self.sid, correction)
+            latest = self.app.ask(self.sid, self.EXPLICIT)
+        plan = daily_necessary.read(self.store, latest['id'])['plan']
+        self.assertEqual(len(plan['basis']['revisions']), 8)
+        with self.assertRaisesRegex(EngineError, '八次更正上限'):
+            self.app.ask(self.sid, correction)
+        self.engine.answer.assert_not_called()
+
+    def test_bare_inquiry_needs_current_anchor_and_respects_raw_and_attachment_routes(self):
+        self.app.ask(self.sid, self.START)
+        self.assertEqual(self.app.ask(self.store.new_session(), self.ASK)['content'], '普通模型回答')
+        raw = DailyAssistant(self.store, self.engine, allow_local_evidence=False)
+        raw_sid = self.store.new_session()
+        self.app.ask(raw_sid, self.START)
+        self.assertEqual(raw.ask(raw_sid, self.EXPLICIT)['content'], '普通模型回答')
+        path = self.path / 'sample.txt'
+        path.write_text('測試用附件', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        with self.assertRaisesRegex(EngineError, '只接受純文字'):
+            self.app.ask(self.sid, self.EXPLICIT)
+        self.assertEqual(self.app.ask(self.sid, self.ASK)['content'], '普通模型回答')
+        self.assertEqual(self.engine.answer.call_count, 3)
+
+    def test_cancelled_inquiry_can_retry_and_receipt_is_rederived(self):
+        first = self.app.ask(self.sid, self.START)
+        evaluate = daily_necessary.evaluate
+
+        def cancelled(plan, cancel=None):
+            if plan['schema'] == daily_necessary.INQUIRY_PLAN:
+                raise EngineError('停止', 'cancelled')
+            return evaluate(plan, cancel)
+
+        with patch.object(daily_necessary, 'evaluate', side_effect=cancelled), self.assertRaisesRegex(EngineError, '停止'):
+            self.app.ask(self.sid, self.ASK)
+        result = self.app.retry(self.sid)
+        self.assertEqual(len(self.store.messages(self.sid, 10)), 4)
+        self.assertEqual(daily_necessary.read(self.store, result['id'])['plan']['source']['answer_id'], first['id'])
+        context = self.store.answer_context(result['id'])
+        context[daily_necessary.FIELD]['inquiry']['refute'] = [['南機']]
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), result['id']))
+        with self.assertRaisesRegex(ValueError, '原問或推論不符'):
+            daily_necessary.read(self.store, result['id'])
+        self.engine.answer.assert_not_called()
