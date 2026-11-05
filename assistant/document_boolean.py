@@ -24,10 +24,10 @@ def _tokens(text):
     return tokens
 
 
-def parse(text, parse_atom):
+def parse(text, parse_atom, *, allow_plain=False):
     """Return the original-order filters and a precedence-aware expression tree."""
     tokens = _tokens(text)
-    if len(tokens) > 80 or not any(token in ('或', '(') for token in tokens):
+    if len(tokens) > 80 or (not allow_plain and not any(token in ('或', '(') for token in tokens)):
         return None
     filters = []
     position = 0

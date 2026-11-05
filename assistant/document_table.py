@@ -5,7 +5,7 @@ import unicodedata
 from itertools import combinations
 from pathlib import PurePath
 
-from . import document_boolean
+from . import document_boolean, document_dates
 from .document_ranges import MAX_LINES, STATUS_TEXT, requested_ranges
 
 
@@ -21,6 +21,8 @@ NUMERIC_AGGREGATE_PLAN = 'document_calculation_plan_v7'
 NUMERIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v7'
 LOGIC_AGGREGATE_PLAN = 'document_calculation_plan_v8'
 LOGIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v8'
+DATE_AGGREGATE_PLAN = 'document_calculation_plan_v9'
+DATE_AGGREGATE_RECEIPT = 'document_calculation_receipt_v9'
 MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
 _SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
@@ -56,6 +58,10 @@ _NUMERIC_SOURCE = (rf'(?P<scope>{_SPAN}(?: *(?:、|與|和) *{_SPAN}){{0,{MAX_AG
 _NUMERIC_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(?P<operation>加總|合計|平均) *{_NUMERIC_SOURCE}{_FILTER_UNIT}')
 _NUMERIC_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_NUMERIC_SOURCE} *(?:的 *)?'
                              rf'(?P<operation>總和|合計|平均值?){_FILTER_UNIT}')
+_DATE_OPERATORS = {'不早於': 'ge', '不晚於': 'le', '早於': 'lt', '晚於': 'gt', '不等於': 'ne', '等於': 'eq',
+                   '>=': 'ge', '≤': 'le', '<=': 'le', '≥': 'ge', '>': 'gt', '<': 'lt', '=': 'eq', '!=': 'ne', '≠': 'ne'}
+_DATE_COMPARISON = re.compile(rf'{_TOKEN} *({"|".join(map(re.escape, _DATE_OPERATORS))}) *(.{{1,18}})')
+_DATE_RANGE = re.compile(rf'{_TOKEN} *(?:從|自) *(.{{1,18}}?) *(?:到|至) *(.{{1,18}})')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -67,6 +73,7 @@ _REASONS = {
     'row_ambiguous': '指定範圍內有多筆符合鍵值的資料列，請縮小範圍或改用唯一鍵值。',
     'filter_unknown': '部分資料列的條件欄位空白，無法確定是否符合。',
     'filter_blank': '欄位空白。',
+    'filter_date_invalid': '不是可確認的完整公曆日期。',
     'filter_unit_incompatible': '來源單位與比較門檻的單位不相容。',
     'value_unconfirmed': '儲存格沒有可核對的確定數值。',
     'unit_missing': '表頭與儲存格都沒有明示單位。',
@@ -230,6 +237,38 @@ def parse_logic_aggregate(question, unit_pattern, supported_units, parse_quantit
         return None
     filters, logic = parsed
     return dict(schema=LOGIC_AGGREGATE_PLAN, **plan, filters=filters, logic=logic)
+
+
+def _date_condition(part):
+    if match := _DATE_RANGE.fullmatch(part):
+        name, first, last = match.groups()
+        start, end = document_dates.canonical(first), document_dates.canonical(last)
+        if name.strip() and start and end:
+            return dict(column=name.strip(), operator='between', date=start, end_date=end)
+    elif match := _DATE_COMPARISON.fullmatch(part):
+        name, operator, raw = match.groups()
+        normalized = document_dates.canonical(raw)
+        if name.strip() and normalized:
+            return dict(column=name.strip(), operator=_DATE_OPERATORS[operator], date=normalized)
+    return None
+
+
+def parse_date_aggregate(question, unit_pattern, supported_units, parse_quantity):
+    envelope = _threshold_envelope(question, unit_pattern, supported_units)
+    if envelope is None:
+        return None
+    expression, plan = envelope
+
+    def parse_condition(part):
+        return _date_condition(part) or _threshold_condition(part, unit_pattern, supported_units, parse_quantity)
+
+    parsed = document_boolean.parse(expression, parse_condition, allow_plain=True)
+    if parsed is None:
+        return None
+    filters, logic = parsed
+    if not any('date' in condition for condition in filters):
+        return None
+    return dict(schema=DATE_AGGREGATE_PLAN, **plan, filters=filters, logic=logic)
 
 
 def query(operands):
@@ -405,6 +444,14 @@ def _test_cell(raw, condition):
     return dict(value=raw, status='true' if matches else 'false')
 
 
+def _test_condition(raw, header_unit, condition, test_numeric):
+    if 'date' in condition:
+        return document_dates.test(raw, condition)
+    if 'unit' in condition:
+        return test_numeric(raw, header_unit, condition)
+    return _test_cell(raw, condition)
+
+
 def filter_rows(operand, source, unit_pattern, filters, test_numeric=None, logic=None):
     """Apply the exact condition and retain evidence for every physical data row."""
     names = [condition['column'] for condition in filters]
@@ -415,7 +462,7 @@ def filter_rows(operand, source, unit_pattern, filters, test_numeric=None, logic
     matches, decisions = [], []
     has_unknown = False
     for line, row in enumerate(bound['rows'], bound['first_row']):
-        tests = [(test_numeric(row[index], header_unit, condition) if 'unit' in condition else _test_cell(row[index], condition))
+        tests = [_test_condition(row[index], header_unit, condition, test_numeric)
                  for index, header_unit, condition in zip(bound['key_indexes'], bound['key_units'], filters, strict=True)]
         outcomes = [test['status'] for test in tests]
         if logic is None:

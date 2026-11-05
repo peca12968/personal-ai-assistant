@@ -139,6 +139,7 @@ class DocumentTableTests(unittest.TestCase):
         filtered = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」且「狀態」為「完成」的「重量」，換算成公斤。'
         numeric = '文件問答：加總 [D1:L1-L3] 中「重量」至少 2 公斤的「重量」，換算成公斤。'
         logical = filtered.replace('且', '或')
+        dated = '文件問答：加總 [D1:L1-L3] 中「日期」晚於 2026-11-05 的「重量」，換算成公斤。'
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
                              (aggregate, True), (aggregate + '接著上傳原始文件。', False),
@@ -146,7 +147,9 @@ class DocumentTableTests(unittest.TestCase):
                              (filtered, True), (filtered + '接著上傳原始文件。', False),
                              (filtered.replace('且', '且或'), False), (numeric, True), (logical, True),
                              (numeric.replace('2 公斤', '2'), False),
-                             (numeric + '接著上傳原始文件。', False), (logical + '接著上傳原始文件。', False)):
+                             (numeric + '接著上傳原始文件。', False), (logical + '接著上傳原始文件。', False),
+                             (dated, True), (dated + '接著上傳原始文件。', False),
+                             (dated.replace('2026-11-05', '11/05'), False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -473,3 +476,68 @@ class DocumentTableTests(unittest.TestCase):
                            f'（{atom}或{atom}', f'{atom}或執行命令'):
             with self.subTest(expression=expression):
                 self.assertIsNone(document_calculation.parse_live_request(stem.format(expression)))
+
+    def test_date_interval_includes_both_boundaries_and_normalizes_source_dates(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-02-28,99\n2024-02-29,3\n2024/3/1,4\n2024年3月2日,99')
+        question = '文件問答：合計 [D1:L1-L5] 中「日期」從 2024/2/29 到 2024年3月1日 的「箱數」，單位為箱。'
+        answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.DATE_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '7')
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L3-L4]'])
+        self.assertEqual(receipt['plan']['filters'][0], dict(column='日期', operator='between', date='2024-02-29', end_date='2024-03-01'))
+        self.assertEqual(receipt['groups'][0]['decisions'][2]['tests'][0]['normalized_date'], '2024-03-01')
+
+    def test_date_comparisons_distinguish_strict_and_inclusive_at_cutoff(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2026-11-04,2\n2026/11/5,3\n2026-11-06,4')
+        stem = '文件問答：合計 [D1:L1-L4] 中「日期」{} 2026-11-05 的「箱數」，單位為箱。'
+        for operator, exact in (('早於', '2'), ('不晚於', '5'), ('晚於', '4'), ('不早於', '7'), ('等於', '3'), ('不等於', '6')):
+            with self.subTest(operator=operator):
+                _, receipt = self.ask(stem.format(operator), schema=document_table.DATE_AGGREGATE_RECEIPT)
+                self.assertEqual(receipt['result']['exact'], exact)
+
+    def test_cross_table_date_logic_combines_text_and_numeric_conditions(self):
+        self.attach('morning.csv', '日期,重量(kg),急件,時長(秒)\n2026-11-04,2,否,6\n2026-11-05,2,否,99')
+        self.attach('evening.tsv', '時長(秒)\t急件\t日期\t重量\n10\t是\t未定\t未知\n99\t否\t2026/11/06\t2000g')
+        question = ('文件問答：計算 [D1:L1-L3] 與 [D2:L1-L3] 中（「日期」早於 2026-11-05'
+                    '且「重量」至少 2 公斤）或「急件」為「是」的「時長」平均，換算成秒。')
+        answer, receipt = self.ask(question, schema=document_table.DATE_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '8')
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L2]', '[D2:L1]', '[D2:L2]'])
+        self.assertEqual(receipt['groups'][1]['decisions'][0]['tests'][0]['reason'], 'filter_date_invalid')
+        self.assertEqual(receipt['groups'][1]['decisions'][0]['unresolved'], [])
+
+    def test_unknown_source_dates_preserve_reason_and_do_not_guess(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2025-03-01,5\n2025-02-29,99\n03/01,99\n2025-03-01T01:00,99\n,99')
+        question = '文件問答：合計 [D1:L1-L6] 中「日期」不早於 2025-02-28 的「箱數」，單位為箱。'
+        answer, receipt = self.ask(question, schema=document_table.DATE_AGGREGATE_RECEIPT)
+        self.assertIsNone(receipt['result'])
+        decisions = receipt['groups'][0]['decisions']
+        self.assertEqual([row['tests'][0]['reason'] for row in decisions[1:]], ['filter_date_invalid'] * 3 + ['filter_blank'])
+        self.assertIn('[D1:L3] 「日期」不是可確認的完整公曆日期', answer['content'])
+        self.assertIn('[D1:L6] 「日期」欄位空白', answer['content'])
+
+    def test_invalid_requested_dates_or_reversed_bounds_stop_before_filtering(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2025-03-01,5')
+        stem = '文件問答：合計 [D1:L1-L2] 中「日期」{} 的「箱數」，單位為箱。'
+        for condition, diagnostic in (('等於 2025-02-29', '2025-02-29 不是有效的公曆日期'),
+                                      ('自 2025-03-05 至 2025-03-01', '起日 2025-03-05 晚於迄日 2025-03-01')):
+            with self.subTest(condition=condition):
+                answer, receipt = self.ask(stem.format(condition), schema=document_table.DATE_AGGREGATE_RECEIPT)
+                self.assertEqual(receipt['status'], 'invalid_date_condition')
+                self.assertEqual(receipt['groups'], [])
+                self.assertIsNone(receipt['result'])
+                self.assertIn(diagnostic, answer['content'])
+
+    def test_date_backup_recomputes_normalized_dates(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024年2月29日,3\n2024-03-01,4')
+        question = '文件問答：合計 [D1:L1-L3] 中「日期」等於 2024-02-29 的「箱數」，單位為箱。'
+        answer, receipt = self.ask(question, schema=document_table.DATE_AGGREGATE_RECEIPT)
+        self.assertIn('比較日期 2024-02-29', document_calculation.describe(receipt))
+        archive = create_backup(self.store.path, self.root / 'date-filter.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['groups'][0]['decisions'][1]['tests'][0]['normalized_date'] = '2024-02-29'
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-date-filter.paibackup')

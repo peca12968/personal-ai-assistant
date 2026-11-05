@@ -6,7 +6,7 @@ from decimal import Decimal
 from itertools import groupby
 from operator import eq, ge, gt, le, lt, ne
 
-from . import document_boolean, document_table, document_units, exact_math, local_answer_receipts
+from . import document_boolean, document_dates, document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
 from .expression_math import check_cancel
 from .response_delivery import digest
@@ -31,7 +31,8 @@ _DIGITS = '零一二三四五六七八九'
 _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七八九]|[一二三四五六七八九]?十[一二三四五六七八九]?)'
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
-                  document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN)
+                  document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
+                  document_table.DATE_AGGREGATE_PLAN)
 
 
 def parse_request(question):
@@ -74,7 +75,8 @@ def parse_live_request(question):
             or document_table.parse_multi_aggregate(question, _UNIT, document_units.SCALES)
             or document_table.parse_filter_aggregate(question, _UNIT, document_units.SCALES)
             or _parse_numeric_aggregate(question)
-            or _parse_logic_aggregate(question))
+            or _parse_logic_aggregate(question)
+            or _parse_date_aggregate(question))
 
 
 def _parse_numeric_aggregate(question):
@@ -83,6 +85,10 @@ def _parse_numeric_aggregate(question):
 
 def _parse_logic_aggregate(question):
     return document_table.parse_logic_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
+
+
+def _parse_date_aggregate(question):
+    return document_table.parse_date_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
 
 def snapshot(store, sid, plan):
@@ -505,10 +511,14 @@ def _multi_source_lines(operand, source, group, complete, filters=None):
 
 
 def _evaluate_grouped_aggregate(plan, cancel):
-    logical = plan['schema'] == document_table.LOGIC_AGGREGATE_PLAN
+    dated = plan['schema'] == document_table.DATE_AGGREGATE_PLAN
+    logical = dated or plan['schema'] == document_table.LOGIC_AGGREGATE_PLAN
     numeric = logical or plan['schema'] == document_table.NUMERIC_AGGREGATE_PLAN
     filtered = numeric or plan['schema'] == document_table.FILTER_AGGREGATE_PLAN
-    if logical:
+    if dated:
+        request = _parse_date_aggregate(plan['request'])
+        schema = document_table.DATE_AGGREGATE_RECEIPT
+    elif logical:
         request = _parse_logic_aggregate(plan['request'])
         schema = document_table.LOGIC_AGGREGATE_RECEIPT
     elif numeric:
@@ -529,7 +539,12 @@ def _evaluate_grouped_aggregate(plan, cancel):
     overlaps = document_table.overlaps(operands, catalog)
     result = total_exact = None
     groups = []
-    if overlaps:
+    date_errors = [f'「{condition["column"]}」的日期條件，{issue}' for condition in filters or ()
+                   if 'date' in condition and (issue := document_dates.condition_error(condition))]
+    if date_errors:
+        status = 'invalid_date_condition'
+        lines = ['目前無法計算。請核對下列日期條件。', *date_errors]
+    elif overlaps:
         status = 'range_overlap'
         lines = ['目前無法計算。下列範圍來自相同內容且行號重疊，請選擇互不重疊的範圍。']
         lines.extend(f'{_range_label(operands[a])} 與 {_range_label(operands[b])}。' for a, b in overlaps)
@@ -587,7 +602,8 @@ def read(store, mid):
 def describe(receipt):
     plan = receipt['plan']
     if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT,
-                             document_table.NUMERIC_AGGREGATE_RECEIPT, document_table.LOGIC_AGGREGATE_RECEIPT):
+                             document_table.NUMERIC_AGGREGATE_RECEIPT, document_table.LOGIC_AGGREGATE_RECEIPT,
+                             document_table.DATE_AGGREGATE_RECEIPT):
         lines = [receipt['output']]
         if 'logic' in plan:
             lines.append('\n條件結構 ' + document_boolean.describe(plan['logic']))
@@ -639,6 +655,8 @@ def _describe_filter_decisions(group, filters):
                 outcome = document_table.reason(test['reason']).removesuffix('。')
             elif 'normalized_exact' in test:
                 outcome += f'，比較值 {test["normalized_exact"]} {condition["unit"]}'
+            elif 'normalized_date' in test:
+                outcome += f'，比較日期 {test["normalized_date"]}'
             details.append(f'「{condition["column"]}」{raw}（{outcome}）')
         if row.get('unresolved'):
             names = '、'.join(f'「{filters[index]["column"]}」' for index in row['unresolved'])
