@@ -2,12 +2,19 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from assistant import document_calculation, document_table
+from assistant import document_calculation, document_dates, document_table
 from assistant.backup import create_backup, restore_backup
-from assistant.engine import Assistant
+from assistant.engine import Assistant, EngineError
 from assistant.store import Store
 from scripts.daily_expenses import DailyAssistant
+
+
+LEAP_CLOCK = {'local_datetime': '2024-03-01T00:15:00+08:00',
+              'observed_at_utc': '2024-02-29T16:15:00+00:00'}
+MONDAY_CLOCK = {'local_datetime': '2026-01-05T00:15:00+08:00',
+                'observed_at_utc': '2026-01-04T16:15:00+00:00'}
 
 
 class NoModel:
@@ -140,6 +147,7 @@ class DocumentTableTests(unittest.TestCase):
         numeric = '文件問答：加總 [D1:L1-L3] 中「重量」至少 2 公斤的「重量」，換算成公斤。'
         logical = filtered.replace('且', '或')
         dated = '文件問答：加總 [D1:L1-L3] 中「日期」晚於 2026-11-05 的「重量」，換算成公斤。'
+        relative = dated.replace('晚於 2026-11-05 ', '在上週')
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
                              (aggregate, True), (aggregate + '接著上傳原始文件。', False),
@@ -149,7 +157,8 @@ class DocumentTableTests(unittest.TestCase):
                              (numeric.replace('2 公斤', '2'), False),
                              (numeric + '接著上傳原始文件。', False), (logical + '接著上傳原始文件。', False),
                              (dated, True), (dated + '接著上傳原始文件。', False),
-                             (dated.replace('2026-11-05', '11/05'), False)):
+                             (dated.replace('2026-11-05', '11/05'), False),
+                             (relative, True), (relative + '接著上傳原始文件。', False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -541,3 +550,110 @@ class DocumentTableTests(unittest.TestCase):
             db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             create_backup(self.store.path, self.root / 'tampered-date-filter.paibackup')
+
+    def test_relative_range_and_strict_cutoff_share_one_local_observation(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-02-27,99\n2024年2月28日,2\n2024-02-29,3\n2024/3/1,4\n2024-03-02,99')
+        question = ('文件問答：合計 [D1:L1-L6] 中「日期」從前天到今天且「日期」早於明天'
+                    '的「箱數」，單位為箱。')
+        with patch.object(document_dates, 'observe_local_clock', return_value=LEAP_CLOCK) as clock:
+            answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+        clock.assert_called_once_with()
+        self.assertEqual(receipt['result']['exact'], '9')
+        self.assertEqual(receipt['plan']['date_observation'], LEAP_CLOCK)
+        first, second = receipt['plan']['filters']
+        self.assertEqual((first['date'], first['end_date'], second['date']), ('2024-02-28', '2024-03-01', '2024-03-02'))
+        self.assertIn('電腦本地日期 2024-03-01', answer['content'])
+        self.assertIn('早於 2024-03-02', answer['content'])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L3-L5]'])
+
+    def test_relative_weeks_use_monday_and_sunday_across_two_years_and_tables(self):
+        self.attach('left.csv', '日期,急件,時長(秒)\n2025-12-28,否,99\n2025-12-29,否,6\n2026-01-05,否,99')
+        self.attach('right.tsv', '急件\t日期\t時長(秒)\n是\t未定\t10\n否\t2026-01-04\t8\n否\t2026-01-11\t7')
+        stem = ('文件問答：計算 [D1:L1-L4] 與 [D2:L1-L4] 中「日期」在{}或「急件」為「是」'
+                '的「時長」平均，單位為秒。')
+        with patch.object(document_dates, 'observe_local_clock', return_value=MONDAY_CLOCK):
+            _, last = self.ask(stem.format('上週'), schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+            _, current = self.ask(stem.format('這週'), schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+        self.assertEqual((last['result']['exact'], current['result']['exact']), ('8', '116/3'))
+        self.assertIn('2025-12-29 到 2026-01-04', last['output'])
+        self.assertIn('2026-01-05 到 2026-01-11', current['output'])
+        self.assertEqual(last['groups'][1]['decisions'][0]['unresolved'], [])
+
+    def test_relative_months_include_whole_calendar_period_and_leap_day(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-01-31,99\n2024-02-01,2\n2024-02-29,5\n2024-03-01,3\n2024-03-31,4\n2024-04-01,99')
+        stem = '文件問答：合計 [D1:L1-L7] 中「日期」{}的「箱數」，單位為箱。'
+        with patch.object(document_dates, 'observe_local_clock', return_value=LEAP_CLOCK):
+            for term, start, end in (('在上個月', '2024-02-01', '2024-02-29'),
+                                     ('本月', '2024-03-01', '2024-03-31')):
+                with self.subTest(term=term):
+                    _, receipt = self.ask(stem.format(term), schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+                    self.assertEqual(receipt['result']['exact'], '7')
+                    self.assertIn(f'{start} 到 {end}', receipt['output'])
+
+    def test_relative_comparisons_mixed_bounds_and_invalid_range(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-02-29,2\n2024-03-01,3\n2024-03-02,5')
+        stem = '文件問答：合計 [D1:L1-L4] 中「日期」{}的「箱數」，單位為箱。'
+        with patch.object(document_dates, 'observe_local_clock', return_value=LEAP_CLOCK):
+            for term, exact in (('是昨天', '2'), ('不早於今天', '8'), ('自2024/2/29至今天', '5')):
+                with self.subTest(term=term):
+                    _, receipt = self.ask(stem.format(term), schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+                    self.assertEqual(receipt['result']['exact'], exact)
+            answer, receipt = self.ask(stem.format('從明天到昨天'), schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+        self.assertIn('起日 2024-03-02 晚於迄日 2024-02-29', answer['content'])
+        self.assertEqual(receipt['status'], 'invalid_date_condition')
+        self.assertIsNone(receipt['result'])
+        self.assertEqual(receipt['groups'], [])
+
+    def test_only_supported_relative_requests_read_clock_and_quoted_values_are_literal(self):
+        stem = '文件問答：合計 [D1:L1-L2] 中「日期」{}的「箱數」，單位為箱。'
+        with patch.object(document_dates, 'observe_local_clock', side_effect=AssertionError('unexpected clock read')):
+            for term in ('在最近', '在上週五', '等於台北時間今天', '從上週到本週', '在本週，依工作日'):
+                with self.subTest(term=term):
+                    self.assertIsNone(document_calculation.parse_live_request(stem.format(term)))
+            literal = document_calculation.parse_live_request(stem.format('為「今天」或「日期」為「昨天」'))
+            absolute = document_calculation.parse_live_request(stem.format('等於2024-02-29'))
+            relative = document_calculation.parse_live_request(stem.format('是今天'))
+        self.assertEqual(literal['schema'], document_table.LOGIC_AGGREGATE_PLAN)
+        self.assertEqual([item['value'] for item in literal['filters']], ['今天', '昨天'])
+        self.assertEqual(absolute['schema'], document_table.DATE_AGGREGATE_PLAN)
+        self.assertEqual(relative['schema'], document_table.RELATIVE_DATE_AGGREGATE_PLAN)
+        self.assertNotIn('date_observation', relative)
+
+    def test_relative_backup_uses_original_clock_and_rejects_clock_edits(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-02-29,7\n2024-03-01,99')
+        question = '文件問答：合計 [D1:L1-L3] 中「日期」是昨天的「箱數」，單位為箱。'
+        with patch.object(document_dates, 'observe_local_clock', return_value=LEAP_CLOCK):
+            answer, receipt = self.ask(question, schema=document_table.RELATIVE_DATE_AGGREGATE_RECEIPT)
+        with patch.object(document_dates, 'observe_local_clock', side_effect=AssertionError('historical clock read')):
+            archive = create_backup(self.store.path, self.root / 'relative.paibackup')
+            restore_backup(archive['path'], self.root / 'restored-relative')
+            restored = Store(self.root / 'restored-relative' / 'assistant.sqlite3')
+            self.assertEqual(document_calculation.read(restored, answer['id']), receipt)
+            self.assertEqual(receipt['result']['exact'], '7')
+
+        context = self.store.answer_context(answer['id'])
+        observation = context[document_calculation.FIELD]['plan']['date_observation']
+        observation['local_datetime'] = '2024-03-01T00:16:00+08:00'
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            document_calculation.validate(context[document_calculation.FIELD], answer['content'], question)
+        observation['observed_at_utc'] = '2024-02-29T16:16:00+00:00'
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '與已完成流程不符'):
+            create_backup(self.store.path, self.root / 'tampered-relative.paibackup')
+
+    def test_retry_uses_original_relative_date_instead_of_a_new_clock_read(self):
+        self.attach('dates.csv', '日期,箱數(箱)\n2024-02-29,7\n2024-03-01,99')
+        app = DailyAssistant(self.store, NoModel())
+        question = '文件問答：合計 [D1:L1-L3] 中「日期」是昨天的「箱數」，單位為箱。'
+        with (patch.object(document_dates, 'observe_local_clock', return_value=LEAP_CLOCK),
+              patch.object(document_calculation, 'evaluate', side_effect=EngineError('已停止', 'cancelled'))):
+            with self.assertRaises(EngineError):
+                app.ask(self.sid, question)
+        with patch.object(document_dates, 'observe_local_clock', side_effect=AssertionError('retry clock read')):
+            answer = app.retry(self.sid)
+        receipt = document_calculation.read(self.store, answer['id'])
+        self.assertEqual(receipt['plan']['date_observation'], LEAP_CLOCK)
+        self.assertEqual(receipt['result']['exact'], '7')
+        self.assertEqual([message['content'] for message in self.store.messages(self.sid) if message['role'] == 'user'],
+                         [question])

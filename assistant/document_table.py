@@ -23,6 +23,8 @@ LOGIC_AGGREGATE_PLAN = 'document_calculation_plan_v8'
 LOGIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v8'
 DATE_AGGREGATE_PLAN = 'document_calculation_plan_v9'
 DATE_AGGREGATE_RECEIPT = 'document_calculation_receipt_v9'
+RELATIVE_DATE_AGGREGATE_PLAN = 'document_calculation_plan_v10'
+RELATIVE_DATE_AGGREGATE_RECEIPT = 'document_calculation_receipt_v10'
 MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
 _SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
@@ -62,6 +64,8 @@ _DATE_OPERATORS = {'不早於': 'ge', '不晚於': 'le', '早於': 'lt', '晚於
                    '>=': 'ge', '≤': 'le', '<=': 'le', '≥': 'ge', '>': 'gt', '<': 'lt', '=': 'eq', '!=': 'ne', '≠': 'ne'}
 _DATE_COMPARISON = re.compile(rf'{_TOKEN} *({"|".join(map(re.escape, _DATE_OPERATORS))}) *(.{{1,18}})')
 _DATE_RANGE = re.compile(rf'{_TOKEN} *(?:從|自) *(.{{1,18}}?) *(?:到|至) *(.{{1,18}})')
+_RELATIVE_MEMBERSHIP = re.compile(rf'{_TOKEN} *(?:落在|在|為|是)? *'
+                                  rf'({"|".join((*document_dates.DAY_OFFSETS, *document_dates.PERIODS))})')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -239,36 +243,58 @@ def parse_logic_aggregate(question, unit_pattern, supported_units, parse_quantit
     return dict(schema=LOGIC_AGGREGATE_PLAN, **plan, filters=filters, logic=logic)
 
 
-def _date_condition(part):
+def _date_condition(part, endpoint=document_dates.canonical):
     if match := _DATE_RANGE.fullmatch(part):
         name, first, last = match.groups()
-        start, end = document_dates.canonical(first), document_dates.canonical(last)
+        start, end = endpoint(first), endpoint(last)
         if name.strip() and start and end:
             return dict(column=name.strip(), operator='between', date=start, end_date=end)
     elif match := _DATE_COMPARISON.fullmatch(part):
         name, operator, raw = match.groups()
-        normalized = document_dates.canonical(raw)
+        normalized = endpoint(raw)
         if name.strip() and normalized:
             return dict(column=name.strip(), operator=_DATE_OPERATORS[operator], date=normalized)
     return None
 
 
-def parse_date_aggregate(question, unit_pattern, supported_units, parse_quantity):
+def _relative_endpoint(raw):
+    term = raw.strip()
+    return term if term in document_dates.DAY_OFFSETS else document_dates.canonical(raw)
+
+
+def _relative_date_condition(part):
+    condition = _date_condition(part, _relative_endpoint)
+    if condition is not None:
+        if any(condition.get(field) in document_dates.DAY_OFFSETS for field in ('date', 'end_date')):
+            condition['relative_expression'] = part
+        return condition
+    if (match := _RELATIVE_MEMBERSHIP.fullmatch(part)) and match[1].strip():
+        name, term = match.groups()
+        return dict(column=name.strip(), operator='between' if term in document_dates.PERIODS else 'eq',
+                    date=term, relative_expression=part)
+    return None
+
+
+def parse_date_aggregate(question, unit_pattern, supported_units, parse_quantity, *, relative=False):
     envelope = _threshold_envelope(question, unit_pattern, supported_units)
     if envelope is None:
         return None
     expression, plan = envelope
 
+    parse_date = _relative_date_condition if relative else _date_condition
+
     def parse_condition(part):
-        return _date_condition(part) or _threshold_condition(part, unit_pattern, supported_units, parse_quantity)
+        return parse_date(part) or _threshold_condition(part, unit_pattern, supported_units, parse_quantity)
 
     parsed = document_boolean.parse(expression, parse_condition, allow_plain=True)
     if parsed is None:
         return None
     filters, logic = parsed
-    if not any('date' in condition for condition in filters):
+    required = 'relative_expression' if relative else 'date'
+    if not any(required in condition for condition in filters):
         return None
-    return dict(schema=DATE_AGGREGATE_PLAN, **plan, filters=filters, logic=logic)
+    schema = RELATIVE_DATE_AGGREGATE_PLAN if relative else DATE_AGGREGATE_PLAN
+    return dict(schema=schema, **plan, filters=filters, logic=logic)
 
 
 def query(operands):

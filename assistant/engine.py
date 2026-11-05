@@ -369,6 +369,8 @@ class Assistant:
             context.update(response_mode='local_calculation', calculation=calculation,
                            documents={'catalog':[], 'excerpts':[]})
         elif document_plan is not None:
+            previous_plan = previous.get(document_calculation.FIELD) if retry else None
+            document_plan = document_calculation.bind_live_request(document_plan, previous_plan)
             sources = document_calculation.snapshot(self.store, sid, document_plan)
             document_plan['documents'] = sources
             context = make_context(question, [], [])

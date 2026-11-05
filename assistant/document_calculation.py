@@ -32,7 +32,7 @@ _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七�
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
-                  document_table.DATE_AGGREGATE_PLAN)
+                  document_table.DATE_AGGREGATE_PLAN, document_table.RELATIVE_DATE_AGGREGATE_PLAN)
 
 
 def parse_request(question):
@@ -76,7 +76,8 @@ def parse_live_request(question):
             or document_table.parse_filter_aggregate(question, _UNIT, document_units.SCALES)
             or _parse_numeric_aggregate(question)
             or _parse_logic_aggregate(question)
-            or _parse_date_aggregate(question))
+            or _parse_date_aggregate(question)
+            or _parse_date_aggregate(question, relative=True))
 
 
 def _parse_numeric_aggregate(question):
@@ -87,8 +88,20 @@ def _parse_logic_aggregate(question):
     return document_table.parse_logic_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
 
-def _parse_date_aggregate(question):
-    return document_table.parse_date_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
+def _parse_date_aggregate(question, *, relative=False):
+    return document_table.parse_date_aggregate(
+        question, _UNIT, document_units.SCALES, _parse_table_quantity, relative=relative)
+
+
+def bind_live_request(plan, previous=None):
+    if plan['schema'] != document_table.RELATIVE_DATE_AGGREGATE_PLAN:
+        return plan
+    if isinstance(previous, dict) and previous.get('schema') == plan['schema']:
+        bound = document_dates.bind_relative_plan(plan, previous['date_observation'])
+        if previous != {**bound, 'documents': previous['documents']}:
+            raise ValueError('重試所需的相對日期計畫與原問不符。')
+        return bound
+    return document_dates.bind_relative_plan(plan, document_dates.observe_local_clock())
 
 
 def snapshot(store, sid, plan):
@@ -511,11 +524,17 @@ def _multi_source_lines(operand, source, group, complete, filters=None):
 
 
 def _evaluate_grouped_aggregate(plan, cancel):
-    dated = plan['schema'] == document_table.DATE_AGGREGATE_PLAN
+    relative = plan['schema'] == document_table.RELATIVE_DATE_AGGREGATE_PLAN
+    dated = relative or plan['schema'] == document_table.DATE_AGGREGATE_PLAN
     logical = dated or plan['schema'] == document_table.LOGIC_AGGREGATE_PLAN
     numeric = logical or plan['schema'] == document_table.NUMERIC_AGGREGATE_PLAN
     filtered = numeric or plan['schema'] == document_table.FILTER_AGGREGATE_PLAN
-    if dated:
+    if relative:
+        request = _parse_date_aggregate(plan['request'], relative=True)
+        if request is not None:
+            request = document_dates.bind_relative_plan(request, plan['date_observation'])
+        schema = document_table.RELATIVE_DATE_AGGREGATE_RECEIPT
+    elif dated:
         request = _parse_date_aggregate(plan['request'])
         schema = document_table.DATE_AGGREGATE_RECEIPT
     elif logical:
@@ -577,6 +596,8 @@ def _evaluate_grouped_aggregate(plan, cancel):
             lines = [f'「{column}」的{scope}{label}為 {_display_exact(result)} {unit}，共 {len(rows)} 列。']
         for operand, source, group in zip(operands, sources, groups, strict=True):
             lines.extend(_multi_source_lines(operand, source, group, status == 'complete', filters))
+    if relative:
+        lines[1:1] = document_dates.describe_relative_plan(request)
     check_cancel(cancel)
     answer = '\n'.join(lines)
     return answer, dict(schema=schema, plan=plan, model_called=False,
@@ -603,7 +624,7 @@ def describe(receipt):
     plan = receipt['plan']
     if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT,
                              document_table.NUMERIC_AGGREGATE_RECEIPT, document_table.LOGIC_AGGREGATE_RECEIPT,
-                             document_table.DATE_AGGREGATE_RECEIPT):
+                             document_table.DATE_AGGREGATE_RECEIPT, document_table.RELATIVE_DATE_AGGREGATE_RECEIPT):
         lines = [receipt['output']]
         if 'logic' in plan:
             lines.append('\n條件結構 ' + document_boolean.describe(plan['logic']))
