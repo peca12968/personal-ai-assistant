@@ -76,8 +76,16 @@ def find_codex():
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, POLICY_MARKER, focused_help, policy_reference
+    from .prompt_scope import TRANSCRIPTION_GUIDANCE, transcription_focus, transcription_format, OUTER_GUIDANCE
     policy = policy_reference(context)
-    instructions = FOCUSED_GUIDANCE if policy is not None and focused_help(context) else instructions.replace(PROMPT_MARKER, GUIDANCE)
+    copy_focus = transcription_focus(context)
+    copy_format = transcription_format(context) if copy_focus else None
+    if 'transcription_format' in context and context['transcription_format'] != copy_format:
+        copy_focus = False
+    if copy_focus:
+        instructions = TRANSCRIPTION_GUIDANCE
+    else:
+        instructions = FOCUSED_GUIDANCE if policy is not None and focused_help(context) else instructions.replace(PROMPT_MARKER, GUIDANCE)
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     instructions += '\n' + COMPANION_GUIDANCE
     instructions += '\n' + answer_feedback.GUIDANCE
@@ -86,6 +94,8 @@ def render_prompt(context):
         instructions += POLICY_MARKER + json.dumps(policy, ensure_ascii=False)
     instructions += ('\n交付檢查：遵守本輪明確格式；逐字照抄或轉錄只輸出指定內容，界定範圍的引號不算內容。'
                      '精簡仍須回答各個所問部分，包括適用範圍與判斷所需證據。')
+    if copy_focus and copy_format is not None:
+        instructions += '\n' + OUTER_GUIDANCE[copy_format['outer_quotes']]
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
@@ -269,6 +279,9 @@ class Assistant:
             context['delivery_capabilities'] = delivery_help
         if not self.allow_local_calculation:
             context['calculation_mode'] = 'model_only_evaluation'
+        from .prompt_scope import transcription_format
+        if copy_format := transcription_format(context):
+            context['transcription_format'] = copy_format
         return context
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):
