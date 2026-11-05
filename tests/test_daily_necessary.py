@@ -416,3 +416,144 @@ class DailyNecessaryInquiryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '原問或推論不符'):
             daily_necessary.read(self.store, result['id'])
         self.engine.answer.assert_not_called()
+
+
+class DailyNecessaryDisputeTests(unittest.TestCase):
+    INITIAL = DailyNecessaryInquiryTests.START
+    ASK = DailyNecessaryInquiryTests.ASK
+    PAIR = ('沿用上一輪條件：巡檢表回報「北機已確認可用」，'
+            '維修表回報「唯一的北機已確定不可用」。保留分歧。')
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.sid = self.store.new_session()
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '普通模型回答'
+        self.app = DailyAssistant(self.store, self.engine)
+
+    def test_paired_reports_preserve_both_sides_and_only_the_named_condition(self):
+        initial = self.app.ask(self.sid, self.INITIAL)
+        answer = self.app.ask(self.sid, self.PAIR)
+        receipt = daily_necessary.read(self.store, answer['id'])
+        self.assertEqual(receipt['analysis']['status'], 'undetermined')
+        self.assertEqual(receipt['plan']['source']['answer_id'], initial['id'])
+        self.assertEqual(receipt['conflicts'], [dict(name='北機', reports=[
+            dict(source='巡檢表', observation='北機已確認可用', state='true'),
+            dict(source='維修表', observation='唯一的北機已確定不可用', state='false'),
+        ])])
+        self.assertNotIn('已確認「條件2 北機可用」', receipt['canonical'])
+        self.assertNotIn('已確認並非「條件2 北機可用」', receipt['canonical'])
+        state = daily_necessary.effective(receipt['plan'])
+        self.assertEqual([c['observation'] for c in state['conditions']],
+                         ['操作證尚未確認', '北機尚未檢查', '南機尚未檢查'])
+        self.assertIn('巡檢表「北機已確認可用」', answer['content'])
+        self.assertIn('維修表「唯一的北機已確定不可用」', daily_necessary.describe(receipt))
+        self.engine.answer.assert_not_called()
+
+    def test_a_conflict_does_not_hide_an_independent_blocker_or_disqualify_a_backup(self):
+        for permit, south in product(('true', 'false'), ('true', 'false', 'unknown')):
+            # The north machine can take either value. Determine the expected result independently.
+            possibilities = {permit == 'true' and (north or backup)
+                             for north in (True, False)
+                             for backup in {'true': (True,), 'false': (False,), 'unknown': (True, False)}[south]}
+            status = {frozenset({True}): 'supported', frozenset({False}): 'refuted',
+                      frozenset({False, True}): 'undetermined'}[frozenset(possibilities)]
+            with self.subTest(permit=permit, south=south):
+                sid = self.store.new_session()
+                permit_text = {'true': '操作證已確認有效', 'false': '唯一的操作證已確定失效'}[permit]
+                south_text = {'true': '南機已確認可用', 'false': '唯一的南機已確定不可用',
+                              'unknown': '南機尚未檢查'}[south]
+                text = self.INITIAL.replace('操作證尚未確認', permit_text).replace('南機尚未檢查', south_text)
+                self.app.ask(sid, text)
+                answer = self.app.ask(sid, self.PAIR)
+                check = self.app.ask(sid, self.ASK)
+                receipt = daily_necessary.read(self.store, answer['id'])
+                inquiry = daily_necessary.read(self.store, check['id'])
+                self.assertEqual(receipt['analysis']['status'], status)
+                self.assertEqual(inquiry['inquiry']['conclusion'], status)
+                self.assertEqual(inquiry['conflicts'], receipt['conflicts'])
+                self.assertIn('北機 · 巡檢表', check['content'])
+                if status == 'supported':
+                    self.assertEqual(inquiry['inquiry']['support'], [])
+                elif status == 'refuted':
+                    self.assertEqual(inquiry['inquiry']['blockers'], [['操作證']])
+        self.engine.answer.assert_not_called()
+
+    def test_single_report_requires_a_conflicting_prior_confirmation_and_only_known_correction_clears_it(self):
+        initial = self.app.ask(self.sid, self.INITIAL)
+        report = '沿用上一輪條件：交班表回報「操作證已確認有效」。保留分歧。'
+        with self.assertRaisesRegex(EngineError, '一正一反'):
+            self.app.ask(self.sid, report)
+        correction = '沿用上一輪條件：唯一的操作證已確定失效。重算。'
+        self.app.ask(self.sid, correction)
+        disputed = self.app.ask(self.sid, report)
+        receipt = daily_necessary.read(self.store, disputed['id'])
+        self.assertEqual(receipt['conflicts'][0]['reports'][1], dict(
+            source=None, observation='唯一的操作證已確定失效', state='false'))
+        self.assertEqual(receipt['plan']['original']['request'], self.INITIAL)
+        self.assertEqual(receipt['analysis']['status'], 'undetermined')
+        with self.assertRaisesRegex(EngineError, '仍有分歧'):
+            self.app.ask(self.sid, '沿用上一輪條件：操作證尚未確認。重算。')
+        with self.assertRaisesRegex(EngineError, '已有待核對'):
+            self.app.ask(self.sid, report)
+        self.app.ask(self.sid, self.ASK)
+        resolved = self.app.ask(self.sid, correction)
+        latest = daily_necessary.read(self.store, resolved['id'])
+        self.assertEqual(resolved['content'], '停用')
+        self.assertNotIn('conflicts', latest)
+        self.assertIn(report, latest['plan']['revisions'])
+        self.assertEqual(daily_necessary.read(self.store, disputed['id']), receipt)
+        self.assertEqual(daily_necessary.read(self.store, initial['id'])['plan']['request'], self.INITIAL)
+        self.engine.answer.assert_not_called()
+
+    def test_ambiguous_reports_and_mixed_actions_never_change_the_saved_state(self):
+        first = self.app.ask(self.sid, self.INITIAL)
+        for text in (self.PAIR.replace('巡檢表', 'ABC').replace('維修表', 'abc'),
+                     self.PAIR.replace('唯一的北機已確定不可用', '唯一的南機已確定不可用'),
+                     self.PAIR.replace('唯一的北機已確定不可用', '北機已確認可用'),
+                     self.PAIR.replace('唯一的北機已確定不可用', '北機尚未檢查'),
+                     self.PAIR.replace('北機已確認可用', '舊北機已確認可用'),
+                     self.PAIR + '並啟動機組。'):
+            with self.subTest(text=text), self.assertRaises(EngineError) as exc:
+                self.app.ask(self.sid, text)
+            self.assertEqual(exc.exception.code, 'evidence_invalid')
+        self.assertEqual(self.store.messages(self.sid, 1)[0]['id'], first['id'])
+        with self.assertRaises(EngineError):
+            self.app.ask(self.store.new_session(), self.PAIR)
+        raw = DailyAssistant(self.store, self.engine, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.sid, self.PAIR)['content'], '普通模型回答')
+        self.engine.answer.assert_called_once()
+
+    def test_two_disputed_conditions_keep_independent_resolution(self):
+        self.app.ask(self.sid, self.INITIAL)
+        self.app.ask(self.sid, self.PAIR)
+        permit = self.app.ask(self.sid, '沿用上一輪條件：交班表回報「操作證已確認有效」，'
+                              '查驗單回報「唯一的操作證已確定失效」。保留分歧。')
+        receipt = daily_necessary.read(self.store, permit['id'])
+        self.assertEqual([item['name'] for item in receipt['conflicts']], ['操作證', '北機'])
+        corrected = self.app.ask(self.sid, '沿用上一輪條件：北機已確認可用。重算。')
+        current = daily_necessary.read(self.store, corrected['id'])
+        self.assertEqual([item['name'] for item in current['conflicts']], ['操作證'])
+        self.assertEqual(corrected['content'], '待查')
+        self.assertIn('交班表「操作證已確認有效」', daily_necessary.describe(current))
+        self.engine.answer.assert_not_called()
+
+    def test_restore_rederives_dispute_provenance_and_rejects_altered_reports(self):
+        self.app.ask(self.sid, self.INITIAL)
+        disputed = self.app.ask(self.sid, self.PAIR)
+        latest = self.app.ask(self.sid, self.ASK)
+        receipt = daily_necessary.read(self.store, latest['id'])
+        backup = create_backup(self.store.path, self.path / 'test.paibackup')
+        restore_backup(backup['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, latest['id']), receipt)
+        context = restored.answer_context(disputed['id'])
+        context[daily_necessary.FIELD]['conflicts'][0]['reports'][1]['source'] = '巡檢表'
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), disputed['id']))
+        with self.assertRaisesRegex(ValueError, '原問或推論不符'):
+            daily_necessary.read(restored, latest['id'])

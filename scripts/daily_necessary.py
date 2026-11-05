@@ -9,6 +9,8 @@ FIELD = 'necessary_conditions'
 V1 = 'daily_necessary_plan_v1'
 V2 = 'daily_necessary_plan_v2'
 REVISION_PLAN = 'daily_necessary_revision_v1'
+DISPUTE_PLAN = 'daily_necessary_dispute_v1'
+UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
 INQUIRY_PLAN = 'daily_necessary_inquiry_v1'
 MAX_REVISIONS = 8
 REVISION_PREFIX = re.compile(r'(?:請)?沿用上一輪(?:必要)?條件[：:，,]\s*')
@@ -16,6 +18,10 @@ REVISION = re.compile(REVISION_PREFIX.pattern + r'([^。！？?\r\n，,；;：:]
                       r'(?:[。；;，,]\s*(?:請)?(?:重算|重新核對|只(?:回|回覆|回答|輸出)結論))?[。！]?')
 INQUIRY = re.compile(rf'(?:{REVISION_PREFIX.pattern})?'
                      r'(?:還要(?:核對|查)什麼|哪些條件(?:還要|仍要)核對)[？?。]?')
+REPORT = (r'([\u4e00-\u9fffA-Za-z0-9][\u4e00-\u9fffA-Za-z0-9_.-]{0,23})'
+          r'回報「([^「」。！？?\r\n，,；;：:]{2,55})」')
+DISPUTE = re.compile(rf'{REVISION_PREFIX.pattern}{REPORT}(?:[，,]\s*{REPORT})?'
+                     r'[。；;]\s*(?:請)?保留分歧[。！]?')
 NAME = r'[\u4e00-\u9fff]{1,24}?'
 RULE = re.compile(rf'(?P<verb>使用|啟用|啟動|開啟|進入)(?P<target>{NAME})'
                   r'(?P<rule>要有|必須有|必須要有|需要同時有|必須同時有|須同時具備|的必要且充分條件是同時具備)'
@@ -169,6 +175,33 @@ def valid_source(source):
             and isinstance(source['sha256'], str) and bool(re.fullmatch(r'[0-9a-f]{64}', source['sha256'])))
 
 
+def match_observation(conditions, clause):
+    matches = [(condition, status) for condition in conditions
+               if (status := observation(clause, condition))]
+    if len(matches) != 1:
+        raise ValueError('請用原本的完整條件名稱，明確寫出一項已知或待查狀態。')
+    return matches[0]
+
+
+def preserve_dispute(conditions, match):
+    source, clause, other_source, other_clause = match.groups()
+    condition, status = match_observation(conditions, clause)
+    if condition.get('conflict'):
+        raise ValueError('這項條件已有待核對的分歧。請在重新核對後更正它。')
+    if other_source is None:
+        other_status = condition['state']
+        other_clause = condition['observation']
+    else:
+        other_condition, other_status = match_observation(conditions, other_clause)
+        if condition is not other_condition or source.casefold() == other_source.casefold():
+            raise ValueError('請提供不同來源針對同一項條件的相反回報。')
+    if {status, other_status} != {'true', 'false'}:
+        raise ValueError('保留分歧需要同一條件的一正一反。可提供兩個來源，或一筆與既有確認相反的回報。')
+    reports = [dict(source=source, observation=clause, state=status),
+               dict(source=other_source, observation=other_clause, state=other_status)]
+    condition.update(state='unknown', conflict=reports)
+
+
 def effective(plan):
     if not isinstance(plan, dict):
         raise ValueError('必要條件規約與原問不符。')
@@ -178,10 +211,10 @@ def effective(plan):
                 or evidence_logic.digest(plan['request']) != plan['request_sha256']
                 or not valid_source(plan['source'])
                 or not isinstance(plan['basis'], dict)
-                or plan['basis'].get('schema') not in (V1, V2, REVISION_PLAN)):
+                or plan['basis'].get('schema') not in (V1, V2, *UPDATE_PLANS)):
             raise ValueError('待核對項目的原問或來源不符。')
         return effective(plan['basis'])
-    if plan.get('schema') != REVISION_PLAN:
+    if plan.get('schema') not in UPDATE_PLANS:
         if parse_version(plan.get('request'), plan.get('schema')) != plan or type(plan['sufficient']) is not bool:
             raise ValueError('必要條件規約與原問不符。')
         return plan
@@ -198,24 +231,30 @@ def effective(plan):
     state = parse_version(original['request'], original['schema'])
     if state is None:
         raise ValueError('原始條件規則無法核對。')
+    has_dispute = False
     for request in revisions:
+        if plan['schema'] == DISPUTE_PLAN and (dispute := DISPUTE.fullmatch(request)):
+            preserve_dispute(state['conditions'], dispute)
+            has_dispute = True
+            continue
         match = REVISION.fullmatch(request)
         if not match:
             raise ValueError('每次只能更正一項已列出的必要條件。')
         clause = match[1].strip()
-        matches = [(condition, status) for condition in state['conditions']
-                   if (status := observation(clause, condition))]
-        if len(matches) != 1:
-            raise ValueError('請用原本的完整條件名稱，明確寫出一項已知或待查狀態。')
-        condition, status = matches[0]
+        condition, status = match_observation(state['conditions'], clause)
+        if 'conflict' in condition and status == 'unknown':
+            raise ValueError('這項條件仍有分歧，請在確認結果後更正。')
         condition.update(observation=clause, state=status)
+        condition.pop('conflict', None)
+    if plan['schema'] == DISPUTE_PLAN and not has_dispute:
+        raise ValueError('必要條件紀錄缺少可核對的分歧。')
     return state
 
 
 def revise(question, parent, source):
     if parent['schema'] == INQUIRY_PLAN:
         parent = parent['basis']
-    if parent['schema'] == REVISION_PLAN:
+    if parent['schema'] in UPDATE_PLANS:
         original = parent['original']
         earlier = parent['revisions']
     else:
@@ -223,7 +262,8 @@ def revise(question, parent, source):
         earlier = []
     if len(earlier) >= MAX_REVISIONS:
         raise ValueError('已達沿用條件的八次更正上限，請重新列出完整條件。')
-    plan = dict(schema=REVISION_PLAN, request=question, request_sha256=evidence_logic.digest(question),
+    schema = DISPUTE_PLAN if parent['schema'] == DISPUTE_PLAN or DISPUTE.fullmatch(question) else REVISION_PLAN
+    plan = dict(schema=schema, request=question, request_sha256=evidence_logic.digest(question),
                 original=original, revisions=[*earlier, question], source=source)
     effective(plan)
     return plan
@@ -274,6 +314,15 @@ def inquiry_text(state, result):
     return '\n'.join(lines)
 
 
+def dispute_text(conflicts):
+    lines = ['下列回報互相矛盾，對應條件保留為未定。']
+    for item in conflicts:
+        descriptions = [f'{report["source"] or "既有觀察"}「{report["observation"]}」'
+                        for report in item['reports']]
+        lines.append(f'- {item["name"]} · ' + '／'.join(descriptions))
+    return '\n'.join(lines)
+
+
 def evaluate(plan, cancel=None):
     state = effective(plan)
     action = '「' + state['action'] + '」'
@@ -306,6 +355,7 @@ def evaluate(plan, cancel=None):
     status = checked['analysis']['status']
     schema = {V1: 'daily_necessary_receipt_v1', V2: 'daily_necessary_receipt_v2',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
+              DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1'}[plan['schema']]
     receipt = dict(schema=schema, plan=plan, status='complete', model_called=False,
                    analysis=checked['analysis'], canonical=canonical)
@@ -314,6 +364,13 @@ def evaluate(plan, cancel=None):
         result = inquiry_result(state, status)
         answer = inquiry_text(state, result)
         receipt['inquiry'] = result
+    conflicts = [dict(name=c['name'], reports=c['conflict']) for c in state['conditions'] if 'conflict' in c]
+    if conflicts:
+        receipt['conflicts'] = conflicts
+        if plan['schema'] == INQUIRY_PLAN:
+            answer += '\n' + dispute_text(conflicts)
+        elif DISPUTE.fullmatch(plan['request']):
+            answer = f'目前結論「{answer}」。\n' + dispute_text(conflicts)
     receipt['output'] = answer
     return answer, receipt
 
@@ -401,14 +458,19 @@ def describe(receipt):
     resolved = effective(plan)
     states = {'true': '已確認滿足', 'false': '已確認不滿足', 'unknown': '尚未核實'}
     lines = [plan['request']]
-    if plan['schema'] in (REVISION_PLAN, INQUIRY_PLAN):
+    if plan['schema'] in (*UPDATE_PLANS, INQUIRY_PLAN):
         basis = plan['basis'] if plan['schema'] == INQUIRY_PLAN else plan
+        updates = '條件更新' if basis['schema'] == DISPUTE_PLAN else '明確更正'
         lines += ['', f'沿用上一則回答 #{plan["source"]["answer_id"]}',
-                  f'已核對 {len(basis.get("revisions", []))} 次明確更正', '原始問題：' + resolved['request']]
+                  f'已核對 {len(basis.get("revisions", []))} 次{updates}', '原始問題：' + resolved['request']]
     observation_title = '沿用的觀察' if plan['schema'] == INQUIRY_PLAN else (
-        '沿用及更新後的觀察' if plan['schema'] == REVISION_PLAN else '採用的本輪觀察')
+        '沿用及更新後的觀察' if plan['schema'] in UPDATE_PLANS else '採用的本輪觀察')
     lines += ['', '規則：' + resolved['rule'], observation_title]
-    lines += [f'{c["observation"]} → {states[c["state"]]}' for c in resolved['conditions']]
+    for condition in resolved['conditions']:
+        if 'conflict' in condition:
+            lines.append(f'{condition["name"]} → 回報有分歧（先前觀察：{condition["observation"]}）')
+        else:
+            lines.append(f'{condition["observation"]} → {states[condition["state"]]}')
     if resolved['schema'] == V2:
         observed = {c['name']: c['state'] for c in resolved['conditions']}
         for group in resolved['groups']:
@@ -416,5 +478,7 @@ def describe(receipt):
                 values = {observed[name] for name in group}
                 state = 'true' if 'true' in values else 'false' if values == {'false'} else 'unknown'
                 lines.append('備援（' + '或'.join(group) + '） → ' + states[state])
+    if receipt.get('conflicts') and plan['schema'] == DISPUTE_PLAN and not DISPUTE.fullmatch(plan['request']):
+        lines += ['', dispute_text(receipt['conflicts'])]
     lines.extend(['', f'相容情況數：{receipt["analysis"]["compatible_worlds"]}', '交付：' + receipt['output']])
     return '\n'.join(lines)
