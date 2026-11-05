@@ -25,7 +25,7 @@ def main():
             parser.error('報告需使用data/下尚未存在的新路徑。')
     suite=ROOT/'evals/chat_transcription.json'
     cases=json.loads(suite.read_text(encoding='utf-8'))
-    sources=['assistant/literal_request_v1.py','assistant/chat_transcription.py','assistant/engine.py',
+    sources=['assistant/literal_request_v1.py','assistant/literal_request_v2.py','assistant/chat_transcription.py','assistant/engine.py',
              'assistant/answer_runs.py','assistant/store.py','assistant/backup.py',
              'scripts/daily_expenses.py','scripts/evaluate_chat_transcription.py','evals/chat_transcription.json']
     fingerprints={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in sources}

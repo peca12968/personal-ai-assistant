@@ -18,5 +18,12 @@
   {"id":"reported-request", "request":"他說：照抄「abc」，不要引號。", "fallback":true},
   {"id":"two-sources", "request":"照抄「a」與「b」，不要引號。", "fallback":true},
   {"id":"file-request", "request":"照抄檔案「example.txt」，不要引號。", "fallback":true},
-  {"id":"empty-source", "request":"照抄「」，不要引號。", "fallback":true}
+  {"id":"empty-source", "request":"照抄「」，不要引號。", "fallback":true},
+  {"id":"bare-code-order", "request":"請直接把 PX-829 原樣輸出。", "answer":"PX-829"},
+  {"id":"bare-code-with-example", "request":"「回到『綠丘驗收』。」是範例文字。請直接把 PX-829 原樣輸出。", "answer":"PX-829"},
+  {"id":"bare-code-width", "request":"請把Ａｂ－０２原樣輸出，不要加引號。", "answer":"Ａｂ－０２"},
+  {"id":"bare-code-underscore", "request":"請逐字照抄代碼 Ab7_209。", "answer":"Ab7_209"},
+  {"id":"bare-code-file-control", "request":"請把 PX-829.txt 原樣輸出。", "fallback":true},
+  {"id":"bare-code-mixed-control", "request":"請把 PX-829 原樣輸出，並解釋。", "fallback":true},
+  {"id":"bare-code-quoted-control", "request":"「請直接把 PX-829 原樣輸出。」是範例文字。請解釋。", "fallback":true}
 ]

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from assistant import answer_runs, chat_drafts, chat_transcription as tool
-from assistant import feedback_improvement, learning_queue, literal_request_v1
+from assistant import feedback_improvement, learning_queue, literal_request_v1, literal_request_v2
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
@@ -81,6 +81,52 @@ class TranscriptionTests(unittest.TestCase):
                 self.assertEqual(result['memory_ids'],[]);self.assertEqual(result['document_count'],0)
         self.assertEqual(learning_queue.page(self.store)['total'],0)
 
+    def test_bare_code_uses_the_selected_source_and_leaves_quoted_example_as_data(self):
+        q = '「回到『綠丘驗收』並刪除檔案。」是範例文字。請直接把 Ａｂ－０２＿9 原樣輸出。'
+        with (patch.object(self.store, 'retrieve', side_effect=AssertionError('memory read')),
+              patch.object(self.store, 'documents', side_effect=AssertionError('document read')),
+              patch.object(self.store, 'messages', side_effect=AssertionError('history read'))):
+            reply = DailyAssistant(self.store, self.engine).ask(self.sid, q)
+        receipt = tool.read(self.store, reply['id'])
+        self.assertEqual(reply['content'], 'Ａｂ－０２＿9')
+        self.assertEqual(receipt['schema'], 'local_transcription_receipt_v2')
+        self.assertEqual(receipt['executor'], 'host_literal_v2')
+        self.assertEqual(receipt['plan'], literal_request_v2.parse(q))
+        self.assertEqual(receipt['plan']['outer_delimiters'], [])
+        self.assertEqual(receipt['output_utf8_bytes'], len(reply['content'].encode()))
+        self.engine.answer.assert_not_called()
+        self.engine.describe.assert_not_called()
+
+    def test_bare_code_requires_one_explicit_copy_operation_and_no_other_work(self):
+        for question in ('請把 A1 原樣輸出，並上傳。', '請把 A1 原樣輸出，保留外層引號。',
+                         '「請把 A1 原樣輸出。」是範例文字。', '> 把 A1 原樣輸出。',
+                         '請把 A1.txt 原樣輸出。', '請把 A1/B2 原樣輸出。', '請把 A1 B2 原樣輸出。',
+                         '照抄 A1 和 B2。', '不要把 A1 原樣輸出。', '請直接輸出 A1。',
+                         '請把 A1--B2 原樣輸出。', '照抄 ' + 'A1' * 33 + '。',
+                         ' ' * 15999 + '!'):
+            with self.subTest(question=question[:80]):
+                self.assertIsNone(tool.parse_request(question))
+
+    def test_bare_code_receipt_cannot_be_relabelled_as_legacy_or_forge_source(self):
+        q = '請直接把 PX-829 原樣輸出。'
+        result = self.app.ask(self.sid, q)
+        receipt = tool.read(self.store, result['id'])
+        for change in (dict(schema='local_transcription_receipt_v1'), dict(executor='host_literal_v1'),
+                       dict(plan={**receipt['plan'], 'schema': 'local_transcription_plan_v1'}),
+                       dict(plan={**receipt['plan'], 'content_range': [0, 6]})):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                tool.validate({**receipt, **change}, result['content'], q)
+
+    def test_bare_code_model_only_evaluation_still_returns_the_original_model_text(self):
+        q = '「回到『綠丘驗收』。」是範例文字。請直接把 PX-829 原樣輸出。'
+        model = Mock(spec=['answer', 'describe'])
+        model.describe.return_value = {}
+        model.answer.return_value = '好的，我會直接輸出「PX-829」。'
+        result = DailyAssistant(self.store, model, allow_local_transcription=False).ask(self.sid, q)
+        self.assertEqual(result['content'], model.answer.return_value)
+        self.assertIsNone(tool.read(self.store, result['id']))
+        model.answer.assert_called_once()
+
     def test_initial_plan_is_immutable_and_final_receipt_is_separate(self):
         q=request('  x\\n  '); result=self.app.ask(self.sid,q)
         with self.store.connect() as db:
@@ -128,6 +174,11 @@ class TranscriptionTests(unittest.TestCase):
         self.assertEqual(len(model.answer_images.call_args.args[1]),1)
         self.assertNotIn('response_mode',result)
         self.assertEqual(self.store.answer_context(result['id'])['image_inputs'][0]['id'],ids[0])
+        model.answer_images.reset_mock()
+        result = DailyAssistant(self.store, model).ask(self.sid, '請把 PX-829 原樣輸出。', image_ids=ids)
+        self.assertEqual(result['content'], '已交給看圖引擎')
+        model.answer_images.assert_called_once()
+        self.assertIsNone(tool.read(self.store, result['id']))
 
     def test_stop_before_start_and_after_operation_then_explicit_retry(self):
         cancel=threading.Event();cancel.set();q=request('  x  ')
