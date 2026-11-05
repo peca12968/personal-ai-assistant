@@ -72,6 +72,15 @@ class DailyIdentifierTests(unittest.TestCase):
                        raw + '後來已確認是 T82。', '樓下主機的序號是 T82。'):
             self.assertIsNone(missing_literal(q, unsafe))
 
+    def test_missing_identifier_keeps_conflicting_prefixes(self):
+        q = '我想查樓下主機的序號。若無法得知，只回覆「資訊不足」。'
+        absence = '樓下主機的序號無法得知。'
+        conclusion = '因此，我只能回答「資訊不足」。'
+        self.assertEqual(missing_literal(q, absence + conclusion), '資訊不足')
+        for prefix in ('樓下主機的序號已查到。', '樓下主機的序號是一二五。', '只有樓上主機的資料未提供。'):
+            with self.subTest(prefix=prefix):
+                self.assertIsNone(missing_literal(q, prefix + absence + conclusion))
+
     def test_untrusted_examples_revisions_and_ambiguous_pairs_are_skipped(self):
         for q in ('轉述這句：我要的是白盒的編號。', '「請問白盒的編號？」',
                   '我要的是兩者的代碼。', '我要的是白盒或灰盒的編號。',

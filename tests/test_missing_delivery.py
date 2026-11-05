@@ -41,6 +41,22 @@ class MissingDeliveryTests(unittest.TestCase):
                     '資料不足。引文說樣品盒重量未提供，無法得知。'):
             self.assertEqual(extract(q, raw), raw)
 
+    def test_keep_positive_answers_and_additional_questions_before_missing_fallback(self):
+        q = '樣品箱重量是多少？若無法得知，只輸出 資料不足。'
+        absence = '無法得知樣品箱重量。'
+        followup = '請補充秤重資料。'
+        for raw in ('樣品箱重量為 6 公斤。' + absence,
+                    '樣品箱重量為 6 公斤。' + absence + followup,
+                    absence + '請補充秤重資料，但已量得6公斤，請確認。'):
+            with self.subTest(raw=raw):
+                self.assertEqual(extract(q, raw), raw)
+        self.assertEqual(extract(q, absence + followup), '資料不足')
+        multi = q.replace('若無法', '何時秤重？若無法')
+        self.assertEqual(extract(multi, absence), absence)
+        self.assertEqual(extract(multi, '資料不足。'), '資料不足。')
+        quoted = '依這句回答「有重量嗎？」。' + q
+        self.assertEqual(extract(quoted, absence), '資料不足')
+
     def test_multiple_questions_and_quoted_requests_remain_unshortened(self):
         raw = '無法得知大樣品盒重量。'
         for q in ('大樣品盒重量是多少？小樣品盒重量是多少？若無法得知，只輸出 資料不足。',

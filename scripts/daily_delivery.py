@@ -73,9 +73,14 @@ def _scoped_missing_label(question, draft):
 
 
 NUMERIC_CONCLUSION = re.compile(
-    rf'(?:(?:(?:因此|所以)[，,]?\s*)?(?:{LABEL}(?:新台幣金額|金額|數量)?){IS})?'
+    rf'(?:(?:(?:因此|所以)[，,]?\s*)?(?P<label>{LABEL}(?:新台幣金額|金額|數量)?){IS})?'
     rf'(?:(?P<left>(?:{NUMBER}\s*[-+*/×÷]\s*)+{NUMBER})\s*=\s*)?'
     rf'(?P<result>{NUMBER})\s*(?:元|片|個|件|顆)?')
+TIME_ASSERTION = (r'(?:最早可行|最早|可行)(?:的)?(?:連續\s*[0-9]+\s*分鐘)?'
+                  r'(?:開始及結束時間|時間區間|時間|時段)')
+TIME_CONCLUSION = re.compile(rf'(?:(?:因此|所以)[，,]\s*)?(?:{TIME_ASSERTION}{IS})?{RANGE}')
+PRIOR_TIME_CONCLUSION = re.compile(rf'(?:(?:因此|所以)[，,]\s*)?(?:{TIME_ASSERTION}|答案|結果){IS}{RANGE}')
+MISSING_FOLLOWUP = re.compile(r'請(?:提供|補充)[^，,。；;！？：:\n]{1,50}(?:資訊|資料|文件|查詢|確認)')
 
 
 def equation_agrees(match):
@@ -163,7 +168,7 @@ def numeric_delivery(question, draft, sentences):
         if re.fullmatch(rf'{NUMBER}\s*(?:元|片|個|件|顆)?', remainder):
             assertion = '答案是' + remainder
     match = NUMERIC_CONCLUSION.fullmatch(assertion)
-    if not match or (len(sentences) > 1 and not re.search(LABEL + '|=', assertion)):
+    if not match or (len(sentences) > 1 and not (match['label'] or match['left'])):
         return draft
     result = match['result'].replace(',', '')
     if match['left']:
@@ -172,14 +177,15 @@ def numeric_delivery(question, draft, sentences):
             return draft + '\n\n數字核對：原答的等式「' + match['left'] + ' = ' + match['result'] + '」不成立，最後數字仍待確認。'
         if agrees is None:
             return draft
-    # A bare conclusion must not hide an unsupported or conflicting earlier equation.
-    for index, sentence in enumerate(sentences[:-1]):
-        if '=' not in sentence and '＝' not in sentence:
-            continue
+    # Keep an unsupported earlier equation or a different explicit conclusion
+    # visible, even if a later explanation separates it from the last answer.
+    for sentence in sentences[:-1]:
         prior = NUMERIC_CONCLUSION.fullmatch(sentence)
-        if not prior or (prior['left'] and equation_agrees(prior) is not True):
-            return draft
-        if index == len(sentences) - 2 and not match['left'] and prior['result'].replace(',', '') != result:
+        if '=' in sentence or '＝' in sentence:
+            if not prior or (prior['left'] and equation_agrees(prior) is not True):
+                return draft
+        if (prior and (prior['label'] or prior['left'])
+                and prior['result'].replace(',', '') != result):
             return draft
     if '整數' in question[question.rfind('只'):] and '.' in result:
         return draft
@@ -218,6 +224,8 @@ def extract(question, draft):
         return draft
     last = sentences[-1]
     if kind == 'missing':
+        if _instruction_text(question, mask_unclosed=True).count('?') > 1:
+            return draft
         if re.fullmatch(re.escape(literal) + r'[。！]?', draft.strip()):
             return literal
         if len(sentences) == 2 and sentences[0] == literal:
@@ -228,8 +236,10 @@ def extract(question, draft):
                 return literal
         # Bind the missing field to the subject actually asked about. A generic
         # caveat, an unrelated unknown, or a later positive conclusion is insufficient.
-        if re.fullmatch(r'請(?:提供|補充)[^。！？]{1,50}(?:資訊|資料|文件|查詢|確認)', last) and len(sentences) > 1:
-            last = sentences[-2]
+        if len(sentences) == 2 and MISSING_FOLLOWUP.fullmatch(last):
+            last = sentences[0]
+        elif len(sentences) != 1:
+            return draft
         m = re.fullmatch(r'(?:根據[^，。]{1,28}[，,]\s*)?(?:目前)?(?:無法得知|無法確定|無從得知)([^，。；！？]{2,70})', last)
         if m and missing_field_matches(question, m[1]):
             return literal
@@ -241,8 +251,12 @@ def extract(question, draft):
     if kind == 'number':
         return numeric_delivery(question, draft, sentences)
     if kind == 'time':
-        m = re.fullmatch(rf'(?:(?:因此|所以)[，,]\s*)?(?:(?:最早可行|最早|可行)(?:的)?(?:連續\s*[0-9]+\s*分鐘)?(?:開始及結束時間|時間區間|時間|時段){IS})?{RANGE}', last)
+        m = TIME_CONCLUSION.fullmatch(last)
         if m and (len(sentences) == 1 or '可行' in last or '最早' in last):
+            for sentence in sentences[:-1]:
+                prior = PRIOR_TIME_CONCLUSION.fullmatch(sentence)
+                if prior and prior.groups() != m.groups():
+                    return draft
             return m[1] + '-' + m[2]
     if kind == 'choice':
         m = re.fullmatch(r'(?:答案[為是：:]\s*)?([A-Z])(?:[、.：:]?\s+([^\s，。！？]{1,24}))?', last)

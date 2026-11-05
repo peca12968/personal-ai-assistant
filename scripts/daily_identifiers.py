@@ -43,14 +43,9 @@ def missing_literal(question, draft):
         return None
     literal = missing[1] or missing[2]
     subject = re.escape(focus['target'] + '的' + focus['field'])
-    if re.fullmatch(subject + r'(?:目前)?(?:不詳|未提供|無法確認|無法得知)[。！]?', draft.strip()):
-        return literal
-    if re.search(r'[A-Za-z0-9]', draft):
-        return None
-    # Format the model's explicit conclusion; a conditional/quoted instruction
-    # alone does not establish that the value is actually unavailable.
-    if (re.search(r'沒有(?:相關)?資料|無法確認|無法得知|未提供', draft)
-            and re.search(rf'(?:^|[。\n])(?:因此[，,])?我只能回答「{literal}」[。！]?(?:$|如果您能提供[^。！？]+。?$)', draft)):
+    absence = rf'{subject}(?:目前)?(?:不詳|未提供|無法確認|無法得知)'
+    conclusion = rf'(?:[。\n]\s*(?:因此[，,])?我只能回答「{literal}」)?'
+    if re.fullmatch(absence + conclusion + r'[。！]?', draft.strip()):
         return literal
     return None
 

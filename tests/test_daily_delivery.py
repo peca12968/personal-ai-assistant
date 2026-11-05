@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from assistant.engine import Assistant
+from assistant.response_delivery import read
 from assistant.store import Store
 from scripts import daily_chat
 from scripts.daily_delivery import DailyLocalEngine, explanation_body, extract
@@ -71,6 +72,34 @@ class DeliveryTests(unittest.TestCase):
         for text in ('1 + 2 × 3 = 7', '2 × 2 = 5。答案為 19。', '2 + 3 = 5。答案為 6。',
                      '3％ ＝ 0.03。答案是 4。', '1' * 270 + ' + 1 = 3'):
             self.assertEqual(extract(question, text), text)
+
+    def test_keep_earlier_conflicting_numeric_conclusions(self):
+        question = '總額是多少？只回答整數。'
+        for raw in (
+            '總額為 218 元。答案是 281 元。',
+            '合計為 180 + 38 = 218 元。已列出兩筆金額。答案是 281 元。',
+            '總額為 218 元。合計為 180 + 101 = 281 元。',
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(extract(question, raw), raw)
+        self.assertEqual(extract(question, '總額為 1,281 元。合計為 1,200 + 81 = 1281 元。'), '1281')
+
+    def test_conflicting_meeting_conclusions_survive_daily_chat_without_a_receipt(self):
+        question = '兩人最早何時能碰面？只輸出時段，格式 HH:MM-HH:MM。'
+        final = '可行時段為 14:30-15:00。'
+        earlier = ('最早可行時段是 10:30–11:00。', '結果為 10:30–11:00。')
+        for prior in earlier:
+            with self.subTest(prior=prior):
+                self.assertEqual(extract(question, prior + final), prior + final)
+        self.assertEqual(extract(question, '最早可行時段為 14:30–15:00。' + final), '14:30-15:00')
+        self.assertEqual(extract(question, '上午已取消。對方原可用 10:30–11:00。' + final), '14:30-15:00')
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            raw = Raw(earlier[0] + final)
+            answer = Assistant(store, DailyLocalEngine(raw)).ask(store.new_session(), question)
+            self.assertEqual(answer['content'], raw.draft)
+            self.assertIsNone(read(store, answer['id']))
+            self.assertEqual(raw.calls, 1)
 
     def test_mismatched_equation_keeps_workings_in_chat_only(self):
         with tempfile.TemporaryDirectory() as tmp:
