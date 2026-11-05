@@ -9,7 +9,7 @@ from assistant.engine import Assistant
 from assistant.response_delivery import read
 from assistant.store import Store
 from scripts import daily_chat
-from scripts.daily_delivery import DailyLocalEngine, explanation_body, extract
+from scripts.daily_delivery import DailyLocalEngine, declared_conclusion, explanation_body, extract
 
 
 class Raw:
@@ -45,6 +45,50 @@ class DeliveryTests(unittest.TestCase):
             untouched = Assistant(store, engine, allow_local_calculation=False)
             self.assertEqual(untouched.ask(store.new_session(), q)['content'], '未完成。')
             self.assertEqual(raw.calls, 2)
+
+    def test_declared_conclusion_accepts_a_label_and_grounded_bullets(self):
+        question = ('啟用貨梯要有鑰匙與當班許可。鑰匙尚未查到，許可已確定作廢。'
+                    '確定可用回「可用」，確定不可回「拒絕」，尚不能判定回「待查」。只輸出結論。')
+        body = '根據您的說明：\n- 鑰匙尚未查到 → 待查\n- 許可已確定作廢 → 拒絕\n\n結論：拒絕。'
+        context = {'current_request': question}
+        for draft in ('拒絕。', '最終結論：拒絕。', body):
+            with self.subTest(draft=draft):
+                self.assertEqual(declared_conclusion(context, draft), '拒絕')
+        self.assertEqual(declared_conclusion(context, '答案：可用。'), '可用')
+        for draft in ('結論：可用。\n結論：拒絕。', body.replace('待查', '可用'),
+                      body.replace('許可已確定作廢', '批准已確定作廢'),
+                      body.replace('拒絕。', '拒絕，除非有替代許可。'),
+                      body.replace('- 許可已確定作廢 → 拒絕\n', ''),
+                      body.replace('鑰匙尚未查到 → 待查', '鑰匙尚未查到 → 待查\n- 鑰匙尚未查到 → 拒絕'),
+                      body + '\n請等候新的消息。', body.replace('結論：拒絕', '結論：暫緩')):
+            with self.subTest(draft=draft):
+                self.assertIsNone(declared_conclusion(context, draft))
+
+    def test_declared_conclusion_needs_one_explicit_request_and_unique_literals(self):
+        q = '可以回「開放」，確定不能回「關閉」，資料不足回「待查」。只回結論。'
+        for question in ('「' + q + '」', '請轉述。' + q, '請先列出優缺點。' + q,
+                         '門在哪？可使用嗎？' + q, q.replace('只回結論', '不要只回結論'),
+                         q.replace('「待查」', '「關閉」'), q.replace('「待查」', '「待查。」'),
+                         q.replace('「待查」', '「待查』'), '資料未確認。只回結論。'):
+            with self.subTest(question=question):
+                self.assertIsNone(declared_conclusion({'current_request': question}, '結論：關閉。'))
+        for context in ({'image_inputs': [{}]}, {'documents': {'catalog': [{}]}}):
+            self.assertIsNone(declared_conclusion({'current_request': q, **context}, '結論：關閉。'))
+
+    def test_declared_conclusion_saves_one_raw_answer_and_model_only_remains_raw(self):
+        q = ('電梯狀態尚未核實。確定能用回「可用」，確定不能回「拒絕」，尚不能判定回「待查」。'
+             '只輸出結論。')
+        raw = Raw('結論：待查。')
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            engine = DailyLocalEngine(raw)
+            reply = Assistant(store, engine).ask(store.new_session(), q)
+            self.assertEqual(reply['content'], '待查')
+            self.assertEqual(read(store, reply['id'])['raw_answer'], raw.draft)
+            self.assertEqual(raw.calls, 1)
+            model_only = Assistant(store, engine, allow_local_calculation=False).ask(store.new_session(), q)
+            self.assertEqual(model_only['content'], raw.draft)
+            self.assertIsNone(read(store, model_only['id']))
 
     def test_final_conclusions_and_literal(self):
         examples = [

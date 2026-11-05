@@ -44,6 +44,86 @@ _SCOPED_FALLBACKS = (
 )
 
 
+_DECLARED_OUTPUT = re.compile(r'(?:^|(?<=[。！？?\n]))\s*(?:請)?只(?:回覆|回|回答|輸出|給)'
+                              r'(?:最終(?:的)?|最後(?:的)?|指定(?:的)?|一個|單一)?(?:結論|標籤)[。！]?\s*$')
+_LABEL_WORD = r'[A-Za-z0-9\u4e00-\u9fff]{1,16}'
+_LABEL_RULE = re.compile(
+    rf'([^「」『』，,；;：:。！？?\r\n]{{1,45}}?)(?:請)?(?:回覆|回答|回|輸出|給)\s*'
+    rf'(?:「({_LABEL_WORD})」|『({_LABEL_WORD})』)')
+_DECLARED_ANSWER = re.compile(rf'(?:(?P<conclusion>(?:最後|最終)?(?:結論|答案))[：:]\s*)?'
+                              rf'(?P<label>{_LABEL_WORD})[。.!！]?')
+_PENDING_RULE = re.compile(r'(?:尚不能判定|尚無法判定|證據不足|資料不足|未核實|不清楚)')
+_PENDING_EVIDENCE = r'(?:尚未|還未|還沒|未)(?:測試|查到|檢查|核實|確認|量測|驗證)$'
+_EVIDENCE_END = re.compile(_PENDING_EVIDENCE +
+                           r'|已(?:經|確定|確認)?(?:撤銷|作廢|失效|故障|斷開|遺失|關閉|核准|收到|完成|通過)$')
+_EVIDENCE_BULLET = re.compile(rf'-\s+([^→]{{1,100}}?)\s*→\s*({_LABEL_WORD})[。.!！]?')
+_EVIDENCE_INTRO = re.compile(r'根據(?:您的說明|你提供的資料|您提供的資料|提供的資料)[：:]')
+
+
+def declared_conclusion(context, draft):
+    """Shorten a declared model verdict, preserving unsupported or conflicting prose."""
+    question = context['current_request']
+    if (len(question) > 1200 or len(draft) > 2500 or context.get('image_inputs')
+            or context.get('documents', {}).get('catalog')):
+        return None
+    directive = _DECLARED_OUTPUT.search(question)
+    plain = _instruction_text(question, mask_unclosed=True)
+    if (not directive or not _DECLARED_OUTPUT.search(plain) or plain.count('?') > 1
+            or re.search(r'解釋|翻譯|改寫|重述|複述|轉述|照抄|舉例|範例|分析原因|'
+                         r'(?:說明|列出|附上|交代)(?:理由|原因|過程|步驟|依據)|'
+                         r'(?:先|並|再|另外|還要)(?:說明|列出|補充|交代|附上)', plain)):
+        return None
+    stem = question[:directive.start()].rstrip('。！？?\r\n ')
+    *source, rules = re.split(r'[。！？?\r\n]+', stem)
+    mapping = {}
+    for part in re.split(r'[，,；;]', rules):
+        match = _LABEL_RULE.fullmatch(part.strip())
+        if not match:
+            return None
+        condition, label = match[1].strip(), match[2] or match[3]
+        if not condition or condition in mapping.values() or label in mapping:
+            return None
+        mapping[label] = condition
+    if not 2 <= len(mapping) <= 5:
+        return None
+
+    lines = [line.strip() for line in draft.splitlines() if line.strip()]
+    final = _DECLARED_ANSWER.fullmatch(lines[-1]) if lines else None
+    if not final or final['label'] not in mapping:
+        return None
+    label = final['label']
+    if len(lines) == 1:
+        return label
+    if not final['conclusion']:
+        return None
+
+    body = lines[:-1]
+    if body and body[0] in ('個人 AI 助理', '個人AI助理'):
+        body = body[1:]
+    if body and _EVIDENCE_INTRO.fullmatch(body[0]):
+        body = body[1:]
+    if not 1 <= len(body) <= 8:
+        return None
+
+    facts = {clause.strip() for sentence in source for clause in re.split(r'[，,；;、]', sentence)}
+    seen, support = set(), False
+    for line in body:
+        bullet = _EVIDENCE_BULLET.fullmatch(line)
+        if not bullet:
+            return None
+        fact, observed = bullet[1], bullet[2]
+        if (fact not in facts or fact in seen or observed not in mapping or not _EVIDENCE_END.search(fact)
+                or any(word in fact for word in mapping)
+                or re.search(r'結論|判定|整體|總體|因此|所以|但|然而|不過|除非|假設|若|例如|可能|據說|聽說|如果|或', fact)):
+            return None
+        seen.add(fact)
+        if observed == label:
+            support = True
+        elif not (_PENDING_RULE.fullmatch(mapping[observed]) and re.search(_PENDING_EVIDENCE, fact)):
+            return None
+    return label if support else None
+
+
 def _scoped_missing_label(question, draft):
     """Remove one extra full stop from an already selected literal."""
     if not draft.endswith(('.', '。')) or len(draft) > 65:
@@ -431,7 +511,8 @@ class DailyLocalEngine:
         if ctx.get('context_scope') == CURRENT_MESSAGE_ONLY and not ctx.get('image_inputs'):
             if (label := _scoped_missing_label(question, draft)) is not None:
                 return label
-        concise = missing_literal(question, draft) or supplied_code(ctx, draft) or daily_dialogue.short_label(ctx, draft)
+        concise = (missing_literal(question, draft) or supplied_code(ctx, draft)
+                   or declared_conclusion(ctx, draft) or daily_dialogue.short_label(ctx, draft))
         if concise is not None:
             return concise
         delivered = extract(question, omit_unrelated_identifier(ctx, explanation_body(ctx, draft)))
