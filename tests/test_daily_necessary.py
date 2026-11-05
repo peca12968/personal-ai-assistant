@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from assistant import answer_runs
 from assistant.backup import create_backup, restore_backup
 from assistant.engine import EngineError
 from assistant.store import Store
@@ -167,3 +168,100 @@ class DailyAlternativeTests(unittest.TestCase):
                            (json.dumps(context, ensure_ascii=False), group['id']))
             with self.assertRaisesRegex(ValueError, '規約'):
                 daily_necessary.read(restored, group['id'])
+
+
+class DailyNecessaryRevisionTests(unittest.TestCase):
+    INITIAL = ('啟用量測台的必要且充分條件是同時具備有效的操作證和（可用的北機或可用的南機）。'
+               '唯一的操作證已確定失效，北機尚未檢查，南機已確認可用。' + LABELS)
+    ENABLE = '沿用上一輪條件：操作證已確認有效。重算。'
+    SOUTH_OUT = '沿用上一輪條件，唯一的南機已確定不可用，重新核對。'
+    NORTH_READY = '沿用上一輪必要條件：北機已確認可用。請只回結論。'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.sid = self.store.new_session()
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '普通模型回答'
+        self.app = DailyAssistant(self.store, self.engine)
+        self.first = self.app.ask(self.sid, self.INITIAL)
+
+    def test_multi_turn_revisions_preserve_other_members_and_prior_receipts(self):
+        answers = [self.first]
+        for prompt, expected in [(self.ENABLE, '可用'), (self.SOUTH_OUT, '待查'), (self.NORTH_READY, '可用')]:
+            reply = self.app.ask(self.sid, prompt)
+            self.assertEqual(reply['content'], expected)
+            receipt = daily_necessary.read(self.store, reply['id'])
+            self.assertEqual(receipt['plan']['source']['answer_id'], answers[-1]['id'])
+            self.assertEqual(receipt['plan']['original']['request'], self.INITIAL)
+            answers.append(reply)
+        self.assertEqual(self.first['content'], '停用')
+        final = daily_necessary.read(self.store, answers[-1]['id'])
+        state = daily_necessary.effective(final['plan'])
+        self.assertEqual(state['groups'], [['操作證'], ['北機', '南機']])
+        self.assertEqual([c['state'] for c in state['conditions']], ['true', 'true', 'false'])
+        self.assertIn('沿用上一則回答', daily_necessary.describe(final))
+        self.engine.answer.assert_not_called()
+
+    def test_previous_context_must_be_exact_and_in_the_same_session(self):
+        for text in ('沿用上一輪條件：舊北機已確認可用。',
+                     '沿用上一輪條件：北機可能可用。',
+                     '沿用上一輪條件：北機已確認可用。並寄出通知。'):
+            with self.subTest(text=text), self.assertRaises(EngineError) as exc:
+                self.app.ask(self.sid, text)
+            self.assertEqual(exc.exception.code, 'evidence_invalid')
+        with self.assertRaises(EngineError):
+            self.app.ask(self.store.new_session(), self.ENABLE)
+        self.app.ask(self.sid, '換個話題。')
+        self.assertEqual(self.engine.answer.call_count, 1)
+        with self.assertRaises(EngineError):
+            self.app.ask(self.sid, self.ENABLE)
+        self.assertEqual(self.engine.answer.call_count, 1)
+
+    def test_retry_checks_same_predecessor_and_no_duplicate_user_turn(self):
+        evaluate = daily_necessary.evaluate
+        def cancelled(plan, cancel=None):
+            if plan['schema'] == daily_necessary.REVISION_PLAN:
+                raise EngineError('停止', 'cancelled')
+            return evaluate(plan, cancel)
+
+        with patch.object(daily_necessary, 'evaluate', side_effect=cancelled):
+            with self.assertRaises(EngineError):
+                self.app.ask(self.sid, self.ENABLE)
+        result = self.app.retry(self.sid)
+        self.assertEqual(result['content'], '可用')
+        self.assertEqual(len(self.store.messages(self.sid, 10)), 4)
+        self.assertEqual(daily_necessary.read(self.store, result['id'])['plan']['source']['answer_id'], self.first['id'])
+
+    def test_source_change_before_begin_blocks_commit_and_raw_mode_stays_raw(self):
+        begin = answer_runs.begin
+        def race(*args, **kwargs):
+            self.store.add_message(self.sid, 'user', '這是另一則訊息')
+            return begin(*args, **kwargs)
+        with patch.object(answer_runs, 'begin', side_effect=race), self.assertRaises(EngineError) as exc:
+            self.app.ask(self.sid, self.ENABLE)
+        self.assertEqual(exc.exception.code, 'evidence_invalid')
+        self.assertEqual(answer_runs.runs(self.store, self.sid)[0]['status'], 'failed')
+        self.assertEqual(len([m for m in self.store.messages(self.sid, 10) if m['role'] == 'assistant']), 1)
+        raw = DailyAssistant(self.store, self.engine, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.store.new_session(), self.ENABLE)['content'], '普通模型回答')
+
+    def test_restore_revalidates_each_predecessor(self):
+        revised = self.app.ask(self.sid, self.ENABLE)
+        newest = self.app.ask(self.sid, self.SOUTH_OUT)
+        original = daily_necessary.read(self.store, newest['id'])
+        bundle = create_backup(self.store.path, self.path / 'sample.paibackup')
+        restore_backup(bundle['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, newest['id']), original)
+        context = restored.answer_context(self.first['id'])
+        context['unrelated_change'] = True
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), self.first['id']))
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily_necessary.read(restored, newest['id'])
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily_necessary.read(restored, revised['id'])
