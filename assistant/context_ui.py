@@ -108,9 +108,9 @@ def show_context(parent, store, message_id):
     if calculated:
         from .chat_calculation import describe
         sections = [('計算紀錄', '當時請求：\n' + context['current_request'] + '\n\n' + describe(context['calculation']))]
-    from .response_delivery import describe
+    from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):
-        sections.insert(0, ('答案整理', delivery_text))
+        sections.insert(0, (VIEW_TAB, delivery_text))
     for title, content in sections:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)

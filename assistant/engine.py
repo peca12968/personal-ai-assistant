@@ -75,6 +75,8 @@ def find_codex():
 
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
+    from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, focused_help
+    instructions = FOCUSED_GUIDANCE if focused_help(context) else instructions.replace(PROMPT_MARKER, GUIDANCE)
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     instructions += '\n' + COMPANION_GUIDANCE
     instructions += '\n' + answer_feedback.GUIDANCE
@@ -257,6 +259,9 @@ class Assistant:
             from .idle_learning import capabilities
             learning_help.update(capabilities())
             context['learning_capabilities'] = learning_help
+        from .response_delivery import help_context as delivery_help_context
+        if delivery_help := delivery_help_context(question):
+            context['delivery_capabilities'] = delivery_help
         if not self.allow_local_calculation:
             context['calculation_mode'] = 'model_only_evaluation'
         return context
