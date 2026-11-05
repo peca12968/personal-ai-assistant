@@ -58,7 +58,7 @@ def main():
             if signature(args.suite) != frozen: raise ValueError('來源、提示、腳本或案例已變更。')
             store = Store(folder/f'{i}.sqlite3')
             sid, ids = prepare(store, case)
-            app = Assistant(store, CodexEngine(folder/f'engine-{i}'), allow_local_transcription=False)
+            app = Assistant(store, CodexEngine(folder/f'engine-{i}'), allow_local_transcription=False, allow_local_evidence=False)
             context = app.prepare_context(sid, case['prompt'])
             row = {'id': case['id'], 'category': case['category'], 'criteria': case['criteria'],
                    'human_grade': None, 'session_id': sid, 'state_path': str(store.path),

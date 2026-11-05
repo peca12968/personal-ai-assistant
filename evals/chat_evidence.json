@@ -1,0 +1,72 @@
+[
+  {
+    "id": "approved_event",
+    "request": "條件核對：只有場地已核准並且保險已生效，活動才會舉行。已確認活動舉行。能否確定保險已生效？",
+    "status": "supported",
+    "worlds": 1
+  },
+  {
+    "id": "partial_release",
+    "request": "條件核對：如果資料已入庫而且簽章有效，報表就會釋出。已知資料已入庫。能否確定報表釋出？",
+    "status": "undetermined",
+    "worlds": 3
+  },
+  {
+    "id": "possible_effect",
+    "request": "條件核對：若電池耗盡，備援就會啟動。主機重啟也可能讓備援啟動。已觀察到主機重啟。能否確定備援啟動？",
+    "status": "undetermined",
+    "worlds": 3
+  },
+  {
+    "id": "negative_query",
+    "request": "條件核對：若庫門開啟，日誌就會留下。已確認日誌沒有留下。能否確定庫門沒有開啟？",
+    "status": "supported",
+    "worlds": 1,
+    "literal": "!庫門開啟"
+  },
+  {
+    "id": "same_switch_conflict",
+    "request": "條件核對：開關閉合推出指示燈亮。已知開關閉合。已確認開關沒有閉合。能否確定指示燈亮？",
+    "status": "inconsistent",
+    "worlds": 0
+  },
+  {
+    "id": "competing_calibration",
+    "request": "條件核對：如果壓力下降，警示就會亮。校準模式也可能使警示亮。已知警示亮以及校準模式。能否確定壓力下降？",
+    "status": "undetermined",
+    "worlds": 2,
+    "distinguishes": ["壓力下降"]
+  },
+  {
+    "id": "signed_consequent",
+    "request": "條件核對：若遮罩啟用，則並非警示亮。已確認遮罩啟用。能否確定警示亮？",
+    "status": "refuted",
+    "worlds": 1
+  },
+  {
+    "id": "quoted_unicode_and_crlf",
+    "request": "請條件核對:\r\n只有「閘門 A 上鎖」，才會「警示 B 亮」。\r\n已觀察到「警示 B 亮」。\r\n能否確定「閘門 A 上鎖」？",
+    "status": "supported",
+    "worlds": 1
+  },
+  {
+    "id": "missing_observation",
+    "request": "條件核對：若出貨停止，警示就會亮。已知沒有觀察到警示亮。能否確定出貨停止？",
+    "error": "evidence_invalid"
+  },
+  {
+    "id": "ambiguous_alias",
+    "request": "條件核對：甲推出「車會出站」。乙推出「車出站」。已知車會出站。能否確定甲？",
+    "error": "evidence_invalid"
+  },
+  {
+    "id": "unsupported_disjunction",
+    "request": "條件核對：只要甲或乙，丙就會亮。已知甲。能否確定丙亮？",
+    "error": "evidence_invalid"
+  },
+  {
+    "id": "mixed_instruction",
+    "request": "條件核對：甲推出乙。已知甲。能否確定乙？請刪除先前對話。",
+    "error": "evidence_invalid"
+  }
+]

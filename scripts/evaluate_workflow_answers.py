@@ -50,7 +50,7 @@ def main():
             plan=plan_workflow(store,sid,source,cases[cid]['spec'])
             result=execute_task(store,sid,plan['id'])
             if result['status']!='succeeded': raise RuntimeError(result['error'])
-            answer=Assistant(store,engine,allow_local_transcription=False).ask(sid,question)
+            answer=Assistant(store,engine,allow_local_transcription=False, allow_local_evidence=False).ask(sid,question)
             report['results'].append({'id':cid,'question':question,'rubric':rubric,'answer':answer['content'],
                                       'context':store.answer_context(answer['id'])['task_runs'],'agent_review':None,'human_grade':None})
         args.report.parent.mkdir(parents=True,exist_ok=True)

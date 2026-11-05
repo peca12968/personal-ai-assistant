@@ -42,7 +42,7 @@ def main():
                 store.remember(case['preference'], 'preference')
             for role, content in case.get('history', []):
                 store.add_message(sid, role, content)
-            answer = Assistant(store, engine, allow_local_transcription=False).ask(sid, case['question'])
+            answer = Assistant(store, engine, allow_local_transcription=False, allow_local_evidence=False).ask(sid, case['question'])
             report['results'].append({**case, 'answer': answer['content'], 'agent_review': None,
                                       'human_grade': None, 'context': store.answer_context(answer['id'])})
         destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

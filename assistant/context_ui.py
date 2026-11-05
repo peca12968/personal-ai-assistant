@@ -51,6 +51,17 @@ def show_context(parent, store, message_id):
     local = context.get('response_mode') == 'local_memory'
     calculated = context.get('response_mode') == 'local_calculation'
     transcribed = context.get('response_mode') == 'local_transcription'
+    evidence = context.get('response_mode') == 'local_evidence'
+    if evidence:
+        from . import chat_evidence
+        try:
+            evidence_receipt = chat_evidence.read(store, message_id)
+            if evidence_receipt is None:
+                raise ValueError('找不到本機條件核對紀錄。')
+        except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            window.destroy()
+            messagebox.showerror('本機條件核對紀錄無法核對', str(exc), parent=parent)
+            return
     if transcribed:
         from .chat_transcription import read,describe as describe_transcription
         try:
@@ -59,10 +70,10 @@ def show_context(parent, store, message_id):
             window.destroy()
             messagebox.showerror('本機轉錄紀錄無法核對',str(exc),parent=parent)
             return
-    window.title('本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
+    window.title('本機條件核對紀錄' if evidence else '本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
     window.geometry("820x640")
     window.minsize(600, 420)
-    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed else
+    notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed or evidence else
               "顯示此回答送出時的參考資料，不代表模型實際採用了每一筆。之後編輯記憶不會改寫此快照。")
     ttk.Label(window, text=notice,
               padding=12, wraplength=730).pack(fill="x")
@@ -120,6 +131,8 @@ def show_context(parent, store, message_id):
         sections = [('計算紀錄', '當時請求：\n' + context['current_request'] + '\n\n' + describe(context['calculation']))]
     if transcribed:
         sections = [('轉錄紀錄','當時請求：\n'+context['current_request']+'\n\n'+describe_transcription(transcription_receipt))]
+    if evidence:
+        sections = [('條件核對', '當時請求：\n' + context['current_request'] + '\n\n' + chat_evidence.describe(evidence_receipt))]
     from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):
         sections.insert(0, (VIEW_TAB, delivery_text))

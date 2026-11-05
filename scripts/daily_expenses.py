@@ -249,6 +249,9 @@ class DailyAssistant(Assistant):
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         question = question.strip()
+        from assistant.chat_evidence import matches_request
+        if self.allow_local_evidence and matches_request(question):
+            return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         if self.allow_local_transcription and not image_ids:
             from assistant.chat_transcription import parse_request
             if parse_request(question) is not None:

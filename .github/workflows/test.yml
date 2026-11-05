@@ -16,6 +16,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python scripts/evaluate_chat_calculation.py
       - run: python scripts/evaluate_chat_transcription.py
+      - run: python scripts/evaluate_chat_evidence.py
       - run: python scripts/evaluate_daily_conversations.py
       - run: python scripts/evaluate_device_components.py
       - run: python scripts/learning/prepare_epistemic.py

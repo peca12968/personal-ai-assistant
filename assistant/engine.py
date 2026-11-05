@@ -248,12 +248,16 @@ class CodexEngine:
 
 
 class Assistant:
-    def __init__(self, store, engine, *, allow_local_calculation=True, allow_local_transcription=True):
+    def __init__(self, store, engine, *, allow_local_calculation=True, allow_local_transcription=True,
+                 allow_local_evidence=True):
         self.store, self.engine = store, engine
         self.allow_local_calculation = allow_local_calculation
         if type(allow_local_transcription) is not bool:
             raise ValueError('本機轉錄開關需為布林值。')
         self.allow_local_transcription = allow_local_transcription
+        if type(allow_local_evidence) is not bool:
+            raise ValueError('本機條件核對開關需為布林值。')
+        self.allow_local_evidence = allow_local_evidence
 
     def prepare_context(self, sid, question, exclude_message_id=None):
         history = self.store.messages(sid, 16, exclude_local=True, exclude_message_id=exclude_message_id)
@@ -340,12 +344,20 @@ class Assistant:
         from . import chat_transcription
         transcription = (chat_transcription.parse_request(question)
                          if self.allow_local_transcription and not image_metadata else None)
+        from . import chat_evidence
+        evidence = chat_evidence.parse_request(question) if self.allow_local_evidence else None
+        if evidence is not None and image_metadata:
+            raise ValueError('本機條件核對使用本輪文字，請先取消圖片選取。')
         if calculation is not None and image_metadata:
             raise ValueError('本機精確計算指令不能同時附圖；請先取消圖片選取。')
         if image_payloads and not callable(getattr(self.engine, 'answer_images', None)):
             raise ValueError('目前引擎不支援圖片，沒有送出問題或忽略附件。')
         answer_runs.recover(self.store, sid)
-        if transcription is not None:
+        if evidence is not None:
+            context = make_context(question, [], [])
+            context.update(response_mode=chat_evidence.MODE, evidence=evidence,
+                           documents={'catalog': [], 'excerpts': []})
+        elif transcription is not None:
             context = make_context(question, [], [])
             context.update(response_mode=chat_transcription.MODE,transcription=transcription,
                            documents={'catalog':[],'excerpts':[]})
@@ -365,7 +377,13 @@ class Assistant:
             uid = answer_runs.begin(self.store, sid, run_id, question, context, retry, draft=draft)
             try:
                 delivery = None
-                if transcription is not None:
+                if evidence is not None:
+                    try:
+                        answer, receipt = chat_evidence.evaluate(evidence, cancel)
+                    except ValueError as exc:
+                        raise EngineError('本機條件核對未完成：' + str(exc), 'evidence_invalid') from None
+                    context['evidence'] = receipt
+                elif transcription is not None:
                     try:
                         answer,receipt = chat_transcription.evaluate(transcription,cancel)
                         chat_transcription.validate(receipt,answer,question)
@@ -390,7 +408,7 @@ class Assistant:
                 from .prompt_scope import transcription_focus
                 # A citation-looking fragment in an explicit literal is data,
                 # not a claim of support from an imported document.
-                checks = [] if transcription is not None or transcription_focus(context) else check_citations(answer, context['documents']['excerpts'])
+                checks = [] if evidence is not None or transcription is not None or transcription_focus(context) else check_citations(answer, context['documents']['excerpts'])
                 if any(not check['range_valid'] for check in checks):
                     answer += '\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
                 mid = answer_runs.finish(self.store, run_id, answer, context, checks,
@@ -404,4 +422,5 @@ class Assistant:
                 'run_id': run_id, 'user_message_id': uid,
                 **({'response_mode':'local_calculation', 'calculation':receipt} if calculation is not None else {}),
                 **({'response_mode':chat_transcription.MODE, 'transcription':receipt} if transcription is not None else {}),
+                **({'response_mode': chat_evidence.MODE, 'evidence': receipt} if evidence is not None else {}),
                 **({'image_count': len(image_metadata)} if image_metadata else {})}

@@ -410,6 +410,8 @@ class App:
                         self.status.set('本機精確計算已完成 · 未呼叫模型 ·「查看本次參考」可核對算式與運算紀錄')
                     elif value.get('response_mode') == 'local_transcription':
                         self.status.set('本機逐字轉錄已完成 · 未呼叫模型 ·「查看本次參考」可核對原文、空白與字元數')
+                    elif value.get('response_mode') == 'local_evidence':
+                        self.status.set('本機條件核對已完成 ·「查看本次參考」可核對原文、反例及觀察分支')
                     else:
                         self.status.set("回答已存本機 · 記憶：" + ids + f' · 早期摘錄：{len(value["excerpt_ids"])} 則 · 文件：{value["document_count"]} 個 · 圖片：{value.get("image_count",0)} 張')
                 else:

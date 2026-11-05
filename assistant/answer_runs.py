@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 
 ERROR_LABELS = {
+    'evidence_invalid': '本機條件核對未完成，請用相同命題名稱分別寫明規則、觀察和待判問題。',
     'transcription_invalid': '本機逐字轉錄未完成；來源、格式或輸出核對失敗，沒有保存完成答案。',
     'local_system_memory': 'Windows 回報記憶體／分頁檔可用額度不足（1455），本機模型未完成作答，沒有保存完成答案。',
     'calculation_invalid': '本機精確計算的算式、範圍或輸出要求不符，沒有保存完成答案；未呼叫模型。請修正算式或要求後重新提問。',

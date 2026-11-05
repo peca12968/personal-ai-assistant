@@ -70,7 +70,7 @@ def collect(store,sid,case,saved,engine,unchanged):
             result=engine.answer(prompt,cancel)
             calls[0]['engine_answer']=result
             return result
-    answer=Assistant(store,Recorded(),allow_local_transcription=False).ask(sid,case['prompt'],draft=chat_drafts.submission(saved))
+    answer=Assistant(store,Recorded(),allow_local_transcription=False, allow_local_evidence=False).ask(sid,case['prompt'],draft=chat_drafts.submission(saved))
     unchanged()
     if len(calls)!=1 or chat_drafts.get(store,sid)['content']:
         raise ValueError('Actual draft submission did not complete.')

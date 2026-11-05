@@ -109,7 +109,7 @@ def main():
                     elif status == 'cancelled':
                         cancel.set()
                     execute_task(store, sid, task['id'], cancel=cancel, timeout=0 if status == 'timeout' else 30)
-                app = Assistant(store, engine, allow_local_transcription=False)
+                app = Assistant(store, engine, allow_local_transcription=False, allow_local_evidence=False)
                 context = app.prepare_context(sid, question)
                 answer = app.ask(sid, question)
                 live_results.append({'status': status, 'question': question, 'rubric': rubric, 'context': context['task_runs'],

@@ -98,7 +98,7 @@ def collect(source, signature):
     probe.save(folder / 'plan.json', plan)
     print(folder.name, digest, flush=True)
     store = probe.Store(folder / 'assistant.sqlite3')
-    app = probe.Assistant(store, engine, allow_local_calculation=False, allow_local_transcription=False)
+    app = probe.Assistant(store, engine, allow_local_calculation=False, allow_local_transcription=False, allow_local_evidence=False)
     rows = []
     for trial in plan['trials']:
         rows.append(probe.ask(app, store, trial['question']))
