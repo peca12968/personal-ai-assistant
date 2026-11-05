@@ -75,12 +75,17 @@ def find_codex():
 
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
-    from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, focused_help
-    instructions = FOCUSED_GUIDANCE if focused_help(context) else instructions.replace(PROMPT_MARKER, GUIDANCE)
+    from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, POLICY_MARKER, focused_help, policy_reference
+    policy = policy_reference(context)
+    instructions = FOCUSED_GUIDANCE if policy is not None and focused_help(context) else instructions.replace(PROMPT_MARKER, GUIDANCE)
     instructions += '\n' + (ROOT / 'prompts/communication.txt').read_text(encoding='utf-8')
     instructions += '\n' + COMPANION_GUIDANCE
     instructions += '\n' + answer_feedback.GUIDANCE
     instructions += '\n' + MEMORY_ALIAS_GUIDANCE
+    if policy is not None:
+        instructions += POLICY_MARKER + json.dumps(policy, ensure_ascii=False)
+    instructions += ('\n交付檢查：遵守本輪明確格式；逐字照抄或轉錄只輸出指定內容，界定範圍的引號不算內容。'
+                     '精簡仍須回答各個所問部分，包括適用範圍與判斷所需證據。')
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
