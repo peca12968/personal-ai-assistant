@@ -124,6 +124,7 @@ def main():
     parser.add_argument('--engine', choices=('local', 'codex'))
     parser.add_argument('--qualified-segment', action='store_true')
     choices = parser.add_mutually_exclusive_group()
+    choices.add_argument('--qualified-base-assay')
     choices.add_argument('--local-experiment')
     choices.add_argument('--local-batch')
     choices.add_argument('--local-active', action='store_true')
@@ -135,7 +136,10 @@ def main():
     mode.add_argument('--retry-answer', action='store_true')
     args, other = parser.parse_known_args()
 
-    if args.qualified_segment:
+    if args.qualified_base_assay is not None:
+        if args.engine or args.qualified_segment or other:
+            parser.error('--qualified-base-assay 需單獨選用本機驗收模型。')
+    elif args.qualified_segment:
         if args.engine or args.local_experiment or args.local_batch or args.local_active:
             parser.error('分段模型與其他模型選項只能選一種。')
         if other:
@@ -148,10 +152,13 @@ def main():
         parser.error('--retry-answer 需要 --session，且不能再附加文件。')
     if args.file and not args.ask:
         parser.error('--file 需搭配 --ask。')
-    if args.qualified_segment and args.session and not (args.ask or args.retry_answer):
+    if (args.qualified_segment or args.qualified_base_assay is not None) and args.session and not (args.ask or args.retry_answer):
         parser.error('--session 需搭配 --ask 或 --retry-answer。')
     try:
-        if args.qualified_segment:
+        if args.qualified_base_assay is not None:
+            from scripts.learning.qualified_base_chat import QualifiedBaseEngine
+            raw = QualifiedBaseEngine(args.data_dir, args.qualified_base_assay)
+        elif args.qualified_segment:
             from scripts.learning.segment_chat import SegmentEngine
             raw = SegmentEngine(args.data_dir)
         else:
