@@ -4,6 +4,7 @@ import re
 import unicodedata
 from decimal import Decimal
 from itertools import groupby
+from operator import eq, ge, gt, le, lt, ne
 
 from . import document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
@@ -28,6 +29,9 @@ _WEIGHT = re.compile(
     r'(?: *若無法計算, *請說明缺少哪個範圍(?:, *並可列出目前有依據的重量)?。)?(?: *不要估算。?)?')
 _DIGITS = '零一二三四五六七八九'
 _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七八九]|[一二三四五六七八九]?十[一二三四五六七八九]?)'
+_COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
+_GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
+                  document_table.NUMERIC_AGGREGATE_PLAN)
 
 
 def parse_request(question):
@@ -68,14 +72,19 @@ def parse_live_request(question):
             or document_table.parse_request(question, _UNIT, document_units.SCALES)
             or document_table.parse_aggregate(question, _UNIT, document_units.SCALES)
             or document_table.parse_multi_aggregate(question, _UNIT, document_units.SCALES)
-            or document_table.parse_filter_aggregate(question, _UNIT, document_units.SCALES))
+            or document_table.parse_filter_aggregate(question, _UNIT, document_units.SCALES)
+            or _parse_numeric_aggregate(question))
+
+
+def _parse_numeric_aggregate(question):
+    return document_table.parse_numeric_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
 
 def snapshot(store, sid, plan):
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
-    grouped_plan = plan['schema'] in (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN)
+    grouped_plan = plan['schema'] in _GROUPED_PLANS
     table_plan = grouped_plan or plan['schema'] in (document_table.PLAN, document_table.AGGREGATE_PLAN)
     query = document_table.query(operands) if table_plan else plan['request']
     excerpts, ranges, limited = select_ranges(query, sources, max_excerpts=len(operands) if grouped_plan else 2,
@@ -175,7 +184,7 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
-    if plan.get('schema') in (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN):
+    if plan.get('schema') in _GROUPED_PLANS:
         return _evaluate_grouped_aggregate(plan, cancel)
     if plan.get('schema') == document_table.AGGREGATE_PLAN:
         return _evaluate_aggregate(plan, cancel)
@@ -290,23 +299,46 @@ def _table_quantity(operand, source, target, convert):
     return _cell_quantity(row, target, convert)
 
 
-def _cell_quantity(row, target, convert):
-    value = unicodedata.normalize('NFKC', row['cell']).strip()
+def _parse_table_quantity(raw):
+    value = unicodedata.normalize('NFKC', raw).strip()
     match = re.fullmatch(rf'({_NUMBER}) *(?:({_UNIT}))?', value)
-    if match is None:
+    return (_number(match[1]), match[2]) if match is not None else None
+
+
+def _cell_quantity(row, target, convert):
+    quantity = _parse_table_quantity(row['cell'])
+    if quantity is None:
         return {**row, 'status': 'value_unconfirmed'}
-    header_unit, cell_unit = row['header_unit'], match[2]
+    value, cell_unit = quantity
+    header_unit = row['header_unit']
     if header_unit and cell_unit and not _same_unit(header_unit, cell_unit):
         return {**row, 'status': 'unit_conflict', 'cell_unit': cell_unit}
     unit = cell_unit or header_unit
     if unit is None:
         return {**row, 'status': 'unit_missing'}
-    observed = {**row, 'value': _number(match[1]), 'source_unit': unit}
+    observed = {**row, 'value': value, 'source_unit': unit}
     if convert:
         scale = document_units.SCALES.get(unit)
         return (_scaled_quantity(observed, scale, document_units.SCALES[target]) if scale is not None
                 else {**observed, 'status': 'unit_unsupported'})
     return {**observed, 'status': 'confirmed' if _same_unit(unit, target) else 'unit_incompatible'}
+
+
+def _test_numeric_filter(raw, header_unit, condition):
+    target = condition['unit']
+    convert = target in document_units.SCALES
+    evidence = dict(value=raw, header_unit=header_unit)
+    if not raw.strip():
+        return {**evidence, 'status': 'unknown', 'reason': 'filter_blank'}
+    observed = _cell_quantity(dict(cell=raw, header_unit=header_unit), target, convert)
+    if observed['status'] != 'confirmed':
+        reason = observed['status']
+        return {**evidence, 'status': 'unknown', 'reason': 'filter_unit_incompatible' if reason == 'unit_incompatible' else reason}
+    value = exact_math.parse(observed['converted']['exact'] if convert else observed['value'])
+    threshold = exact_math.parse(condition['value'])
+    matches = _COMPARISONS[condition['operator']](value, threshold)
+    return {**evidence, 'status': 'true' if matches else 'false', 'source_unit': observed['source_unit'],
+            'factor_exact': observed.get('factor_exact', '1'), 'normalized_exact': str(value)}
 
 
 def _table_line(operand, row, unit):
@@ -429,9 +461,15 @@ def _unknown_filter_lines(operand, group, filters):
     label = _range_label(operand)
     lines = [f'{label}，{len(unknown)} 列無法判定是否符合。']
     for row in unknown[:8]:
-        names = '、'.join(f'「{condition["column"]}」' for condition, test in zip(filters, row['tests'], strict=True)
-                         if test['status'] == 'unknown')
-        lines.append(f'[D{operand["document_id"]}:L{row["line_number"]}] {names}空白。')
+        unresolved = [(condition, test) for condition, test in zip(filters, row['tests'], strict=True)
+                      if test['status'] == 'unknown']
+        if any('reason' in test for _, test in unresolved):
+            details = ' '.join(f'「{condition["column"]}」{document_table.reason(test.get("reason", "filter_blank"))}'
+                               for condition, test in unresolved)
+        else:
+            names = '、'.join(f'「{condition["column"]}」' for condition, _ in unresolved)
+            details = f'{names}空白。'
+        lines.append(f'[D{operand["document_id"]}:L{row["line_number"]}] {details}')
     invalid = [row for row in group['observations'] if row['status'] != 'confirmed']
     lines.extend(f'{row["row_citation"]} 符合條件。{document_table.reason(row["status"])}' for row in invalid[:8])
     if len(unknown) > 8 or len(invalid) > 8:
@@ -461,9 +499,15 @@ def _multi_source_lines(operand, source, group, complete, filters=None):
 
 
 def _evaluate_grouped_aggregate(plan, cancel):
-    filtered = plan['schema'] == document_table.FILTER_AGGREGATE_PLAN
-    parser = document_table.parse_filter_aggregate if filtered else document_table.parse_multi_aggregate
-    request = parser(plan['request'], _UNIT, document_units.SCALES)
+    numeric = plan['schema'] == document_table.NUMERIC_AGGREGATE_PLAN
+    filtered = numeric or plan['schema'] == document_table.FILTER_AGGREGATE_PLAN
+    if numeric:
+        request = _parse_numeric_aggregate(plan['request'])
+        schema = document_table.NUMERIC_AGGREGATE_RECEIPT
+    else:
+        parser = document_table.parse_filter_aggregate if filtered else document_table.parse_multi_aggregate
+        request = parser(plan['request'], _UNIT, document_units.SCALES)
+        schema = document_table.FILTER_AGGREGATE_RECEIPT if filtered else document_table.MULTI_AGGREGATE_RECEIPT
     documents = plan['documents']
     if request is None or plan != {**request, 'documents': documents}:
         raise ValueError('跨表彙總計畫與原問不符。')
@@ -482,7 +526,8 @@ def _evaluate_grouped_aggregate(plan, cancel):
         for operand, source in zip(operands, sources, strict=True):
             check_cancel(cancel)
             if filtered:
-                selected, total, matches, decisions = document_table.filter_rows(operand, source, _UNIT, filters)
+                selected, total, matches, decisions = document_table.filter_rows(operand, source, _UNIT, filters,
+                                                                                _test_numeric_filter if numeric else None)
                 rows = _quantities_from_matches(matches, unit, convert, cancel)
                 groups.append(dict(selection_status=selected, total_rows=total, observations=rows, decisions=decisions))
             else:
@@ -508,7 +553,6 @@ def _evaluate_grouped_aggregate(plan, cancel):
             lines.extend(_multi_source_lines(operand, source, group, status == 'complete', filters))
     check_cancel(cancel)
     answer = '\n'.join(lines)
-    schema = document_table.FILTER_AGGREGATE_RECEIPT if filtered else document_table.MULTI_AGGREGATE_RECEIPT
     return answer, dict(schema=schema, plan=plan, model_called=False,
                         status=status, overlaps=overlaps, groups=groups, total_exact=total_exact,
                         result=result, output=answer, output_sha256=digest(answer))
@@ -531,7 +575,8 @@ def read(store, mid):
 
 def describe(receipt):
     plan = receipt['plan']
-    if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT):
+    if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT,
+                             document_table.NUMERIC_AGGREGATE_RECEIPT):
         lines = [receipt['output']]
         groups = receipt['groups']
         if plan['operation'] == 'mean' and receipt['total_exact'] is not None:
@@ -573,6 +618,13 @@ def _describe_filter_decisions(group, filters):
     labels = {'matched': '符合', 'excluded': '排除', 'unknown': '未定'}
     outcomes = {'true': '符合', 'false': '不符', 'unknown': '空白'}
     for row in group['decisions']:
-        details = '、'.join(f'「{condition["column"]}」{json.dumps(test["value"], ensure_ascii=False)}（{outcomes[test["status"]]}）'
-                            for condition, test in zip(filters, row['tests'], strict=True))
-        yield f'第 {row["line_number"]} 行 · {labels[row["status"]]} · {details}'
+        details = []
+        for condition, test in zip(filters, row['tests'], strict=True):
+            raw = json.dumps(test['value'], ensure_ascii=False)
+            outcome = outcomes[test['status']]
+            if 'reason' in test:
+                outcome = document_table.reason(test['reason']).removesuffix('。')
+            elif 'normalized_exact' in test:
+                outcome += f'，比較值 {test["normalized_exact"]} {condition["unit"]}'
+            details.append(f'「{condition["column"]}」{raw}（{outcome}）')
+        yield f'第 {row["line_number"]} 行 · {labels[row["status"]]} · ' + '、'.join(details)

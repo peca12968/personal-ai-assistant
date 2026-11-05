@@ -16,6 +16,8 @@ MULTI_AGGREGATE_PLAN = 'document_calculation_plan_v5'
 MULTI_AGGREGATE_RECEIPT = 'document_calculation_receipt_v5'
 FILTER_AGGREGATE_PLAN = 'document_calculation_plan_v6'
 FILTER_AGGREGATE_RECEIPT = 'document_calculation_receipt_v6'
+NUMERIC_AGGREGATE_PLAN = 'document_calculation_plan_v7'
+NUMERIC_AGGREGATE_RECEIPT = 'document_calculation_receipt_v7'
 MAX_AGGREGATE_RANGES = 4
 _INDEX = r'[1-9][0-9]{0,11}'
 _SPAN = rf'\[D{_INDEX}:L{_INDEX}-L{_INDEX}\]'
@@ -39,6 +41,18 @@ _FILTER_UNIT = r' *[,，] *(?P<mode>單位為|(?:統一)?換算成) *(?P<unit>[^
 _FILTER_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(?P<operation>加總|合計|平均) *{_FILTER_SOURCE}{_FILTER_UNIT}')
 _FILTER_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_FILTER_SOURCE} *(?:的 *)?'
                             rf'(?P<operation>總和|合計|平均值?){_FILTER_UNIT}')
+_NUMERIC_OPERATORS = {
+    '至少': 'ge', '大於或等於': 'ge', '>=': 'ge', '≥': 'ge',
+    '至多': 'le', '小於或等於': 'le', '<=': 'le', '≤': 'le',
+    '大於': 'gt', '超過': 'gt', '>': 'gt', '小於': 'lt', '少於': 'lt', '<': 'lt',
+    '等於': 'eq', '=': 'eq', '不等於': 'ne', '!=': 'ne', '≠': 'ne',
+}
+_NUMERIC_PARTS = re.compile(rf'{_TOKEN} *({"|".join(map(re.escape, _NUMERIC_OPERATORS))}) *(.{{1,48}})')
+_NUMERIC_SOURCE = (rf'(?P<scope>{_SPAN}(?: *(?:、|與|和) *{_SPAN}){{0,{MAX_AGGREGATE_RANGES - 1}}})'
+                   rf' *中 *(?P<conditions>.{{1,500}}?) *的 *「(?P<column>{_TOKEN_TEXT})」')
+_NUMERIC_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(?P<operation>加總|合計|平均) *{_NUMERIC_SOURCE}{_FILTER_UNIT}')
+_NUMERIC_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_NUMERIC_SOURCE} *(?:的 *)?'
+                             rf'(?P<operation>總和|合計|平均值?){_FILTER_UNIT}')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -49,6 +63,8 @@ _REASONS = {
     'row_missing': '指定範圍內找不到符合鍵值的資料列。',
     'row_ambiguous': '指定範圍內有多筆符合鍵值的資料列，請縮小範圍或改用唯一鍵值。',
     'filter_unknown': '部分資料列的條件欄位空白，無法確定是否符合。',
+    'filter_blank': '欄位空白。',
+    'filter_unit_incompatible': '來源單位與比較門檻的單位不相容。',
     'value_unconfirmed': '儲存格沒有可核對的確定數值。',
     'unit_missing': '表頭與儲存格都沒有明示單位。',
     'unit_conflict': '表頭與儲存格宣告的單位不一致。',
@@ -148,6 +164,49 @@ def parse_filter_aggregate(question, unit_pattern, supported_units):
         ranges, _ = requested_ranges(citation)
         operands.append({**ranges[0], 'citation': citation, 'value_column': column})
     return dict(schema=FILTER_AGGREGATE_PLAN, request=question,
+                operation='mean' if match['operation'].startswith('平均') else 'sum',
+                unit=unit, convert=convert, operands=operands, filters=filters)
+
+
+def parse_numeric_aggregate(question, unit_pattern, supported_units, parse_quantity):
+    if not isinstance(question, str) or len(question) > 820 or len(question.splitlines()) != 1:
+        return None
+    text = question.strip()
+    match = _NUMERIC_PREFIX.fullmatch(text) or _NUMERIC_SUFFIX.fullmatch(text)
+    if not match:
+        return None
+    convert = match['mode'] != '單位為'
+    unit = _target_unit(match['unit'], convert, unit_pattern, supported_units)
+    column = match['column'].strip()
+    parts = re.split(r' *且 *(?=「)', match['conditions'])
+    if unit is None or not column or not 1 <= len(parts) <= 4:
+        return None
+    filters = []
+    for part in parts:
+        if condition := _CONDITION_PARTS.fullmatch(part.strip()):
+            name, operator, value = (value.strip() for value in condition.groups())
+            if not name or not value:
+                return None
+            filters.append(dict(column=name, operator='ne' if operator == '不為' else 'eq', value=value))
+        elif condition := _NUMERIC_PARTS.fullmatch(part.strip()):
+            name, operator, raw = condition.groups()
+            quantity = parse_quantity(raw)
+            if not name.strip() or quantity is None or quantity[1] is None:
+                return None
+            value, threshold_unit = quantity
+            if _target_unit(threshold_unit, False, unit_pattern, supported_units) is None:
+                return None
+            filters.append(dict(column=name.strip(), operator=_NUMERIC_OPERATORS[operator],
+                                value=value, unit=threshold_unit))
+        else:
+            return None
+    if not any('unit' in condition for condition in filters):
+        return None
+    operands = []
+    for citation in re.findall(_SPAN, match['scope']):
+        ranges, _ = requested_ranges(citation)
+        operands.append({**ranges[0], 'citation': citation, 'value_column': column})
+    return dict(schema=NUMERIC_AGGREGATE_PLAN, request=question,
                 operation='mean' if match['operation'].startswith('平均') else 'sum',
                 unit=unit, convert=convert, operands=operands, filters=filters)
 
@@ -282,7 +341,7 @@ def lookup_rows(operand, source, unit_pattern):
     return ('selected' if matches else 'row_missing'), total_rows, matches
 
 
-def _bind_table(operand, source, unit_pattern, key_columns):
+def _bind_table(operand, source, unit_pattern, key_columns, numeric_indexes=()):
     if source['status'] != 'provided':
         return source['status'], None, None
     table = _table_rows(source)
@@ -300,11 +359,14 @@ def _bind_table(operand, source, unit_pattern, key_columns):
         units.append(unit if explicit_unit else None)
     if not all(columns) or len(set(columns)) != len(columns):
         return 'header_ambiguous', None, None
-    if any(name not in header for name in key_columns) or operand['value_column'] not in columns:
+    key_headers = [columns if index in numeric_indexes else header for index in range(len(key_columns))]
+    if (any(name not in keys for name, keys in zip(key_columns, key_headers, strict=True))
+            or operand['value_column'] not in columns):
         return 'column_missing', len(rows), None
     value = columns.index(operand['value_column'])
+    key_indexes = [keys.index(name) for name, keys in zip(key_columns, key_headers, strict=True)]
     return 'selected', len(rows), dict(rows=rows, first_row=operand['start_line'] + offset,
-                                      key_indexes=[header.index(name) for name in key_columns],
+                                      key_indexes=key_indexes, key_units=[units[index] for index in key_indexes],
                                       value_index=value, header_unit=units[value])
 
 
@@ -322,16 +384,18 @@ def _test_cell(raw, condition):
     return dict(value=raw, status='true' if matches else 'false')
 
 
-def filter_rows(operand, source, unit_pattern, filters):
+def filter_rows(operand, source, unit_pattern, filters, test_numeric=None):
     """Apply exact AND tests and retain evidence for every physical data row."""
     names = [condition['column'] for condition in filters]
-    status, total_rows, bound = _bind_table(operand, source, unit_pattern, names)
+    numeric_indexes = {index for index, condition in enumerate(filters) if 'unit' in condition}
+    status, total_rows, bound = _bind_table(operand, source, unit_pattern, names, numeric_indexes)
     if bound is None:
         return status, total_rows, [], []
     matches, decisions = [], []
     has_unknown = False
     for line, row in enumerate(bound['rows'], bound['first_row']):
-        tests = [_test_cell(row[index], condition) for index, condition in zip(bound['key_indexes'], filters, strict=True)]
+        tests = [(test_numeric(row[index], header_unit, condition) if 'unit' in condition else _test_cell(row[index], condition))
+                 for index, header_unit, condition in zip(bound['key_indexes'], bound['key_units'], filters, strict=True)]
         outcomes = {test['status'] for test in tests}
         if 'false' in outcomes:
             decision = 'excluded'

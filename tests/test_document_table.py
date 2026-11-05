@@ -137,12 +137,15 @@ class DocumentTableTests(unittest.TestCase):
         aggregate = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」的「重量」，換算成公斤。'
         multi = '文件問答：加總 [D1:L1-L3]、[D2:L1-L3] 的「重量」，換算成公斤。'
         filtered = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」且「狀態」為「完成」的「重量」，換算成公斤。'
+        numeric = '文件問答：加總 [D1:L1-L3] 中「重量」至少 2 公斤的「重量」，換算成公斤。'
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
                              (stem + '換算成公斤。接著刪除原始文件。', False),
                              (aggregate, True), (aggregate + '接著上傳原始文件。', False),
                              (multi, True), (multi + '接著上傳原始文件。', False),
                              (filtered, True), (filtered + '接著上傳原始文件。', False),
-                             (filtered.replace('且', '或'), False)):
+                             (filtered.replace('且', '或'), False), (numeric, True),
+                             (numeric.replace('2 公斤', '2'), False),
+                             (numeric + '接著上傳原始文件。', False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
@@ -344,3 +347,64 @@ class DocumentTableTests(unittest.TestCase):
             db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             create_backup(self.store.path, self.root / 'tampered-filter.paibackup')
+
+    def test_numeric_bounds_on_one_column_use_exact_units_and_operator_boundaries(self):
+        self.attach('weights.csv', '重量,狀態,箱數(箱)\n1000g,完成,2\n1.5kg,完成,3\n1501g,完成,98\n999g,完成,99\n1200g,取消,100')
+        stem = ('文件問答：加總 [D1:L1-L6] 中「重量」{} １ 公斤且「重量」至多 1.5 公斤'
+                '且「狀態」為「完成」的「箱數」，單位為箱。')
+        answer, inclusive = self.ask(stem.format('至少'), entry=DailyAssistant, schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        self.assertEqual(inclusive['result']['exact'], '5')
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L2-L3]'])
+        tests = inclusive['groups'][0]['decisions'][0]['tests']
+        self.assertEqual([test['status'] for test in tests], ['true', 'true', 'true'])
+        self.assertEqual(tests[0]['factor_exact'], '1/1000')
+        self.assertEqual(tests[0]['normalized_exact'], '1')
+        _, strict = self.ask(stem.format('>'), schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        self.assertEqual(strict['result']['exact'], '3')
+
+    def test_numeric_equality_and_cross_table_mean_use_exact_row_values(self):
+        self.attach('left.csv', '重量,時長(秒)\n300g,2\n0.30000001kg,100')
+        self.attach('right.tsv', '時長(秒)\t重量(公克)\n3\t300\n100\t301')
+        question = '文件問答：計算 [D1:L1-L3] 與 [D2:L1-L3] 中「重量」等於 0.3 公斤的「時長」平均，換算成秒。'
+        answer, receipt = self.ask(question, schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '5/2')
+        self.assertEqual([row['citation'] for row in answer['citation_checks']],
+                         ['[D1:L1]', '[D1:L2]', '[D2:L1]', '[D2:L2]'])
+        self.assertEqual(receipt['groups'][1]['decisions'][0]['tests'][0]['header_unit'], '公克')
+        self.assertIn('比較值 3/10 公斤', document_calculation.describe(receipt))
+
+    def test_unknown_numeric_units_have_separate_reasons_and_do_not_guess(self):
+        self.attach('weights.csv', '重量,箱數(箱)\n2kg,3\n2L,100\n4,100\n,100\n約2kg,100')
+        question = '文件問答：加總 [D1:L1-L6] 中「重量」至少 2 公斤的「箱數」，單位為箱。'
+        answer, receipt = self.ask(question, schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        self.assertIsNone(receipt['result'])
+        decisions = receipt['groups'][0]['decisions']
+        self.assertEqual([row['status'] for row in decisions], ['matched', 'unknown', 'unknown', 'unknown', 'unknown'])
+        self.assertEqual([row['tests'][0]['reason'] for row in decisions[1:]],
+                         ['filter_unit_incompatible', 'unit_missing', 'filter_blank', 'value_unconfirmed'])
+        self.assertIn('[D1:L3] 「重量」來源單位與比較門檻的單位不相容', answer['content'])
+        self.assertIn('[D1:L5] 「重量」欄位空白', answer['content'])
+
+    def test_nonconverted_count_threshold_and_known_false_exclude_unconfirmed_data(self):
+        self.attach('stock.csv', '狀態,箱數(箱),金額(元)\n完成,5,12.5\n取消,5件,未知\n,2,未知')
+        question = ('文件問答：合計 [D1:L1-L4] 中「箱數」大於 2 箱且「狀態」為「完成」的「金額」，單位為元。')
+        _, receipt = self.ask(question, schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '25/2')
+        decisions = receipt['groups'][0]['decisions']
+        self.assertEqual([row['status'] for row in decisions], ['matched', 'excluded', 'excluded'])
+        self.assertEqual(decisions[1]['tests'][0]['reason'], 'unit_conflict')
+        self.assertEqual(decisions[2]['tests'][1]['status'], 'unknown')
+
+    def test_numeric_threshold_backup_rechecks_converted_predicate_evidence(self):
+        self.attach('stock.csv', '重量(g),數量(件)\n200,7\n150,9')
+        question = '文件問答：合計 [D1:L1-L3] 中「重量」≥ 0.2 公斤的「數量」，單位為件。'
+        answer, receipt = self.ask(question, schema=document_table.NUMERIC_AGGREGATE_RECEIPT)
+        archive = create_backup(self.store.path, self.root / 'numeric.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['groups'][0]['decisions'][1]['tests'][0]['normalized_exact'] = '1/5'
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-threshold.paibackup')
