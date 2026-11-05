@@ -90,16 +90,7 @@ def run_daily_window(store, engine, *, default_chat=False):
                     verified = daily_meeting.read(self.store, self.last_answer)
                     if verified is None:
                         raise ValueError
-                    receipt = verified['calculation']
-                    lines = [verified['current_request'], '', '採用的取消條件']
-                    if verified.get('meeting_source'):
-                        lines.insert(1, f"沿用本對話會議回答 #{verified['meeting_source']['answer_id']} 的同日時段與條件")
-                    lines += [c['source'] for c in verified['meeting_plan']['cancelled']] or ['無']
-                    lines += ['', '每人剩餘時段']
-                    for name, slots in receipt['effective'].items():
-                        lines.append(name + '：' + ('、'.join(slots) or '無'))
-                    lines += ['', '共同空檔：' + ('、'.join(receipt['common']) or '無'),
-                              f"所需時間：{receipt['duration']} 分鐘", '結果：' + receipt['result']['exact']]
+                    lines = daily_meeting.describe(verified).splitlines()
                 except (KeyError, TypeError, ValueError, sqlite3.Error):
                     lines = ['無法依原始時段與更正重算這筆會議紀錄。']
             elif context and 'expense_ledger' in context:
