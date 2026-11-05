@@ -3,6 +3,7 @@ data/
 **/autonomy-artifacts/
 **/learning-batches/
 **/local-engine-workspace/
+**/*.attempts/
 __pycache__/
 *.py[cod]
 .env

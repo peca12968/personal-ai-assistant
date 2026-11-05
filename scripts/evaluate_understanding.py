@@ -10,7 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from assistant.engine import Assistant, CodexEngine, render_prompt
+from assistant.engine import Assistant, CodexEngine, EngineError, render_prompt
+from scripts.evaluation_attempts import AttemptJournal, report_lease
 from scripts.evaluation_reports import (index_report, load_json, strict_json, validate_report,
     verify_suite, canonical_digest, TRACE_MODE, LOCAL_TRACE_MODE, TRACE_CONTEXT_MARKER, MAX_JSON_BYTES)
 from assistant.store import Store
@@ -19,6 +20,7 @@ from assistant.companion_profile import get_profile, reset_profile, save_profile
 SUITE = ROOT / 'evals/understanding.json'
 RUNNER_PATH = Path(__file__).resolve()
 VALIDATOR_PATH = RUNNER_PATH.with_name('evaluation_reports.py')
+ATTEMPTS_PATH = RUNNER_PATH.with_name('evaluation_attempts.py')
 
 
 def sha(data):
@@ -137,7 +139,8 @@ def live_fingerprint(suite_path):
     # Keep fingerprint() compatible with the other dedicated goal runners;
     # this protocol specifically fingerprints its collector and validator.
     return {**fingerprint(suite_path), 'runner_sha256': sha(RUNNER_PATH.read_bytes()),
-            'report_validation_sha256': sha(VALIDATOR_PATH.read_bytes())}
+            'report_validation_sha256': sha(VALIDATOR_PATH.read_bytes()),
+            'attempt_journal_sha256': sha(ATTEMPTS_PATH.read_bytes())}
 
 
 def load_report(path, signature, ids, resume, *, mode=None):
@@ -166,7 +169,7 @@ def load_report(path, signature, ids, resume, *, mode=None):
     return result
 
 
-def collect_case(store, sid, case, engine, unchanged, *, describe=None):
+def collect_case(store, sid, case, engine, unchanged, *, describe=None, journal=None):
     calls = []
     class Recorded:
         def answer(self, prompt, cancel=None):
@@ -174,7 +177,8 @@ def collect_case(store, sid, case, engine, unchanged, *, describe=None):
                 raise ValueError('本理解案例意外呼叫引擎多次，未將它視為單次作答。')
             unchanged()
             calls.append({'request': prompt})
-            result = engine.answer(prompt, cancel)
+            result = (journal.invoke(case, prompt, engine, cancel) if journal is not None
+                      else engine.answer(prompt, cancel))
             calls[0]['engine_answer'] = result
             return result
     recorded = Recorded()
@@ -264,33 +268,37 @@ def main():
         signature = {**live_fingerprint(args.suite), **selection}
         if signature['suite_sha256'] != sha(suite_bytes):
             raise ValueError('案例集在讀取後已變更，未開始收集。')
-        report = load_report(args.report, signature, [case['id'] for case in cases], args.resume, mode=mode)
-        verify_suite(report, suite_bytes)
-        save_report(args.report, report)
-        if engine is None:
-            engine = CodexEngine(ROOT / 'data')
         def unchanged():
             if {**live_fingerprint(args.suite), **selection} != signature:
                 raise ValueError('評估期間程式、提示、案例、測試器或驗證器已改變，停止以免混用版本。')
-        finished = {row['id'] for row in report['results']}
-        for case in cases:
-            if case['id'] in finished:
-                continue
-            unchanged()
-            with tempfile.TemporaryDirectory() as tmp:
-                store = Store(Path(tmp) / 'state.sqlite3')
-                sid = prepare_case(store, case)
-                if selection:
-                    row = collect_case(store, sid, case, engine, unchanged, describe=engine.describe)
-                else:
-                    row = collect_case(store, sid, case, engine, unchanged)
-                report['results'].append(row)
-                validate_report(report)
-                verify_suite(report, suite_bytes)
+        # Hold one OS lock across read, collection and report writes. A leftover
+        # lease file is not evidence that an engine process is alive or stopped.
+        args.report = args.report.resolve()
+        with report_lease(args.report):
+            report = load_report(args.report, signature, [case['id'] for case in cases], args.resume, mode=mode)
+            verify_suite(report, suite_bytes)
+            journal = AttemptJournal(args.report, report)
+            journal.check(report)
             save_report(args.report, report)
-            print(case['id'], 'answered; rubric review pending', flush=True)
-        print(f'Collected {len(report["results"])}/{len(cases)} actual answers; review required.')
-    except (ValueError, OSError) as exc:
+            if engine is None:
+                engine = CodexEngine(ROOT / 'data')
+            finished = {row['id'] for row in report['results']}
+            for case in cases:
+                if case['id'] in finished:
+                    continue
+                unchanged()
+                with tempfile.TemporaryDirectory() as tmp:
+                    store = Store(Path(tmp) / 'state.sqlite3')
+                    sid = prepare_case(store, case)
+                    row = collect_case(store, sid, case, engine, unchanged, journal=journal,
+                                       **({'describe': engine.describe} if selection else {}))
+                    report['results'].append(row)
+                    validate_report(report)
+                    verify_suite(report, suite_bytes)
+                save_report(args.report, report)
+                print(case['id'], 'answered; rubric review pending', flush=True)
+            print(f'Collected {len(report["results"])}/{len(cases)} actual answers; review required.')
+    except (ValueError, OSError, EngineError) as exc:
         parser.exit(1, str(exc) + '\n')
 
 
