@@ -307,7 +307,7 @@ class DailyLocalEngine:
 
     def deliver(self, prompt, draft):
         marker = '\n\n以下 JSON 是使用者資料與當前問題：\n'
-        _, found, payload = prompt.partition(marker)
+        _, found, payload = prompt.rpartition(marker)
         if not found:
             return draft
         try:
@@ -319,6 +319,9 @@ class DailyLocalEngine:
                 or ctx.get('engine_selection') != self.describe() or render_prompt(ctx) != prompt):
             return draft
         question = ctx['current_request']
+        from assistant.prompt_scope import transcription_focus
+        if transcription_focus(ctx):
+            return draft
         concise = missing_literal(question, draft) or supplied_code(ctx, draft) or daily_dialogue.short_label(ctx, draft)
         if concise is not None:
             return concise

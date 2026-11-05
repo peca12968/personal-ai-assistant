@@ -31,6 +31,8 @@ jobs:
       - run: python scripts/evaluate_understanding.py --suite evals/delivery_generalization.json
       - run: python scripts/evaluate_understanding.py --suite evals/transcription.json
       - run: python scripts/evaluate_understanding.py --suite evals/transcription_fidelity.json
+      - run: python scripts/evaluate_understanding.py --suite evals/transcription_sources.json
+      - run: python scripts/evaluate_understanding.py --suite evals/transcription_escapes.json
       - run: python scripts/evaluate_understanding.py --suite evals/topic_context.json
       - run: python scripts/evaluate_goal_drafts.py
       - run: python scripts/evaluate_goal_drafts.py --suite evals/goal_draft_inputs.json

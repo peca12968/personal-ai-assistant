@@ -57,6 +57,8 @@ def main():
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/delivery_generalization.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/transcription.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/transcription_fidelity.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/transcription_sources.json")
+    run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/transcription_escapes.json")
     run(sys.executable, "scripts/evaluate_understanding.py", "--suite", "evals/topic_context.json")
     run(sys.executable, "scripts/evaluate_goal_drafts.py")
     run(sys.executable, "scripts/evaluate_goal_drafts.py", "--suite", "evals/goal_draft_inputs.json")

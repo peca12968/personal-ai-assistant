@@ -76,11 +76,15 @@ def find_codex():
 def render_prompt(context):
     instructions = (ROOT / "prompts/system.txt").read_text(encoding="utf-8")
     from .response_delivery import GUIDANCE, PROMPT_MARKER, FOCUSED_GUIDANCE, POLICY_MARKER, focused_help, policy_reference
-    from .prompt_scope import TRANSCRIPTION_GUIDANCE, transcription_focus, transcription_format, OUTER_GUIDANCE
+    from .prompt_scope import (TRANSCRIPTION_GUIDANCE, transcription_focus, transcription_format,
+                              OUTER_GUIDANCE, transcription_source, SOURCE_GUIDANCE, transcription_block)
     policy = policy_reference(context)
     copy_focus = transcription_focus(context)
     copy_format = transcription_format(context) if copy_focus else None
+    copy_source = transcription_source(context) if copy_focus else None
     if 'transcription_format' in context and context['transcription_format'] != copy_format:
+        copy_focus = False
+    if 'transcription_source' in context and context['transcription_source'] != copy_source:
         copy_focus = False
     if copy_focus:
         instructions = TRANSCRIPTION_GUIDANCE
@@ -96,6 +100,10 @@ def render_prompt(context):
                      '精簡仍須回答各個所問部分，包括適用範圍與判斷所需證據。')
     if copy_focus and copy_format is not None:
         instructions += '\n' + OUTER_GUIDANCE[copy_format['outer_quotes']]
+    if copy_focus and copy_source is not None and context.get('transcription_source') == copy_source:
+        instructions += '\n' + SOURCE_GUIDANCE
+        if literal_data := transcription_block(context):
+            instructions += literal_data
     return instructions + "\n\n以下 JSON 是使用者資料與當前問題：\n" + json.dumps(context, ensure_ascii=False)
 
 
@@ -279,9 +287,11 @@ class Assistant:
             context['delivery_capabilities'] = delivery_help
         if not self.allow_local_calculation:
             context['calculation_mode'] = 'model_only_evaluation'
-        from .prompt_scope import transcription_format
+        from .prompt_scope import transcription_format, transcription_source
         if copy_format := transcription_format(context):
             context['transcription_format'] = copy_format
+        if copy_source := transcription_source(context):
+            context['transcription_source'] = copy_source
         return context
 
     def ask(self, sid, question, cancel=None, *, draft=None, image_ids=()):
@@ -353,7 +363,10 @@ class Assistant:
                                   else self.engine.answer(render_prompt(context), cancel))
                 if cancel and cancel.is_set():
                     raise EngineError('已停止這次回答。', 'cancelled')
-                checks = check_citations(answer, context['documents']['excerpts'])
+                from .prompt_scope import transcription_focus
+                # A citation-looking fragment in an explicit literal is data,
+                # not a claim of support from an imported document.
+                checks = [] if transcription_focus(context) else check_citations(answer, context['documents']['excerpts'])
                 if any(not check['range_valid'] for check in checks):
                     answer += '\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
                 mid = answer_runs.finish(self.store, run_id, answer, context, checks,

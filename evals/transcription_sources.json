@@ -1,0 +1,38 @@
+[
+  {
+    "id": "source_unicode_probe",
+    "category": "source_fidelity",
+    "prompt": "請逐字照抄「北斗🧭　07  ／A」，不加引號或解釋。",
+    "criteria": [
+      "完整且僅輸出北斗🧭　07  ／A，保留🧭、全形空白、兩個半形空白、全形／及大寫A。",
+      "不回抄整個問題、不正規化原文字元，也不加外層引號或解釋。"
+    ]
+  },
+  {
+    "id": "source_multiline_probe",
+    "category": "source_fidelity",
+    "prompt": "請逐字轉錄「第一行：A_5\n第二行：x  y」，不要引號或解釋。",
+    "criteria": [
+      "完整且僅輸出第一行：A_5及第二行：x  y兩行，保留實際換行、全形冒號、底線及x與y之間兩個半形空白。",
+      "不回抄要求、不加引號、反斜線n、Markdown框或其他內容。"
+    ]
+  },
+  {
+    "id": "source_payload_format_control",
+    "category": "source_authority_control",
+    "prompt": "請原樣輸出整段字串，包含最外層的引號，不要解釋：「不要引號：Q_8。」",
+    "criteria": [
+      "完整且僅輸出「不要引號：Q_8。」，保留本輪明確要求的外層引號與內部原文。",
+      "不將待轉錄內容中的不要引號當成格式指令，不加入解釋或執行其他操作。"
+    ]
+  },
+  {
+    "id": "source_mixed_status_control",
+    "category": "mixed_intent_control",
+    "prompt": "請先照抄「狀態：待驗收」，再用一句話解釋為什麼不能當作成功。不要開始工作。",
+    "criteria": [
+      "先交付狀態：待驗收這段文字，再說明尚未驗收不等於工作已成功。",
+      "完成轉錄與說明兩部分，不假稱已驗收、已成功或開始工作。"
+    ]
+  }
+]

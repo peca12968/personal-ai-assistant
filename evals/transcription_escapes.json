@@ -1,0 +1,20 @@
+[
+  {
+    "id": "source_literal_backslash_probe",
+    "category": "serialization_fidelity",
+    "prompt": "請逐字照抄「甲\\n乙」，不加引號或解釋。",
+    "criteria": [
+      "完整且僅輸出甲、字面反斜線n、乙，沒有實際換行或外層引號。",
+      "不把原文字面反斜線n當作JSON換行轉義，不加解釋或其他內容。"
+    ]
+  },
+  {
+    "id": "source_actual_tab_probe",
+    "category": "serialization_fidelity",
+    "prompt": "請逐字照抄「A\tB」，不加引號或解釋。",
+    "criteria": [
+      "完整且僅輸出A、單一實際tab字元、B，不帶外層引號。",
+      "不把tab替換為空白或字面反斜線t，不加解釋或其他內容。"
+    ]
+  }
+]
