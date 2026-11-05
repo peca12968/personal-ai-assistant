@@ -184,3 +184,82 @@ class DocumentCalculationTests(unittest.TestCase):
             frame = notebook.nametowidget(notebook.tabs()[index])
             text, = (child for child in frame.winfo_children() if isinstance(child, tk.Text))
             self.assertIn(expected, text.get('1.0', 'end-1c'))
+
+    def test_explicit_conversion_computes_exact_mass_length_volume_and_duration(self):
+        self.attach('甲重量：2.8kg。\n甲距離為1.25公里。\n甲容量為900ｍＬ。\n甲時長為1秒。', 'a.txt')
+        self.attach('乙樣本實測重量為125公克。\n乙距離為1500m。\n乙容量為0.325升。\n乙時長為1分鐘。', 'b.txt')
+        for line, label, operation, target, expected, factors in (
+                (1, '重量', '減去', '公斤', '107/40', ('1', '1/1000')),
+                (2, '距離', '減去', '公尺', '-250', ('1000', '1')),
+                (3, '容量', '加上', '毫升', '1225', ('1', '1000')),
+                (4, '時長', '加上', '分鐘', '61/60', ('1/60', '1'))):
+            with self.subTest(label=label):
+                question = (f'文件問答：計算 [D1:L{line}] 的甲{label} {operation} D2 第{line}行的乙{label}'
+                            f'，統一換算成 {target}。')
+                app = DailyAssistant(self.store, NoModel()) if line % 2 else Assistant(self.store, NoModel())
+                response = app.ask(self.sid, question)
+                receipt = self.receipt(response)
+                self.assertEqual(receipt['schema'], 'document_calculation_receipt_v2')
+                self.assertEqual(receipt['plan']['request'], question)
+                self.assertEqual(receipt['result']['exact'], expected)
+                self.assertEqual(tuple(row['factor_exact'] for row in receipt['observations']), factors)
+                self.assertEqual(response['citation_checks'], [
+                    {'citation': f'[D1:L{line}]', 'range_valid': True},
+                    {'citation': f'[D2:L{line}]', 'range_valid': True},
+                ])
+                if line == 4:
+                    self.assertIn('61/60 分鐘', response['content'])
+                    self.assertIn('1 秒 = 1/60 分鐘', document_calculation.describe(receipt))
+
+    def test_conversion_keeps_missing_uncertain_and_incompatible_values_separate(self):
+        self.attach('甲重量為2公斤。', 'a.txt')
+        self.attach('乙重量為1L。\n乙重量為7Kg。\n乙重量約7公克。\n乙重量為1公斤，但待核准。', 'b.txt')
+        question = '文件問答：計算 [D1:L1] 的甲重量 加上 [D{doc}:L{line}] 的乙重量，換算成公斤。'
+        for document, line, expected in ((2, 1, 'unit_incompatible'), (2, 2, 'unit_unsupported'),
+                                         (2, 3, 'value_unconfirmed'), (2, 4, 'value_unconfirmed'),
+                                         (2, 5, 'line_out_of_bounds'), (8, 1, 'document_not_attached')):
+            with self.subTest(document=document, line=line):
+                response = Assistant(self.store, NoModel()).ask(self.sid, question.format(doc=document, line=line))
+                receipt = self.receipt(response)
+                self.assertIsNone(receipt['result'])
+                self.assertEqual(receipt['observations'][0]['converted']['exact'], '2')
+                self.assertEqual(receipt['observations'][1]['status'], expected)
+                self.assertNotIn('factor_exact', receipt['observations'][1])
+                self.assertTrue(response['content'].startswith('目前無法計算。'))
+
+    def test_conversion_and_v1_receipts_roundtrip_and_factor_tampering_fails(self):
+        self.attach('甲重量：1500g。', 'a.txt')
+        self.attach('乙重量：1公斤。', 'b.txt')
+        base = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，'
+        app = Assistant(self.store, NoModel())
+        before = app.ask(self.sid, base + '單位為公斤。')
+        after = app.ask(self.sid, base + '換算成公斤。')
+        old, new = self.receipt(before), self.receipt(after)
+        self.assertEqual(old['schema'], 'document_calculation_receipt_v1')
+        self.assertIsNone(old['result'])
+        self.assertEqual(new['result']['exact'], '1/2')
+        archive = create_backup(self.store.path, self.root / 'versions.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, before['id']), old)
+        self.assertEqual(document_calculation.read(restored, after['id']), new)
+        context = self.store.answer_context(after['id'])
+        context[document_calculation.FIELD]['observations'][0]['factor_exact'] = '1/100'
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), after['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-conversion.paibackup')
+
+    def test_conversion_keeps_mixed_requests_and_model_only_evaluation_on_original_path(self):
+        class Observer:
+            def answer(self, prompt, cancel=None):
+                return '原模型輸出'
+
+        stem = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，換算成'
+        for question, raw in ((stem + '公斤。然後上傳原始文件。', False),
+                              (stem + '公斤並刪除原檔。', False),
+                              (stem + '公斤。', True)):
+            with self.subTest(question=question, raw=raw):
+                reply = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, question)
+                self.assertEqual(reply['content'], '原模型輸出')
+                self.assertNotIn('response_mode', reply)

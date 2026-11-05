@@ -342,7 +342,7 @@ class Assistant:
         from . import chat_calculation
         calculation = chat_calculation.parse_request(question) if self.allow_local_calculation else None
         from . import document_calculation
-        document_plan = (document_calculation.parse_request(question)
+        document_plan = (document_calculation.parse_live_request(question)
                          if self.allow_local_calculation and not image_metadata else None)
         from . import chat_transcription
         transcription = (chat_transcription.parse_request(question)

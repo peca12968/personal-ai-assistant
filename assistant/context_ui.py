@@ -147,7 +147,7 @@ def show_context(parent, store, message_id):
     if evidence:
         sections = [('條件核對', '當時請求：\n' + context['current_request'] + '\n\n' + chat_evidence.describe(evidence_receipt))]
     if document_math:
-        sections = [('文件計算', '當時請求：\n' + context['current_request'] + '\n\n' + math_receipt['output']),
+        sections = [('文件計算', '當時請求：\n' + context['current_request'] + '\n\n' + document_calculation.describe(math_receipt)),
                     ('文件來源', doc_text)]
     from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):
