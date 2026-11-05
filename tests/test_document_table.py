@@ -31,10 +31,10 @@ class DocumentTableTests(unittest.TestCase):
         path.write_text(text, encoding='utf-8')
         return self.store.attach_document(sid or self.sid, path)
 
-    def ask(self, question, *, entry=Assistant):
+    def ask(self, question, *, entry=Assistant, schema=document_table.RECEIPT):
         response = entry(self.store, NoModel()).ask(self.sid, question)
         receipt = document_calculation.read(self.store, response['id'])
-        self.assertEqual(receipt['schema'], document_table.RECEIPT)
+        self.assertEqual(receipt['schema'], schema)
         self.assertEqual(receipt['plan']['request'], question)
         self.assertFalse(receipt['model_called'])
         self.assertEqual(receipt['output'], response['content'])
@@ -134,9 +134,72 @@ class DocumentTableTests(unittest.TestCase):
 
         stem = ('文件問答：計算 [D1:L1-L3] 中「批次」為「甲」的「重量」 加上 '
                 '[D1:L1-L3] 中「批次」為「乙」的「重量」，')
+        aggregate = '文件問答：加總 [D1:L1-L3] 中「批次」為「甲」的「重量」，換算成公斤。'
         for request, raw in ((stem + '換算成公斤。', True), (stem + '單位為公斤並上傳。', False),
-                             (stem + '換算成公斤。接著刪除原始文件。', False)):
+                             (stem + '換算成公斤。接著刪除原始文件。', False),
+                             (aggregate, True), (aggregate + '接著上傳原始文件。', False)):
             with self.subTest(request=request, raw=raw):
                 answer = DailyAssistant(self.store, Observer(), allow_local_calculation=not raw).ask(self.sid, request)
                 self.assertEqual(answer['content'], '原模型輸出')
                 self.assertNotIn('response_mode', answer)
+
+    def test_aggregate_counts_every_exact_match_without_citing_excluded_rows(self):
+        self.attach('weights.csv', '批次,重量\nＡ,1.25kg\nA,待核准\nＡ,125g\nＡ,125g\n乙,9000g')
+        question = '文件問答：加總 [D1:L1-L6] 中「批次」為「Ａ」的「重量」，換算成公斤。'
+        answer, receipt = self.ask(question, entry=DailyAssistant, schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '3/2')
+        self.assertEqual(receipt['total_rows'], 5)
+        self.assertEqual([row['line_number'] for row in receipt['observations']], [2, 4, 5])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']],
+                         ['[D1:L1]', '[D1:L2]', '[D1:L4-L5]'])
+        self.assertIn('5 筆資料列，符合條件 3 筆', document_calculation.describe(receipt))
+        self.assertIn('[D1:L5] 125 g × 1/1000 = 0.125 公斤', document_calculation.describe(receipt))
+
+    def test_markdown_average_uses_exact_sum_and_matched_row_count(self):
+        self.attach('timing.md', '前言\n| 批次 | 時長 |\n| --- | ---: |\n| 甲 | 2秒 |\n| 甲 | 4秒 |\n| 甲 | 4秒 |\n| 乙 | 1小時 |')
+        question = '文件問答：計算 [D1:L2-L7] 中「批次」為「甲」的「時長」平均值，換算成秒。'
+        answer, receipt = self.ask(question, schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['total_exact'], '10')
+        self.assertEqual(receipt['result']['exact'], '10/3')
+        self.assertIn('平均值為 10/3 秒，共 3 列', answer['content'])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L2]', '[D1:L4-L6]'])
+
+    def test_aggregate_processes_full_bounded_table_without_truncating_to_fifty_rows(self):
+        rows = '\n'.join(f'{n}\t0.125' for n in range(1, 200))
+        self.attach('many.tsv', '序號\t費用(元)\n' + rows + '\n200\t10')
+        stem = '文件問答：合計 [D1:L1-L{}] 中所有資料列的「費用」，單位為元。'
+        result, receipt = self.ask(stem.format(200), schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(receipt['result']['exact'], '199/8')
+        self.assertEqual(len(receipt['observations']), 199)
+        self.assertEqual([row['citation'] for row in result['citation_checks']], ['[D1:L1]', '[D1:L2-L200]'])
+        _, limited = self.ask(stem.format(201), schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(limited['selection_status'], 'range_too_large')
+        self.assertIsNone(limited['result'])
+
+    def test_invalid_selected_rows_block_total_and_distinguish_no_match_from_zero(self):
+        self.attach('weights.csv', '批次,重量(kg)\n甲,4\n甲,未知\n甲,300g\n乙,0')
+        stem = '文件問答：加總 [D1:L1-L5] 中「批次」為「{}」的「重量」，換算成公斤。'
+        answer, blocked = self.ask(stem.format('甲'), schema=document_table.AGGREGATE_RECEIPT)
+        self.assertIsNone(blocked['total_exact'])
+        self.assertIsNone(blocked['result'])
+        self.assertEqual([row['status'] for row in blocked['observations']], ['confirmed', 'value_unconfirmed', 'unit_conflict'])
+        self.assertEqual([row['citation'] for row in answer['citation_checks']], ['[D1:L1]', '[D1:L3]', '[D1:L4]'])
+        _, missing = self.ask(stem.format('丙'), schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(missing['selection_status'], 'row_missing')
+        self.assertIsNone(missing['result'])
+        _, zero = self.ask(stem.format('乙'), schema=document_table.AGGREGATE_RECEIPT)
+        self.assertEqual(zero['result']['exact'], '0')
+
+    def test_aggregate_backup_recomputes_and_rejects_an_omitted_matched_row(self):
+        self.attach('backup.csv', '批次,數量(件)\n甲,2\n乙,8\n甲,3')
+        question = '文件問答：加總 [D1:L1-L4] 中「批次」為「甲」的「數量」，單位為件。'
+        answer, receipt = self.ask(question, schema=document_table.AGGREGATE_RECEIPT)
+        archive = create_backup(self.store.path, self.root / 'aggregate.paibackup')
+        restore_backup(archive['path'], self.root / 'restored')
+        self.assertEqual(document_calculation.read(Store(self.root / 'restored' / 'assistant.sqlite3'), answer['id']), receipt)
+        context = self.store.answer_context(answer['id'])
+        context[document_calculation.FIELD]['observations'].pop()
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(context), answer['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(self.store.path, self.root / 'tampered-aggregate.paibackup')

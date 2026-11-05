@@ -1,8 +1,9 @@
-"""Two explicitly bound document operands and reproducible exact arithmetic."""
+"""Explicitly bound document values and reproducible exact arithmetic."""
 import json
 import re
 import unicodedata
 from decimal import Decimal
+from itertools import groupby
 
 from . import document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
@@ -64,14 +65,16 @@ def _parse_conversion(question):
 
 def parse_live_request(question):
     return (parse_request(question) or _parse_conversion(question)
-            or document_table.parse_request(question, _UNIT, document_units.SCALES))
+            or document_table.parse_request(question, _UNIT, document_units.SCALES)
+            or document_table.parse_aggregate(question, _UNIT, document_units.SCALES))
 
 
 def snapshot(store, sid, plan):
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
-    query = document_table.query(operands) if plan['schema'] == document_table.PLAN else plan['request']
+    table_plan = plan['schema'] in (document_table.PLAN, document_table.AGGREGATE_PLAN)
+    query = document_table.query(operands) if table_plan else plan['request']
     excerpts, ranges, limited = select_ranges(query, sources, max_excerpts=2, max_chars=14000)
     catalog = [dict(document_id=row['id'], name=row['name'], sha256=row['sha256'],
                     total_lines=len(row['content'].splitlines())) for row in sources]
@@ -168,6 +171,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == document_table.AGGREGATE_PLAN:
+        return _evaluate_aggregate(plan, cancel)
     if plan.get('schema') == document_table.PLAN:
         return _evaluate_table(plan, cancel)
     if plan.get('schema') == CONVERSION_PLAN:
@@ -276,6 +281,10 @@ def _table_quantity(operand, source, target, convert):
     row = document_table.lookup(operand, source, _UNIT)
     if row['status'] != 'selected':
         return row
+    return _cell_quantity(row, target, convert)
+
+
+def _cell_quantity(row, target, convert):
     value = unicodedata.normalize('NFKC', row['cell']).strip()
     match = re.fullmatch(rf'({_NUMBER}) *(?:({_UNIT}))?', value)
     if match is None:
@@ -336,6 +345,66 @@ def _evaluate_table(plan, cancel):
                         observations=observed, result=result, output=answer, output_sha256=digest(answer))
 
 
+def _row_citations(document, observations):
+    citations = []
+    for _, group in groupby(enumerate(observations), key=lambda item: item[1]['line_number'] - item[0]):
+        numbers = [row['line_number'] for _, row in group]
+        start, end = numbers[0], numbers[-1]
+        citations.append(f'[D{document}:L{start}]' if start == end else f'[D{document}:L{start}-L{end}]')
+    return citations
+
+
+def _aggregate_result(observations, convert, operation):
+    total = 0
+    for row in observations:
+        value = row['converted']['exact'] if convert else row['value']
+        total = exact_math.bounded(total + exact_math.parse(value))
+    args = (dict(operation='quotient', values=[str(total), str(len(observations))]) if operation == 'mean'
+            else dict(operation='sum', values=[str(total)]))
+    return exact_math.calculate(args), str(total)
+
+
+def _evaluate_aggregate(plan, cancel):
+    request = document_table.parse_aggregate(plan['request'], _UNIT, document_units.SCALES)
+    documents = plan['documents']
+    if request is None or plan != {**request, 'documents': documents} or len(documents['catalog']) > 1:
+        raise ValueError('表格彙總計畫與原問不符。')
+    operands, unit, convert = request['operands'], request['unit'], request['convert']
+    operand, = operands
+    source, = document_table.lines_for_requests(documents, _catalog(documents, operands), operands)
+    status, total_rows, matches = document_table.lookup_rows(operand, source, _UNIT)
+    observations = []
+    for line, row in matches:
+        check_cancel(cancel)
+        observations.append({**_cell_quantity(row, unit, convert), 'line_number': line})
+    result = total_exact = None
+    count = len(observations)
+    if status != 'selected':
+        answer = '目前無法計算。' + document_table.reason(status)
+        if source['status'] == 'provided':
+            answer += ' ' + operand['citation']
+    else:
+        header = observations[0]['header_citation']
+        invalid = [row for row in observations if row['status'] != 'confirmed']
+        if invalid:
+            lines = [f'符合條件的 {count} 列中，有 {len(invalid)} 列無法核對，無法計算。 {header}']
+            lines.extend(f'{row["row_citation"]} {document_table.reason(row["status"])}' for row in invalid[:8])
+            if len(invalid) > 8:
+                lines.append('其餘無法核對的列可在「查看本次參考」查閱。')
+        else:
+            operation = request['operation']
+            result, total_exact = _aggregate_result(observations, convert, operation)
+            label = '平均值' if operation == 'mean' else '總和'
+            lines = [f'「{operand["value_column"]}」的{label}為 {_display_exact(result)} {unit}，共 {count} 列。',
+                     '表頭 ' + header,
+                     '計入 ' + ' '.join(_row_citations(operand['document_id'], observations))]
+        answer = '\n'.join(lines)
+    check_cancel(cancel)
+    return answer, dict(schema=document_table.AGGREGATE_RECEIPT, plan=plan, model_called=False,
+                        selection_status=status, total_rows=total_rows, observations=observations,
+                        total_exact=total_exact, result=result, output=answer, output_sha256=digest(answer))
+
+
 def validate(receipt, delivered, question=None):
     try:
         answer, expected = evaluate(receipt['plan'])
@@ -353,6 +422,22 @@ def read(store, mid):
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == document_table.AGGREGATE_RECEIPT:
+        lines = [receipt['output']]
+        if receipt['total_rows'] is not None:
+            lines.append(f'\n範圍內有 {receipt["total_rows"]} 筆資料列，符合條件 {len(receipt["observations"])} 筆。')
+        if plan['operation'] == 'mean' and receipt['total_exact'] is not None:
+            lines.append(f'精確總和 {receipt["total_exact"]} {plan["unit"]} ÷ {len(receipt["observations"])}')
+        for row in receipt['observations']:
+            citation = row['row_citation']
+            if row['status'] != 'confirmed':
+                lines.append(f'{citation} {document_table.reason(row["status"])}')
+            else:
+                line = f'{citation} {row["value"]} {row["source_unit"]}'
+                if 'converted' in row and row['source_unit'] != plan['unit']:
+                    line += f' × {row["factor_exact"]} = {_display_exact(row["converted"])} {plan["unit"]}'
+                lines.append(line)
+        return '\n'.join(lines)
     factors = [f'{row.get("row_citation", operand["citation"])} 1 {row["source_unit"]} = {row["factor_exact"]} {plan["unit"]}'
                for operand, row in zip(plan['operands'], receipt['observations'], strict=True)
                if 'factor_exact' in row and row['source_unit'] != plan['unit']]

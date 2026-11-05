@@ -1,4 +1,4 @@
-"""Bind two requested table values to immutable, numbered document rows."""
+"""Bind requested table values to immutable, numbered document rows."""
 import csv
 import re
 import unicodedata
@@ -9,12 +9,18 @@ from .document_ranges import MAX_LINES, STATUS_TEXT, requested_ranges
 
 PLAN = 'document_calculation_plan_v3'
 RECEIPT = 'document_calculation_receipt_v3'
+AGGREGATE_PLAN = 'document_calculation_plan_v4'
+AGGREGATE_RECEIPT = 'document_calculation_receipt_v4'
 _INDEX = r'[1-9][0-9]{0,11}'
 _REF = rf'(\[D{_INDEX}:L{_INDEX}-L{_INDEX}\])'
 _TOKEN = r'「([^「」\[\]\x00-\x1f\x7f]{1,48})」'
 _OPERAND = rf'{_REF} *中 *{_TOKEN} *為 *{_TOKEN} *的 *{_TOKEN}'
 _REQUEST = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_OPERAND} *(加上|減去|[+＋\-－]) *{_OPERAND}'
                       r' *[,，] *(單位為|(?:統一)?換算成) *([^。?？\s]{1,8})[。?？]?')
+_AGG_SOURCE = rf'{_REF} *(?:中 *{_TOKEN} *為 *{_TOKEN} *|中 *(?:所有資料列 *)?)?的 *{_TOKEN}'
+_AGG_UNIT = r' *[,，] *(單位為|(?:統一)?換算成) *([^。?？\s]{1,8})[。?？]?'
+_AGG_PREFIX = re.compile(rf'文件問答[:：] *(?:請)?(加總|合計|平均) *{_AGG_SOURCE}{_AGG_UNIT}')
+_AGG_SUFFIX = re.compile(rf'文件問答[:：] *(?:請)?計算 *{_AGG_SOURCE} *(?:的 *)?(總和|合計|平均值?){_AGG_UNIT}')
 _ALIGNMENT = re.compile(r':?-{3,}:?')
 _HEADER_UNIT = re.compile(r'(.*?) *(?:\(([^()（）]{1,16})\)|（([^()（）]{1,16})）)')
 _SAME_UNIT_ONLY = frozenset('元 新台幣元 美元 件 個 箱 份 張 套 瓶 包 組 盒 批 顆 人 席 台 本'.split())
@@ -40,9 +46,8 @@ def parse_request(question, unit_pattern, supported_units):
         return None
     first, first_key, first_value, first_col, operator, second, second_key, second_value, second_col, mode, unit = match.groups()
     convert = mode != '單位為'
-    unit = unicodedata.normalize('NFKC', unit)
-    if (not re.fullmatch(unit_pattern, unit)
-            or (unit not in supported_units and (convert or unit not in _SAME_UNIT_ONLY))):
+    unit = _target_unit(unit, convert, unit_pattern, supported_units)
+    if unit is None:
         return None
     operands = []
     for citation, key, value, column in ((first, first_key, first_value, first_col), (second, second_key, second_value, second_col)):
@@ -53,6 +58,34 @@ def parse_request(question, unit_pattern, supported_units):
         operands.append({**rows[0], 'citation': citation, 'key_column': key, 'key_value': value, 'value_column': column})
     return dict(schema=PLAN, request=question, operation='sum' if operator in ('加上', '+', '＋') else 'difference',
                 unit=unit, convert=convert, operands=operands)
+
+
+def _target_unit(unit, convert, unit_pattern, supported_units):
+    unit = unicodedata.normalize('NFKC', unit)
+    if re.fullmatch(unit_pattern, unit) and (unit in supported_units or (not convert and unit in _SAME_UNIT_ONLY)):
+        return unit
+    return None
+
+
+def parse_aggregate(question, unit_pattern, supported_units):
+    if not isinstance(question, str) or len(question) > 480 or len(question.splitlines()) != 1:
+        return None
+    text = question.strip()
+    if match := _AGG_PREFIX.fullmatch(text):
+        operation, citation, key, value, column, mode, unit = match.groups()
+    elif match := _AGG_SUFFIX.fullmatch(text):
+        citation, key, value, column, operation, mode, unit = match.groups()
+    else:
+        return None
+    convert = mode != '單位為'
+    unit = _target_unit(unit, convert, unit_pattern, supported_units)
+    if unit is None or not column.strip() or (key is not None and not (key.strip() and value.strip())):
+        return None
+    spans, _ = requested_ranges(citation)
+    operand = {**spans[0], 'citation': citation, 'key_column': key.strip() if key is not None else None,
+               'key_value': value.strip() if value is not None else None, 'value_column': column.strip()}
+    return dict(schema=AGGREGATE_PLAN, request=question, operation='mean' if operation.startswith('平均') else 'sum',
+                unit=unit, convert=convert, operands=[operand])
 
 
 def query(operands):
@@ -150,14 +183,24 @@ def _table_rows(source):
 
 
 def lookup(operand, source, unit_pattern):
+    status, _, matches = lookup_rows(operand, source, unit_pattern)
+    if status != 'selected':
+        return dict(status=status)
+    if len(matches) > 1:
+        return dict(status='row_ambiguous', matching_lines=[line for line, _ in matches])
+    return matches[0][1]
+
+
+def lookup_rows(operand, source, unit_pattern):
+    """Return status, total data-row count, and matching cells in physical order."""
     if source['status'] != 'provided':
-        return source
+        return source['status'], None, []
     table = _table_rows(source)
     if table is None:
-        return dict(status='table_invalid')
+        return 'table_invalid', None, []
     header, rows, offset = table
     if not 2 <= len(header) <= 80 or not rows or any(len(row) != len(header) for row in rows):
-        return dict(status='table_invalid')
+        return 'table_invalid', None, []
     columns, units = [], []
     for cell in header:
         match = _HEADER_UNIT.fullmatch(cell)
@@ -166,21 +209,17 @@ def lookup(operand, source, unit_pattern):
         columns.append(match[1].strip() if explicit_unit else cell)
         units.append(unit if explicit_unit else None)
     if not all(columns) or len(set(columns)) != len(columns):
-        return dict(status='header_ambiguous')
-    if operand['key_column'] not in header or operand['value_column'] not in columns:
-        return dict(status='column_missing')
-    key = header.index(operand['key_column'])
+        return 'header_ambiguous', None, []
+    key_column = operand['key_column']
+    if (key_column is not None and key_column not in header) or operand['value_column'] not in columns:
+        return 'column_missing', len(rows), []
+    key = header.index(key_column) if key_column is not None else None
     value = columns.index(operand['value_column'])
-    matches = [(index, row[value]) for index, row in enumerate(rows, offset)
-               if row[key].strip() == operand['key_value']]
     start, document = operand['start_line'], operand['document_id']
-    if not matches:
-        return dict(status='row_missing')
-    if len(matches) > 1:
-        return dict(status='row_ambiguous', matching_lines=[start + index for index, _ in matches])
-    index, cell = matches[0]
-    return dict(status='selected', header_unit=units[value], cell=cell, sha256=source['sha256'],
-                header_citation=f'[D{document}:L{start}]', row_citation=f'[D{document}:L{start + index}]')
+    matches = [(line, dict(status='selected', header_unit=units[value], cell=row[value], sha256=source['sha256'],
+                           header_citation=f'[D{document}:L{start}]', row_citation=f'[D{document}:L{line}]'))
+               for line, row in enumerate(rows, start + offset) if key is None or row[key].strip() == operand['key_value']]
+    return ('selected' if matches else 'row_missing'), len(rows), matches
 
 
 def reason(status):
