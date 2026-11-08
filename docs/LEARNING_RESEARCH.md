@@ -407,3 +407,14 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 第一個命令只驗證合成資料。第二個命令建立獨立的本機研究資料庫和未開始的參考工作，接著可依本文件的底座分段流程固定總步數與短題驗收，再於原生閒置時執行。先從原始底座另開研究，便於用相同規則比較參數與重載結果。保留題只進入驗收，通過檢查點、短題與完整助理驗收後才有資格討論能力改善。
 
 分段研究的短題通過後，以 `evals/prerequisite_contrast_assistant_transfer.json` 準備新的完整助理對照。另有六道判斷及四道控制，和實際訓練或短題規約的問題均不重複。使用 `assess_base_assistant.py prepare` 指定已通過的短題驗收，再走完整輸入預檢及逐題流程。
+
+### 無關待查項目與輸出代碼
+
+`evals/prerequisite_decision_codes.json` 定義共同條件、任一條件、共同加備援、必要條件，以及所有合格項目都具有某標記等情境。程式列舉相容情況求出結論。每個情境有六例，三種結論和三個輸出代碼都各出現兩次。有些配對只改一個不影響結論的觀察，有些在相同事實下改用另一套代碼。已知必要標記存在時，除非另有證據，仍不能確定目標成立。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study decision-codes
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study decision-codes --prepare <新研究名稱>
+```
+
+新版從原始底座開始，訓練集保留 18 個早期訓練例並加入 30 個新例。12 個新保留題都排除於訓練。準備收據的 `short_transfer` 指向另外保存的短題檔，包含 6 個早期保留題與原有 6 個轉移題。準備分段後以 `assess_base_checkpoint.py prepare --transfer-suite` 指定該檔，讓先前的改善和退步可在同一批新權重上重測。完整助理仍使用另存且未參與短題的獨立題庫。

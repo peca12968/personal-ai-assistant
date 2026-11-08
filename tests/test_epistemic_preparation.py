@@ -1,10 +1,12 @@
 import json
+from collections import Counter
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.learning import prepare_epistemic as study
+from scripts.learning import decision_code_study as codes
 
 
 class EpistemicPreparationTests(unittest.TestCase):
@@ -14,10 +16,12 @@ class EpistemicPreparationTests(unittest.TestCase):
         self.assertEqual(len(data['assistant_suite']['cases']),8)
 
     def test_default_entry_never_opens_database_or_prepares_gpu_work(self):
-        with patch('sys.argv',['prepare_epistemic.py']), patch.object(study,'Store') as store, patch.object(study.batches,'prepare') as prepare:
-            study.main()
-            store.assert_not_called()
-            prepare.assert_not_called()
+        for arguments in ([], ['--study', 'decision-codes']):
+            with (self.subTest(arguments=arguments), patch('sys.argv', ['prepare_epistemic.py', *arguments]),
+                  patch.object(study, 'Store') as store, patch.object(study.batches, 'prepare') as prepare):
+                study.main()
+                store.assert_not_called()
+                prepare.assert_not_called()
 
     def test_preparation_uses_an_isolated_store_and_existing_bounded_idle_policy(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(study,'ROOT',Path(tmp)), \
@@ -58,3 +62,50 @@ class EpistemicPreparationTests(unittest.TestCase):
         data['training'][0]['prompt'] = '\u3000' + prior
         with self.assertRaisesRegex(ValueError, 'separate from earlier training and evaluation'):
             study.specification(json.dumps(data).encode('utf-8'))
+
+    def test_irrelevant_unknowns_and_necessary_only_rules_keep_correct_verdicts(self):
+        for rule, patterns, expected in (
+            ('either', ('TF', 'TU'), 'supported'),
+            ('shared_backup', ('TTF', 'TTU'), 'supported'),
+            ('shared_backup', ('FTF', 'FTU'), 'refuted'),
+            ('shared_backup', ('TFU', 'UTF'), 'undetermined'),
+            ('all', ('FT', 'FU'), 'refuted'),
+            ('necessary_only', ('TT', 'TU'), 'undetermined'),
+            ('required_marker', ('T', 'U'), 'undetermined'),
+            ('required_marker', ('F',), 'refuted'),
+        ):
+            with self.subTest(rule=rule, patterns=patterns):
+                self.assertEqual({codes.decide(rule, pattern) for pattern in patterns}, {expected})
+        self.assertEqual(codes.decide('necessary_only', 'TT', witnessed=True), 'supported')
+
+    def test_same_facts_require_different_codes_without_changing_decision(self):
+        spec = json.loads(study.DECISION_SPEC.read_bytes())
+        compiled = codes.compile_study(spec)
+        first, alternate = compiled['training'][:2]
+        self.assertEqual(first['verdict'], alternate['verdict'])
+        self.assertNotEqual(first['answer'], alternate['answer'])
+        self.assertEqual(first['prompt'].split('只輸出指定代碼。')[1],
+                         alternate['prompt'].split('只輸出指定代碼。')[1])
+        for split in compiled.values():
+            for row in split:
+                self.assertEqual(row['answer'], row['code_map'][row['verdict']])
+            for group in {row['contrast'] for row in split}:
+                outcomes = [row for row in split if row['contrast'] == group]
+                self.assertEqual(Counter(row['verdict'] for row in outcomes), dict.fromkeys(codes.VERDICTS, 2))
+                self.assertEqual(set(Counter(row['answer'] for row in outcomes).values()), {2})
+        spec['heldout'][0]['id'] = spec['training'][0]['id']
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            codes.compile_study(spec)
+
+    def test_decision_codes_replay_training_but_reserve_old_heldout_for_transfer(self):
+        raw, data = study.load_study('decision-codes')
+        self.assertEqual(json.loads(raw), data)
+        self.assertEqual((len(data['training']), len(data['heldout']), len(data['transfer_suite']['cases'])),
+                         (48, 12, 12))
+        prior = study.specification(study.CONTRAST_SPEC.read_bytes())
+        self.assertEqual(data['training'][:18], prior['training'])
+        old_heldout = {(row['prompt'], row['answer']) for row in prior['heldout']}
+        self.assertEqual({(row['prompt'], row['answer']) for row in data['transfer_suite']['cases'][-6:]},
+                         old_heldout)
+        self.assertTrue({row['prompt'] for row in data['training']}.isdisjoint(
+            {row['prompt'] for row in [*data['heldout'], *data['transfer_suite']['cases']]}))

@@ -1,0 +1,56 @@
+{
+  "schema": "synthetic_prerequisite_decision_codes_v1",
+  "training": [
+    {
+      "id": "proof_delivery",
+      "rule": "all",
+      "action": "交付校勘稿",
+      "conditions": ["稿件附件齊全", "校勘人已簽核"],
+      "codes": ["K", "M", "V"]
+    },
+    {
+      "id": "invoice_reading",
+      "rule": "either",
+      "action": "讀取傳票",
+      "conditions": ["室內終端可登入", "離線讀取器能讀取傳票"],
+      "codes": ["7", "3", "9"]
+    },
+    {
+      "id": "specimen_storage",
+      "rule": "shared_backup",
+      "action": "封存標本",
+      "conditions": ["標本編碼已核實", "低溫櫃可用", "備用冷藏箱可用"],
+      "codes": ["丙", "丁", "戊"]
+    },
+    {
+      "id": "data_calibration",
+      "rule": "necessary_only",
+      "action": "開始比對量測結果",
+      "conditions": ["時鐘已校準", "輸入端已接通"],
+      "codes": ["R2", "R5", "R8"]
+    },
+    {
+      "id": "maintenance_membership",
+      "rule": "required_marker",
+      "action": "歸入維護批次",
+      "conditions": ["備品有本期登錄標記"],
+      "codes": ["H", "J", "X"]
+    }
+  ],
+  "heldout": [
+    {
+      "id": "film_shipping",
+      "rule": "shared_backup",
+      "action": "交運底片箱",
+      "conditions": ["封裝已通過檢驗", "月台收件已確認", "上門取件已確認"],
+      "codes": ["L4", "P2", "W9"]
+    },
+    {
+      "id": "night_cargo",
+      "rule": "required_marker",
+      "action": "列入夜間搬運清單",
+      "conditions": ["箱號有夜間授權註記"],
+      "codes": ["申", "酉", "戌"]
+    }
+  ]
+}
