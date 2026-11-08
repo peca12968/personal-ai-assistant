@@ -392,3 +392,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 逐題入口需要尚未整批執行的原始規約。每次 `run` 預設選下一題，以同一次原生閒置觀察分別在兩個獨立程序執行底座與候選。每題有二十分鐘上限，恢復輸入或來源變更時停止。停止或失敗的原答保留，之後的命令接著收集尚未嘗試的題目。報告重核完整成對的實際請求、原答、會話、輸入長度及退出紀錄，列出已規劃與已完成題數，再分列目標和控制正確數。逐題研究是獨立的量測規約，日常候選資格仍由原本的完整驗收決定。
+
+### 共同條件與備援的對照式學習
+
+`evals/prerequisite_contrast_learning.json` 有六組訓練情境和兩組保留情境。每組固定同一條規則，替換觀察後分別得到「已確認成立」「已確認不成立」「未知」。情境涵蓋共同條件、備援、逐人核對、必要性與充分性的方向，以及同等回報衝突。整組留在同一分割，並檢查與先前的訓練及實測題有無重複。完整助理驗收另有四道控制題。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study prerequisite-contrast
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study prerequisite-contrast --prepare <新研究名稱>
+```
+
+第一個命令只驗證合成資料。第二個命令建立獨立的本機研究資料庫和未開始的參考工作，接著可依本文件的底座分段流程固定總步數與短題驗收，再於原生閒置時執行。先從原始底座另開研究，便於用相同規則比較參數與重載結果。保留題只進入驗收，通過檢查點、短題與完整助理驗收後才有資格討論能力改善。
+
+分段研究的短題通過後，以 `evals/prerequisite_contrast_assistant_transfer.json` 準備新的完整助理對照。另有六道判斷及四道控制，和實際訓練或短題規約的問題均不重複。使用 `assess_base_assistant.py prepare` 指定已通過的短題驗收，再走完整輸入預檢及逐題流程。

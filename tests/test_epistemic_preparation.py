@@ -41,3 +41,20 @@ class EpistemicPreparationTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'spec.json';path.write_text(json.dumps(data),encoding='utf8')
                 with patch.object(study,'SPEC',path),self.assertRaises(ValueError):study.specification()
+
+    def test_prerequisite_contrasts_have_disjoint_full_triplets(self):
+        data = study.specification(study.CONTRAST_SPEC.read_bytes())
+        self.assertEqual((len(data['training']), len(data['heldout'])), (18, 6))
+        groups = [{row['contrast'] for row in data[split]} for split in ('training', 'heldout')]
+        self.assertEqual([len(group) for group in groups], [6, 2])
+        self.assertTrue(groups[0].isdisjoint(groups[1]))
+        data['training'][0]['contrast'] = data['heldout'][0]['contrast']
+        with self.assertRaisesRegex(ValueError, 'single split'):
+            study.specification(json.dumps(data).encode('utf-8'))
+
+    def test_prerequisite_training_cannot_include_the_active_generalization_case(self):
+        data = json.loads(study.CONTRAST_SPEC.read_bytes())
+        prior = json.loads(study.GENERALIZATION_SPEC.read_bytes())['cases'][0]['question']
+        data['training'][0]['prompt'] = '\u3000' + prior
+        with self.assertRaisesRegex(ValueError, 'separate from earlier training and evaluation'):
+            study.specification(json.dumps(data).encode('utf-8'))

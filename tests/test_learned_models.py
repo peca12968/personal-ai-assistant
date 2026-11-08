@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -179,7 +180,8 @@ class LearnedModelTests(unittest.TestCase):
     def test_cli_selection_diagnostics_history_and_conflicts(self):
         cmd=[sys.executable,'scripts/learning/selection.py']
         def run(args,code=0,entry=cmd):
-            result=subprocess.run(entry+args+['--data-dir',str(self.root)],capture_output=True,text=True,encoding='utf-8',timeout=20,cwd=local_models.ROOT)
+            result=subprocess.run(entry+args+['--data-dir',str(self.root)],capture_output=True,text=True,encoding='utf-8',
+                                  timeout=20,cwd=local_models.ROOT,env={**os.environ,'PYTHONIOENCODING':'utf-8'})
             self.assertEqual(result.returncode,code,result.stderr)
             self.assertNotIn('Traceback',result.stderr)
             return result
