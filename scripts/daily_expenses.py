@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_conditions, daily_clearance, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_necessary, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_counts, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_necessary, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
@@ -237,6 +237,18 @@ class DailyAssistant(Assistant):
 
     def _ask(self, sid, question, cancel=None, retry=None, draft=None, image_ids=()):
         question = question.strip()
+        local = self.allow_local_calculation and not image_ids
+        before = retry['user_message_id'] if retry else None
+        prior = {}
+        if retry and local:
+            with self.store.connect() as db:
+                original = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?',
+                                      (retry['id'], sid)).fetchone()
+            prior = json.loads(original[0]) if original else {}
+        if local and (not retry or daily_counts.FIELD in prior):
+            counted = self._counted_answer(sid, question, cancel, retry, draft, prior)
+            if counted is not None:
+                return counted
         if current_message_only(question):
             return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         if self.allow_local_calculation and not image_ids:
@@ -250,14 +262,6 @@ class DailyAssistant(Assistant):
             from assistant.chat_transcription import parse_request
             if parse_request(question) is not None:
                 return super()._ask(sid,question,cancel=cancel,retry=retry,draft=draft,image_ids=image_ids)
-        local = self.allow_local_calculation and not image_ids
-        before = retry['user_message_id'] if retry else None
-        prior = {}
-        if retry and local:
-            with self.store.connect() as db:
-                original = db.execute('SELECT context_json FROM answer_runs WHERE id=? AND session_id=?',
-                                      (retry['id'], sid)).fetchone()
-            prior = json.loads(original[0]) if original else {}
         anchor = None
         explicit_conditions = daily_necessary.matches_revision(question)
         if (self.allow_local_calculation and self.allow_local_evidence
@@ -505,6 +509,26 @@ class DailyAssistant(Assistant):
             return answer, receipt
 
         return self._run_recorded(sid, question, context, calculate, cancel, retry, draft)
+
+    def _counted_answer(self, sid, question, cancel, retry, draft, prior):
+        plan = daily_counts.parse(question)
+        has_sources = plan is not None and self.store.documents(sid, include_content=False)
+        empty_documents = {'catalog': [], 'excerpts': []}
+        if retry and (plan is None or has_sources or prior[daily_counts.FIELD] != plan or prior.get('image_inputs')
+                      or prior.get('response_mode') != daily_counts.MODE or prior.get('documents') != empty_documents):
+            raise ValueError('重試所需的數量原文或資料範圍已變更，請重新提供完整條件。')
+        if plan is None or has_sources:
+            return None
+        context = make_context(question, [], [])
+        context.update(response_mode=daily_counts.MODE, documents=empty_documents,
+                       **{daily_counts.FIELD: plan})
+
+        def calculate(_):
+            if self.store.documents(sid, include_content=False):
+                raise ValueError('計算前已加入附件，請重新指定要使用的資料。')
+            return daily_counts.evaluate(plan)
+
+        return self._run_recorded(sid, question, context, calculate, cancel, retry, draft, daily_counts.FIELD)
 
     def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):

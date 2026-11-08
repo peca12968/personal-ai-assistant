@@ -15,14 +15,23 @@ def run_daily_window(store, engine, *, default_chat=False):
     from tkinter import filedialog, messagebox, scrolledtext, simpledialog
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_meeting, daily_meeting_export, daily_necessary
+    from scripts import daily_counts, daily_meeting, daily_meeting_export, daily_necessary
 
     class DailyWindow(App):
         def inspect_context(self):
             answer_id = self.last_answer
             context = self.store.answer_context(answer_id) if answer_id else None
             meeting_schema = None
-            if context and daily_necessary.FIELD in context:
+            if context and daily_counts.FIELD in context:
+                title = '本機數量核對'
+                try:
+                    receipt = daily_counts.read(self.store, answer_id)
+                    if receipt is None:
+                        raise ValueError
+                    lines = daily_counts.describe(receipt).splitlines()
+                except (KeyError, TypeError, ValueError):
+                    lines = ['無法核對這次數量計算紀錄與原始問題。']
+            elif context and daily_necessary.FIELD in context:
                 title = '本機必要條件核對'
                 try:
                     receipt = daily_necessary.read(self.store, self.last_answer)
