@@ -1,8 +1,10 @@
 """Recompute a completed short checkpoint assay, including a rejected candidate."""
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
+from itertools import combinations
 import json
 from pathlib import Path
+import re
 import sys
 
 if __package__ in (None, ''):
@@ -14,6 +16,14 @@ from scripts.learning.review_batch import read_phase
 
 
 STATES = {'已確認成立', '已確認不成立', '未知'}
+CODE = r'[A-Z0-9\u4e00-\u9fff]{1,4}'
+CODE_DECLARATIONS = (
+    re.compile(rf'確定可行回「(?P<supported>{CODE})」，確定不可行回「(?P<refuted>{CODE})」，'
+               rf'現有資料不足回「(?P<undetermined>{CODE})」。只輸出指定代碼。'),
+    re.compile(rf'回覆代碼「(?P<undetermined>{CODE})」表示待確認，「(?P<refuted>{CODE})」表示確定不能，'
+               rf'「(?P<supported>{CODE})」表示確定能。整個回答只留代碼。'),
+)
+CODE_REPLY = re.compile(rf'(?:({CODE})|「({CODE})」|『({CODE})』)。?')
 
 
 def outcome(expected, row):
@@ -31,6 +41,71 @@ def outcome(expected, row):
         except (ValueError, UnicodeError, RecursionError):
             pass
     return 'different_state' if expected in STATES and output in STATES else 'other_output'
+
+
+def declared_codes(prompt):
+    matches = [match for rule in CODE_DECLARATIONS for match in rule.finditer(prompt)]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    if match.start() != 0 and match.end() != len(prompt):
+        return None
+    codes = {literal: state for state, literal in match.groupdict().items()}
+    evidence = prompt[:match.start()] + prompt[match.end():]
+    return (codes, evidence) if len(codes) == 3 and evidence else None
+
+
+def code_reply(row, codes):
+    if not row['ended_with_eos']:
+        return None
+    match = CODE_REPLY.fullmatch(row['output'].strip(' \t\r\n'))
+    return codes.get(next(code for code in match.groups() if code is not None)) if match else None
+
+
+def code_diagnostics(cases, reports):
+    groups, evidence_rows = {}, defaultdict(list)
+    phases = ('baseline', 'reload')
+    rows = [reports[phase]['rows'] for phase in phases]
+    for case, *answers in zip(cases, *rows, strict=True):
+        declaration = declared_codes(case['prompt'])
+        if declaration is None:
+            continue
+        codes, evidence = declaration
+        expected = codes.get(case['answer'])
+        if expected is None:
+            continue
+        group = groups.setdefault(case['group'], {phase: {} for phase in phases})
+        observed = {}
+        for phase, answer in zip(phases, answers, strict=True):
+            state = code_reply(answer, codes)
+            exact = answer['ended_with_eos'] and answer['output'] == case['answer']
+            if not answer['ended_with_eos']:
+                category = 'unfinished'
+            elif state is None:
+                category = 'unrecognized_output'
+            elif state != expected:
+                category = 'wrong_declared_verdict'
+            else:
+                category = 'exact' if exact else 'correct_verdict_format_difference'
+            group[phase].setdefault(expected, Counter())[category] += 1
+            observed[phase] = state, exact
+        evidence_rows[case['group'], evidence].append((case['id'], codes, expected, observed))
+    remapped = defaultdict(list)
+    for (group, _), variants in evidence_rows.items():
+        for left, right in combinations(variants, 2):
+            first_id, first_codes, expected, first_observed = left
+            second_id, second_codes, target, second_observed = right
+            if first_codes == second_codes or expected != target:
+                continue
+            pair = dict(case_ids=[first_id, second_id], expected=expected)
+            for phase in phases:
+                first_state, first_exact = first_observed[phase]
+                second_state, second_exact = second_observed[phase]
+                pair[phase] = dict(decoded=[first_state, second_state],
+                                   both_correct=first_state == second_state == expected,
+                                   both_exact=first_exact and second_exact)
+            remapped[group].append(pair)
+    return dict(by_expected_verdict=groups, same_evidence_remapped=dict(remapped))
 
 
 def verify(folder):
@@ -76,8 +151,12 @@ def review(name):
         before, after = (checked['scores'][phase][cid] for phase in ('baseline', 'reload'))
         if before != after:
             result['improved_ids' if after else 'regressed_ids'].append(cid)
-    return dict(assay=name, scope=checked['scope'], passed=checked['passed'], groups=groups,
-                failed_checks=[name for name, passed in checked['checks'].items() if not passed])
+    result = dict(assay=name, scope=checked['scope'], passed=checked['passed'], groups=groups,
+                  failed_checks=[name for name, passed in checked['checks'].items() if not passed])
+    codes = code_diagnostics(cases, reports)
+    if codes['by_expected_verdict']:
+        result['decision_codes'] = codes
+    return result
 
 
 def main():

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.learning import assess_base_checkpoint as assay
+from scripts.learning import decision_code_study
 from scripts.learning import review_base_checkpoint as report
 
 
@@ -131,6 +132,39 @@ class BaseCheckpointAssayTests(unittest.TestCase):
             with self.subTest(expected=expected, actual=actual, eos=eos):
                 self.assertEqual(report.outcome(expected, {'output': actual, 'ended_with_eos': eos}), outcome)
 
+    def test_decision_code_review_uses_the_current_mapping_and_keeps_exact_scores_separate(self):
+        scenario = dict(id='fiction', rule='required_marker', action='領取樣本',
+                        conditions=['瓶上有本期標記'], codes=['A2', '甲', '9'])
+        for heldout in (True, False):
+            rendered = decision_code_study.compile_group(scenario, heldout)
+            cases = [{**case, 'group': 'heldout'} for case in rendered]
+            before = raw_rows(cases)
+            before[0]['output'] = '「A2」。'
+            before[1]['output'] = 'A2'
+            before[2]['output'] = '答案是甲'
+            before[3]['ended_with_eos'] = False
+            phases = {'baseline': {'rows': before}, 'reload': {'rows': raw_rows(cases)}}
+            observed = report.code_diagnostics(cases, phases)
+            by_verdict = observed['by_expected_verdict']['heldout']
+            self.assertEqual(by_verdict['baseline']['supported'],
+                             {'correct_verdict_format_difference': 1, 'wrong_declared_verdict': 1})
+            self.assertEqual(by_verdict['baseline']['refuted'], {'unrecognized_output': 1, 'unfinished': 1})
+            self.assertEqual(by_verdict['reload']['supported'], {'exact': 2})
+            pairs = observed['same_evidence_remapped']['heldout']
+            pair = next(item for item in pairs if item['case_ids'] == ['fiction_1', 'fiction_2'])
+            self.assertEqual(pair['baseline']['decoded'], ['supported', 'undetermined'])
+            self.assertFalse(pair['baseline']['both_correct'])
+            self.assertTrue(pair['reload']['both_exact'])
+            self.assertTrue(pair['reload']['both_correct'])
+            self.assertFalse(assay.grades(cases, before)['fiction_1'])
+
+    def test_code_diagnostics_decline_ambiguous_declarations_and_wrappers(self):
+        instruction = '確定可行回「A」，確定不可行回「B」，現有資料不足回「C」。只輸出指定代碼。'
+        self.assertIsNone(report.declared_codes('引文：' + instruction + '結束。'))
+        self.assertIsNone(report.declared_codes(instruction + '其他內容。' + instruction))
+        self.assertIsNone(report.declared_codes(instruction.replace('「B」', '「A」') + '其他內容。'))
+        self.assertIsNone(report.code_reply({'ended_with_eos': True, 'output': '「A』'}, {'A': 'supported'}))
+
     def test_report_recomputes_rejected_result_without_writing_or_accepting_forged_exit(self):
         protocol = {'fixed': 'study'}
         admitted = {'ticks_ms': 800000, 'last_input_tick': 100000, 'idle_ms': 700000}
@@ -162,6 +196,7 @@ class BaseCheckpointAssayTests(unittest.TestCase):
               patch.object(assay.batches, 'adapter_files', return_value=self.weights)):
             result = report.review('study')
             self.assertFalse(result['passed'])
+            self.assertNotIn('decision_codes', result)
             self.assertEqual(result['groups']['heldout']['regressed_ids'], ['heldout-0'])
             self.assertIn('baseline_correct_cases_retained', result['failed_checks'])
             self.assertEqual({path.name: path.read_bytes() for path in folder.iterdir()}, before)
