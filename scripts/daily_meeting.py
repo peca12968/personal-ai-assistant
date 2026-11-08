@@ -1,11 +1,12 @@
 """Read-only earliest common slot in explicitly listed availability."""
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 import hashlib
 import json
 import re
 
 from assistant import document_dates
 from assistant.local_answer_receipts import MAX_JSON_BYTES, load_context
+from scripts import daily_meeting_zones as meeting_zones
 
 CLOCK = r'(?:(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|24:00)'
 SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
@@ -33,6 +34,8 @@ COUNT = dict(zip('兩二三四五六七八', (2, 2, 3, 4, 5, 6, 7, 8)))
 DATED_PLAN = 'daily_availability_dates_v2'
 RELATIVE_PLAN = 'daily_availability_relative_v3'
 ZONED_PLAN = 'daily_availability_zoned_v4'
+NAMED_ZONED_PLAN = 'daily_availability_named_zones_v5'
+ZONED_PLANS = (ZONED_PLAN, NAMED_ZONED_PLAN)
 DATE_PLANS = (DATED_PLAN, RELATIVE_PLAN)
 DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
 WEEK_KIND = r'[本這下]'
@@ -49,11 +52,14 @@ DATED_ASK = re.compile(r'(?:請問)?最早哪一天(?:的哪個時段)?(?:能|�
 NO_AVAILABILITY = r'(?:無空檔|沒有空檔)'
 UNAVAILABLE = re.compile(rf'({NATURAL_NAME})(?:當天)?{NO_AVAILABILITY}')
 UTC_OFFSET = r'UTC[+-](?:0[0-9]|1[0-4]):[0-5][0-9]'
+ZONE = rf'(?:{UTC_OFFSET}|{meeting_zones.IANA_ZONE})'
 ZONED_HEADER = re.compile(r'\A跨時區會議[：:]')
-ZONED_PERSON = re.compile(rf'({NATURAL_NAME})\s+({UTC_OFFSET})[：:]\s*(.+)')
+ZONED_PERSON = re.compile(rf'({NATURAL_NAME})\s+({ZONE})[：:]\s*(.+)')
 ZONED_DAY = re.compile(rf'({DATE})\s+(.+)')
 ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
                           r'格式\s*YYYY-MM-DD HH:MM-HH:MM UTC±HH:MM')
+NAMED_ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
+                                r'格式\s*YYYY-MM-DD HH:MM UTC±HH:MM 至 HH:MM UTC±HH:MM')
 ZONED_REVISION = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+(取消|的?空檔改為)\s*(.+)')
 
 
@@ -269,14 +275,26 @@ def zoned_slots(text):
     return slot_list(text, allow_alternatives=True)
 
 
+def parse_zone(text, named):
+    if re.fullmatch(UTC_OFFSET, text):
+        offset = offset_minutes(text)
+        return offset_text(offset) if named else offset
+    if named and len(text) <= 96 and re.fullmatch(meeting_zones.IANA_ZONE, text):
+        return text
+    raise ValueError('請使用固定 UTC 偏移或完整的 IANA 時區名稱。')
+
+
 def parse_zoned(question):
     if len(question) > 8192:
         return None
     body = ZONED_HEADER.sub('', question, count=1)
     lines = [part.strip() for part in re.split(r'[。\r\n]+', body) if part.strip()]
-    if not 6 <= len(lines) <= 12 or not ZONED_OUTPUT.fullmatch(lines[-1]):
+    if not 6 <= len(lines) <= 12:
         return None
-    reference = re.fullmatch(rf'基準時區\s*({UTC_OFFSET})', lines[0])
+    named = bool(NAMED_ZONED_OUTPUT.fullmatch(lines[-1]))
+    if not named and not ZONED_OUTPUT.fullmatch(lines[-1]):
+        return None
+    reference = re.fullmatch(rf'基準時區\s*({ZONE})', lines[0])
     candidate_line = re.fullmatch(r'候選日期[：:]\s*(.+)', lines[1])
     duration = parse_duration(lines[-2])
     if not reference or not candidate_line or not duration:
@@ -289,7 +307,7 @@ def parse_zoned(question):
         return None
     people = {}
     try:
-        reference_offset = offset_minutes(reference[1])
+        reference_zone = parse_zone(reference[1], named)
         for day in dates:
             if not re.fullmatch(DATE, day):
                 return None
@@ -315,10 +333,35 @@ def parse_zoned(question):
                 if available is None:
                     return None
                 local_days[local[1]] = dict(available=available, cancelled=[])
-            people[name] = dict(offset=offset_minutes(entry[2]), days=local_days)
+            zone = parse_zone(entry[2], named)
+            people[name] = {('zone' if named else 'offset'): zone, 'days': local_days}
     except ValueError:
         return None
-    return dict(schema=ZONED_PLAN, dates=dates, reference_offset=reference_offset, people=people, duration=length)
+    plan = dict(schema=NAMED_ZONED_PLAN if named else ZONED_PLAN, dates=dates, people=people, duration=length)
+    plan['reference_zone' if named else 'reference_offset'] = reference_zone
+    return plan
+
+
+def zone_keys(plan):
+    return {plan['reference_zone'], *(person['zone'] for person in plan['people'].values())}
+
+
+def named_keys(plan):
+    return {key for key in zone_keys(plan) if re.fullmatch(meeting_zones.IANA_ZONE, key)}
+
+
+def bind_named_zones(plan, previous, *, fresh=False):
+    if plan['schema'] != NAMED_ZONED_PLAN:
+        return plan
+    keys = named_keys(plan)
+    if fresh:
+        saved = meeting_zones.snapshot(keys)
+    elif isinstance(previous, dict) and previous.get('schema') == NAMED_ZONED_PLAN and 'zone_rules' in previous:
+        saved = previous['zone_rules']
+    else:
+        raise ValueError('會議缺少原先保存的時區規則。')
+    meeting_zones.load_rules(saved, keys)
+    return {**plan, 'zone_rules': saved}
 
 
 FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
@@ -353,7 +396,7 @@ def revise(plan, clause):
             raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
         plan['duration'] = length
         return
-    if plan.get('schema') == ZONED_PLAN:
+    if plan.get('schema') in ZONED_PLANS:
         revise_zoned(plan, clause)
         return
     dated = plan.get('schema') in DATE_PLANS
@@ -401,6 +444,8 @@ def display(interval):
 
 
 def resolve(plan):
+    if plan.get('schema') == NAMED_ZONED_PLAN:
+        return resolve_named_zoned(plan)
     if plan.get('schema') == ZONED_PLAN:
         return resolve_zoned(plan)
     if plan.get('schema') in DATE_PLANS:
@@ -408,27 +453,31 @@ def resolve(plan):
     return resolve_same_day(plan)
 
 
-def resolve_same_day(plan):
-    # The day is bounded to 1,440 cells; overlap, adjacency and subtraction have
-    # the same semantics regardless of the order or duplication of input ranges.
-    common = bytearray([1]) * 1440
+def shared_windows(plan, width):
+    common = bytearray([1]) * width
     effective = {}
     for name, intervals in plan['available'].items():
-        mask = bytearray(1440)
+        mask = bytearray(width)
         for a, b in intervals:
             mask[a:b] = bytes([1]) * (b-a)
         for cut in plan['cancelled']:
             if cut['name'] == name:
                 a, b = cut['interval']
                 mask[a:b] = bytes(b-a)
-        effective[name] = list(map(display, ranges(mask)))
+        effective[name] = list(ranges(mask))
         common = bytearray(x & y for x, y in zip(common, mask))
-    windows = list(ranges(common))
+    return effective, list(ranges(common))
+
+
+def resolve_same_day(plan):
+    # Each cell represents one minute in a fixed-offset day.
+    effective, windows = shared_windows(plan, 1440)
     length = plan['duration']
     first = next(((a, a + length) for a, b in windows if b - a >= length), None)
     answer = display(first) if first else '沒有可行時段'
     receipt = dict(schema='daily_meeting_calculation_v1', status='complete', model_called=False,
-                   effective=effective, common=list(map(display, windows)), duration=length,
+                   effective={name: list(map(display, slots)) for name, slots in effective.items()},
+                   common=list(map(display, windows)), duration=length,
                    expression=f'共同空檔中最早連續 {length} 分鐘', result=dict(exact=answer, calculations=[]))
     return visible_answer(plan, receipt), receipt
 
@@ -457,9 +506,9 @@ def resolve_dated(plan):
     return answer, receipt
 
 
-def shifted_intersection(interval, shift):
+def shifted_intersection(interval, shift, width=1440):
     start, end = interval
-    start, end = max(0, start + shift), min(1440, end + shift)
+    start, end = max(0, start + shift), min(width, end + shift)
     return [start, end] if start < end else None
 
 
@@ -490,6 +539,56 @@ def resolve_zoned(plan):
     return answer, receipt
 
 
+def utc_availability(plan, zones):
+    available, cancelled = {}, []
+    for name, person in plan['people'].items():
+        available[name] = []
+        zone = zones[person['zone']]
+        label = f'{name}（{person["zone"]}）'
+        for day, windows in person['days'].items():
+            available[name].extend(meeting_zones.utc_intervals(day, windows['available'], zone, label))
+            cuts = [cut['interval'] for cut in windows['cancelled']]
+            cancelled.extend(dict(name=name, interval=interval)
+                             for interval in meeting_zones.utc_intervals(day, cuts, zone, label))
+    return available, cancelled
+
+
+def named_day(day, zone, label, available, cancelled, length):
+    start, end = next(meeting_zones.utc_intervals(day, [(0, 1440)], zone, label))
+    width = end - start
+    if not 1 <= width <= 2880:
+        raise ValueError('基準日期超出可比較的日界。')
+    projected = {name: [overlap for interval in slots if (overlap := shifted_intersection(interval, -start, width))]
+                 for name, slots in available.items()}
+    removed = [dict(name=cut['name'], interval=overlap) for cut in cancelled
+               if (overlap := shifted_intersection(cut['interval'], -start, width))]
+    effective, common = shared_windows(dict(available=projected, cancelled=removed), width)
+    first = next(((left, left + length) for left, right in common if right - left >= length), None)
+    civil_day = date.fromisoformat(day)
+
+    def show(interval):
+        return ' 至 '.join(meeting_zones.local_clock(start + minute, zone, civil_day) for minute in interval)
+
+    return dict(date=day, effective={name: list(map(show, slots)) for name, slots in effective.items()},
+                common=list(map(show, common)), first=show(first) if first else None)
+
+
+def resolve_named_zoned(plan):
+    zones = meeting_zones.load_rules(plan['zone_rules'], named_keys(plan))
+    for key in zone_keys(plan) - zones.keys():
+        zones[key] = timezone(timedelta(minutes=offset_minutes(key)))
+    reference = plan['reference_zone']
+    length = plan['duration']
+    available, cancelled = utc_availability(plan, zones)
+    days = [named_day(day, zones[reference], reference, available, cancelled, length) for day in sorted(plan['dates'])]
+    answer = next((f'{day["date"]} {day["first"]}' for day in days if day['first']), '沒有可行時段')
+    receipt = dict(schema='daily_meeting_named_zone_calculation_v5', status='complete', model_called=False,
+                   days=days, duration=length, reference_zone=reference,
+                   expression=f'依基準時區查找最早共同連續 {length} 分鐘',
+                   result=dict(exact=answer, calculations=[]))
+    return answer, receipt
+
+
 def visible_answer(plan, receipt):
     exact = receipt['result']['exact']
     if plan.get('output') != 'conversational':
@@ -506,7 +605,7 @@ def visible_answer(plan, receipt):
 def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
-    zoned = plan['schema'] == ZONED_PLAN
+    zoned = plan['schema'] in ZONED_PLANS
     dated = zoned or plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
@@ -519,9 +618,15 @@ def describe(context):
             lines.append(f'相對日期以原本的電腦本地日期 {anchor["date"]} 為基準。')
             lines.append(f'原本的本機時鐘觀察 {observed}')
     if zoned:
-        lines += ['', f'基準時區 {offset_text(plan["reference_offset"])}', '原始當地空檔與更正']
+        named = plan['schema'] == NAMED_ZONED_PLAN
+        reference = plan['reference_zone'] if named else offset_text(plan['reference_offset'])
+        lines += ['', f'基準時區 {reference}']
+        if named:
+            lines.append(f'沿用保存的 tzdata {plan["zone_rules"]["version"]} 規則。')
+        lines.append('原始當地空檔與更正')
         for name, person in plan['people'].items():
-            lines.append(f'{name} {offset_text(person["offset"])}')
+            zone = person['zone'] if named else offset_text(person['offset'])
+            lines.append(f'{name} {zone}')
             for local_day, windows in sorted(person['days'].items()):
                 slots = '、'.join(map(display, windows['available'])) or '無'
                 lines.append(f'  {local_day} {slots}')
@@ -612,6 +717,7 @@ def verified_meeting(db, mid):
     plan = parse(original[0]['question'], observation=recorded_observation(original[1].get('meeting_plan')))
     if plan is None:
         raise ValueError('會議紀錄缺少可核對的原始時段。')
+    plan = bind_named_zones(plan, original[1].get('meeting_plan'))
 
     def check(record, effective):
         row, saved, _ = record

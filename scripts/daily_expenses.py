@@ -529,6 +529,8 @@ class DailyAssistant(Assistant):
                 return None
             meeting, origin = previous
             daily_meeting.revise(meeting, change[1])
+        else:
+            meeting = daily_meeting.bind_named_zones(meeting, prior.get('meeting_plan'), fresh=not retry)
         if retry and (prior.get('meeting_plan') != meeting or prior.get('meeting_source') != origin):
             raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
         context = make_context(question, [], [])
