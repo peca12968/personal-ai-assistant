@@ -14,6 +14,10 @@ from scripts.daily_expenses import DailyAssistant
 
 
 PENS = '三箱原先各裝 8 支筆。開箱後發現其中 5 支損壞，其餘可用。只輸出剩下的可用支數，用阿拉伯數字。'
+TOTAL_RING_CASE = next(
+    row for row in json.loads((Path(__file__).resolve().parents[1] / 'evals/prerequisite_contrast_assistant_transfer.json')
+                              .read_text(encoding='utf-8'))['cases'] if row['id'] == 'explicit_loss_control'
+)
 
 
 class DailyCountTests(unittest.TestCase):
@@ -46,6 +50,7 @@ class DailyCountTests(unittest.TestCase):
                 receipt = daily_counts.read(self.store, result['id'])
                 self.assertEqual(receipt, result[daily_counts.FIELD])
                 self.assertIs(receipt['model_called'], False)
+                self.assertEqual(receipt['plan']['schema'], daily_counts.SCHEMA)
                 self.assertEqual(receipt['plan']['request'], prompt)
                 self.assertEqual(self.store.answer_context(result['id'])['recent_conversation'], [])
         self.engine.answer.assert_not_called()
@@ -75,6 +80,35 @@ class DailyCountTests(unittest.TestCase):
                 self.assertEqual(result['content'], '一般模型回答')
                 self.assertIsNone(daily_counts.read(self.store, result['id']))
         self.assertEqual(self.engine.answer.call_count, len(controls))
+
+    def test_complete_inspection_counts_the_named_item_and_returns_only_digits(self):
+        cases = (
+            (TOTAL_RING_CASE['question'], TOTAL_RING_CASE['answer']),
+            ('已有五盒每盒 4 個瓷杯。盤點完這批共有 3 個破損。請只輸出可用瓷杯的阿拉伯數字總數。', '17'),
+            ('原有兩袋各5顆珠子。檢查後這批共有十顆不能用。只回可用珠子的阿拉伯數字總數。', '0'),
+        )
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                result = self.app.ask(self.store.new_session(), prompt)
+                receipt = daily_counts.read(self.store, result['id'])
+                self.assertEqual(result['content'], expected)
+                self.assertEqual(receipt['plan']['schema'], daily_counts.TOTAL_SCHEMA)
+                self.assertIs(receipt['model_called'], False)
+        self.engine.answer.assert_not_called()
+
+    def test_named_total_declines_partial_inspection_and_other_scopes(self):
+        prompt = TOTAL_RING_CASE['question']
+        for control in (
+            prompt.replace('後共有', '後另一批共有'), prompt.replace('檢查後共有', '抽查時發現'),
+            prompt.replace('共有 4', '至少有 4'), prompt.replace('可用扣環', '可用螺絲'),
+            prompt.replace('4 枚不能用', '4 包不能用'), prompt.replace('共有 4', '共有 24'),
+            prompt.replace('包各', '包每盒'), prompt + '再寄出清單。',
+        ):
+            with self.subTest(control=control):
+                self.assertIsNone(daily_counts.parse(control))
+                result = self.app.ask(self.store.new_session(), control)
+                self.assertEqual(result['content'], '一般模型回答')
+                self.assertIsNone(daily_counts.read(self.store, result['id']))
 
     def test_raw_model_and_attachment_routes_bypass_local_counts(self):
         sid = self.store.new_session()

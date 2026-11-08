@@ -15,6 +15,9 @@ from scripts.daily_expenses import DailyAssistant
 EVAL_PATH = Path(__file__).resolve().parents[1] / 'evals/base_assistant_generalization.json'
 RECORDING = next(case for case in json.loads(EVAL_PATH.read_text(encoding='utf-8'))['cases']
                  if case['id'] == 'recording_consent_revoked')
+GROUPED_PATH = EVAL_PATH.with_name('prerequisite_contrast_assistant_transfer.json')
+GROUPED = [case for case in json.loads(GROUPED_PATH.read_text(encoding='utf-8'))['cases']
+           if case['id'].startswith('map_room_')]
 PERMITS = '本次三位訪客都必須有有效的入場證才可入場。'
 LABELS = '可入場回「可進」，確定不能入場回「不可進」，證據不足回「待核實」。請只輸出一個標籤。'
 
@@ -120,3 +123,115 @@ class DailyRosterPrerequisiteTests(unittest.TestCase):
             self.assertEqual(result['content'], '模型原答')
             self.assertIsNone(daily_necessary.read(store, result['id']))
             self.assertEqual(engine.answer.call_count, 2)
+
+
+class DailyGroupedRosterPrerequisiteTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.store = Store(self.root / 'assistant.sqlite3')
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '模型原答'
+        self.app = DailyAssistant(self.store, self.engine, default_chat=True)
+
+    def test_frozen_complete_dialogues_use_original_grouped_evidence(self):
+        states = [('true', 'true', 'true', 'true'), ('true', 'true', 'false', 'unknown'),
+                  ('true', 'true', 'unknown', 'true')]
+        for case, expected_states in zip(GROUPED, states, strict=True):
+            with self.subTest(case=case['id']):
+                sid = self.store.new_session()
+                for row in case['history']:
+                    self.store.add_message(sid, row['role'], row['content'])
+                reply = self.app.ask(sid, case['question'])
+                receipt = daily_necessary.read(self.store, reply['id'])
+                plan = receipt['plan']
+                self.assertEqual(reply['content'], case['answer'])
+                self.assertEqual(plan['schema'], daily_necessary.V4)
+                self.assertEqual(tuple(c['state'] for c in plan['conditions']), expected_states)
+                self.assertTrue(all(c['scope'] == '今天' for c in plan['conditions']))
+                self.assertIs(receipt['model_called'], False)
+                self.assertEqual(self.store.answer_context(reply['id'])['recent_conversation'], [])
+        self.engine.answer.assert_not_called()
+
+    def test_grouped_facts_respect_necessity_sufficiency_and_known_failure(self):
+        rule = '三位維護員都必須持有本次有效的區域通行證'
+        labels = '能使用回「通行」，不能使用回「停用」，資料不足回「待核」。只回標籤。'
+        details = ('已核對有效', '尚未核對', '唯一的通行證已失效')
+        possibilities = ((True,), (False, True), (False,))
+        for sufficient, values in product((False, True), product(range(3), repeat=3)):
+            with self.subTest(sufficient=sufficient, values=values):
+                clauses = []
+                for state, detail in enumerate(details):
+                    group = [f'第{n}' for n, value in enumerate(values, 1) if value == state]
+                    if state == 2:
+                        clauses.extend(person + '位' + detail for person in group)
+                    elif group:
+                        clauses.append('、'.join(group) + '位' + detail)
+                text = rule + ('，三位都有效就是全部要求' if sufficient else '')
+                text += '。本次' + '，'.join(clauses) + '。' + labels
+                allowed = {action for observations in product(*(possibilities[v] for v in values))
+                           for action in (True, False)
+                           if (action == all(observations) if sufficient else not action or all(observations))}
+                expected = '通行' if allowed == {True} else '停用' if allowed == {False} else '待核'
+                self.assertEqual(daily_necessary.evaluate(daily_necessary.parse(text))[0], expected)
+        maximum = ('八位維護員都必須持有本次有效的區域通行證，八位都有效就是全部要求。'
+                   '本次第1、第2、第3、第4、第5、第6、第7及第8位均已核對有效。' + labels)
+        self.assertEqual(daily_necessary.evaluate(daily_necessary.parse(maximum))[0], '通行')
+        self.assertIsNone(daily_necessary.parse(maximum.replace('八位', '九位')))
+
+    def test_ambiguous_roster_or_credential_facts_and_attached_requests_fall_back(self):
+        question = GROUPED[1]['question']
+        controls = (
+            question.replace('，第四位尚未核對', ''),
+            question.replace('第四位尚未核對', '第二位尚未核對'),
+            question.replace('第四位尚未核對', '第五位尚未核對'),
+            question.replace('唯一的使用碼', '唯一的門禁碼'),
+            question.replace('唯一的使用碼', '使用碼'),
+            question.replace('第三位唯一', '第三位昨天唯一'),
+            question.replace('四名都有效', '三名都有效'),
+            question.replace('今天的模擬規則', '本次的模擬規則'),
+            question.replace('第三位唯一', '第三及第四位唯一').replace('，第四位尚未核對', ''),
+            question + '再替我登入。',
+            GROUPED[0]['question'].replace('，全都有效', ''),
+        )
+        for prompt in controls:
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(daily_necessary.parse(prompt))
+                self.assertEqual(self.app.ask(self.store.new_session(), prompt)['content'], '模型原答')
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.store.new_session(), question)['content'], '模型原答')
+        sid = self.store.new_session()
+        note = self.root / 'observations.txt'
+        note.write_text('補充本次使用碼資料', encoding='utf-8')
+        self.store.attach_document(sid, note)
+        self.assertEqual(self.app.ask(sid, question)['content'], '模型原答')
+
+    def test_grouped_receipt_retry_correction_and_backup_preserve_person_bindings(self):
+        question = GROUPED[1]['question']
+        sid = self.store.new_session()
+        with patch.object(daily_necessary, 'evaluate', side_effect=EngineError('停止', 'cancelled')):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, question)
+        first = self.app.retry(sid)
+        self.assertEqual(first['content'], '禁止')
+        receipt = daily_necessary.read(self.store, first['id'])
+        self.assertIn('第三位｜第三位唯一的使用碼已作廢 → 已確認不滿足', daily_necessary.describe(receipt))
+        with self.assertRaisesRegex(EngineError, '完整條件名稱'):
+            self.app.ask(sid, '沿用上一輪條件：第三位的使用碼已確認有效。重算。')
+        correction = self.app.ask(sid, '沿用上一輪條件：第三位的繪圖室使用碼已確認有效。重算。')
+        self.assertEqual(correction['content'], '未定')
+        final = self.app.ask(sid, '沿用上一輪條件：第四位的繪圖室使用碼已確認有效。重算。')
+        self.assertEqual(final['content'], '准用')
+        bundle = create_backup(self.store.path, self.root / 'grouped.paibackup')
+        restore_backup(bundle['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, final['id'])['plan']['original']['schema'], daily_necessary.V4)
+        context = restored.answer_context(first['id'])
+        context[daily_necessary.FIELD]['plan']['conditions'][2]['state'] = 'unknown'
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), first['id']))
+        with self.assertRaisesRegex(ValueError, '必要條件規約'):
+            daily_necessary.read(restored, final['id'])
+        self.engine.answer.assert_not_called()

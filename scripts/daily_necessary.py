@@ -10,7 +10,8 @@ FIELD = 'necessary_conditions'
 V1 = 'daily_necessary_plan_v1'
 V2 = 'daily_necessary_plan_v2'
 V3 = 'daily_necessary_roster_plan_v3'
-INITIAL_PLANS = (V1, V2, V3)
+V4 = 'daily_necessary_grouped_roster_plan_v4'
+INITIAL_PLANS = (V1, V2, V3, V4)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -70,6 +71,21 @@ ROSTER_RULE = re.compile(
     rf'(?:須有|必須有|要有|需要有)(?:一份)?有效的?(?P<credential>[\u4e00-\u9fff]{{1,18}}?)'
     rf'才(?:能|可以|可)(?P<action>{NAME})')
 ROSTER_OUTPUT = re.compile(r'(?:請)?只(?:回|回覆|回答|輸出)(?:一個)?(?:結論|標籤)')
+GROUPED_SCOPE = r'今天|本次|目前'
+GROUPED_COUNT = r'[兩二三四五六七八2-8]'
+GROUPED_ORDINAL = r'第([一二三四五六七八1-8])'
+GROUPED_PERSON = r'第[一二三四五六七八1-8]'
+GROUPED_PEOPLE = rf'(?:{GROUPED_PERSON}[名位]?(?:、|及|與|和))*{GROUPED_PERSON}[名位]'
+GROUPED_INTRO = re.compile(rf'(?:請)?只(?:按|依)(?P<scope>{GROUPED_SCOPE})的(?:模擬)?規則判斷')
+GROUPED_RULE = re.compile(
+    rf'(?P<count>{GROUPED_COUNT})[名位](?:製圖員|維護員|測試員|檢測員|操作員|講者|參與者|成員|訪客|工作人員|操作者|申請人|隊員)'
+    rf'(?:必須各自|都必須)持有(?P<scope>{GROUPED_SCOPE})(?:一張|一份|一組)?有效的'
+    r'(?P<credential>[\u4e00-\u9fff]{0,14}?(?P<kind>使用碼|通行碼|門禁碼|入場證|通行證|操作證|工作證|識別證))'
+    rf'(?:[，,]\s*(?P<complete>{GROUPED_COUNT})[名位]都有效就是全部要求)?'
+)
+GROUPED_MEANINGS = dict(supported=r'(?:確定)?(?:能|可|可以)使用',
+                        refuted=r'(?:確定)?(?:不能|不可)使用',
+                        undetermined=MEANINGS['undetermined'] + r'|無法判定')
 
 
 def alternative_groups(text):
@@ -141,7 +157,14 @@ def observation(clause, condition, *, carried=False):
 
 
 def parse(question):
-    return parse_version(question, V1) or parse_version(question, V2) or parse_version(question, V3)
+    return (parse_version(question, V1) or parse_version(question, V2)
+            or parse_version(question, V3) or parse_version(question, V4))
+
+
+def roster_conditions(count, credential, scope):
+    return [dict(name=person + credential, property='有效', requirement=f'{person}有有效的{credential}',
+                 participant=person, credential=credential, scope=scope)
+            for person in (f'第{ordinal}位' for ordinal in ROSTER_ORDINALS[:count])]
 
 
 def parse_roster(question, sentences):
@@ -163,16 +186,86 @@ def parse_roster(question, sentences):
     options = labels(label_text, meanings)
     if not options:
         return None
-    conditions = []
-    for ordinal in ROSTER_ORDINALS[:ROSTER_COUNTS[rule['count']]]:
-        person = f'第{ordinal}位'
-        conditions.append(dict(name=person + credential, property='有效',
-                               requirement=f'{person}有有效的{credential}', participant=person,
-                               credential=credential, scope=scope))
+    conditions = roster_conditions(ROSTER_COUNTS[rule['count']], credential, scope)
     if not bind_observations(conditions, sentences[1:-2]):
         return None
     return dict(schema=V3, request=question, request_sha256=evidence_logic.digest(question),
                 action=action, rule=sentences[0], sufficient=False, conditions=conditions, labels=options)
+
+
+def bind_grouped_roster(conditions, sentences, scope, item):
+    people = {condition['participant']: condition for condition in conditions}
+    verified = re.compile(rf'(?:{scope})?已(?:核對|確認)({GROUPED_PEOPLE})(?:的)?{item}'
+                          r'[，,]\s*(?:全都|都|均)有效')
+    subject = re.compile(rf'(?:{scope})?({GROUPED_PEOPLE})(.+)')
+    positive = re.compile(rf'(?:(?:的)?{item})?(?:全都|都|均)?已(?:核對|確認|確定)(?:全都|均)?有效')
+    negative = re.compile(rf'(?:的)?唯一(?:的)?{item}已(?:確認|確定)?(?:作廢|失效|撤銷|撤回)'
+                          rf'|已(?:確認|確定)沒有有效的?{item}')
+    pending = re.compile(rf'(?:(?:的)?{item})?(?:尚未|還沒)(?:核對|核實|檢查|確認)')
+    for sentence in sentences:
+        batch = verified.fullmatch(sentence)
+        clauses = [sentence] if batch else re.split(r'[，,；;]', sentence)
+        for part in clauses:
+            clause = part.strip()
+            if batch:
+                group, status = batch[1], 'true'
+            else:
+                match = subject.fullmatch(clause)
+                if match is None:
+                    return False
+                group, detail = match.groups()
+                if positive.fullmatch(detail):
+                    status = 'true'
+                elif negative.fullmatch(detail):
+                    status = 'false'
+                elif pending.fullmatch(detail):
+                    status = 'unknown'
+                else:
+                    return False
+            ordinals = re.findall(GROUPED_ORDINAL, group)
+            if status == 'false' and len(ordinals) != 1:
+                return False
+            for ordinal in ordinals:
+                if ordinal.isascii():
+                    ordinal = ROSTER_ORDINALS[int(ordinal) - 1]
+                condition = people.get(f'第{ordinal}位')
+                if condition is None or 'observation' in condition:
+                    return False
+                condition.update(observation=clause, state=status)
+    return all('observation' in condition for condition in conditions)
+
+
+def parse_grouped_roster(question, sentences):
+    intro = GROUPED_INTRO.fullmatch(sentences[0])
+    if intro:
+        sentences = sentences[1:]
+    if not 4 <= len(sentences) <= 11:
+        return None
+    rule = GROUPED_RULE.fullmatch(sentences[0])
+    if not rule or UNBOUND.search(rule['credential']):
+        return None
+    scope = rule['scope']
+    observations = sentences[1:-2]
+    if (intro and intro['scope'] != scope) or (not intro and not observations[0].startswith(scope)):
+        return None
+    count = ROSTER_COUNTS[rule['count']]
+    if rule['complete'] and ROSTER_COUNTS[rule['complete']] != count:
+        return None
+    output, label_text = sentences[-2:]
+    if ROSTER_OUTPUT.fullmatch(label_text):
+        output, label_text = label_text, output
+    options = labels(label_text, GROUPED_MEANINGS)
+    if not ROSTER_OUTPUT.fullmatch(output) or not options:
+        return None
+    credential = rule['credential']
+    conditions = roster_conditions(count, credential, scope)
+    item = re.escape(credential)
+    if rule['kind'] != credential:
+        item = rf'(?:{item}|{re.escape(rule["kind"])})'
+    if not bind_grouped_roster(conditions, observations, scope, item):
+        return None
+    return dict(schema=V4, request=question, request_sha256=evidence_logic.digest(question),
+                action='使用', rule=sentences[0], sufficient=bool(rule['complete']), conditions=conditions, labels=options)
 
 
 def bind_observations(conditions, sentences):
@@ -199,6 +292,8 @@ def parse_version(question, version):
     sentences = [s.strip() for s in re.split(r'[。\r\n]+', body)]
     if version == V3:
         return parse_roster(question, sentences)
+    if version == V4:
+        return parse_grouped_roster(question, sentences)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -469,6 +564,7 @@ def evaluate(plan, cancel=None):
     status = checked['analysis']['status']
     schema = {V1: 'daily_necessary_receipt_v1', V2: 'daily_necessary_receipt_v2',
               V3: 'daily_necessary_roster_receipt_v3',
+              V4: 'daily_necessary_grouped_roster_receipt_v4',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
@@ -592,7 +688,10 @@ def describe(receipt):
         if 'conflict' in condition:
             lines.append(f'{condition["name"]} → 回報有分歧（先前觀察：{condition["observation"]}）')
         else:
-            lines.append(f'{condition["observation"]} → {states[condition["state"]]}')
+            source = condition['observation']
+            if resolved['schema'] == V4:
+                source = f'{condition["participant"]}｜{source}'
+            lines.append(f'{source} → {states[condition["state"]]}')
     if resolved['schema'] == V2:
         observed = {c['name']: c['state'] for c in resolved['conditions']}
         for group in resolved['groups']:

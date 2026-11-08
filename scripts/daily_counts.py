@@ -8,6 +8,7 @@ from assistant import local_answer_receipts
 MODE = 'local_calculation'
 FIELD = 'counted_items'
 SCHEMA = 'counted_items_v1'
+TOTAL_SCHEMA = 'counted_items_exhaustive_v2'
 UNITS = '支塊顆枚件個張份條瓶本卷片枝冊'
 DIGITS = '零一二三四五六七八九'
 POSITIVE = '一二兩三四五六七八九'
@@ -36,6 +37,16 @@ QUESTION = re.compile(
     rf'(?:請問)?(?P<remaining>剩下的?|剩餘)?(?P<usable>可用)?'
     rf'(?:(?P<unit>[{UNITS}])數|數量)(?:還有|是|有)?多少[？?][ \t]*{NUMBER_ONLY}'
 )
+TOTAL_STOCK = re.compile(
+    rf'(?:已有|原有)[ \t]*(?P<groups>{COUNT})[ \t]*(?P<group_unit>[箱盒袋包組籃盤捆])[ \t]*'
+    rf'(?:各|每(?P=group_unit))[ \t]*(?P<each>{COUNT})[ \t]*'
+    rf'(?P<unit>[{UNITS}])[ \t]*(?P<item>[\u4e00-\u9fff]{{1,12}})'
+)
+TOTAL_DEFECT = re.compile(
+    rf'(?:檢查|清點|盤點)(?:後|完)(?:這批|本批)?共(?:有|計)[ \t]*(?P<loss>{COUNT})[ \t]*'
+    rf'(?P<unit>[{UNITS}])(?:都)?(?:損壞|破損|不能用|無法使用)'
+)
+TOTAL_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆|回傳|回)可用(?P<item>[\u4e00-\u9fff]{1,12})的阿拉伯數字總數')
 
 
 def number(raw):
@@ -55,7 +66,9 @@ def parse(request):
     if len(clauses) != 3:
         return None
     stock = STOCK.fullmatch(clauses[0])
-    if stock is None or UNSAFE_ITEM.search(stock['item']):
+    if stock is None:
+        return parse_total_loss(request, clauses)
+    if UNSAFE_ITEM.search(stock['item']):
         return None
     defect = DEFECT.fullmatch(clauses[1])
     loss = defect or REMOVAL.fullmatch(clauses[1])
@@ -71,10 +84,28 @@ def parse(request):
     total = groups * each
     if not total or deducted > total or (defect and deducted < total and not defect['remainder']):
         return None
-    return {'schema': SCHEMA, 'request': request, 'clauses': clauses, 'unit': unit,
+    return counted_plan(SCHEMA, request, clauses, stock, groups, each, deducted,
+                        'unusable' if defect else 'removed')
+
+
+def parse_total_loss(request, clauses):
+    stock = TOTAL_STOCK.fullmatch(clauses[0])
+    loss = TOTAL_DEFECT.fullmatch(clauses[1])
+    output = TOTAL_OUTPUT.fullmatch(clauses[2])
+    if (not stock or not loss or not output or UNSAFE_ITEM.search(stock['item'])
+            or stock['unit'] != loss['unit'] or stock['item'] != output['item']):
+        return None
+    groups, each, deducted = number(stock['groups']), number(stock['each']), number(loss['loss'])
+    if not groups or not each or deducted > groups * each:
+        return None
+    return counted_plan(TOTAL_SCHEMA, request, clauses, stock, groups, each, deducted, 'unusable')
+
+
+def counted_plan(schema, request, clauses, stock, groups, each, deducted, deduction):
+    return {'schema': schema, 'request': request, 'clauses': clauses, 'unit': stock['unit'],
             'item': stock['item'], 'group_unit': stock['group_unit'],
             'groups': str(groups), 'each': str(each), 'deducted': str(deducted),
-            'deduction': 'unusable' if defect else 'removed'}
+            'deduction': deduction}
 
 
 def evaluate(plan):
