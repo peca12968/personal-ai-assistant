@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from scripts.learning import assess_base_checkpoint as assay
 from scripts.learning import decision_code_study
+from scripts.learning import prepare_epistemic
 from scripts.learning import review_base_checkpoint as report
 
 
@@ -164,6 +165,34 @@ class BaseCheckpointAssayTests(unittest.TestCase):
         self.assertIsNone(report.declared_codes(instruction + '其他內容。' + instruction))
         self.assertIsNone(report.declared_codes(instruction.replace('「B」', '「A」') + '其他內容。'))
         self.assertIsNone(report.code_reply({'ended_with_eos': True, 'output': '「A』'}, {'A': 'supported'}))
+
+    def test_observation_study_declarations_decode_their_distinct_output_styles(self):
+        _, data = prepare_epistemic.load_study('observation-language')
+        for row in [*data['training'][48:], *data['heldout'][:6]]:
+            with self.subTest(case=row['id']):
+                code_map, evidence = report.declared_codes(row['prompt'])
+                self.assertEqual(code_map, {literal: state for state, literal in row['code_map'].items()})
+                self.assertEqual(code_map[row['answer']], row['verdict'])
+                self.assertIn('現在能否', evidence)
+
+    def test_retention_compares_earlier_candidate_across_renumbered_splits(self):
+        previous = [dict(id='old', prompt='原保留題', group='heldout', answer='R')]
+        current = [dict(id='new', prompt='原保留題', group='transfer', answer='R')]
+        old = (previous, {'baseline': {'rows': raw_rows(previous, ('old',))}},
+               {'scores': {'reload': {'old': True}}})
+        new = (current, {'baseline': {'rows': raw_rows(current, ('new',))}},
+               {'scores': {'reload': {'new': False}}})
+        result = report.retention(old, new)
+        self.assertFalse(result['all_prior_correct_retained'])
+        self.assertEqual(result['groups']['heldout'], {'count': 1, 'prior': 1, 'current': 0})
+        self.assertEqual(result['regressed'], [{'previous_id': 'old', 'current_id': 'new', 'group': 'heldout'}])
+        changed = copy.deepcopy(new)
+        changed[1]['baseline']['rows'][0]['tokens'] += 1
+        with self.assertRaisesRegex(ValueError, '原始底座回覆不一致'):
+            report.retention(old, changed)
+        current[0]['group'] = 'new'
+        with self.assertRaisesRegex(ValueError, '缺少'):
+            report.retention(old, new)
 
     def test_report_recomputes_rejected_result_without_writing_or_accepting_forged_exit(self):
         protocol = {'fixed': 'study'}

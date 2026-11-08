@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from scripts.learning import prepare_epistemic as study
 from scripts.learning import decision_code_study as codes
+from scripts.learning import observation_language_study as observations
 
 
 class EpistemicPreparationTests(unittest.TestCase):
@@ -16,7 +17,7 @@ class EpistemicPreparationTests(unittest.TestCase):
         self.assertEqual(len(data['assistant_suite']['cases']),8)
 
     def test_default_entry_never_opens_database_or_prepares_gpu_work(self):
-        for arguments in ([], ['--study', 'decision-codes']):
+        for arguments in ([], ['--study', 'decision-codes'], ['--study', 'observation-language']):
             with (self.subTest(arguments=arguments), patch('sys.argv', ['prepare_epistemic.py', *arguments]),
                   patch.object(study, 'Store') as store, patch.object(study.batches, 'prepare') as prepare):
                 study.main()
@@ -109,3 +110,43 @@ class EpistemicPreparationTests(unittest.TestCase):
                          old_heldout)
         self.assertTrue({row['prompt'] for row in data['training']}.isdisjoint(
             {row['prompt'] for row in [*data['heldout'], *data['transfer_suite']['cases']]}))
+
+    def test_observation_study_preserves_all_earlier_unseen_questions_and_both_known_errors(self):
+        _, earlier = study.load_study('decision-codes')
+        raw, data = study.load_study('observation-language')
+        self.assertEqual(json.loads(raw), data)
+        self.assertEqual((len(data['training']), len(data['heldout']), len(data['transfer_suite']['cases'])),
+                         (63, 16, 16))
+        self.assertEqual(data['training'][:48], earlier['training'])
+        retained = {(row['prompt'], row['answer']) for row in [*earlier['heldout'], *earlier['transfer_suite']['cases']]}
+        checks = {(row['prompt'], row['answer']) for row in [*data['heldout'], *data['transfer_suite']['cases']]}
+        self.assertEqual(len(retained), 24)
+        self.assertEqual(len(checks - retained), 8)
+        self.assertTrue(retained <= checks)
+        self.assertFalse({question for question, _ in checks} & {row['prompt'] for row in data['training']})
+        self.assertTrue({'route-alternative', 'previous-contrast-5'} <= {row['id'] for row in data['heldout']})
+        full = data['full_transfer_suite']['cases']
+        self.assertEqual(Counter(row['group'] for row in full), {'target': 6, 'control': 4})
+        self.assertFalse({row['question'] for row in full} & (
+            {question for question, _ in checks} | {row['prompt'] for row in data['training']}))
+
+    def test_natural_fact_annotations_distinguish_necessity_and_reject_bad_witnesses_or_leakage(self):
+        spec = json.loads(study.OBSERVATION_SPEC.read_bytes())
+        compiled = observations.compile_study(spec)
+        panel = [row for row in compiled['training'] if row['contrast'] == 'platform_surface']
+        self.assertEqual([row['verdict'] for row in panel], list(codes.VERDICTS))
+        self.assertIn('一層尚未擦去的水膜', panel[1]['prompt'])
+        self.assertEqual(panel[1]['answer'], panel[1]['code_map']['refuted'])
+        self.assertEqual(panel[2]['answer'], panel[2]['code_map']['undetermined'])
+        spec['training'][1]['observations'][1]['witnessed'] = True
+        with self.assertRaisesRegex(ValueError, 'witnessed outcome'):
+            observations.compile_study(spec)
+
+        spec = json.loads(study.OBSERVATION_SPEC.read_bytes())
+        _, earlier = study.load_study('decision-codes')
+        spec['transfer'][0]['prompt'] = '\u3000' + earlier['heldout'][0]['prompt']
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / 'overlap.json'
+            fixture.write_text(json.dumps(spec), encoding='utf-8')
+            with patch.object(study, 'OBSERVATION_SPEC', fixture), self.assertRaisesRegex(ValueError, 'overlap'):
+                study.load_study('observation-language')

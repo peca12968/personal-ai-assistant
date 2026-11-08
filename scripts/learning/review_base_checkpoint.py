@@ -22,8 +22,13 @@ CODE_DECLARATIONS = (
                rf'現有資料不足回「(?P<undetermined>{CODE})」。只輸出指定代碼。'),
     re.compile(rf'回覆代碼「(?P<undetermined>{CODE})」表示待確認，「(?P<refuted>{CODE})」表示確定不能，'
                rf'「(?P<supported>{CODE})」表示確定能。整個回答只留代碼。'),
+    re.compile(rf'能確定可以回 (?P<supported>{CODE})，能確定不可以回 (?P<refuted>{CODE})，'
+               rf'還不能確定回 (?P<undetermined>{CODE})。只輸出代碼。'),
+    re.compile(rf'只回一個代碼。(?P<undetermined>{CODE}) 表示資料不足，(?P<supported>{CODE}) 表示確定可行，'
+               rf'(?P<refuted>{CODE}) 表示確定不可行。'),
 )
 CODE_REPLY = re.compile(rf'(?:({CODE})|「({CODE})」|『({CODE})』)。?')
+RETENTION_GROUPS = {'heldout', 'transfer', 'guard'}
 
 
 def outcome(expected, row):
@@ -138,8 +143,44 @@ def verify(folder):
     return cases, reports, checked
 
 
-def review(name):
-    cases, reports, checked = verify(assay.assay_folder(name))
+def retention(previous, current):
+    old_cases, old_reports, old_checked = previous
+    new_cases, new_reports, new_checked = current
+    available = {}
+    for case, baseline in zip(new_cases, new_reports['baseline']['rows'], strict=True):
+        if case['group'] in RETENTION_GROUPS:
+            if case['prompt'] in available:
+                raise ValueError('新驗收的同一保留題有多筆紀錄。')
+            available[case['prompt']] = case, baseline
+    groups, regressed, improved = {}, [], []
+    for old, old_baseline in zip(old_cases, old_reports['baseline']['rows'], strict=True):
+        group = old['group']
+        if group not in RETENTION_GROUPS:
+            continue
+        match = available.pop(old['prompt'], None)
+        if match is None:
+            raise ValueError('新驗收缺少早期保留題、轉移題或基本控制。')
+        new, new_baseline = match
+        if (old['answer'] != new['answer'] or any(old_baseline[key] != new_baseline[key]
+                                                for key in ('output', 'tokens', 'ended_with_eos'))):
+            raise ValueError('兩次驗收的答案規約或原始底座回覆不一致。')
+        before = old_checked['scores']['reload'][old['id']]
+        after = new_checked['scores']['reload'][new['id']]
+        counts = groups.setdefault(group, dict(count=0, prior=0, current=0))
+        counts['count'] += 1
+        counts['prior'] += before
+        counts['current'] += after
+        if before != after:
+            (improved if after else regressed).append(dict(previous_id=old['id'], current_id=new['id'], group=group))
+    if not groups:
+        raise ValueError('早期驗收沒有可比較的保留題。')
+    return dict(groups=groups, all_prior_correct_retained=not regressed,
+                improved=improved, regressed=regressed)
+
+
+def review(name, retained_from=None):
+    verified = verify(assay.assay_folder(name))
+    cases, reports, checked = verified
     groups = {}
     for case, baseline, reload in zip(cases, reports['baseline']['rows'], reports['reload']['rows'], strict=True):
         group = case['group']
@@ -156,15 +197,21 @@ def review(name):
     codes = code_diagnostics(cases, reports)
     if codes['by_expected_verdict']:
         result['decision_codes'] = codes
+    if retained_from is not None:
+        if retained_from == name:
+            raise ValueError('請指定不同的早期驗收。')
+        prior = verify(assay.assay_folder(retained_from))
+        result['retention'] = dict(previous_assay=retained_from, **retention(prior, verified))
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--name', required=True)
+    parser.add_argument('--retained-from', help='Recompute retention of an earlier verified short assay.')
     args = parser.parse_args()
     try:
-        result = review(args.name)
+        result = review(args.name, args.retained_from)
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
         parser.exit(2, f'{exc}\n')
     print(json.dumps(result, ensure_ascii=False, indent=2))

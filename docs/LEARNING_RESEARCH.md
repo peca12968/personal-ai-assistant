@@ -38,6 +38,8 @@
 
 指定代碼的短題按原題宣告解讀已結束的單一代碼，分開列出正確結論但格式不同、選錯結論、未辨認輸出及未結束。也會配對同一測試組中證據完全相同但代碼映射不同的題目，並分開列出兩題的結論及是否均精確答對。這些診斷沿用已核對的原始回答與既有精確門檻。
 
+比較兩次已完成的短題，可在新版報告命令加上 `--retained-from <早期研究名稱>`。會按原題與預期答案配對早期全部保留、轉移和基本控制，核對原始底座回覆、結束標記與 token 數，再比較兩次候選。任何早期題目缺漏或底座結果不一致時拒絕計算。另列變好與退步的題號。
+
 
 ### 分段提交與下次閒置工作接續
 
@@ -420,3 +422,14 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 新版從原始底座開始，訓練集保留 18 個早期訓練例並加入 30 個新例。12 個新保留題都排除於訓練。準備收據的 `short_transfer` 指向另外保存的短題檔，包含 6 個早期保留題與原有 6 個轉移題。準備分段後以 `assess_base_checkpoint.py prepare --transfer-suite` 指定該檔，讓先前的改善和退步可在同一批新權重上重測。完整助理仍使用另存且未參與短題的獨立題庫。
+
+### 自然觀察的必要條件學習
+
+`evals/prerequisite_observation_language.json` 用容量、表面狀態、目前與上一輪的讀值、尺寸及標記等情境訓練自然觀察的判讀。每個情境各有成立、不成立與未定一例。事實狀態由合成作者標註，再列舉與規則相容的情況求答案。保留不同物件、過期資訊、未知狀態和必要條件方向的區別。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study observation-language
+.venv/Scripts/python.exe scripts/learning/prepare_epistemic.py --study observation-language --prepare <新研究名稱>
+```
+
+重播 48 個已用訓練例，加入 15 個新觀察例。短題保留先前全部 24 道保留及轉移題、8 道基本控制，另有 8 道新評估。先前錯誤的指定代碼和空桶必要條件進入必過的保留組。準備收據另提供 `full_transfer`，保存 10 道與短題及訓練不重疊的完整助理題。

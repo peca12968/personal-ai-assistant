@@ -11,16 +11,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from assistant import learning_batches as batches, learning_queue as queue, parameter_acceptance, idle_learning
 from assistant.store import Store
-from scripts.learning import decision_code_study
+from scripts.learning import decision_code_study, observation_language_study
 
 SPEC = ROOT / 'evals/epistemic_learning.json'
 CONTRAST_SPEC = ROOT / 'evals/prerequisite_contrast_learning.json'
 CONTRAST_ASSISTANT_TRANSFER = ROOT / 'evals/prerequisite_contrast_assistant_transfer.json'
 GENERALIZATION_SPEC = ROOT / 'evals/base_assistant_generalization.json'
 DECISION_SPEC = ROOT / 'evals/prerequisite_decision_codes.json'
+OBSERVATION_SPEC = ROOT / 'evals/prerequisite_observation_language.json'
 SHORT_TRANSFER = ROOT / 'evals/base_checkpoint_transfer.json'
 CONTRAST_SCHEMA = 'synthetic_prerequisite_contrast_v1'
 LABELS = {'已確認成立', '已確認不成立', '未知'}
+OBSERVATION_CHECKS = {'passcode-present', 'permit-revoked', 'route-alternative', 'previous-contrast-5'}
 
 
 def normalized(prompt):
@@ -122,9 +124,67 @@ def decision_codes_data():
                 compiler_sha256=hashlib.sha256(Path(decision_code_study.__file__).read_bytes()).hexdigest())
 
 
+def observation_language_data():
+    source = OBSERVATION_SPEC.read_bytes()
+    spec = json.loads(source)
+    fresh = observation_language_study.compile_study(spec)
+    prior_bytes, prior = load_study('decision-codes')
+    earlier = load_study('epistemic')[1]
+    previous_full = json.loads(CONTRAST_ASSISTANT_TRANSFER.read_bytes())['cases']
+    generalization = json.loads(GENERALIZATION_SPEC.read_bytes())['cases']
+    controls = [row for row in prior['assistant_suite']['cases'] if row['group'] == 'control']
+    prior_transfer = prior['transfer_suite']['cases']
+    reserved = {normalized(row['prompt']) for split in ('training', 'heldout') for row in earlier[split]}
+    reserved.update(normalized(row['prompt']) for split in ('training', 'heldout') for row in prior[split])
+    reserved.update(normalized(row['prompt']) for row in prior_transfer)
+    reserved.update(normalized(row['question']) for row in [*controls, *previous_full, *generalization,
+                                                             *earlier['assistant_suite']['cases']])
+
+    transfer = spec['transfer']
+    if not isinstance(transfer, list) or len(transfer) != 2:
+        raise ValueError('The study requires two independent observation transfer cases.')
+    transfer_ids = {row['id'] for row in prior_transfer} | {row['id'] for row in prior['heldout']}
+    for row in transfer:
+        if (not isinstance(row, dict) or set(row) != {'id', 'prompt', 'answer'}
+                or not isinstance(row['id'], str) or not re.fullmatch(r'[a-z0-9_-]{1,40}', row['id'])
+                or row['id'] in transfer_ids):
+            raise ValueError('Invalid or duplicate observation transfer case.')
+        queue.text(row['answer'], 120, 'Observation transfer answer')
+        transfer_ids.add(row['id'])
+    full_transfer = parameter_acceptance.suite(spec['full_transfer'])
+    new_questions = [row['prompt'] for row in [*fresh['training'], *fresh['heldout'], *transfer]]
+    new_questions.extend(row['question'] for row in full_transfer['cases'])
+    for question in new_questions:
+        key = normalized(queue.text(question, 2000, 'Observation language question'))
+        if key in reserved:
+            raise ValueError('Observation examples overlap training or reserved evaluations.')
+        reserved.add(key)
+
+    promoted = [row for row in prior_transfer if row['id'] in OBSERVATION_CHECKS]
+    if len(promoted) != len(OBSERVATION_CHECKS):
+        raise ValueError('The earlier explicit retention checks are missing.')
+    old_checks, old_transfer = prior['heldout'][:6], prior['heldout'][6:]
+    training = [*prior['training'], *fresh['training']]
+    heldout = [*fresh['heldout'], *old_checks, *promoted]
+    short_transfer = [*old_transfer, *(row for row in prior_transfer if row['id'] not in OBSERVATION_CHECKS), *transfer]
+    short_transfer = [{key: row[key] for key in ('id', 'prompt', 'answer')} for row in short_transfer]
+    if len(training) != 63 or len(heldout) != 16 or len(short_transfer) != 16:
+        raise ValueError('Unexpected observation study or retention coverage.')
+    targets = [dict(id=row['id'], group='target', question=row['prompt'], answer=row['answer']) for row in heldout]
+    assistant_suite = parameter_acceptance.suite(dict(schema='full_assistant_cases_v1', cases=[*targets, *controls]))
+    return dict(schema=observation_language_study.SCHEMA, author='Codex synthetic observation language contrasts',
+                training=training, heldout=heldout, assistant_suite=assistant_suite,
+                transfer_suite=dict(schema='base_checkpoint_transfer_v1', cases=short_transfer),
+                full_transfer_suite=full_transfer,
+                parent_study_sha256=hashlib.sha256(prior_bytes).hexdigest(),
+                source_sha256=hashlib.sha256(source).hexdigest(),
+                compiler_sha256=hashlib.sha256(Path(observation_language_study.__file__).read_bytes()).hexdigest())
+
+
 def load_study(study):
-    if study == 'decision-codes':
-        data = decision_codes_data()
+    generators = {'decision-codes': decision_codes_data, 'observation-language': observation_language_data}
+    if study in generators:
+        data = generators[study]()
         return json.dumps(data, ensure_ascii=False, sort_keys=True).encode('utf-8'), data
     raw = study_bytes(study)
     return raw, specification(raw)
@@ -154,6 +214,10 @@ def prepare(name, study='epistemic'):
         transfer_path = folder / 'short-transfer.json'
         batches.save(transfer_path, data['transfer_suite'])
         receipt['short_transfer'] = str(transfer_path)
+    if 'full_transfer_suite' in data:
+        transfer_path = folder / 'full-transfer.json'
+        batches.save(transfer_path, data['full_transfer_suite'])
+        receipt['full_transfer'] = str(transfer_path)
     batches.save(folder / 'study.json', data)
     batches.save(folder / 'preparation.json', receipt)
     return receipt
@@ -161,7 +225,8 @@ def prepare(name, study='epistemic'):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--study', choices=('epistemic', 'prerequisite-contrast', 'decision-codes'), default='epistemic')
+    parser.add_argument('--study', choices=('epistemic', 'prerequisite-contrast', 'decision-codes',
+                                           'observation-language'), default='epistemic')
     parser.add_argument('--prepare', metavar='NEW_RUN')
     args = parser.parse_args()
     if args.prepare:

@@ -1,0 +1,189 @@
+{
+  "schema": "synthetic_prerequisite_observation_language_v1",
+  "training": [
+    {
+      "id": "archive_budget",
+      "rule": "all",
+      "action": "交接封存副本",
+      "conditions": ["目的磁區尚有至少十二吉位元組可寫", "這次的清單已有正式簽署"],
+      "codes": ["D1", "D4", "D7"],
+      "observations": [
+        {"states": "TT", "fact": "目的磁區目前剩十五吉位元組可寫，本次清單已留有正式簽名。"},
+        {"states": "FU", "fact": "目的磁區總共只剩八吉位元組可寫，本次清單的簽署情形還沒回報。"},
+        {"states": "UT", "fact": "本次清單已有正式簽名。備用磁區有十八吉位元組可寫，目的磁區的空間沒有量過。"}
+      ]
+    },
+    {
+      "id": "platform_surface",
+      "rule": "necessary_only",
+      "action": "登上觀察架",
+      "conditions": ["唯一登架踏板表面乾燥", "東側扶手完整"],
+      "codes": ["辛", "庚", "壬"],
+      "observations": [
+        {"states": "TT", "fact": "踏板表面已徹底擦乾，東側扶手無損。這次獨立通行實測已成功登架。", "witnessed": true},
+        {"states": "FU", "fact": "唯一踏板上仍有一層尚未擦去的水膜，東側扶手還沒檢查。"},
+        {"states": "TT", "fact": "踏板完全乾燥，東側扶手也經檢查完整。尚未核對任何其他要求或做登架測試。"}
+      ]
+    },
+    {
+      "id": "sample_signal",
+      "rule": "either",
+      "action": "核對本輪採樣",
+      "conditions": ["西側探頭已送出本輪讀值", "獨立紙帶含本輪讀值"],
+      "codes": ["J5", "L2", "G9"],
+      "observations": [
+        {"states": "TU", "fact": "本輪讀值已從西側探頭傳回，封袋內的紙帶還沒打開。"},
+        {"states": "FF", "fact": "西側探頭本輪整段都沒有傳送資料。紙帶上的所有數值均來自上一輪。"},
+        {"states": "FU", "fact": "西側探頭本輪從頭到尾都沒送出讀值，紙帶還在封袋中，內容未查。"}
+      ]
+    },
+    {
+      "id": "cart_width",
+      "rule": "shared_backup",
+      "action": "搬運展架",
+      "conditions": ["唯一可用推車的寬度不超過九十公分", "北通道目前能通行", "南通道目前能通行"],
+      "codes": ["鈴", "鼓", "鐘"],
+      "observations": [
+        {"states": "TTU", "fact": "唯一推車寬八十五公分，北通道目前開放通行，南通道狀態尚未回報。"},
+        {"states": "FTU", "fact": "唯一推車實測寬一百零四公分，北通道目前可通行，南通道尚未檢查。"},
+        {"states": "TFU", "fact": "唯一推車寬八十七公分，北通道目前完全封閉，南通道狀態沒人回報。"}
+      ]
+    },
+    {
+      "id": "printed_label",
+      "rule": "required_marker",
+      "action": "納入展示清單",
+      "conditions": ["本批貨架標籤印有藍色方框"],
+      "codes": ["4X", "8H", "2B"],
+      "observations": [
+        {"states": "T", "fact": "本批貨架標籤印著藍色方框，另有正式結果確認本批已納入展示清單。", "witnessed": true},
+        {"states": "F", "fact": "檢查了本批貨架標籤全部版面，唯一圖案是橘色圓形。"},
+        {"states": "U", "fact": "照片中的藍色方框印在另一批貨架的標籤上，本批標籤被遮住而尚未核對。"}
+      ]
+    }
+  ],
+  "heldout": [
+    {
+      "id": "shipping_temperature",
+      "rule": "all",
+      "action": "交付冷藏樣本",
+      "conditions": ["這次指定的唯一保溫箱內溫度不高於攝氏六度", "本次運送的封條完整"],
+      "codes": ["寅", "卯", "辰"],
+      "observations": [
+        {"states": "TT", "fact": "指定箱實測攝氏五度，本次運送的封條從頭到尾完整貼合，沒有裂口。"},
+        {"states": "FU", "fact": "指定箱剛實測為攝氏九度，本次封條尚未檢查。"},
+        {"states": "UT", "fact": "本次運送的封條完整。攝氏四度的量測來自旁邊未指定的空箱，指定箱還未量測。"}
+      ]
+    },
+    {
+      "id": "calibration_deadline",
+      "rule": "shared_backup",
+      "action": "放行儀器",
+      "conditions": ["本輪唯一校正卡尚在有效期限內", "甲組已完成複核", "乙組已完成複核"],
+      "codes": ["Q8", "T1", "F6"],
+      "observations": [
+        {"states": "TTU", "fact": "卡片有效到今天十八點，目前是同一天十四點二十分。甲組已提交最終複核結果，乙組未回報。"},
+        {"states": "FTU", "fact": "卡片有效到今天十八點，目前是同一天二十一點。甲組已提交最終複核結果，乙組未回報。"},
+        {"states": "TFU", "fact": "卡片有效到今天十九點，目前是同一天十四點。甲組確認尚未開始複核，乙組未回報。"}
+      ]
+    }
+  ],
+  "transfer": [
+    {
+      "id": "sealed_supply_threshold",
+      "prompt": "要送出急救補充盒，唯一一盒必須至少還有六包未拆封的紗布。這盒只剩四包未拆封的紗布，另外兩包都已拆開，外盒材質未核對。判斷能否送出，只回代碼。代碼 Z 表示確定能，X 表示確定不能，M 表示未定。",
+      "answer": "X"
+    },
+    {
+      "id": "distinct_return_batch",
+      "prompt": "回收承接規則要求本批的唯一回收櫃已清空。今天的清點紀錄說上一批回收櫃還放有物品，本批回收櫃沒有清點結果。請只用一個代碼判斷本批能否承接。W 表示資料不足，F 表示確定不能，G 表示確定能。",
+      "answer": "W"
+    }
+  ],
+  "full_transfer": {
+    "schema": "full_assistant_cases_v1",
+    "cases": [
+      {
+        "id": "cabin_today_ready",
+        "group": "target",
+        "history": [
+          {"role": "user", "content": "昨天三人的橙色乘艙貼都在有效期限內。"},
+          {"role": "assistant", "content": "已記下，這份紀錄只涵蓋昨天。"}
+        ],
+        "question": "三人同艙的完整條件是每人都有今天仍有效的一張乘艙貼。凡在今天零時前發出的貼紙，今天零時一律作廢。甲、乙、丙早上已各領一張，三張都能使用到今晚。問三人今天能否同艙。請只回一個代碼，A3 表示可行，B3 表示不可行，C3 表示資料不足。",
+        "answer": "A3"
+      },
+      {
+        "id": "cabin_today_expired",
+        "group": "target",
+        "history": [
+          {"role": "user", "content": "昨天三人的橙色乘艙貼都在有效期限內。"},
+          {"role": "assistant", "content": "已記下，這份紀錄只涵蓋昨天。"}
+        ],
+        "question": "三人同艙的完整條件是每人都有今天仍有效的一張乘艙貼。凡在今天零時前發出的貼紙，今天零時一律作廢。甲的貼紙今早新發且有效，乙沒回報。丙確認手上只有昨晚發的那張，今天沒有領新貼。問三人今天能否同艙。請只回一個代碼，A3 表示可行，B3 表示不可行，C3 表示資料不足。",
+        "answer": "B3"
+      },
+      {
+        "id": "cabin_today_unchecked",
+        "group": "target",
+        "history": [
+          {"role": "user", "content": "昨天三人的橙色乘艙貼都在有效期限內。"},
+          {"role": "assistant", "content": "已記下，這份紀錄只涵蓋昨天。"}
+        ],
+        "question": "三人同艙的完整條件是每人都有今天仍有效的一張乘艙貼。凡在今天零時前發出的貼紙，今天零時一律作廢。甲、丙今天的新貼已核實有效。乙昨天有貼，今天有沒有領到有效的新貼尚未查到。問三人今天能否同艙。請只回一個代碼，A3 表示可行，B3 表示不可行，C3 表示資料不足。",
+        "answer": "C3"
+      },
+      {
+        "id": "exposure_box_ready",
+        "group": "target",
+        "question": "顯影盒可以啟用的完整要求有兩項。主鏡窗須沒有任何可見指紋，主盒內須至少有兩張還沒拆封的遮片。檢查主鏡窗只看到無痕的透明表面，主盒清點有三張，其中兩張封口完好、一張已拆開。只輸出一個標籤，條件全滿足回「可顯影」，確定缺一項回「暫停」，資料不足回「待核」。",
+        "answer": "可顯影"
+      },
+      {
+        "id": "exposure_box_insufficient",
+        "group": "target",
+        "question": "顯影盒可以啟用的完整要求有兩項。主鏡窗須沒有任何可見指紋，主盒內須至少有兩張還沒拆封的遮片。主鏡窗尚未檢查，主盒清點共有三張遮片，其中兩張封口都已撕開，只有一張仍封著。只輸出一個標籤，條件全滿足回「可顯影」，確定缺一項回「暫停」，資料不足回「待核」。",
+        "answer": "暫停"
+      },
+      {
+        "id": "exposure_box_other_scope",
+        "group": "target",
+        "question": "顯影盒可以啟用的完整要求有兩項。主鏡窗須沒有任何可見指紋，主盒內須至少有兩張還沒拆封的遮片。主鏡窗已檢查無痕，兩張封口完好的遮片放在隔壁的備用盒。主盒未清點。只輸出一個標籤，條件全滿足回「可顯影」，確定缺一項回「暫停」，資料不足回「待核」。",
+        "answer": "待核"
+      },
+      {
+        "id": "humidity_ticket_exact",
+        "group": "control",
+        "question": "濕度紀錄單的編號是「ｍ_027」。只逐字輸出編號，保留全形小寫ｍ、底線與前導零。",
+        "answer": "ｍ_027"
+      },
+      {
+        "id": "revised_sample_total",
+        "group": "control",
+        "history": [
+          {"role": "user", "content": "三盤樣本每盤放十塊，先記損壞六塊。"},
+          {"role": "assistant", "content": "目前記為三盤各十塊，損壞六塊。"}
+        ],
+        "question": "更正同一批損壞數，是 8 塊，其餘均可用。盤數和每盤數量照原先。只回可用塊數的阿拉伯數字。",
+        "answer": "22"
+      },
+      {
+        "id": "missing_thickness",
+        "group": "control",
+        "question": "這塊切料只有長和寬，沒有厚度，也沒有可用的預設值。若資料不足以算體積，只輸出「缺厚度」。",
+        "answer": "缺厚度"
+      },
+      {
+        "id": "new_rack_location",
+        "group": "control",
+        "history": [
+          {"role": "user", "content": "測光片先放在第六架。"},
+          {"role": "assistant", "content": "記下測光片暫放第六架。"},
+          {"role": "user", "content": "最新更正，測光片已移到第八架，第六架是上一次的位置。"}
+        ],
+        "question": "依最新更正，只輸出測光片目前所在的架號，照記錄原文格式。",
+        "answer": "第八架"
+      }
+    ]
+  }
+}
