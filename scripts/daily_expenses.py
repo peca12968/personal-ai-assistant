@@ -510,8 +510,12 @@ class DailyAssistant(Assistant):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):
             return None
         change = daily_meeting.FOLLOWUP.fullmatch(question)
-        meeting = daily_meeting.parse(question) if not change and not image_ids else None
+        observation = daily_meeting.recorded_observation(prior.get('meeting_plan'))
+        meeting = (daily_meeting.parse(question, observation=observation, use_local_clock=not retry)
+                   if not change and not image_ids else None)
         if not change and not meeting:
+            if retry and 'meeting_plan' in prior:
+                raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
             return None
         if image_ids or prior.get('image_inputs') or self.store.documents(sid, include_content=False):
             if (change and not self.default_chat) or 'meeting_plan' in prior:

@@ -1,9 +1,10 @@
 """Read-only earliest common slot in explicitly listed availability."""
-from datetime import date
+from datetime import date, timedelta
 import hashlib
 import json
 import re
 
+from assistant import document_dates
 from assistant.local_answer_receipts import MAX_JSON_BYTES, load_context
 
 CLOCK = r'(?:(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|24:00)'
@@ -30,8 +31,17 @@ OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:開�
 ASK = re.compile(r'[，,。；;\n]\s*(?:請問)?最早(?:什麼時候|幾點)(?:能|可以)開(?:會)?[？?。]?$')
 COUNT = dict(zip('兩二三四五六七八', (2, 2, 3, 4, 5, 6, 7, 8)))
 DATED_PLAN = 'daily_availability_dates_v2'
+RELATIVE_PLAN = 'daily_availability_relative_v3'
+DATE_PLANS = (DATED_PLAN, RELATIVE_PLAN)
 DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
-DAY_LINE = re.compile(rf'({DATE})[：:]\s*(.+)')
+WEEK_KIND = r'[本這下]'
+WEEK_LABEL = r'(?:週|周|星期)'
+WEEK_DAY = r'[一二三四五六日天]'
+WEEKDAY = re.compile(rf'({WEEK_KIND}){WEEK_LABEL}({WEEK_DAY})')
+RELATIVE_DAY = rf'(?:今天|明天|後天|{WEEK_KIND}{WEEK_LABEL}{WEEK_DAY})'
+DAY_LINE = re.compile(rf'({DATE}|{RELATIVE_DAY})[：:]\s*(.+)')
+ANCHOR_LINE = re.compile(rf'以\s*({DATE})\s*為今天')
+WEEKDAYS = dict(zip('一二三四五六日天', (0, 1, 2, 3, 4, 5, 6, 6)))
 DATED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
                           r'格式\s*YYYY-MM-DD HH:MM-HH:MM')
 DATED_ASK = re.compile(r'(?:請問)?最早哪一天(?:的哪個時段)?(?:能|可以)(?:開會|碰面)[？?]?')
@@ -70,8 +80,8 @@ def cancelled_interval(removal):
     return [0, 720] if re.fullmatch(MORNING, text) else span(text)
 
 
-def parse(question):
-    return parse_same_day(question) or parse_dated(question)
+def parse(question, *, observation=None, use_local_clock=False):
+    return parse_same_day(question) or parse_dated(question, observation=observation, use_local_clock=use_local_clock)
 
 
 def parse_same_day(question):
@@ -156,11 +166,28 @@ def parse_availability(clauses, *, dated=False):
     return dict(available=available, cancelled=cancelled) if len(available) >= 2 else None
 
 
-def parse_dated(question):
+def date_term(term, anchor):
+    if term in ('今天', '明天', '後天'):
+        return anchor + timedelta(days=document_dates.DAY_OFFSETS[term])
+    if week := WEEKDAY.fullmatch(term):
+        shift = WEEKDAYS[week[2]] - anchor.weekday() + (7 if week[1] == '下' else 0)
+        return anchor + timedelta(days=shift)
+    return date.fromisoformat(term)
+
+
+def recorded_observation(plan):
+    anchor = plan.get('date_anchor') if isinstance(plan, dict) else None
+    return anchor.get('observation') if isinstance(anchor, dict) else None
+
+
+def parse_dated(question, *, observation=None, use_local_clock=False):
     if len(question) > 8192:
         return None
     text = re.sub(r'\A會議排程[：:]\s*', '', question.strip())
     lines = [part.strip() for part in re.split(r'[。\r\n]+', text) if part.strip()]
+    explicit = ANCHOR_LINE.fullmatch(lines[0]) if lines else None
+    if explicit:
+        lines.pop(0)
     if not 3 <= len(lines) <= 9:
         return None
     output = lines.pop()
@@ -169,15 +196,11 @@ def parse_dated(question):
     if not duration or not (conversational or DATED_OUTPUT.fullmatch(output)):
         return None
     length, participants = duration
-    days = {}
+    entered = {}
     names = None
     for line in lines:
         entry = DAY_LINE.fullmatch(line)
-        if not entry or entry[1] in days:
-            return None
-        try:
-            date.fromisoformat(entry[1])
-        except ValueError:
+        if not entry or entry[1] in entered:
             return None
         clauses = [part.strip() for part in re.split(r'[，,；;]', entry[2])]
         availability = parse_availability(clauses, dated=True)
@@ -187,8 +210,35 @@ def parse_dated(question):
         if (names is not None and present != names) or (participants is not None and len(present) != participants):
             return None
         names = present
-        days[entry[1]] = availability
-    return dict(schema=DATED_PLAN, days=days, duration=length, output='conversational' if conversational else 'exact')
+        entered[entry[1]] = availability
+    anchor = None
+    reference = None
+    if explicit:
+        try:
+            anchor = date.fromisoformat(explicit[1])
+        except ValueError:
+            return None
+        reference = dict(source='user', date=anchor.isoformat())
+    elif any(not re.fullmatch(DATE, term) for term in entered):
+        if observation is None:
+            if not use_local_clock:
+                return None
+            observation = document_dates.observe_local_clock()
+        anchor = document_dates._observed_date(observation)
+        reference = dict(source='computer_local', date=anchor.isoformat(), observation=observation)
+    days, terms = {}, {}
+    for term, availability in entered.items():
+        try:
+            day = date_term(term, anchor).isoformat()
+        except (ValueError, OverflowError):
+            return None
+        if day in days:
+            return None
+        days[day], terms[day] = availability, term
+    plan = dict(schema=DATED_PLAN, days=days, duration=length, output='conversational' if conversational else 'exact')
+    if reference is not None:
+        plan.update(schema=RELATIVE_PLAN, date_anchor=reference, date_terms=terms)
+    return plan
 
 
 FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
@@ -203,7 +253,7 @@ def revise(plan, clause):
             raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
         plan['duration'] = length
         return
-    dated = plan.get('schema') == DATED_PLAN
+    dated = plan.get('schema') in DATE_PLANS
     availability = plan
     if dated:
         day = re.fullmatch(rf'({DATE})(?:\s+|[：:]\s*)(.+)', clause)
@@ -248,7 +298,7 @@ def display(interval):
 
 
 def resolve(plan):
-    if plan.get('schema') == DATED_PLAN:
+    if plan.get('schema') in DATE_PLANS:
         return resolve_dated(plan)
     return resolve_same_day(plan)
 
@@ -294,7 +344,9 @@ def resolve_dated(plan):
     if plan['output'] == 'conversational':
         answer = (f'最早可以排在 {first}，共 {length} 分鐘。' if first
                   else f'列出的日期沒有可行時段。每一天都沒有連續 {length} 分鐘的共同空檔。')
-    receipt = dict(schema='daily_meeting_dates_calculation_v2', status='complete', model_called=False,
+    schema = ('daily_meeting_relative_calculation_v3' if plan['schema'] == RELATIVE_PLAN
+              else 'daily_meeting_dates_calculation_v2')
+    receipt = dict(schema=schema, status='complete', model_called=False,
                    days=days, duration=length, expression=f'依日期查找最早共同連續 {length} 分鐘',
                    result=dict(exact=exact, calculations=[]))
     return answer, receipt
@@ -316,16 +368,24 @@ def visible_answer(plan, receipt):
 def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
-    dated = plan['schema'] == DATED_PLAN
+    dated = plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
+    if anchor := plan.get('date_anchor'):
+        if anchor['source'] == 'user':
+            lines.append(f'依原問指定的日期 {anchor["date"]} 為今天。')
+        else:
+            observed = anchor['observation']['local_datetime']
+            lines.append(f'相對日期以原本的電腦本地日期 {anchor["date"]} 為基準。')
+            lines.append(f'原本的本機時鐘觀察 {observed}')
     days = receipt['days'] if dated else [receipt]
     for day in days:
         availability = plan
         lines.append('')
         if dated:
-            lines.append(day['date'])
+            term = plan.get('date_terms', {}).get(day['date'], day['date'])
+            lines.append(day['date'] if term == day['date'] else f'{day["date"]}（原文「{term}」）')
             availability = plan['days'][day['date']]
         lines.append('採用的取消條件')
         lines += [c['source'] for c in availability['cancelled']] or ['無']
@@ -398,7 +458,7 @@ def verified_meeting(db, mid):
             raise ValueError('會議的上一筆來源已變更。')
         history.append(parent)
     original = history.pop()
-    plan = parse(original[0]['question'])
+    plan = parse(original[0]['question'], observation=recorded_observation(original[1].get('meeting_plan')))
     if plan is None:
         raise ValueError('會議紀錄缺少可核對的原始時段。')
 
