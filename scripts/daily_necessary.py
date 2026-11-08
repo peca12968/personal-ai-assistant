@@ -9,6 +9,8 @@ MODE = 'local_calculation'
 FIELD = 'necessary_conditions'
 V1 = 'daily_necessary_plan_v1'
 V2 = 'daily_necessary_plan_v2'
+V3 = 'daily_necessary_roster_plan_v3'
+INITIAL_PLANS = (V1, V2, V3)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -59,6 +61,15 @@ CONJUNCTION = r'和|與|、|並且|以及'
 OUTSIDE_CONJUNCTION = re.compile(rf'(?:{CONJUNCTION})(?![^()（）]*[)）])')
 ALTERNATIVE = re.compile(r'或者|或')
 GROUP = re.compile(r'\(([^()（）]+)\)|（([^()（）]+)）')
+ROSTER_ORDINALS = '一二三四五六七八'
+ROSTER_COUNTS = dict(zip('兩二三四五六七八', (2, 2, 3, 4, 5, 6, 7, 8), strict=True))
+ROSTER_COUNTS.update({str(n): n for n in range(2, 9)})
+ROSTER_RULE = re.compile(
+    rf'(?P<scope>今天|本次|目前)?\s*(?P<count>[兩二三四五六七八2-8])\s*位'
+    r'(?:講者|講員|參與者|成員|訪客|工作人員|操作者|申請人|隊員)(?:都|各自)'
+    rf'(?:須有|必須有|要有|需要有)(?:一份)?有效的?(?P<credential>[\u4e00-\u9fff]{{1,18}}?)'
+    rf'才(?:能|可以|可)(?P<action>{NAME})')
+ROSTER_OUTPUT = re.compile(r'(?:請)?只(?:回|回覆|回答|輸出)(?:一個)?(?:結論|標籤)')
 
 
 def alternative_groups(text):
@@ -83,21 +94,40 @@ def alternative_groups(text):
     return groups if 1 <= sum(len(g) > 1 for g in groups) <= 2 else None
 
 
-def labels(text):
+def labels(text, meanings=MEANINGS):
     result = {}
     for clause in re.split(r'[，,；;]', text):
         match = LABEL.fullmatch(clause.strip())
         if not match:
             return None
-        kind = next((key for key, pattern in MEANINGS.items() if re.fullmatch(pattern, match[1])), None)
+        kind = next((key for key, pattern in meanings.items() if re.fullmatch(pattern, match[1])), None)
         value = match[2] or match[3]
         if not kind or kind in result or value in result.values():
             return None
         result[kind] = value
-    return result if set(result) == set(MEANINGS) else None
+    return result if set(result) == set(meanings) else None
 
 
-def observation(clause, condition):
+def roster_observation(clause, condition, carried):
+    person = condition['participant']
+    credential = re.escape(condition['credential'])
+    scope = condition['scope']
+    subject = person + (rf'(?:{scope})?' if scope and not carried else '')
+    if re.fullmatch(rf'{subject}(?:的)?{credential}已(?:確認|確定)有效', clause):
+        return 'true'
+    if re.fullmatch(rf'{subject}(?:的唯一的?|唯一的){credential}已(?:確認|確定)?(?:撤回|撤銷|作廢|失效)'
+                    rf'|{subject}已(?:確認|確定)沒有有效的?{credential}'
+                    rf'|{subject}已撤回唯一的{credential}', clause):
+        return 'false'
+    item = credential if carried else rf'(?:{credential}|文件)'
+    if re.fullmatch(rf'{subject}(?:的)?{item}(?:尚未|還沒)(?:核對|核實|檢查|確認)', clause):
+        return 'unknown'
+    return None
+
+
+def observation(clause, condition, *, carried=False):
+    if 'participant' in condition:
+        return roster_observation(clause, condition, carried)
     name = re.escape(condition['name'])
     prop = condition['property']
     yes, no = TYPES[prop]
@@ -111,11 +141,55 @@ def observation(clause, condition):
 
 
 def parse(question):
-    return parse_version(question, V1) or parse_version(question, V2)
+    return parse_version(question, V1) or parse_version(question, V2) or parse_version(question, V3)
+
+
+def parse_roster(question, sentences):
+    if not 4 <= len(sentences) <= 11 or not ROSTER_OUTPUT.fullmatch(sentences[-1]):
+        return None
+    rule = ROSTER_RULE.fullmatch(sentences[0])
+    if not rule or UNBOUND.search(rule['credential']) or UNBOUND.search(rule['action']):
+        return None
+    action = rule['action']
+    scope = rule['scope'] or ''
+    credential = rule['credential']
+    label_text = sentences[-2]
+    if scope:
+        label_text = re.sub(rf'^依{scope}的已知條件[，,]\s*', '', label_text)
+    action_pattern = '(?:錄音|錄)' if action == '錄音' else re.escape(action)
+    meanings = dict(supported=rf'(?:可|確定能|確定可){action_pattern}',
+                    refuted=rf'(?:不可|確定不能|確定不可){action_pattern}',
+                    undetermined=MEANINGS['undetermined'] + r'|仍有可能但不能確定')
+    options = labels(label_text, meanings)
+    if not options:
+        return None
+    conditions = []
+    for ordinal in ROSTER_ORDINALS[:ROSTER_COUNTS[rule['count']]]:
+        person = f'第{ordinal}位'
+        conditions.append(dict(name=person + credential, property='有效',
+                               requirement=f'{person}有有效的{credential}', participant=person,
+                               credential=credential, scope=scope))
+    if not bind_observations(conditions, sentences[1:-2]):
+        return None
+    return dict(schema=V3, request=question, request_sha256=evidence_logic.digest(question),
+                action=action, rule=sentences[0], sufficient=False, conditions=conditions, labels=options)
+
+
+def bind_observations(conditions, sentences):
+    for sentence in sentences:
+        for part in re.split(r'[，,；;]', sentence):
+            clause = part.strip()
+            matches = [(condition, status) for condition in conditions
+                       if (status := observation(clause, condition))]
+            if len(matches) != 1 or 'observation' in matches[0][0]:
+                return False
+            condition, status = matches[0]
+            condition.update(observation=clause, state=status)
+    return all('observation' in condition for condition in conditions)
 
 
 def parse_version(question, version):
-    if version not in (V1, V2):
+    if version not in INITIAL_PLANS:
         return None
     if not isinstance(question, str) or not 1 <= len(question) <= 1600:
         return None
@@ -123,6 +197,8 @@ def parse_version(question, version):
     if re.search(r'[！？?]', body):
         return None
     sentences = [s.strip() for s in re.split(r'[。\r\n]+', body)]
+    if version == V3:
+        return parse_roster(question, sentences)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -148,16 +224,7 @@ def parse_version(question, version):
             names[-1].append(term[2])
     if not 2 <= len(conditions) <= (4 if version == V1 else 8):
         return None
-    for sentence in sentences[1:-2]:
-        for part in re.split(r'[，,；;]', sentence):
-            clause = part.strip()
-            matches = [(condition, status) for condition in conditions.values()
-                       if (status := observation(clause, condition))]
-            if len(matches) != 1 or 'observation' in matches[0][0]:
-                return None
-            condition, status = matches[0]
-            condition.update(observation=clause, state=status)
-    if any('observation' not in condition for condition in conditions.values()):
+    if not bind_observations(conditions.values(), sentences[1:-2]):
         return None
     plan = dict(schema=version, request=question, request_sha256=evidence_logic.digest(question),
                 action=rule['verb'] + rule['target'], rule=sentences[0],
@@ -184,7 +251,7 @@ def valid_source(source):
 
 def match_observation(conditions, clause):
     matches = [(condition, status) for condition in conditions
-               if (status := observation(clause, condition))]
+               if (status := observation(clause, condition, carried=True))]
     if len(matches) != 1:
         raise ValueError('請用原本的完整條件名稱，明確寫出一項已知或待查狀態。')
     return matches[0]
@@ -218,7 +285,7 @@ def effective(plan):
                 or evidence_logic.digest(plan['request']) != plan['request_sha256']
                 or not valid_source(plan['source'])
                 or not isinstance(plan['basis'], dict)
-                or plan['basis'].get('schema') not in (V1, V2, *UPDATE_PLANS)):
+                or plan['basis'].get('schema') not in (*INITIAL_PLANS, *UPDATE_PLANS)):
             raise ValueError('待核對項目的原問或來源不符。')
         state = effective(plan['basis'])
         if plan['schema'] == COST_PLAN:
@@ -401,6 +468,7 @@ def evaluate(plan, cancel=None):
     _, checked = chat_evidence.evaluate(chat_evidence.parse_request(canonical), cancel)
     status = checked['analysis']['status']
     schema = {V1: 'daily_necessary_receipt_v1', V2: 'daily_necessary_receipt_v2',
+              V3: 'daily_necessary_roster_receipt_v3',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
@@ -474,7 +542,7 @@ def verified_chain(db, mid):
     # Each state may have an inquiry followed by one check order.
     for _ in range(3 * MAX_REVISIONS + 2):
         plan = receipt['plan']
-        if plan['schema'] in (V1, V2):
+        if plan['schema'] in INITIAL_PLANS:
             return first
         predecessor = previous_id(db, row['session_id'], row['user_message_id'])
         parent = saved(db, predecessor)
@@ -483,7 +551,7 @@ def verified_chain(db, mid):
         receipt, row, source = parent
         if carry_forward(plan['request'], receipt['plan'], source) != plan:
             raise ValueError('沿用條件的來源已變更。')
-    if receipt['plan']['schema'] not in (V1, V2):
+    if receipt['plan']['schema'] not in INITIAL_PLANS:
         raise ValueError('必要條件缺少可核對的原始規則。')
     return first
 
