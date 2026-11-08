@@ -12,14 +12,16 @@ from scripts.daily_expenses import DailyAssistant
 
 
 def run_daily_window(store, engine, *, default_chat=False):
-    from tkinter import scrolledtext
+    from tkinter import filedialog, messagebox, scrolledtext, simpledialog
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_meeting, daily_necessary
+    from scripts import daily_meeting, daily_meeting_export, daily_necessary
 
     class DailyWindow(App):
         def inspect_context(self):
-            context = self.store.answer_context(self.last_answer) if self.last_answer else None
+            answer_id = self.last_answer
+            context = self.store.answer_context(answer_id) if answer_id else None
+            meeting_schema = None
             if context and daily_necessary.FIELD in context:
                 title = '本機必要條件核對'
                 try:
@@ -87,10 +89,12 @@ def run_daily_window(store, engine, *, default_chat=False):
             elif context and 'meeting_plan' in context:
                 title = '本機會議時段計算紀錄'
                 try:
-                    verified = daily_meeting.read(self.store, self.last_answer)
+                    verified = daily_meeting.read(self.store, answer_id)
                     if verified is None:
                         raise ValueError
                     lines = daily_meeting.describe(verified).splitlines()
+                    if verified['calculation']['result']['exact'] != '沒有可行時段':
+                        meeting_schema = verified['meeting_plan']['schema']
                 except (KeyError, TypeError, ValueError, sqlite3.Error):
                     lines = ['無法依原始時段與更正重算這筆會議紀錄。']
             elif context and 'expense_ledger' in context:
@@ -113,9 +117,39 @@ def run_daily_window(store, engine, *, default_chat=False):
             panel.title(title)
             panel.geometry('640x460')
             view = scrolledtext.ScrolledText(panel, wrap='word', padx=10, pady=10)
+            if meeting_schema:
+                tk.Button(panel, text='匯出行事曆檔案', command=lambda: self.export_meeting(
+                    panel, answer_id, meeting_schema)).pack(side='bottom', anchor='e', padx=10, pady=8)
             view.pack(fill='both', expand=True)
             view.insert('1.0', '\n'.join(lines))
             view.configure(state='disabled')
+
+        def export_meeting(self, panel, answer_id, schema):
+            title = simpledialog.askstring('行事曆標題', '輸入這場會議的標題。', initialvalue='會議', parent=panel)
+            if title is None:
+                return
+            day = None
+            if schema == daily_meeting_export.SAME_DAY_PLAN:
+                day = simpledialog.askstring('會議日期', '輸入完整日期，格式為 YYYY-MM-DD。', parent=panel)
+                if day is None:
+                    return
+            zone = None
+            if schema not in daily_meeting.ZONED_PLANS:
+                zone = simpledialog.askstring('會議時區', '輸入完整 IANA 名稱或 UTC 偏移，例如 Asia/Taipei 或 UTC+08:00。',
+                                              parent=panel)
+                if zone is None:
+                    return
+            path = filedialog.asksaveasfilename(parent=panel, title='另存行事曆檔案', defaultextension='.ics',
+                                               filetypes=[('iCalendar', '*.ics')], initialfile='meeting.ics',
+                                               confirmoverwrite=False)
+            if not path:
+                return
+            try:
+                saved = daily_meeting_export.export(self.store, answer_id, title, path, day=day, zone=zone)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                messagebox.showerror('匯出未完成', str(exc), parent=panel)
+            else:
+                messagebox.showinfo('行事曆檔案已建立', str(saved), parent=panel)
 
     root = tk.Tk()
     window = DailyWindow(root, store, engine)
