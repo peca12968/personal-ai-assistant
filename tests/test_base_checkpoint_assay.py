@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.learning import assess_base_checkpoint as assay
+from scripts.learning import review_base_checkpoint as report
 
 
 def raw_rows(cases, wrong=()):
@@ -115,3 +116,56 @@ class BaseCheckpointAssayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '已嘗試'):
                 assay.collect('study', 'a' * 64)
             self.assertEqual(launch.call_count, 3)
+
+    def test_report_distinguishes_format_state_and_unfinished_output(self):
+        for expected, actual, eos, outcome in (
+            ('未知', '未知', True, 'exact'),
+            ('未知', '「未知」。', True, 'literal_format'),
+            ('{"ok":true}', '{"ok": true}', True, 'literal_format'),
+            ('{"ok":true}', '{"ok":1}', True, 'other_output'),
+            ('{"ok":true}', '{"ok":false,"ok":true}', True, 'other_output'),
+            ('未知', '已確認成立', True, 'different_state'),
+            ('S', '是', True, 'other_output'),
+            ('未知', '未知', False, 'unfinished'),
+        ):
+            with self.subTest(expected=expected, actual=actual, eos=eos):
+                self.assertEqual(report.outcome(expected, {'output': actual, 'ended_with_eos': eos}), outcome)
+
+    def test_report_recomputes_rejected_result_without_writing_or_accepting_forged_exit(self):
+        protocol = {'fixed': 'study'}
+        admitted = {'ticks_ms': 800000, 'last_input_tick': 100000, 'idle_ms': 700000}
+        folder = self.root / 'study'
+        folder.mkdir()
+        run = dict(protocol_sha256=assay.digest(protocol), receipt='a' * 64, admitted=admitted)
+        assay.save(folder / 'run.json', run)
+        self.reports['baseline']['rows'] = raw_rows(self.cases)
+        for phase in ('restored', 'reload'):
+            self.reports[phase]['rows'] = raw_rows(self.cases, ('heldout-0',))
+        self.record['rows'] = self.reports['restored']['rows'][:-6]
+        report_hashes, exit_hashes = {}, {}
+        for phase in assay.PHASES:
+            path = folder / (phase + '.json')
+            assay.save(path, {**self.reports[phase], 'phase': phase, 'run_sha256': assay.digest(run), 'pid': 18})
+            report_hashes[phase] = assay.batches.file_hash(path)
+            exit_path = folder / (phase + '.exit.json')
+            assay.save(exit_path, dict(worker=18, exit_confirmed=True, returncode=0))
+            exit_hashes[phase] = assay.batches.file_hash(exit_path)
+            (folder / (phase + '.started')).write_text('18', encoding='ascii')
+        checked = assay.assess(self.cases, self.reports, self.record, self.weights)
+        assay.save(folder / 'review.json', {**checked, 'run_sha256': assay.digest(run),
+                                            'report_sha256': report_hashes, 'exit_sha256': exit_hashes})
+        loaded = (protocol, self.root, {'idle_ms': 600000}, self.manifest, self.cases,
+                  {'blob': 'synthetic-blob'}, self.record)
+        before = {path.name: path.read_bytes() for path in folder.iterdir()}
+        with (patch.object(assay, 'PARENT', self.root), patch.object(assay, 'inputs', return_value=loaded),
+              patch.object(assay.segments, 'pin_blob') as pin,
+              patch.object(assay.batches, 'adapter_files', return_value=self.weights)):
+            result = report.review('study')
+            self.assertFalse(result['passed'])
+            self.assertEqual(result['groups']['heldout']['regressed_ids'], ['heldout-0'])
+            self.assertIn('baseline_correct_cases_retained', result['failed_checks'])
+            self.assertEqual({path.name: path.read_bytes() for path in folder.iterdir()}, before)
+            pin.assert_called_once_with(self.root, 'synthetic-blob')
+            assay.save(folder / 'reload.exit.json', dict(worker=18, exit_confirmed=False, returncode=0))
+            with self.assertRaisesRegex(ValueError, '退出'):
+                report.review('study')
