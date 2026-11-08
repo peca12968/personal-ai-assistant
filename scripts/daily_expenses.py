@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_dialogue, daily_criteria, daily_identifiers, daily_meeting, daily_necessary, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_dialogue, daily_criteria, daily_explicit_json, daily_identifiers, daily_meeting, daily_necessary, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
@@ -249,6 +249,10 @@ class DailyAssistant(Assistant):
             counted = self._counted_answer(sid, question, cancel, retry, draft, prior)
             if counted is not None:
                 return counted
+        if local and self.allow_local_transcription and (not retry or daily_explicit_json.FIELD in prior):
+            literal = self._literal_json_answer(sid, question, cancel, retry, draft, prior)
+            if literal is not None:
+                return literal
         if local and self.allow_local_evidence and (not retry or daily_container_id.FIELD in prior):
             container = self._container_answer(sid, question, cancel, retry, draft, prior)
             if container is not None:
@@ -556,6 +560,27 @@ class DailyAssistant(Assistant):
             return daily_container_id.evaluate(plan)
 
         return self._run_recorded(sid, question, context, resolve, cancel, retry, draft, daily_container_id.FIELD)
+
+    def _literal_json_answer(self, sid, question, cancel, retry, draft, prior):
+        plan = daily_explicit_json.parse(question)
+        has_documents = plan is not None and self.store.documents(sid, include_content=False)
+        empty_documents = {'catalog': [], 'excerpts': []}
+        if retry and (plan is None or has_documents or plan != prior[daily_explicit_json.FIELD]
+                      or prior.get('image_inputs') or prior.get('documents') != empty_documents
+                      or prior.get('response_mode') != daily_explicit_json.MODE):
+            raise EngineError('重試的 JSON 欄位或資料範圍已變更。', 'literal_output_invalid')
+        if plan is None or has_documents:
+            return None
+        context = make_context(question, [], [])
+        context.update(response_mode=daily_explicit_json.MODE, documents=empty_documents,
+                       **{daily_explicit_json.FIELD: plan})
+
+        def serialize(_):
+            if self.store.documents(sid, include_content=False):
+                raise EngineError('提交前已加入附件，請重新提供 JSON 欄位。', 'literal_output_invalid')
+            return daily_explicit_json.evaluate(plan)
+
+        return self._run_recorded(sid, question, context, serialize, cancel, retry, draft, daily_explicit_json.FIELD)
 
     def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):

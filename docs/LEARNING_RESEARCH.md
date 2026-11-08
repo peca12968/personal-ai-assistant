@@ -433,3 +433,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 重播 48 個已用訓練例，加入 15 個新觀察例。短題保留先前全部 24 道保留及轉移題、8 道基本控制，另有 8 道新評估。先前錯誤的指定代碼和空桶必要條件進入必過的保留組。準備收據另提供 `full_transfer`，保存 10 道與短題及訓練不重疊的完整助理題。
+
+### 從已驗收適配器接續更新
+
+`continue_verified_adapter.py` 使用兩次已驗收的短題研究。父版本須通過既有短題門檻，近期參考可用於保留題，即使該輪未通過。準備時核對兩輪的底座及原始結果，並封存父版本的適配器檔案與權重指紋。訓練使用 63 筆先前訓練例和 21 筆新合成例，每筆使用一次。每步採三筆重播和一筆新例，固定 21 步及 `0.00005` 學習率。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/continue_verified_adapter.py check
+.venv/Scripts/python.exe scripts/learning/continue_verified_adapter.py prepare <名稱> --parent <父短題研究> --recent <近期短題研究>
+.venv/Scripts/python.exe scripts/learning/continue_verified_adapter.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/continue_verified_adapter.py verify <名稱>
+```
+
+工作需要原生閒置十分鐘，由三個獨立程序實測父版本、訓練後和重新載入。40 道歷史非訓練題、12 道新題及 21 道新訓練例分組計分。保留兩輪任一版曾答對的歷史題，也保留實測父版本答對的非訓練題。新題和新訓練例都須答對，至少有一題非訓練題優於父版本，重載的原答和 logits 須一致。結果留在 F 槽，完整助理資格另行驗收。

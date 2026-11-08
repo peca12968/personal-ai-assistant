@@ -1,0 +1,40 @@
+{
+  "schema": "continued_evidence_cases_v1",
+  "training": [
+    {"id": "press_ready", "kind": "veto", "prompt": "啟用壓機的完整要求是入口壓力至少四十二單位，且已簽署本次放行單。入口實測四十五單位，本次放行單也有正式簽名。能啟用只回 P7，不能只回 B4，資料不足只回 U2。", "answer": "P7"},
+    {"id": "press_blocked", "kind": "veto", "prompt": "啟用壓機的完整要求是入口壓力至少四十二單位，且已簽署本次放行單。入口實測只有三十單位，本次放行單尚未核對。能啟用只回 P7，不能只回 B4，資料不足只回 U2。", "answer": "B4"},
+    {"id": "press_unchecked", "kind": "veto", "prompt": "啟用壓機的完整要求是入口壓力至少四十二單位，且已簽署本次放行單。本次放行單已簽，四十五單位是另一台壓機的讀值，本機入口尚未測量。能啟用只回 P7，不能只回 B4，資料不足只回 U2。", "answer": "U2"},
+    {"id": "lift_ready", "kind": "veto", "prompt": "試行升降臺只有兩個要求，急停開關已復位，固定銷已完全拔出。檢查已確認開關復位，固定銷也已整支取出。只回代碼，R1 表示能試行，D6 表示不能，M4 表示未定。", "answer": "R1"},
+    {"id": "lift_blocked", "kind": "veto", "prompt": "試行升降臺只有兩個要求，急停開關已復位，固定銷已完全拔出。固定銷目前仍插在臺座上，急停開關尚未查。只回代碼，R1 表示能試行，D6 表示不能，M4 表示未定。", "answer": "D6"},
+    {"id": "lift_unchecked", "kind": "veto", "prompt": "試行升降臺只有兩個要求，急停開關已復位，固定銷已完全拔出。急停開關已確認復位，固定銷的位置沒有記錄，也還沒看。只回代碼，R1 表示能試行，D6 表示不能，M4 表示未定。", "answer": "M4"},
+    {"id": "window_ready", "kind": "deadline", "prompt": "送交領料單只需要兩項，現在未超過本日 17:30 且本單有主管簽名。現在是同日 17:20，已看到本單的主管簽名。確定能送回 A6，不能送回 C2，未定回 K7，只輸出代碼。", "answer": "A6"},
+    {"id": "window_blocked", "kind": "deadline", "prompt": "送交領料單只需要兩項，現在未超過本日 17:30 且本單有主管簽名。現在是同日 17:46，本單簽名尚未查。確定能送回 A6，不能送回 C2，未定回 K7，只輸出代碼。", "answer": "C2"},
+    {"id": "window_unchecked", "kind": "deadline", "prompt": "送交領料單只需要兩項，現在未超過本日 17:30 且本單有主管簽名。本單已簽，只知道上次抄下時鐘是 17:20，現在時間尚未核對。確定能送回 A6，不能送回 C2，未定回 K7，只輸出代碼。", "answer": "K7"},
+    {"id": "shelf_ready", "kind": "scope", "prompt": "放進新器具前，指定的唯一上層收納格必須清空。已確認上層格裡什麼都沒有，另有實測確認新器具能放入。只回能放、不能放、待確認三者之一。", "answer": "能放"},
+    {"id": "shelf_blocked", "kind": "scope", "prompt": "放進新器具前，指定的唯一上層收納格必須清空。已核對上層格裡仍放著兩個舊盒，層板承重未確認。只回能放、不能放、待確認三者之一。", "answer": "不能放"},
+    {"id": "shelf_unchecked", "kind": "scope", "prompt": "放進新器具前，指定的唯一上層收納格必須清空。已看到下層格清空，上層格的門還沒開，內容未知。只回能放、不能放、待確認三者之一。", "answer": "待確認"},
+    {"id": "json_single_true", "kind": "json", "prompt": "安全牌已掛上。只輸出一個緊湊 JSON 物件，鍵名 tagged，值是安全牌是否已掛上的布林值。不要空白、換行或程式碼框。", "answer": "{\"tagged\":true}"},
+    {"id": "json_single_false", "kind": "json", "prompt": "安全牌確定尚未掛上。只輸出一個緊湊 JSON 物件，鍵名 tagged，值是安全牌是否已掛上的布林值。不要空白、換行或程式碼框。", "answer": "{\"tagged\":false}"},
+    {"id": "json_single_null", "kind": "json", "prompt": "安全牌是否掛上還沒核對。只輸出一個緊湊 JSON 物件，鍵名 tagged，已確認時用布林值，未核對時用 null。不要空白、換行或程式碼框。", "answer": "{\"tagged\":null}"},
+    {"id": "json_nested_true", "kind": "json", "prompt": "上蓋確定關閉。輸出緊湊 JSON，外層只有 device，內層是只有 closed 的物件，closed 值用布林值。只回 JSON，不要空白。", "answer": "{\"device\":{\"closed\":true}}"},
+    {"id": "json_nested_false", "kind": "json", "prompt": "上蓋確定仍開著。輸出緊湊 JSON，外層只有 device，內層是只有 closed 的物件，closed 值用布林值。只回 JSON，不要空白。", "answer": "{\"device\":{\"closed\":false}}"},
+    {"id": "json_nested_null", "kind": "json", "prompt": "上蓋還沒檢查。輸出緊湊 JSON，外層只有 device，內層是只有 closed 的物件。未檢查時 closed 用 null。只回 JSON，不要空白。", "answer": "{\"device\":{\"closed\":null}}"},
+    {"id": "json_two_keys", "kind": "json", "prompt": "清點得知 3 個樣品，已完成封裝。用緊湊 JSON 物件依序回 count 數值和 packed 布林值。只輸出 JSON，保留鍵名和順序，不要空白。", "answer": "{\"count\":3,\"packed\":true}"},
+    {"id": "json_array_wrap", "kind": "json", "prompt": "有效標籤為 K1 和 L2，順序照原文。只回緊湊 JSON 物件，鍵名 labels，值是這兩個字串的陣列。不要空白和程式碼框。", "answer": "{\"labels\":[\"K1\",\"L2\"]}"},
+    {"id": "json_array_empty", "kind": "json", "prompt": "這次沒有任何有效標籤。只回緊湊 JSON 物件，鍵名 labels，值是字串陣列。沒有標籤時用空陣列。不要空白或說明。", "answer": "{\"labels\":[]}"}
+  ],
+  "checks": [
+    {"id": "wash_ready", "kind": "veto", "prompt": "啟用沖洗站須同時確認進水接頭已接妥、出水閥已開，兩項就是全部要求。已確認接頭鎖好，出水閥也已全開。請只回 R 代表能、B 代表不能、X 代表未定。", "answer": "R"},
+    {"id": "wash_blocked", "kind": "veto", "prompt": "啟用沖洗站須同時確認進水接頭已接妥、出水閥已開，兩項就是全部要求。唯一進水接頭已卸下，出水閥位置尚未查到。請只回 R 代表能、B 代表不能、X 代表未定。", "answer": "B"},
+    {"id": "wash_pending", "kind": "veto", "prompt": "啟用沖洗站須同時確認進水接頭已接妥、出水閥已開，兩項就是全部要求。進水接頭鎖好，出水閥未檢查。請只回 R 代表能、B 代表不能、X 代表未定。", "answer": "X"},
+    {"id": "entry_before", "kind": "deadline", "prompt": "這張登記票是唯一的票，今天 08:45 截止，進門的唯一要求是票仍在期限內。現在同日 08:32。只輸出 M8 表示能進、F4 表示不能、U1 表示未定。", "answer": "M8"},
+    {"id": "entry_after", "kind": "deadline", "prompt": "這張登記票是唯一的票，今天 08:45 截止，進門的唯一要求是票仍在期限內。現在同日 09:05。只輸出 M8 表示能進、F4 表示不能、U1 表示未定。", "answer": "F4"},
+    {"id": "entry_time_unknown", "kind": "deadline", "prompt": "這張登記票是唯一的票，今天 08:45 截止，進門的唯一要求是票仍在期限內。08:32 是昨天的紀錄，今天目前時間尚未核對。只輸出 M8 表示能進、F4 表示不能、U1 表示未定。", "answer": "U1"},
+    {"id": "tray_ready", "kind": "scope", "prompt": "只要指定的唯一接料盤完全空著，就可開始新批，這是完整要求。盤底和四角均已檢查，裡面什麼都沒有。只用原字回答，可以、阻擋、待查。", "answer": "可以"},
+    {"id": "tray_occupied", "kind": "scope", "prompt": "只要指定的唯一接料盤完全空著，就可開始新批，這是完整要求。指定盤的一角仍有舊料，舊料重量還沒稱。只用原字回答，可以、阻擋、待查。", "answer": "阻擋"},
+    {"id": "tray_other", "kind": "scope", "prompt": "只要指定的唯一接料盤完全空著，就可開始新批，這是完整要求。空的是旁邊的備用盤，指定盤的內容沒看過。只用原字回答，可以、阻擋、待查。", "answer": "待查"},
+    {"id": "json_fresh_object", "kind": "json", "prompt": "門栓已確認扣住。只回緊湊 JSON 物件，唯一鍵名是 latched，值為布林值。不用空白、說明或程式碼框。", "answer": "{\"latched\":true}"},
+    {"id": "json_fresh_nested", "kind": "json", "prompt": "天窗現在敞開。只回緊湊 JSON，唯一外層鍵 roof，值是物件，內層唯一鍵 shut，值表示天窗是否關上。不要空白。", "answer": "{\"roof\":{\"shut\":false}}"},
+    {"id": "json_fresh_array", "kind": "json", "prompt": "本輪沒有未核對項目。只回緊湊 JSON 物件，唯一鍵 pending，值是未核對項目字串的陣列。不要空白或程式碼框。", "answer": "{\"pending\":[]}"}
+  ]
+}
