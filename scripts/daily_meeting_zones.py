@@ -70,7 +70,7 @@ def load_rules(saved, keys):
     return zones
 
 
-def utc_minute(day, minute, zone, label):
+def utc_minute(day, minute, zone, label, occurrence=None):
     try:
         local = datetime.combine(date.fromisoformat(day), time()) + timedelta(minutes=minute)
         matches = set()
@@ -80,19 +80,27 @@ def utc_minute(day, minute, zone, label):
                 matches.add(utc)
     except (ValueError, OverflowError):
         raise ValueError(f'{label} 的時間超出可換算的日期。') from None
-    if len(matches) != 1:
+    if not matches or (len(matches) > 1 and occurrence is None):
         reason = '不存在的當地時間' if not matches else '重複的當地時間'
-        raise ValueError(f'{label} 的 {local:%Y-%m-%d %H:%M} 是{reason}，請指定可辨認的時段。')
-    instant = matches.pop()
+        hint = '請指定可辨認的時段' if not matches else '請在時刻後標註「（第一次）」或「（第二次）」'
+        raise ValueError(f'{label} 的 {local:%Y-%m-%d %H:%M} 是{reason}，{hint}。')
+    if occurrence is not None and len(matches) != 2:
+        raise ValueError(f'{label} 的 {local:%Y-%m-%d %H:%M} 只出現一次，請移除出現次序。')
+    instant = sorted(matches)[1 if occurrence == 2 else 0]
     if instant.second or instant.microsecond:
         raise ValueError(f'{label} 的時區偏移精確到秒，請改用可用分鐘表示的時段。')
     return instant.toordinal() * 1440 + instant.hour * 60 + instant.minute
 
 
 def utc_intervals(day, intervals, zone, label):
-    for start, end in intervals:
-        left = utc_minute(day, start, zone, label)
-        right = utc_minute(day, end, zone, label)
+    for slot in intervals:
+        if isinstance(slot, dict):
+            left = utc_minute(day, slot['start'], zone, label, slot['start_choice'])
+            right = utc_minute(day, slot['end'], zone, label, slot['end_choice'])
+        else:
+            start, end = slot
+            left = utc_minute(day, start, zone, label)
+            right = utc_minute(day, end, zone, label)
         if left >= right:
             raise ValueError(f'{label} 的空檔經換算後須為正向時段。')
         yield left, right

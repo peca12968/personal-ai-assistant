@@ -35,7 +35,9 @@ DATED_PLAN = 'daily_availability_dates_v2'
 RELATIVE_PLAN = 'daily_availability_relative_v3'
 ZONED_PLAN = 'daily_availability_zoned_v4'
 NAMED_ZONED_PLAN = 'daily_availability_named_zones_v5'
-ZONED_PLANS = (ZONED_PLAN, NAMED_ZONED_PLAN)
+FOLD_ZONED_PLAN = 'daily_availability_fold_zones_v6'
+NAMED_ZONED_PLANS = (NAMED_ZONED_PLAN, FOLD_ZONED_PLAN)
+ZONED_PLANS = (ZONED_PLAN, *NAMED_ZONED_PLANS)
 DATE_PLANS = (DATED_PLAN, RELATIVE_PLAN)
 DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
 WEEK_KIND = r'[本這下]'
@@ -61,6 +63,9 @@ ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(
 NAMED_ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
                                 r'格式\s*YYYY-MM-DD HH:MM UTC±HH:MM 至 HH:MM UTC±HH:MM')
 ZONED_REVISION = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+(取消|的?空檔改為)\s*(.+)')
+OCCURRENCE = r'(?:（(第[一二]次)）|\((第[一二]次)\))'
+OCCURRENCE_SPAN = re.compile(rf'({CLOCK})\s*{OCCURRENCE}?\s*[-–—至到]\s*({CLOCK})\s*{OCCURRENCE}?')
+OCCURRENCES = {None: None, '第一次': 1, '第二次': 2}
 
 
 def minutes(clock):
@@ -269,10 +274,35 @@ def offset_text(value):
     return f'UTC{"-" if value < 0 else "+"}{hours:02d}:{remainder:02d}'
 
 
-def zoned_slots(text):
+def zoned_span(text, *, named=False):
+    if named and (match := OCCURRENCE_SPAN.fullmatch(text)):
+        start_choice = OCCURRENCES[match[2] or match[3]]
+        end_choice = OCCURRENCES[match[5] or match[6]]
+        if start_choice is not None or end_choice is not None:
+            return dict(start=minutes(match[1]), end=minutes(match[4]),
+                        start_choice=start_choice, end_choice=end_choice)
+    return span(text)
+
+
+def zoned_slots(text, *, named=False):
     if re.fullmatch(NO_AVAILABILITY, text):
         return []
+    if named and re.search(OCCURRENCE, text):
+        slots = [zoned_span(part.strip(), named=True) for part in re.split(r'[和與、]', text)]
+        return slots if len(slots) <= 12 and all(slots) else None
     return slot_list(text, allow_alternatives=True)
+
+
+def zoned_span_text(slot):
+    if not isinstance(slot, dict):
+        return display(slot)
+    parts = []
+    for key in ('start', 'end'):
+        value = slot[key]
+        choice = slot[key + '_choice']
+        clock = f'{value // 60:02d}:{value % 60:02d}'
+        parts.append(clock + {None: '', 1: '（第一次）', 2: '（第二次）'}[choice])
+    return '-'.join(parts)
 
 
 def parse_zone(text, named):
@@ -306,6 +336,7 @@ def parse_zoned(question):
     if participants is not None and participants != len(lines[2:-2]):
         return None
     people = {}
+    explicit_occurrence = False
     try:
         reference_zone = parse_zone(reference[1], named)
         for day in dates:
@@ -329,15 +360,19 @@ def parse_zoned(question):
                 if not local or local[1] in local_days:
                     return None
                 date.fromisoformat(local[1])
-                available = zoned_slots(local[2])
+                available = zoned_slots(local[2], named=named)
                 if available is None:
                     return None
+                explicit_occurrence = explicit_occurrence or any(isinstance(slot, dict) for slot in available)
                 local_days[local[1]] = dict(available=available, cancelled=[])
             zone = parse_zone(entry[2], named)
             people[name] = {('zone' if named else 'offset'): zone, 'days': local_days}
     except ValueError:
         return None
-    plan = dict(schema=NAMED_ZONED_PLAN if named else ZONED_PLAN, dates=dates, people=people, duration=length)
+    schema = NAMED_ZONED_PLAN if named else ZONED_PLAN
+    if explicit_occurrence:
+        schema = FOLD_ZONED_PLAN
+    plan = dict(schema=schema, dates=dates, people=people, duration=length)
     plan['reference_zone' if named else 'reference_offset'] = reference_zone
     return plan
 
@@ -351,12 +386,12 @@ def named_keys(plan):
 
 
 def bind_named_zones(plan, previous, *, fresh=False):
-    if plan['schema'] != NAMED_ZONED_PLAN:
+    if plan['schema'] not in NAMED_ZONED_PLANS:
         return plan
     keys = named_keys(plan)
     if fresh:
         saved = meeting_zones.snapshot(keys)
-    elif isinstance(previous, dict) and previous.get('schema') == NAMED_ZONED_PLAN and 'zone_rules' in previous:
+    elif isinstance(previous, dict) and previous.get('schema') == plan['schema'] and 'zone_rules' in previous:
         saved = previous['zone_rules']
     else:
         raise ValueError('會議缺少原先保存的時區規則。')
@@ -375,16 +410,20 @@ def revise_zoned(plan, clause):
     day = person['days'].get(edit[2]) if person else None
     if day is None:
         raise ValueError('請使用原先列出的參與者及該人的當地日期。')
+    named = plan['schema'] in NAMED_ZONED_PLANS
     if edit[3] != '取消':
-        slots = zoned_slots(edit[4])
+        slots = zoned_slots(edit[4], named=named)
         if slots is None:
             raise ValueError('請列出當日完整空檔，或寫「無空檔」。')
         day.update(available=slots, cancelled=[])
-        return
-    cut = [0, 720] if re.fullmatch(MORNING, edit[4]) else span(edit[4])
-    if not cut or len(day['cancelled']) >= 24:
-        raise ValueError('請提供有效的當地取消時段，每日最多 24 筆。')
-    day['cancelled'].append(dict(interval=cut, source=clause))
+    else:
+        cut = [0, 720] if re.fullmatch(MORNING, edit[4]) else zoned_span(edit[4], named=named)
+        if not cut or len(day['cancelled']) >= 24:
+            raise ValueError('請提供有效的當地取消時段，每日最多 24 筆。')
+        day['cancelled'].append(dict(interval=cut, source=clause))
+        slots = [cut]
+    if any(isinstance(slot, dict) for slot in slots):
+        plan['schema'] = FOLD_ZONED_PLAN
 
 
 def revise(plan, clause):
@@ -444,7 +483,7 @@ def display(interval):
 
 
 def resolve(plan):
-    if plan.get('schema') == NAMED_ZONED_PLAN:
+    if plan.get('schema') in NAMED_ZONED_PLANS:
         return resolve_named_zoned(plan)
     if plan.get('schema') == ZONED_PLAN:
         return resolve_zoned(plan)
@@ -554,7 +593,10 @@ def utc_availability(plan, zones):
 
 
 def named_day(day, zone, label, available, cancelled, length):
-    start, end = next(meeting_zones.utc_intervals(day, [(0, 1440)], zone, label))
+    try:
+        start, end = next(meeting_zones.utc_intervals(day, [(0, 1440)], zone, label))
+    except ValueError as exc:
+        raise ValueError(f'基準日期 {day} 在 {label} 的日界無法唯一換算，請改用其他基準時區或日期。') from exc
     width = end - start
     if not 1 <= width <= 2880:
         raise ValueError('基準日期超出可比較的日界。')
@@ -582,7 +624,9 @@ def resolve_named_zoned(plan):
     available, cancelled = utc_availability(plan, zones)
     days = [named_day(day, zones[reference], reference, available, cancelled, length) for day in sorted(plan['dates'])]
     answer = next((f'{day["date"]} {day["first"]}' for day in days if day['first']), '沒有可行時段')
-    receipt = dict(schema='daily_meeting_named_zone_calculation_v5', status='complete', model_called=False,
+    schema = ('daily_meeting_fold_zone_calculation_v6' if plan['schema'] == FOLD_ZONED_PLAN
+              else 'daily_meeting_named_zone_calculation_v5')
+    receipt = dict(schema=schema, status='complete', model_called=False,
                    days=days, duration=length, reference_zone=reference,
                    expression=f'依基準時區查找最早共同連續 {length} 分鐘',
                    result=dict(exact=answer, calculations=[]))
@@ -618,7 +662,7 @@ def describe(context):
             lines.append(f'相對日期以原本的電腦本地日期 {anchor["date"]} 為基準。')
             lines.append(f'原本的本機時鐘觀察 {observed}')
     if zoned:
-        named = plan['schema'] == NAMED_ZONED_PLAN
+        named = plan['schema'] in NAMED_ZONED_PLANS
         reference = plan['reference_zone'] if named else offset_text(plan['reference_offset'])
         lines += ['', f'基準時區 {reference}']
         if named:
@@ -628,7 +672,7 @@ def describe(context):
             zone = person['zone'] if named else offset_text(person['offset'])
             lines.append(f'{name} {zone}')
             for local_day, windows in sorted(person['days'].items()):
-                slots = '、'.join(map(display, windows['available'])) or '無'
+                slots = '、'.join(map(zoned_span_text, windows['available'])) or '無'
                 lines.append(f'  {local_day} {slots}')
                 lines.extend(f'  {cut["source"]}' for cut in windows['cancelled'])
     days = receipt['days'] if dated else [receipt]
