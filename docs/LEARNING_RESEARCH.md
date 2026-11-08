@@ -446,3 +446,15 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 工作需要原生閒置十分鐘，由三個獨立程序實測父版本、訓練後和重新載入。40 道歷史非訓練題、12 道新題及 21 道新訓練例分組計分。保留兩輪任一版曾答對的歷史題，也保留實測父版本答對的非訓練題。新題和新訓練例都須答對，至少有一題非訓練題優於父版本，重載的原答和 logits 須一致。結果留在 F 槽，完整助理資格另行驗收。
+
+### 固定步數觀察接續權重
+
+`trace_adapter_updates.py` 對已完成的接續規約重現同一父權重、隨機種子、取樣順序及 21 步更新。固定保存第 7、14、21 步的適配器，以獨立程序重測原有全部 73 題。保存中途權重時隔離亂數狀態。取樣及損失須與原實驗一致，第 21 步的權重、原答及 logits 也須重現原結果。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/trace_adapter_updates.py prepare <名稱> --reference <已完成接續規約>
+.venv/Scripts/python.exe scripts/learning/trace_adapter_updates.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/trace_adapter_updates.py verify <名稱>
+```
+
+報告把父版本已錯的題目和更新後首次觀察到的退步分開。各點重算同一套保留題，歷史題、全新題和訓練例分組呈現。固定點只代表觀察到的時間區間，實際變化可能在兩個檢查點之間。每個 GPU 程序採原生閒置及六分鐘時限，中斷會留存已完成檔案和退出證據。完整助理資格仍另行驗收。
