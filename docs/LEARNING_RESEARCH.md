@@ -378,3 +378,17 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 以同一規約執行一次。Windows 輸入閒置達門檻後，逐題在獨立程序使用相同聊天推論程式。恢復輸入、來源異動或逾時會停止，保留已保存的證據。完整驗收核對模型原答、正式會話與已退出的工作程序。候選需要全數答對、保留底座已答對的題目，並至少改善一道目標題，底座也須通過至少一道控制題。資料、原答、權重和規約留在本機研究目錄，日常引擎依使用者原選擇啟動。
+
+### 跨閒置時段的逐題對照
+
+`evals/base_assistant_generalization.json` 固定六道新判斷情境與六道控制題。判斷涵蓋撤回、缺漏、備援、衝突、對象更換和反向條件。控制涵蓋更正、算術、格式、歧義與引文。題目、前文和答案先凍結，每個版本使用相同的合成對話，兩邊各自使用真實引擎資訊。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant.py prepare <研究名稱> --assay <短題驗收名稱> --suite evals/base_assistant_generalization.json
+data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assistant.py preflight <研究名稱>
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant_pairs.py prepare <研究名稱>
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant_pairs.py run <研究名稱> --limit 1
+.venv/Scripts/python.exe scripts/learning/assess_base_assistant_pairs.py report <研究名稱>
+```
+
+逐題入口需要尚未整批執行的原始規約。每次 `run` 預設選下一題，以同一次原生閒置觀察分別在兩個獨立程序執行底座與候選。每題有二十分鐘上限，恢復輸入或來源變更時停止。停止或失敗的原答保留，之後的命令接著收集尚未嘗試的題目。報告重核完整成對的實際請求、原答、會話、輸入長度及退出紀錄，列出已規劃與已完成題數，再分列目標和控制正確數。逐題研究是獨立的量測規約，日常候選資格仍由原本的完整驗收決定。
