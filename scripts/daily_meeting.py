@@ -36,7 +36,8 @@ RELATIVE_PLAN = 'daily_availability_relative_v3'
 ZONED_PLAN = 'daily_availability_zoned_v4'
 NAMED_ZONED_PLAN = 'daily_availability_named_zones_v5'
 FOLD_ZONED_PLAN = 'daily_availability_fold_zones_v6'
-NAMED_ZONED_PLANS = (NAMED_ZONED_PLAN, FOLD_ZONED_PLAN)
+OVERNIGHT_ZONED_PLAN = 'daily_availability_overnight_zones_v7'
+NAMED_ZONED_PLANS = (NAMED_ZONED_PLAN, FOLD_ZONED_PLAN, OVERNIGHT_ZONED_PLAN)
 ZONED_PLANS = (ZONED_PLAN, *NAMED_ZONED_PLANS)
 DATE_PLANS = (DATED_PLAN, RELATIVE_PLAN)
 DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
@@ -62,9 +63,13 @@ ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(
                           r'格式\s*YYYY-MM-DD HH:MM-HH:MM UTC±HH:MM')
 NAMED_ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
                                 r'格式\s*YYYY-MM-DD HH:MM UTC±HH:MM 至 HH:MM UTC±HH:MM')
+OVERNIGHT_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?時段[，,]\s*'
+                              r'格式\s*YYYY-MM-DD HH:MM UTC±HH:MM 至 YYYY-MM-DD HH:MM UTC±HH:MM')
 ZONED_REVISION = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+(取消|的?空檔改為)\s*(.+)')
 OCCURRENCE = r'(?:（(第[一二]次)）|\((第[一二]次)\))'
 OCCURRENCE_SPAN = re.compile(rf'({CLOCK})\s*{OCCURRENCE}?\s*[-–—至到]\s*({CLOCK})\s*{OCCURRENCE}?')
+OVERNIGHT_SPAN = re.compile(rf'(?:({DATE})\s+)?({CLOCK})\s*{OCCURRENCE}?\s*[-–—至到]\s*'
+                            rf'({DATE})\s+({CLOCK})\s*{OCCURRENCE}?')
 OCCURRENCES = {None: None, '第一次': 1, '第二次': 2}
 
 
@@ -293,6 +298,27 @@ def zoned_slots(text, *, named=False):
     return slot_list(text, allow_alternatives=True)
 
 
+def overnight_span(day, text):
+    match = OVERNIGHT_SPAN.fullmatch(text)
+    if not match:
+        return zoned_span(text, named=True)
+    start, end = minutes(match[2]), minutes(match[6])
+    if start == 1440 or end == 1440:
+        return None
+    local_day, start_day, end_day = map(date.fromisoformat, (day, match[1] or day, match[5]))
+    if (start_day - local_day).days not in (0, 1) or (end_day - start_day).days not in (0, 1):
+        return None
+    return dict(start=start, end=end, start_date=match[1] or day, end_date=match[5],
+                start_choice=OCCURRENCES[match[3] or match[4]], end_choice=OCCURRENCES[match[7] or match[8]])
+
+
+def overnight_slots(day, text):
+    if re.fullmatch(NO_AVAILABILITY, text):
+        return []
+    slots = [overnight_span(day, part.strip()) for part in re.split(r'[和與、]|或', text)]
+    return slots if len(slots) <= 12 and all(slots) else None
+
+
 def zoned_span_text(slot):
     if not isinstance(slot, dict):
         return display(slot)
@@ -301,7 +327,8 @@ def zoned_span_text(slot):
         value = slot[key]
         choice = slot[key + '_choice']
         clock = f'{value // 60:02d}:{value % 60:02d}'
-        parts.append(clock + {None: '', 1: '（第一次）', 2: '（第二次）'}[choice])
+        day = slot.get(key + '_date')
+        parts.append((f'{day} ' if day else '') + clock + {None: '', 1: '（第一次）', 2: '（第二次）'}[choice])
     return '-'.join(parts)
 
 
@@ -319,13 +346,20 @@ def parse_zoned(question):
         return None
     body = ZONED_HEADER.sub('', question, count=1)
     lines = [part.strip() for part in re.split(r'[。\r\n]+', body) if part.strip()]
+    overnight = len(lines) >= 3 and lines[2] == '允許跨基準午夜'
+    if overnight:
+        del lines[2]
     if not 6 <= len(lines) <= 12:
         return None
-    named = bool(NAMED_ZONED_OUTPUT.fullmatch(lines[-1]))
+    named_format = OVERNIGHT_OUTPUT if overnight else NAMED_ZONED_OUTPUT
+    named = bool(named_format.fullmatch(lines[-1]))
+    if overnight and not named:
+        return None
     if not named and not ZONED_OUTPUT.fullmatch(lines[-1]):
         return None
     reference = re.fullmatch(rf'基準時區\s*({ZONE})', lines[0])
-    candidate_line = re.fullmatch(r'候選日期[：:]\s*(.+)', lines[1])
+    candidate_label = '候選起始日期' if overnight else '候選日期'
+    candidate_line = re.fullmatch(rf'{candidate_label}[：:]\s*(.+)', lines[1])
     duration = parse_duration(lines[-2])
     if not reference or not candidate_line or not duration:
         return None
@@ -360,7 +394,8 @@ def parse_zoned(question):
                 if not local or local[1] in local_days:
                     return None
                 date.fromisoformat(local[1])
-                available = zoned_slots(local[2], named=named)
+                available = (overnight_slots(local[1], local[2]) if overnight
+                             else zoned_slots(local[2], named=named))
                 if available is None:
                     return None
                 explicit_occurrence = explicit_occurrence or any(isinstance(slot, dict) for slot in available)
@@ -370,7 +405,9 @@ def parse_zoned(question):
     except ValueError:
         return None
     schema = NAMED_ZONED_PLAN if named else ZONED_PLAN
-    if explicit_occurrence:
+    if overnight:
+        schema = OVERNIGHT_ZONED_PLAN
+    elif explicit_occurrence:
         schema = FOLD_ZONED_PLAN
     plan = dict(schema=schema, dates=dates, people=people, duration=length)
     plan['reference_zone' if named else 'reference_offset'] = reference_zone
@@ -411,18 +448,22 @@ def revise_zoned(plan, clause):
     if day is None:
         raise ValueError('請使用原先列出的參與者及該人的當地日期。')
     named = plan['schema'] in NAMED_ZONED_PLANS
+    overnight = plan['schema'] == OVERNIGHT_ZONED_PLAN
     if edit[3] != '取消':
-        slots = zoned_slots(edit[4], named=named)
+        slots = overnight_slots(edit[2], edit[4]) if overnight else zoned_slots(edit[4], named=named)
         if slots is None:
             raise ValueError('請列出當日完整空檔，或寫「無空檔」。')
         day.update(available=slots, cancelled=[])
     else:
-        cut = [0, 720] if re.fullmatch(MORNING, edit[4]) else zoned_span(edit[4], named=named)
+        if re.fullmatch(MORNING, edit[4]):
+            cut = [0, 720]
+        else:
+            cut = overnight_span(edit[2], edit[4]) if overnight else zoned_span(edit[4], named=named)
         if not cut or len(day['cancelled']) >= 24:
             raise ValueError('請提供有效的當地取消時段，每日最多 24 筆。')
         day['cancelled'].append(dict(interval=cut, source=clause))
         slots = [cut]
-    if any(isinstance(slot, dict) for slot in slots):
+    if not overnight and any(isinstance(slot, dict) for slot in slots):
         plan['schema'] = FOLD_ZONED_PLAN
 
 
@@ -432,6 +473,8 @@ def revise(plan, clause):
     if duration:
         length = int(duration[1])
         if length > 1440:
+            if plan['schema'] == OVERNIGHT_ZONED_PLAN:
+                raise ValueError('請指定 1 至 1440 分鐘的會議時長。')
             raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
         plan['duration'] = length
         return
@@ -592,7 +635,7 @@ def utc_availability(plan, zones):
     return available, cancelled
 
 
-def named_day(day, zone, label, available, cancelled, length):
+def named_day_bounds(day, zone, label):
     try:
         start, end = next(meeting_zones.utc_intervals(day, [(0, 1440)], zone, label))
     except ValueError as exc:
@@ -600,6 +643,12 @@ def named_day(day, zone, label, available, cancelled, length):
     width = end - start
     if not 1 <= width <= 2880:
         raise ValueError('基準日期超出可比較的日界。')
+    return start, end
+
+
+def named_day(day, zone, label, available, cancelled, length):
+    start, end = named_day_bounds(day, zone, label)
+    width = end - start
     projected = {name: [overlap for interval in slots if (overlap := shifted_intersection(interval, -start, width))]
                  for name, slots in available.items()}
     removed = [dict(name=cut['name'], interval=overlap) for cut in cancelled
@@ -615,6 +664,70 @@ def named_day(day, zone, label, available, cancelled, length):
                 common=list(map(show, common)), first=show(first) if first else None)
 
 
+def surviving_windows(intervals, cuts):
+    for start, end in intervals:
+        for left, right in cuts:
+            if right <= start:
+                continue
+            if left >= end:
+                break
+            if start < left:
+                yield start, left
+            start = right
+            if start >= end:
+                break
+        if start < end:
+            yield start, end
+
+
+def possible_starts(available, cancelled, start, end, duration):
+    """Return half-open UTC runs of feasible starts, preserving per-person alternatives."""
+    width = end - start
+    shared = bytearray([1]) * width
+    individual = {}
+    for name, intervals in available.items():
+        cuts = sorted(cut['interval'] for cut in cancelled if cut['name'] == name)
+        mask = bytearray(width)
+        for left, right in surviving_windows(intervals, cuts):
+            first = max(0, left - start)
+            after = min(width, right - start - duration + 1)
+            if first < after:
+                mask[first:after] = b'\x01' * (after - first)
+        individual[name] = [(start + a, start + b) for a, b in ranges(mask)]
+        shared = bytearray(a & b for a, b in zip(shared, mask))
+    return individual, [(start + a, start + b) for a, b in ranges(shared)]
+
+
+def resolve_overnight(plan, zone, available, cancelled):
+    length = plan['duration']
+
+    def show(instant):
+        return meeting_zones.local_date_clock(instant, zone)
+
+    def starts_text(interval):
+        first, after = interval
+        return show(first) if after == first + 1 else f'{show(first)} 至 {show(after - 1)}'
+
+    days = []
+    first_slot = None
+    for day in sorted(plan['dates']):
+        start, end = named_day_bounds(day, zone, plan['reference_zone'])
+        individual, shared = possible_starts(available, cancelled, start, end, length)
+        first = shared[0][0] if shared else None
+        first_text = f'{show(first)} 至 {show(first + length)}' if first is not None else None
+        if first_slot is None and first is not None:
+            first_slot = first, first + length, first_text
+        days.append(dict(date=day, effective={name: list(map(starts_text, slots)) for name, slots in individual.items()},
+                         common=list(map(starts_text, shared)), first=first_text))
+    answer = first_slot[2] if first_slot else '沒有可行時段'
+    result = dict(exact=answer, calculations=[])
+    if first_slot:
+        result.update(utc_start_minute=first_slot[0], utc_end_minute=first_slot[1])
+    return answer, dict(schema='daily_meeting_overnight_calculation_v7', status='complete', model_called=False,
+                        days=days, duration=length, reference_zone=plan['reference_zone'],
+                        expression=f'依候選起始日期查找最早共同連續 {length} 分鐘', result=result)
+
+
 def resolve_named_zoned(plan):
     zones = meeting_zones.load_rules(plan['zone_rules'], named_keys(plan))
     for key in zone_keys(plan) - zones.keys():
@@ -622,6 +735,8 @@ def resolve_named_zoned(plan):
     reference = plan['reference_zone']
     length = plan['duration']
     available, cancelled = utc_availability(plan, zones)
+    if plan['schema'] == OVERNIGHT_ZONED_PLAN:
+        return resolve_overnight(plan, zones[reference], available, cancelled)
     days = [named_day(day, zones[reference], reference, available, cancelled, length) for day in sorted(plan['dates'])]
     answer = next((f'{day["date"]} {day["first"]}' for day in days if day['first']), '沒有可行時段')
     schema = ('daily_meeting_fold_zone_calculation_v6' if plan['schema'] == FOLD_ZONED_PLAN
@@ -650,6 +765,7 @@ def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
     zoned = plan['schema'] in ZONED_PLANS
+    overnight = plan['schema'] == OVERNIGHT_ZONED_PLAN
     dated = zoned or plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
@@ -665,6 +781,8 @@ def describe(context):
         named = plan['schema'] in NAMED_ZONED_PLANS
         reference = plan['reference_zone'] if named else offset_text(plan['reference_offset'])
         lines += ['', f'基準時區 {reference}']
+        if overnight:
+            lines.append('候選日期限制會議開始。各人須有一段空檔完整覆蓋會議。')
         if named:
             lines.append(f'沿用保存的 tzdata {plan["zone_rules"]["version"]} 規則。')
         lines.append('原始當地空檔與更正')
@@ -684,7 +802,9 @@ def describe(context):
             lines.append(day['date'] if term == day['date'] else f'{day["date"]}（原文「{term}」）')
             if not zoned:
                 availability = plan['days'][day['date']]
-        if zoned:
+        if overnight:
+            lines.append('可開始的分鐘（區間含起訖）')
+        elif zoned:
             lines.append('換算後每人剩餘時段')
         else:
             lines.append('採用的取消條件')
@@ -692,7 +812,8 @@ def describe(context):
             lines += ['', '每人剩餘時段']
         for name, slots in day['effective'].items():
             lines.append(name + '：' + ('、'.join(slots) or '無'))
-        lines.append('共同空檔：' + ('、'.join(day['common']) or '無'))
+        label = '共同可開始時間：' if overnight else '共同空檔：'
+        lines.append(label + ('、'.join(day['common']) or '無'))
         if dated:
             lines.append('當日最早：' + (day['first'] or '沒有可行時段'))
     lines += ['', f"所需時間：{receipt['duration']} 分鐘", '結果：' + receipt['result']['exact']]

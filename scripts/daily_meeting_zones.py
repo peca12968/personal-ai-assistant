@@ -95,8 +95,8 @@ def utc_minute(day, minute, zone, label, occurrence=None):
 def utc_intervals(day, intervals, zone, label):
     for slot in intervals:
         if isinstance(slot, dict):
-            left = utc_minute(day, slot['start'], zone, label, slot['start_choice'])
-            right = utc_minute(day, slot['end'], zone, label, slot['end_choice'])
+            left = utc_minute(slot.get('start_date', day), slot['start'], zone, label, slot['start_choice'])
+            right = utc_minute(slot.get('end_date', day), slot['end'], zone, label, slot['end_choice'])
         else:
             start, end = slot
             left = utc_minute(day, start, zone, label)
@@ -120,3 +120,16 @@ def local_clock(instant, zone, day):
     else:
         raise ValueError('基準時區的換算結果超出同一日期。')
     return f'{clock} UTC{offset[:3]}:{offset[3:]}'
+
+
+def local_date_clock(instant, zone):
+    ordinal, minute = divmod(instant, 1440)
+    try:
+        utc = datetime.combine(date.fromordinal(ordinal), time(), tzinfo=timezone.utc) + timedelta(minutes=minute)
+        local = utc.astimezone(zone)
+    except (ValueError, OverflowError):
+        raise ValueError('基準時區的換算結果超出可表示的日期。') from None
+    offset = local.strftime('%z')
+    if len(offset) != 5 or local.second or local.microsecond:
+        raise ValueError('基準時區的換算結果無法用整分鐘表示。')
+    return f'{local.date().isoformat()} {local:%H:%M} UTC{offset[:3]}:{offset[3:]}'

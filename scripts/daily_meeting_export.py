@@ -59,7 +59,10 @@ def event_instants(record, day=None, zone=None):
     if schema in meeting.ZONED_PLANS and zone is not None:
         raise ValueError('請使用會議紀錄中已確認的時區。')
     try:
-        if schema in meeting.NAMED_ZONED_PLANS and (match := NAMED_RESULT.fullmatch(result)):
+        if schema == meeting.OVERNIGHT_ZONED_PLAN:
+            start = utc_from_minute(calculation['result']['utc_start_minute'])
+            end = utc_from_minute(calculation['result']['utc_end_minute'])
+        elif schema in meeting.NAMED_ZONED_PLANS and (match := NAMED_RESULT.fullmatch(result)):
             start = utc_at(match[1], match[2], stored_offset(match[3]))
             end = utc_at(match[1], match[4], stored_offset(match[5]))
         elif schema == meeting.ZONED_PLAN and (match := FIXED_RESULT.fullmatch(result)):
