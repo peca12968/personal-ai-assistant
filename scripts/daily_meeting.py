@@ -32,6 +32,7 @@ ASK = re.compile(r'[，,。；;\n]\s*(?:請問)?最早(?:什麼時候|幾點)(?:
 COUNT = dict(zip('兩二三四五六七八', (2, 2, 3, 4, 5, 6, 7, 8)))
 DATED_PLAN = 'daily_availability_dates_v2'
 RELATIVE_PLAN = 'daily_availability_relative_v3'
+ZONED_PLAN = 'daily_availability_zoned_v4'
 DATE_PLANS = (DATED_PLAN, RELATIVE_PLAN)
 DATE = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
 WEEK_KIND = r'[本這下]'
@@ -47,6 +48,13 @@ DATED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(
 DATED_ASK = re.compile(r'(?:請問)?最早哪一天(?:的哪個時段)?(?:能|可以)(?:開會|碰面)[？?]?')
 NO_AVAILABILITY = r'(?:無空檔|沒有空檔)'
 UNAVAILABLE = re.compile(rf'({NATURAL_NAME})(?:當天)?{NO_AVAILABILITY}')
+UTC_OFFSET = r'UTC[+-](?:0[0-9]|1[0-4]):[0-5][0-9]'
+ZONED_HEADER = re.compile(r'\A跨時區會議[：:]')
+ZONED_PERSON = re.compile(rf'({NATURAL_NAME})\s+({UTC_OFFSET})[：:]\s*(.+)')
+ZONED_DAY = re.compile(rf'({DATE})\s+(.+)')
+ZONED_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行的?(?:日期[及和與])?時段[，,]\s*'
+                          r'格式\s*YYYY-MM-DD HH:MM-HH:MM UTC±HH:MM')
+ZONED_REVISION = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+(取消|的?空檔改為)\s*(.+)')
 
 
 def minutes(clock):
@@ -81,6 +89,8 @@ def cancelled_interval(removal):
 
 
 def parse(question, *, observation=None, use_local_clock=False):
+    if ZONED_HEADER.match(question):
+        return parse_zoned(question)
     return parse_same_day(question) or parse_dated(question, observation=observation, use_local_clock=use_local_clock)
 
 
@@ -241,7 +251,97 @@ def parse_dated(question, *, observation=None, use_local_clock=False):
     return plan
 
 
+def offset_minutes(text):
+    value = minutes(text[4:])
+    if value > 840 or text == 'UTC-00:00':
+        raise ValueError('偏移量須介於 UTC-14:00 與 UTC+14:00，零偏移請使用 UTC+00:00。')
+    return value if text[3] == '+' else -value
+
+
+def offset_text(value):
+    hours, remainder = divmod(abs(value), 60)
+    return f'UTC{"-" if value < 0 else "+"}{hours:02d}:{remainder:02d}'
+
+
+def zoned_slots(text):
+    if re.fullmatch(NO_AVAILABILITY, text):
+        return []
+    return slot_list(text, allow_alternatives=True)
+
+
+def parse_zoned(question):
+    if len(question) > 8192:
+        return None
+    body = ZONED_HEADER.sub('', question, count=1)
+    lines = [part.strip() for part in re.split(r'[。\r\n]+', body) if part.strip()]
+    if not 6 <= len(lines) <= 12 or not ZONED_OUTPUT.fullmatch(lines[-1]):
+        return None
+    reference = re.fullmatch(rf'基準時區\s*({UTC_OFFSET})', lines[0])
+    candidate_line = re.fullmatch(r'候選日期[：:]\s*(.+)', lines[1])
+    duration = parse_duration(lines[-2])
+    if not reference or not candidate_line or not duration:
+        return None
+    length, participants = duration
+    dates = [item.strip() for item in re.split(r'[、，,]', candidate_line[1])]
+    if not 1 <= len(dates) <= 7 or len(set(dates)) != len(dates):
+        return None
+    if participants is not None and participants != len(lines[2:-2]):
+        return None
+    people = {}
+    try:
+        reference_offset = offset_minutes(reference[1])
+        for day in dates:
+            if not re.fullmatch(DATE, day):
+                return None
+            date.fromisoformat(day)
+        for line in lines[2:-2]:
+            entry = ZONED_PERSON.fullmatch(line)
+            if not entry:
+                return None
+            alias = entry[1]
+            name = alias.strip('「」')
+            if name in people or (not alias.startswith('「') and UNBOUND_NAME.search(alias)):
+                return None
+            local_days = {}
+            slots = re.split(r'[，,；;]', entry[3])
+            if not 1 <= len(slots) <= 14:
+                return None
+            for slot in slots:
+                local = ZONED_DAY.fullmatch(slot.strip())
+                if not local or local[1] in local_days:
+                    return None
+                date.fromisoformat(local[1])
+                available = zoned_slots(local[2])
+                if available is None:
+                    return None
+                local_days[local[1]] = dict(available=available, cancelled=[])
+            people[name] = dict(offset=offset_minutes(entry[2]), days=local_days)
+    except ValueError:
+        return None
+    return dict(schema=ZONED_PLAN, dates=dates, reference_offset=reference_offset, people=people, duration=length)
+
+
 FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
+
+
+def revise_zoned(plan, clause):
+    edit = ZONED_REVISION.fullmatch(clause)
+    if not edit:
+        raise ValueError('請先列出參與者與完整的當地日期，再取消或更改當日空檔。')
+    person = plan['people'].get(edit[1].strip('「」'))
+    day = person['days'].get(edit[2]) if person else None
+    if day is None:
+        raise ValueError('請使用原先列出的參與者及該人的當地日期。')
+    if edit[3] != '取消':
+        slots = zoned_slots(edit[4])
+        if slots is None:
+            raise ValueError('請列出當日完整空檔，或寫「無空檔」。')
+        day.update(available=slots, cancelled=[])
+        return
+    cut = [0, 720] if re.fullmatch(MORNING, edit[4]) else span(edit[4])
+    if not cut or len(day['cancelled']) >= 24:
+        raise ValueError('請提供有效的當地取消時段，每日最多 24 筆。')
+    day['cancelled'].append(dict(interval=cut, source=clause))
 
 
 def revise(plan, clause):
@@ -252,6 +352,9 @@ def revise(plan, clause):
         if length > 1440:
             raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
         plan['duration'] = length
+        return
+    if plan.get('schema') == ZONED_PLAN:
+        revise_zoned(plan, clause)
         return
     dated = plan.get('schema') in DATE_PLANS
     availability = plan
@@ -298,6 +401,8 @@ def display(interval):
 
 
 def resolve(plan):
+    if plan.get('schema') == ZONED_PLAN:
+        return resolve_zoned(plan)
     if plan.get('schema') in DATE_PLANS:
         return resolve_dated(plan)
     return resolve_same_day(plan)
@@ -352,6 +457,39 @@ def resolve_dated(plan):
     return answer, receipt
 
 
+def shifted_intersection(interval, shift):
+    start, end = interval
+    start, end = max(0, start + shift), min(1440, end + shift)
+    return [start, end] if start < end else None
+
+
+def project_zoned_day(plan, reference_day):
+    base = date.fromisoformat(reference_day).toordinal()
+    available, cancelled = {}, []
+    for name, person in plan['people'].items():
+        available[name] = []
+        for local_day, windows in person['days'].items():
+            difference = date.fromisoformat(local_day).toordinal() - base
+            shift = difference * 1440 + plan['reference_offset'] - person['offset']
+            for interval in windows['available']:
+                if overlap := shifted_intersection(interval, shift):
+                    available[name].append(overlap)
+            for cut in windows['cancelled']:
+                if overlap := shifted_intersection(cut['interval'], shift):
+                    cancelled.append(dict(name=name, interval=overlap))
+    return dict(available=available, cancelled=cancelled)
+
+
+def resolve_zoned(plan):
+    days = {day: project_zoned_day(plan, day) for day in plan['dates']}
+    answer, receipt = resolve_dated(dict(schema=DATED_PLAN, days=days, output='exact', duration=plan['duration']))
+    if answer != '沒有可行時段':
+        answer = f'{answer} {offset_text(plan["reference_offset"])}'
+    receipt.update(schema='daily_meeting_zoned_calculation_v4', reference_offset=plan['reference_offset'])
+    receipt['result']['exact'] = answer
+    return answer, receipt
+
+
 def visible_answer(plan, receipt):
     exact = receipt['result']['exact']
     if plan.get('output') != 'conversational':
@@ -368,7 +506,8 @@ def visible_answer(plan, receipt):
 def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
-    dated = plan['schema'] in DATE_PLANS
+    zoned = plan['schema'] == ZONED_PLAN
+    dated = zoned or plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
@@ -379,6 +518,14 @@ def describe(context):
             observed = anchor['observation']['local_datetime']
             lines.append(f'相對日期以原本的電腦本地日期 {anchor["date"]} 為基準。')
             lines.append(f'原本的本機時鐘觀察 {observed}')
+    if zoned:
+        lines += ['', f'基準時區 {offset_text(plan["reference_offset"])}', '原始當地空檔與更正']
+        for name, person in plan['people'].items():
+            lines.append(f'{name} {offset_text(person["offset"])}')
+            for local_day, windows in sorted(person['days'].items()):
+                slots = '、'.join(map(display, windows['available'])) or '無'
+                lines.append(f'  {local_day} {slots}')
+                lines.extend(f'  {cut["source"]}' for cut in windows['cancelled'])
     days = receipt['days'] if dated else [receipt]
     for day in days:
         availability = plan
@@ -386,10 +533,14 @@ def describe(context):
         if dated:
             term = plan.get('date_terms', {}).get(day['date'], day['date'])
             lines.append(day['date'] if term == day['date'] else f'{day["date"]}（原文「{term}」）')
-            availability = plan['days'][day['date']]
-        lines.append('採用的取消條件')
-        lines += [c['source'] for c in availability['cancelled']] or ['無']
-        lines += ['', '每人剩餘時段']
+            if not zoned:
+                availability = plan['days'][day['date']]
+        if zoned:
+            lines.append('換算後每人剩餘時段')
+        else:
+            lines.append('採用的取消條件')
+            lines += [c['source'] for c in availability['cancelled']] or ['無']
+            lines += ['', '每人剩餘時段']
         for name, slots in day['effective'].items():
             lines.append(name + '：' + ('、'.join(slots) or '無'))
         lines.append('共同空檔：' + ('、'.join(day['common']) or '無'))
