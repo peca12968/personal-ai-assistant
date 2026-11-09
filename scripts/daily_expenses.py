@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_dialogue, daily_criteria, daily_explicit_json, daily_identifiers, daily_meeting, daily_necessary, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_deadline, daily_dialogue, daily_criteria, daily_explicit_json, daily_identifiers, daily_meeting, daily_necessary, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
@@ -249,6 +249,10 @@ class DailyAssistant(Assistant):
             counted = self._counted_answer(sid, question, cancel, retry, draft, prior)
             if counted is not None:
                 return counted
+        if local and self.allow_local_evidence and (not retry or daily_deadline.FIELD in prior):
+            deadline = self._deadline_answer(sid, question, cancel, retry, draft, prior)
+            if deadline is not None:
+                return deadline
         if local and self.allow_local_transcription and (not retry or daily_explicit_json.FIELD in prior):
             literal = self._literal_json_answer(sid, question, cancel, retry, draft, prior)
             if literal is not None:
@@ -537,6 +541,27 @@ class DailyAssistant(Assistant):
             return daily_counts.evaluate(plan)
 
         return self._run_recorded(sid, question, context, calculate, cancel, retry, draft, daily_counts.FIELD)
+
+    def _deadline_answer(self, sid, question, cancel, retry, draft, prior):
+        plan = daily_deadline.parse(question)
+        has_sources = plan is not None and self.store.documents(sid, include_content=False)
+        empty_documents = {'catalog': [], 'excerpts': []}
+        if retry and (plan is None or has_sources or prior[daily_deadline.FIELD] != plan
+                      or prior.get('image_inputs') or prior.get('documents') != empty_documents
+                      or prior.get('response_mode') != daily_deadline.MODE):
+            raise EngineError('重試所需的期限原文或資料範圍已變更。', 'evidence_invalid')
+        if plan is None or has_sources:
+            return None
+        context = make_context(question, [], [])
+        context.update(response_mode=daily_deadline.MODE, documents=empty_documents,
+                       **{daily_deadline.FIELD: plan})
+
+        def compare(_):
+            if self.store.documents(sid, include_content=False):
+                raise EngineError('提交前已加入附件，請重新提供期限與同日時間。', 'evidence_invalid')
+            return daily_deadline.evaluate(plan)
+
+        return self._run_recorded(sid, question, context, compare, cancel, retry, draft, daily_deadline.FIELD)
 
     def _container_answer(self, sid, question, cancel, retry, draft, prior):
         plan = None

@@ -15,7 +15,7 @@ def run_daily_window(store, engine, *, default_chat=False):
     from tkinter import filedialog, messagebox, scrolledtext, simpledialog
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_container_id, daily_counts, daily_explicit_json, daily_meeting, daily_meeting_export, daily_necessary
+    from scripts import daily_container_id, daily_counts, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_necessary
 
     class DailyWindow(App):
         def inspect_context(self):
@@ -31,6 +31,15 @@ def run_daily_window(store, engine, *, default_chat=False):
                     lines = daily_explicit_json.describe(receipt).splitlines()
                 except (KeyError, TypeError, ValueError):
                     lines = ['無法核對這次 JSON 回覆與原始欄位。']
+            elif context and daily_deadline.FIELD in context:
+                title = '本機期限核對'
+                try:
+                    receipt = daily_deadline.read(self.store, answer_id)
+                    if receipt is None:
+                        raise ValueError
+                    lines = daily_deadline.describe(receipt).splitlines()
+                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                    lines = ['無法核對這次期限回覆與原始時刻。']
             elif context and daily_container_id.FIELD in context:
                 title = '本機編號核對'
                 try:
