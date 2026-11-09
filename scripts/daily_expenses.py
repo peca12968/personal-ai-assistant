@@ -260,8 +260,8 @@ class DailyAssistant(Assistant):
             if selected is not None:
                 return selected
         if self.allow_local_calculation and not image_ids:
-            from assistant.document_calculation import parse_live_request
-            if parse_live_request(question) is not None:
+            from assistant.document_calculation import matches_original_followup, parse_live_request
+            if matches_original_followup(question) or parse_live_request(question) is not None:
                 return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         from assistant.chat_evidence import matches_request
         if self.allow_local_evidence and matches_request(question):

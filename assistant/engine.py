@@ -366,8 +366,13 @@ class Assistant:
         from . import chat_calculation
         calculation = chat_calculation.parse_request(question) if self.allow_local_calculation else None
         from . import document_calculation
-        document_plan = (document_calculation.parse_live_request(question)
-                         if self.allow_local_calculation and not image_metadata else None)
+        document_plan = None
+        if self.allow_local_calculation and not image_metadata:
+            if document_calculation.matches_original_followup(question):
+                before = retry['user_message_id'] if retry else None
+                document_plan = document_calculation.capture_original(self.store, sid, question, before)
+            else:
+                document_plan = document_calculation.parse_live_request(question)
         from . import chat_transcription
         transcription = (chat_transcription.parse_request(question)
                          if self.allow_local_transcription and not image_metadata else None)
@@ -396,9 +401,11 @@ class Assistant:
             previous_plan = previous.get(document_calculation.FIELD) if retry else None
             document_plan = document_calculation.bind_live_request(document_plan, previous_plan)
             sources = document_calculation.snapshot(self.store, sid, document_plan)
+            if document_plan['schema'] == document_calculation.ORIGINAL_PLAN and document_plan['documents'] != sources:
+                raise ValueError('上一則試算的引用行已變更，請重新提供完整的文件算式。')
             document_plan['documents'] = sources
-            if (document_plan['schema'] == document_calculation.SCENARIO_PLAN and isinstance(previous_plan, dict)
-                    and previous_plan.get('schema') == document_calculation.SCENARIO_PLAN and previous_plan != document_plan):
+            if (document_plan['schema'] in document_calculation.PINNED_PLANS and isinstance(previous_plan, dict)
+                    and previous_plan.get('schema') == document_plan['schema'] and previous_plan != document_plan):
                 raise ValueError('重試所需的文件試算來源已變更，請重新確認引用行。')
             context = make_context(question, [], [])
             context.update(response_mode=document_calculation.MODE, document_calculation=document_plan, documents=sources)
@@ -435,7 +442,10 @@ class Assistant:
                     context['calculation'] = receipt
                 elif document_plan is not None:
                     try:
-                        if (document_plan['schema'] == document_calculation.SCENARIO_PLAN
+                        if (document_plan['schema'] == document_calculation.ORIGINAL_PLAN
+                                and document_calculation.capture_original(self.store, sid, question, uid) != document_plan):
+                            raise ValueError('提交前上一則文件試算回答已變更，請重新確認。')
+                        if (document_plan['schema'] in document_calculation.PINNED_PLANS
                                 and document_calculation.snapshot(self.store, sid, document_plan) != sources):
                             raise ValueError('提交前文件試算來源已變更，請重新確認引用行。')
                         answer, receipt = document_calculation.evaluate(document_plan, cancel)

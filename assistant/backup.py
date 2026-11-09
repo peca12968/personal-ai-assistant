@@ -120,7 +120,8 @@ def validate_database(path):
         local_answer_receipts.validate_saved(db, {
             chat_transcription.MODE: (chat_transcription.FIELD, chat_transcription.validate),
             chat_evidence.MODE: (chat_evidence.FIELD, chat_evidence.validate),
-            document_calculation.MODE: (document_calculation.FIELD, document_calculation.validate, True),
+            document_calculation.MODE: (document_calculation.FIELD, document_calculation.validate, True,
+                                        document_calculation.validate_origin),
         })
         if draft_tables <= actual_tables:
             from .chat_drafts import validate_saved

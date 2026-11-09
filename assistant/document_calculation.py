@@ -17,6 +17,9 @@ FIELD = 'document_calculation'
 CONVERSION_PLAN = 'document_calculation_plan_v2'
 SCENARIO_PLAN = 'document_calculation_scenario_plan_v1'
 SCENARIO_RECEIPT = 'document_calculation_scenario_receipt_v1'
+ORIGINAL_PLAN = 'document_calculation_original_plan_v1'
+ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v1'
+PINNED_PLANS = (SCENARIO_PLAN, ORIGINAL_PLAN)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -34,6 +37,8 @@ _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七�
 _SCENARIO_REQUEST = re.compile(r'([^\r\n]{1,319}[。？?])\s*((?:假設|如果)[^\r\n]{1,130})')
 _SCENARIO_VALUE = re.compile(rf'(?:假設|如果) *(?:把|將)? *({_REF}) *的({_LABEL}) *改(?:用|為|成) *({_NUMBER}) *({_UNIT})'
                              r'(?:, *只(?:做)?試算)?[。?!]?')
+_ORIGINAL_REQUEST = re.compile(r'(?:請)?(?:回到|改用|依照|依|按照|按|用)(?:文件原值|原文件數值)[，, ]*'
+                               r'(?:重算|重新計算|重新算)[。！!？?]?')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -107,6 +112,40 @@ def parse_live_request(question):
             or _parse_date_aggregate(question, relative=True))
 
 
+def matches_original_followup(question):
+    return isinstance(question, str) and len(question) <= 36 and _ORIGINAL_REQUEST.fullmatch(question.strip()) is not None
+
+
+def _original_followup(db, sid, question, before):
+    row = db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
+        FROM messages m JOIN answer_contexts c ON c.message_id=m.id
+        WHERE m.role='assistant' AND m.id=(SELECT id FROM messages
+            WHERE session_id=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 1)''',
+        (local_answer_receipts.MAX_JSON_BYTES, sid, before, before)).fetchone()
+    if row is None:
+        return None
+    mid, raw = row
+    context = local_answer_receipts.load_context(raw)
+    if not isinstance(context, dict) or context.get('response_mode') != MODE:
+        return None
+    stored = context.get(FIELD)
+    if not isinstance(stored, dict) or stored.get('schema') != SCENARIO_RECEIPT:
+        return None
+    receipt = local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate, True, validate_origin)
+    scenario = receipt['plan']
+    return dict(schema=ORIGINAL_PLAN, request=question, base=scenario['base'], documents=scenario['documents'],
+                scenario_source=dict(answer_id=mid, sha256=digest(raw)))
+
+
+def capture_original(store, sid, question, before=None):
+    with store.connect() as db:
+        db.execute('BEGIN')
+        plan = _original_followup(db, sid, question, before)
+    if plan is None:
+        raise ValueError('請緊接在文件試算回答後重算，或重新提供完整的文件算式。')
+    return plan
+
+
 def _parse_numeric_aggregate(question):
     return document_table.parse_numeric_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
@@ -132,7 +171,7 @@ def bind_live_request(plan, previous=None):
 
 
 def snapshot(store, sid, plan):
-    if plan['schema'] == SCENARIO_PLAN:
+    if plan['schema'] in PINNED_PLANS:
         plan = plan['base']
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
@@ -237,6 +276,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == ORIGINAL_PLAN:
+        return _evaluate_original(plan, cancel)
     if plan.get('schema') == SCENARIO_PLAN:
         return _evaluate_scenario(plan, cancel)
     if plan.get('schema') in _GROUPED_PLANS:
@@ -350,6 +391,21 @@ def _scenario_quantity(base, hypothesis):
     if scale is None:
         return dict(status='unit_unsupported')
     return _scaled_quantity(dict(value=value, source_unit=unit), scale, document_units.SCALES[base['unit']])
+
+
+def _evaluate_original(plan, cancel):
+    base, source = plan['base'], plan['scenario_source']
+    if (not matches_original_followup(plan['request'])
+            or base != (parse_request(base['request']) or _parse_conversion(base['request']))
+            or set(source) != {'answer_id', 'sha256'} or type(source['answer_id']) is not int
+            or source['answer_id'] <= 0 or not re.fullmatch('[0-9a-f]{64}', source['sha256'])
+            or set(plan) != {'schema', 'request', 'base', 'documents', 'scenario_source'}):
+        raise ValueError('文件原值重算的請求或來源無法核對。')
+    original, evidence = evaluate({**base, 'documents': plan['documents']}, cancel)
+    answer = '依文件原值重算\n' + original
+    return answer, dict(schema=ORIGINAL_RECEIPT, plan=plan, model_called=False,
+                        observations=evidence['observations'], result=evidence['result'],
+                        output=answer, output_sha256=digest(answer))
 
 
 def _evaluate_scenario(plan, cancel):
@@ -698,11 +754,23 @@ def validate(receipt, delivered, question=None):
 
 
 def read(store, mid):
-    return local_answer_receipts.read(store, mid, MODE, FIELD, validate, document_based=True)
+    return local_answer_receipts.read(store, mid, MODE, FIELD, validate, document_based=True,
+                                     validate_origin=validate_origin)
+
+
+def validate_origin(db, sid, before, plan):
+    if plan['schema'] != ORIGINAL_PLAN:
+        return
+    origin = _original_followup(db, sid, plan['request'], before)
+    if plan != origin:
+        raise ValueError('文件原值重算與上一則試算的算式或來源不符。')
 
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == ORIGINAL_RECEIPT:
+        return '\n\n'.join((receipt['output'], f'沿用本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',
+                             plan['base']['request']))
     if receipt['schema'] == SCENARIO_RECEIPT:
         lines = [receipt['output'], '依文件原值重算的算式\n' + plan['base']['request']]
         quantity = receipt['scenario']['quantity']

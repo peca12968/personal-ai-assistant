@@ -16,12 +16,12 @@ def load_context(raw):
         raise ValueError('回答快照巢狀結構過深。') from exc
 
 
-def checked_row(db, mid, context, mode, field, validate, document_based=False):
+def checked_row(db, mid, context, mode, field, validate, document_based=False, validate_origin=None):
     rows = db.execute('''SELECT CASE WHEN length(CAST(m.content AS BLOB))<=? THEN m.content END,
         m.role,m.session_id,r.status,
         CASE WHEN length(CAST(r.context_json AS BLOB))<=? THEN r.context_json END,
         CASE WHEN length(CAST(u.content AS BLOB))<=? THEN u.content END,
-        u.role,u.session_id,r.session_id FROM messages m
+        u.role,u.session_id,r.session_id,u.id FROM messages m
         JOIN answer_runs r ON r.answer_message_id=m.id
         JOIN messages u ON u.id=r.user_message_id WHERE m.id=? LIMIT 2''',
         (MAX_TEXT_BYTES, MAX_JSON_BYTES, MAX_TEXT_BYTES, mid)).fetchall()
@@ -53,11 +53,17 @@ def checked_row(db, mid, context, mode, field, validate, document_based=False):
                           FROM answer_checks WHERE message_id=?''', (MAX_JSON_BYTES, mid)).fetchone()
     if check is None or load_context(check[0]) != checks or any(not item['range_valid'] for item in checks):
         raise ValueError('本機操作的引用檢查與保存來源不符。')
+    if validate_origin is not None:
+        if not 0 < row[9] < mid:
+            raise ValueError('本機操作的提問順序與保存來源不符。')
+        validate_origin(db, row[2], row[9], plan)
     return receipt
 
 
-def read(store, mid, mode, field, validate, *, document_based=False):
+def read(store, mid, mode, field, validate, *, document_based=False, validate_origin=None):
     with store.connect() as db:
+        if validate_origin is not None:
+            db.execute('BEGIN')
         row = db.execute('''SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END
                             FROM answer_contexts WHERE message_id=?''', (MAX_JSON_BYTES, mid)).fetchone()
         if row is None:
@@ -65,7 +71,7 @@ def read(store, mid, mode, field, validate, *, document_based=False):
         context = load_context(row[0])
         if not isinstance(context, dict) or context.get('response_mode') != mode:
             return None
-        return checked_row(db, mid, context, mode, field, validate, document_based)
+        return checked_row(db, mid, context, mode, field, validate, document_based, validate_origin)
 
 
 def validate_saved(db, specs):
