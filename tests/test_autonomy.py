@@ -214,6 +214,53 @@ class AutonomyTests(unittest.TestCase):
         self.assertEqual([s['observation']['requested_ranges'][0]['status'] for s in result['steps']],
                          ['document_not_attached', 'line_out_of_bounds'])
 
+    def test_ordered_batch_retains_readable_ranges_and_exact_citation_coverage(self):
+        first = self.attach('已確認數量\n已確認窗口', name='first.txt')
+        second = self.attach('長' * 10000 + '\n可讀期限', name='second.txt')
+        other = self.store.new_session()
+        foreign = self.attach('PRIVATE_OTHER_SESSION', other, name='foreign.txt')
+        ranges = [
+            {'document_id': did, 'start_line': start, 'end_line': end}
+            for did, start, end in ((first, 1, 2), (foreign, 1, 1), (second, 3, 3),
+                                    (second, 1, 1), (second, 2, 2), (first, 2, 2),
+                                    (first, 2, 1), (first, 1, 201))
+        ]
+        gid = self.goal()
+        engine = ScriptedEngine(
+            action('read_ranges', ranges=ranges),
+            action('finish', report=f'缺漏行不能引用。[D{second}:L3]'),
+            action('ask', question='代理人是誰？',
+                   partial_result=f'數量和窗口已確認。[D{first}:L1-L2] 期限已讀。[D{second}:L2]'),
+        )
+        result = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(result['status'], 'needs_input')
+        batch = result['steps'][0]['observation']
+        self.assertEqual([row['status'] for row in batch['requested_ranges']],
+                         ['provided', 'document_not_attached', 'line_out_of_bounds', 'character_limit',
+                          'provided', 'provided', 'invalid_range', 'range_too_large'])
+        for actual, expected in zip(batch['requested_ranges'], ranges, strict=True):
+            self.assertEqual({field: actual[field] for field in expected}, expected)
+        self.assertEqual([(row['document_id'], row['text']) for row in batch['excerpts']],
+                         [(first, 'L1: 已確認數量\nL2: 已確認窗口'), (second, 'L2: 可讀期限')])
+        self.assertNotIn('PRIVATE_OTHER_SESSION', json.dumps(result))
+        self.assertEqual(result['steps'][1]['observation']['error_phase'], 'execution')
+        self.assertTrue(all(row['range_valid'] for row in result['steps'][2]['observation']['citation_checks']))
+
+        child = a.create_goal(self.store, self.sid, '接續可用資料', parent_id=gid)
+        checkpoint = a.get_goal(self.store, self.sid, child)['previous_stage']['checkpoint']
+        self.assertEqual(checkpoint['activity'][0]['request']['value']['ranges'], ranges)
+        self.assertNotIn('已確認數量', json.dumps(checkpoint, ensure_ascii=False))
+
+    def test_batch_range_validation_rejects_duplicate_excess_and_non_integer_args(self):
+        ranges = [{'document_id': did, 'start_line': 1, 'end_line': 1} for did in range(1, 9)]
+        a.validate_action(json.loads(action('read_ranges', ranges=ranges)))
+        invalid = [[], ranges + [ranges[0]], [ranges[0], ranges[0]],
+                   [{'document_id': 1, 'start_line': True, 'end_line': 1}],
+                   [{'document_id': 1, 'start_line': 1, 'end_line': '2'}]]
+        for rows in invalid:
+            with self.subTest(ranges=rows), self.assertRaises(ValueError):
+                a.validate_action(json.loads(action('read_ranges', ranges=rows)))
+
     def test_source_change_before_or_during_model_call_stops_action(self):
         did = self.attach('old')
         gid = self.goal()

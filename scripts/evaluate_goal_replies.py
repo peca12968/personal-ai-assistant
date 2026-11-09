@@ -51,7 +51,8 @@ def main():
         cases = validate_cases(json.loads(args.suite.read_text(encoding='utf-8')))
         for case in cases:
             autonomy.text(case['prompt'], 4000)
-            autonomy.text(case.get('reply'), 4000)
+            if 'reply' in case:
+                autonomy.text(case['reply'], 4000)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -95,15 +96,19 @@ def main():
                     unchanged()
                     return raw
             try:
-                row['asked'] = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                if row['asked']['status'] != 'needs_input':
-                    raise ValueError('初始執行未停下提問；未提交預設回答。')
-                observed = goal_replies.snapshot(store, sid, gid)
-                before_calls = len(row['calls'])
-                row['reply'] = case['reply']
-                row['saved'] = goal_replies.save(store, sid, gid, case['reply'], expected_fingerprint=observed['fingerprint'])
-                assert row['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
-                row['final'] = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                initial = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                if 'reply' in case:
+                    row['asked'] = initial
+                    if initial['status'] != 'needs_input':
+                        raise ValueError('初始執行未停下提問；未提交預設回答。')
+                    observed = goal_replies.snapshot(store, sid, gid)
+                    before_calls = len(row['calls'])
+                    row['reply'] = case['reply']
+                    row['saved'] = goal_replies.save(store, sid, gid, case['reply'], expected_fingerprint=observed['fingerprint'])
+                    assert row['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
+                    row['final'] = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                else:
+                    row['final'] = initial
                 row['answer'] = row['final']['result'] or row['final']['question'] or row['final']['notice']
             except (ValueError, EngineError) as exc:
                 failed = True; row.update(answer='', error=str(exc), final=autonomy.get_goal(store, sid, gid))

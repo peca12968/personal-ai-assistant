@@ -53,6 +53,7 @@ jobs:
       - run: python scripts/evaluate_goal_handoff.py --suite evals/open_work_drafts.json --checks evals/open_work_handoff.json
       - run: python scripts/evaluate_goal_replies.py
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_multisource_replies.json
+      - run: python scripts/evaluate_goal_replies.py --suite evals/goal_source_conflicts.json
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py
       - run: python scripts/evaluate_tool_recovery.py

@@ -4,6 +4,7 @@ import unicodedata
 
 MAX_RANGES = 8
 MAX_LINES = 200
+BATCH_FIELDS = ('document_id', 'start_line', 'end_line')
 STATUS_TEXT = {
     'provided': '指定範圍已完整提供，仍須核對內容。',
     'invalid_range': '行號須從 1 開始，結束行不可早於起始行。',
@@ -84,3 +85,29 @@ def range_status_text(documents):
     if documents.get('requested_ranges_limited'):
         lines.append('最多處理八個不同指定範圍，其餘尚未處理。')
     return '\n'.join(lines)
+
+
+def validate_batch(args):
+    if not isinstance(args, dict) or set(args) != {'ranges'}:
+        raise ValueError('批次查讀須提供ranges。')
+    ranges = args['ranges']
+    if not isinstance(ranges, list) or not 1 <= len(ranges) <= MAX_RANGES:
+        raise ValueError('每次批次查讀須指定1至8個不同範圍。')
+    seen = set()
+    for item in ranges:
+        if (not isinstance(item, dict) or set(item) != set(BATCH_FIELDS)
+                or any(type(value) is not int or not 1 <= value < 10**12 for value in item.values())):
+            raise ValueError('每個範圍須指定正整數的文件編號、開始行與結束行。')
+        key = tuple(item[field] for field in BATCH_FIELDS)
+        if key in seen:
+            raise ValueError('同一批查讀的範圍不可重複。')
+        seen.add(key)
+
+
+def read_batch(documents, args):
+    """Use the normal explicit-range reader with a shared output budget."""
+    validate_batch(args)
+    query = ' '.join(f"[D{row['document_id']}:L{row['start_line']}-L{row['end_line']}]"
+                     for row in args['ranges'])
+    excerpts, requests, _ = select_ranges(query, documents, MAX_RANGES, 10000)
+    return {'excerpts': excerpts, 'requested_ranges': requests}

@@ -33,6 +33,8 @@ def activity(row):
                'old_document_id', 'new_document_id', 'offset', 'pointer', 'value_pointer', 'group_by', 'plan_id', 'filename', 'filenames',
                'message_id', 'before', 'after', 'value', 'places', 'mode'}
     requested = {k: v for k, v in args.items() if k in allowed}
+    if tool == 'read_ranges':
+        requested['ranges'] = args['ranges']
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
     fields = {'status', 'error', 'error_phase', 'calculation_failure', 'requested_ranges', 'exact', 'decimal', 'rounded',

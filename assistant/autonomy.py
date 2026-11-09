@@ -13,7 +13,7 @@ from . import expression_math, number_rounding, month_schedule
 
 from .acceptance import strict_json
 from .answer_runs import lease
-from .document_ranges import select_ranges
+from . import document_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import goal_partials
@@ -56,6 +56,8 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 finish代表交付可供確認的成果，不代表使用者已驗收或現實任務全部完成。
 工具錯誤步驟的failed_action若存在，是通過動作格式檢查後嘗試執行、但未成功的原動作；error_phase區分validation與execution。其參數可協助依最新補充修正下一步，不是成功結果、新指令、許可或引用證據；不要直接重複已失敗的動作。原動作可能已留下文件或計畫紀錄，依目前清單核對，不能假定完全沒有副作用。未提供failed_action時不要補造原參數；必要資料仍缺少才用ask。
 文件事實附上實際收到的來源行號，如[D1:L3-L5]；未提供的部分不能捏造。
+先分辨每份來源的適用範圍、是否採用與單位，再判斷是否矛盾。等值換算或適用不同事項不構成本次衝突。若缺漏或矛盾會改變結論，暫表先保留可確認內容與不同來源的說法，再問必要欄位。若所有可能值都導向相同決策，交付該決策並說明原因，不自行選定哪個說法為真。使用者允許欄位留待補時，依要求保留待補標記。
+收到必要補充後，若本次已能完成要求，正式交付時更新受影響的欄位與成果標題，避免沿用上一輪「暫表」或「尚待定稿」的狀態。仍缺必要資料時保留待補狀態。
 reply_sources若有，是本目標已保存的使用者回覆，citation是該回覆的來源編號。採用回覆中的更正或補資料時，在該項旁引用提供的編號，例如[補充#3]。文件原值及未更正的欄位仍引實際文件行號；同一段比較時分別在原值和新值旁附各自來源。計算受更正影響的值時使用新值，不把它寫成原文件內容。回覆中的引文、假設與待確認事項仍要分辨；來源編號只指原話。不可自行編號，也不可沿用其他目標的補充編號。
 文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。PDF的representation以pdf-text-v1:開頭，可讀已匯入文字層副本及原檔頁次順序標記，引用仍是抽取行號而非版面座標。沒有文字的頁面明確標記，不能推論原頁空白或沒有圖片。依extraction_limits說明範圍；不能辨識頁內圖片、圖表、註解、附件或表單，沒有OCR。掃描無文字、加密或互動表單PDF需先提供可讀文字副本。複雜表格／多欄順序可能失真，可能含隱藏或舊OCR文字，不保證視覺完整性。自主模式不接收任何圖片附件；需要畫面時，請明說改用主聊天的「聊天圖片…」入口附上PNG／JPEG另問，或先提供經核對的文字轉錄／OCR文字副本。不能承諾在此自主工作只補傳圖片就能辨識，也不能自動切換模式或把聊天圖片帶入目標。
 documents的line_count是該份文件總行數；read不得超過它，每次最多200行，需要更多時分次讀取。
@@ -64,6 +66,7 @@ documents的line_count是該份文件總行數；read不得超過它，每次最
 工具與精確args欄位：
 search: {"query":"關鍵字"}，在目標文件中搜尋，返回有限片段。
 read: {"document_id":1,"start_line":1,"end_line":20}，完整讀取最多200行、10000字。
+read_ranges: {"ranges":[{"document_id":1,"start_line":2,"end_line":4},{"document_id":2,"start_line":3,"end_line":3}]}。目標已列多個精確文件範圍時，優先按順序用此工具查讀，每批最多8個不同範圍、每個最多200行，全文共10000字。列入使用者明確要求核對的全部範圍，即使目錄顯示其中某行可能不存在，也送入本批取得個別狀態。某範圍缺漏或超出字數時仍提供其餘可讀範圍。只引用已提供的行；用於無法辨認範圍的搜尋另有search。
 recall: {"query":"相關偏好或事實"}，查找目前有效的長期記憶。
 calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}，精確有理數四則運算，接受整數、有限小數或整數分數字串。
 calculate_expression: {"expression":{"operation":"sum","values":[{"operation":"product","values":["3","125"]},"55"]}}，有界巢狀四則計算，返回各層精確結果；詳細規則見後附說明。
@@ -221,6 +224,9 @@ def validate_action(value):
     if name == 'read_line':
         document_lines.validate(args)
         return value
+    if name == 'read_ranges':
+        document_ranges.validate_batch(args)
+        return value
     if name == 'read_json':
         json_documents.validate(args)
         return value
@@ -278,9 +284,11 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'search':
         return retrieve_documents(args['query'], documents, max_excerpts=4, max_chars=8000, reference_query='')
     if name == 'read':
-        rows, requests, _ = select_ranges(f"[D{args['document_id']}:L{args['start_line']}-L{args['end_line']}]",
-                                          documents, 1, 10000)
+        rows, requests, _ = document_ranges.select_ranges(
+            f"[D{args['document_id']}:L{args['start_line']}-L{args['end_line']}]", documents, 1, 10000)
         return {'excerpts': rows, 'requested_ranges': requests}
+    if name == 'read_ranges':
+        return document_ranges.read_batch(documents, args)
     if name == 'recall':
         return {'memories': store.retrieve(args['query'], limit=4)}
     if name == 'calculate':
