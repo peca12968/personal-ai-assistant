@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from assistant import answer_runs
 from assistant.backup import create_backup, restore_backup
+from assistant.context import make_context
 from assistant.engine import EngineError
 from assistant.store import Store
 from scripts import daily_meeting as meeting, daily_meeting_lookup as lookup
@@ -131,5 +132,64 @@ class DailyMeetingLookupTests(unittest.TestCase):
         self.assertEqual([item['answer_id'] for item in proof['plan']['matches']], [first['id']])
         self.assertEqual(proof['plan']['checked'][0], dict(answer_id=corrupt['id'], sha256=None))
         self.assertIn('有 1 筆保存的會議回答無法核對。', result['content'])
+        self.engine.answer.assert_not_called()
+
+    def test_topic_filter_is_exact_and_combines_with_dates_and_people(self):
+        title = '採購，風險；檢討'
+        selected = self.app.ask(self.sid, f'會議主題：「{title}」。' + DATED)
+        self.app.ask(self.sid, f'會議主題：「{title}補充」。' + DATED)
+        self.app.ask(self.sid, DATED)
+        result = self.app.ask(self.sid, f'查會議紀錄，主題「{title}」，日期 2028-02-29，參與者「王小晴」。')
+        proof = lookup.read(self.store, result['id'])
+        self.assertEqual(proof['plan']['schema'], lookup.PLAN_V2)
+        self.assertEqual([item['answer_id'] for item in proof['plan']['matches']], [selected['id']])
+        self.assertIn(f'#{selected["id"]}｜「{title}」', result['content'])
+        self.assertIn(f'會議主題「{title}」', meeting.describe(meeting.read(self.store, selected['id'])))
+        self.assertEqual(meeting.recent_completed(self.store, self.sid)[-1]['topic'], title)
+        unmatched = self.app.ask(self.sid, '查會議紀錄，主題「採購」。')
+        self.assertEqual(lookup.read(self.store, unmatched['id'])['plan']['matches'], [])
+        self.engine.answer.assert_not_called()
+
+    def test_older_answer_can_be_labeled_and_relabeling_creates_a_separate_version(self):
+        first = self.app.ask(self.sid, DATED)
+        original = meeting.read(self.store, first['id'])
+        self.app.ask(self.sid, '計算 1 + 1，只回答整數')
+        titled = self.app.ask(self.sid, f'沿用會議回答 #{first["id"]}，會議主題改為「驗收。進度」，重算。')
+        retitled = self.app.ask(self.sid, '上一場會議，主題改成「交接」；時長改為 25 分鐘，重算。')
+        self.assertEqual(titled['content'], first['content'])
+        self.assertEqual(retitled['content'], '2028-02-28 09:10-09:35')
+        snapshots = {first['id']: original}
+        for answer, name in ((titled, '驗收。進度'), (retitled, '交接')):
+            record = meeting.read(self.store, answer['id'])
+            self.assertEqual(record['meeting_plan']['topic'], name)
+            snapshots[answer['id']] = record
+            search = self.app.ask(self.sid, f'查會議紀錄，主題「{name}」。')
+            self.assertEqual([item['answer_id'] for item in lookup.read(self.store, search['id'])['plan']['matches']],
+                             [answer['id']])
+        with self.assertRaisesRegex(ValueError, '只能指定一次會議主題'):
+            self.app.ask(self.sid, f'沿用會議回答 #{titled["id"]}，主題改為「甲」，主題改為「乙」，重算。')
+        bundle = create_backup(self.store.path, self.root/'topic.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual({mid: meeting.read(restored, mid) for mid in snapshots}, snapshots)
+        self.engine.answer.assert_not_called()
+
+    def test_legacy_lookup_retry_replays_its_original_schema(self):
+        first = self.app.ask(self.sid, DATED)
+        plan = lookup.capture(self.store, self.sid, QUERY, schema=lookup.PLAN_V1)
+        context = make_context(QUERY, [], [])
+        context.update(response_mode=lookup.MODE, documents={'catalog': [], 'excerpts': []}, **{lookup.FIELD: plan})
+
+        def stop(_):
+            raise EngineError('停止', 'cancelled')
+
+        with self.assertRaises(EngineError):
+            self.app._run_recorded(self.sid, QUERY, context, stop, None, None, None, lookup.FIELD)
+        retried = self.app.retry(self.sid)
+        proof = lookup.read(self.store, retried['id'])
+        self.assertEqual(proof['plan'], plan)
+        self.assertEqual(proof['schema'], 'daily_meeting_lookup_receipt_v1')
+        self.assertNotIn('topic', proof['plan']['criteria'])
+        self.assertEqual(proof['plan']['matches'][0]['answer_id'], first['id'])
         self.engine.answer.assert_not_called()
 

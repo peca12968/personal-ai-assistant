@@ -6,6 +6,7 @@ from itertools import product
 import json
 from math import prod
 import re
+import unicodedata
 
 from assistant import document_dates
 from assistant.local_answer_receipts import MAX_JSON_BYTES, load_context
@@ -13,6 +14,8 @@ from scripts import daily_meeting_zones as meeting_zones
 
 CLOCK = r'(?:(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|24:00)'
 SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
+TOPIC_TEXT = r'「([^「」\r\n]{1,64})」'
+TOPIC_HEADING = re.compile(rf'\A會議主題[：:][ \t]*{TOPIC_TEXT}(?:。|\r?\n)\s*')
 # Explicit aliases keep dates, qualifications and partial instructions out of the ledger.
 NAME = r'(?:「[\u4e00-\u9fffA-Za-z0-9]{1,16}」|小[\u4e00-\u9fff]|[甲乙丙丁戊己庚辛]|[A-Za-z]{1,20})'
 AVAILABILITY = re.compile(rf'({NAME})(原本)?(可開會的時段為|可開會[：:]|可用時段[為：:]|有空[：:]|為)\s*(.+)')
@@ -112,10 +115,25 @@ def cancelled_interval(removal):
     return [0, 720] if re.fullmatch(MORNING, text) else span(text)
 
 
+def valid_topic(value):
+    return (isinstance(value, str) and 1 <= len(value) <= 64 and value == value.strip()
+            and not any(ch in '「」\u2028\u2029' or unicodedata.category(ch).startswith('C') for ch in value))
+
+
 def parse(question, *, observation=None, use_local_clock=False):
+    topic = None
+    if heading := TOPIC_HEADING.match(question):
+        topic = heading[1]
+        if not valid_topic(topic):
+            return None
+        question = question[heading.end():]
     if ZONED_HEADER.match(question):
-        return parse_zoned(question)
-    return parse_same_day(question) or parse_dated(question, observation=observation, use_local_clock=use_local_clock)
+        plan = parse_zoned(question)
+    else:
+        plan = parse_same_day(question) or parse_dated(question, observation=observation, use_local_clock=use_local_clock)
+    if plan is not None and topic is not None:
+        plan['topic'] = topic
+    return plan
 
 
 def parse_same_day(question):
@@ -447,7 +465,8 @@ def bind_named_zones(plan, previous, *, fresh=False):
 REVISION_END = r'[，,；;。]\s*(?:請)?(?:幫我)?(?:重算|重新計算|重新算|再算一次)(?:最早時段)?[。！!？?]?'
 FOLLOWUP = re.compile(r'(?:上一場會議|上次的?會議|剛才那場會議)[，,：:]\s*(.{1,512})' + REVISION_END)
 SAVED_FOLLOWUP = re.compile(r'沿用會議回答\s*#([0-9]{1,30})[，,：:]\s*(.{1,512})' + REVISION_END)
-REVISION_SEPARATOR = re.compile(r'[，,；;。]')
+REVISION_SEPARATOR = re.compile(r'[，,；;。](?![^「]*」)')
+REVISED_TOPIC = re.compile(rf'(?:會議)?主題改(?:為|成)\s*{TOPIC_TEXT}')
 REVISED_DURATION = re.compile(rf'(?:(?:會議)?(?:時長|長度)|會議)改(?:為|成)?\s*{LENGTH}')
 REVISED_AVAILABILITY = re.compile(rf'({EDIT_NAME}){REPLACE_TIME}\s*(.+)')
 REVISED_CANCEL = re.compile(rf'({EDIT_NAME}){CANCEL_BODY}')
@@ -539,6 +558,11 @@ def revised_unavailable_interval(text, availability, name):
 
 
 def revise_clause(plan, clause, local_date=None, attendee=None):
+    if topic := REVISED_TOPIC.fullmatch(clause):
+        if not valid_topic(topic[1]):
+            raise ValueError('請提供 1 至 64 字的會議主題。')
+        plan['topic'] = topic[1]
+        return 'topic', True
     duration = REVISED_DURATION.fullmatch(clause)
     if duration:
         term = duration[1]
@@ -600,6 +624,8 @@ def revise(plan, clause, *, date_assignments=None, attendee_assignments=None):
             if replacing and scope in touched:
                 if scope is None:
                     raise ValueError('同一輪只能指定一次會議時長。')
+                if scope == 'topic':
+                    raise ValueError('同一輪只能指定一次會議主題。')
                 raise ValueError('同一人同一日請先列一次完整新空檔，再列要扣除的時段。')
             touched.add(scope)
         except ValueError as exc:
@@ -1142,6 +1168,8 @@ def visible_answer(plan, receipt):
 def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
+    if topic := plan.get('topic'):
+        lines.append(f'會議主題「{topic}」')
     date_edit = context.get(DATE_EDIT)
     zoned = plan['schema'] in ZONED_PLANS
     overnight = plan['schema'] == OVERNIGHT_ZONED_PLAN
@@ -1338,7 +1366,8 @@ def read(store, mid):
 
 
 def completed_candidates(db, sid, before, limit):
-    rows = db.execute('''SELECT m.id, m.content FROM messages m
+    rows = db.execute('''SELECT m.id, m.content, json_extract(c.payload, '$.meeting_plan.topic') AS topic
+            FROM messages m
             JOIN answer_contexts c ON c.message_id=m.id
             WHERE m.session_id=? AND m.role='assistant'
               AND (? IS NULL OR m.id<?)

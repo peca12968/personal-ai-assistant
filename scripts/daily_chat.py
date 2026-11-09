@@ -44,6 +44,8 @@ def run_daily_window(store, engine, *, default_chat=False):
             box.pack(side='left', fill='both', expand=True)
             for row in rows:
                 summary = ' '.join(row['content'].split())
+                if daily_meeting.valid_topic(row['topic']):
+                    summary = f'「{row["topic"]}」  {summary}'
                 box.insert('end', f'#{row["id"]}  {summary}')
             box.selection_set(0)
 

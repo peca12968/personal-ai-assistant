@@ -639,7 +639,9 @@ class DailyAssistant(Assistant):
 
     def _meeting_lookup_answer(self, sid, question, cancel, retry, draft, prior):
         field = daily_meeting_lookup.FIELD
-        if not daily_meeting_lookup.parse(question):
+        saved = prior.get(field, {})
+        schema = saved.get('schema', daily_meeting_lookup.PLAN_V2) if isinstance(saved, dict) else None
+        if not daily_meeting_lookup.parse(question, schema=schema):
             if field in prior:
                 raise EngineError('重試的會議查詢已無法核對。', 'evidence_invalid')
             return None
@@ -648,7 +650,7 @@ class DailyAssistant(Assistant):
                 raise EngineError('重試的會議查詢來源已變更。', 'evidence_invalid')
             return None
         before = retry['user_message_id'] if retry else None
-        plan = daily_meeting_lookup.capture(self.store, sid, question, before, cancel)
+        plan = daily_meeting_lookup.capture(self.store, sid, question, before, cancel, schema=schema)
         if retry and prior.get(field) != plan:
             raise EngineError('重試的會議查詢來源已變更。', 'evidence_invalid')
         context = make_context(question, [], [])
@@ -657,7 +659,7 @@ class DailyAssistant(Assistant):
 
         def search(uid):
             if (self.store.documents(sid, include_content=False)
-                    or daily_meeting_lookup.capture(self.store, sid, question, uid, cancel) != plan):
+                    or daily_meeting_lookup.capture(self.store, sid, question, uid, cancel, schema=schema) != plan):
                 raise EngineError('提交前的會議查詢來源已變更。', 'evidence_invalid')
             return daily_meeting_lookup.evaluate(plan)
 

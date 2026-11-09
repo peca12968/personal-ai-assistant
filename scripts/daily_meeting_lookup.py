@@ -7,20 +7,25 @@ from scripts import daily_meeting as meeting
 
 FIELD = 'meeting_lookup'
 MODE = 'local_calculation'
+PLAN_V1 = 'daily_meeting_lookup_plan_v1'
+PLAN_V2 = 'daily_meeting_lookup_plan_v2'
+RECEIPTS = {PLAN_V1: 'daily_meeting_lookup_receipt_v1', PLAN_V2: 'daily_meeting_lookup_receipt_v2'}
 MAX_SCAN = 100
 MAX_RESULTS = 10
 REQUEST = re.compile(r'(?:請)?(?:查詢?|找)會議紀錄[，,：:]\s*(.{1,240}?)[。！!？?]?')
 DATE_FILTER = re.compile(rf'(?:基準)?日期(?:是|為)?\s*({meeting.DATE})')
 ATTENDEE_FILTER = re.compile(r'(?:參與者|人員)(?:是|為)?\s*(.+)')
 PERSON = re.compile(r'「([\u4e00-\u9fffA-Za-z0-9]{1,16})」|([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,19})')
+TOPIC_FILTER = re.compile(rf'(?:會議)?主題(?:是|為)?\s*{meeting.TOPIC_TEXT}')
 
 
-def parse(question):
+def parse(question, *, schema=PLAN_V2):
     request = REQUEST.fullmatch(question) if isinstance(question, str) else None
-    if not request:
+    if not request or not isinstance(schema, str) or schema not in RECEIPTS:
         return None
-    day, attendees = None, []
-    for clause in re.split(r'\s*[，,；;]\s*', request[1]):
+    day, attendees, topic = None, [], None
+    separator = r'[，,；;](?![^「]*」)' if schema == PLAN_V2 else r'[，,；;]'
+    for clause in re.split(rf'\s*{separator}\s*', request[1]):
         if day is None and (match := DATE_FILTER.fullmatch(clause)):
             try:
                 day = date.fromisoformat(match[1]).isoformat()
@@ -33,9 +38,16 @@ def parse(question):
             attendees = [name[1] or name[2] for name in names]
             if len(set(attendees)) != len(attendees):
                 return None
+        elif schema == PLAN_V2 and topic is None and (match := TOPIC_FILTER.fullmatch(clause)):
+            if not meeting.valid_topic(match[1]):
+                return None
+            topic = match[1]
         else:
             return None
-    return dict(date=day, attendees=attendees)
+    criteria = dict(date=day, attendees=attendees)
+    if schema == PLAN_V2:
+        criteria['topic'] = topic
+    return criteria
 
 
 def summary(context):
@@ -51,8 +63,8 @@ def summary(context):
     return dict(dates=dates, attendees=attendees, result=context['calculation']['result']['exact'])
 
 
-def lookup(db, sid, question, before, cancel=None):
-    criteria = parse(question)
+def lookup(db, sid, question, before, cancel=None, *, schema=PLAN_V2):
+    criteria = parse(question, schema=schema)
     if criteria is None:
         return None
     candidates = meeting.completed_candidates(db, sid, before, MAX_SCAN + 1)
@@ -72,17 +84,20 @@ def lookup(db, sid, question, before, cancel=None):
         _, context, source = verified
         checked.append(source)
         item = summary(context)
+        if schema == PLAN_V2 and (topic := context['meeting_plan'].get('topic')):
+            item['topic'] = topic
         if ((criteria['date'] is None or criteria['date'] in item['dates'])
+                and (criteria.get('topic') is None or criteria['topic'] == item.get('topic'))
                 and set(criteria['attendees']).issubset(item['attendees'])):
             matches.append(dict(answer_id=mid, **item))
-    return dict(schema='daily_meeting_lookup_plan_v1', request=question, criteria=criteria, checked=checked,
+    return dict(schema=schema, request=question, criteria=criteria, checked=checked,
                 matches=matches, limited=len(candidates) > MAX_SCAN)
 
 
-def capture(store, sid, question, before=None, cancel=None):
+def capture(store, sid, question, before=None, cancel=None, *, schema=PLAN_V2):
     with store.connect() as db:
         db.execute('BEGIN')
-        return lookup(db, sid, question, before, cancel)
+        return lookup(db, sid, question, before, cancel, schema=schema)
 
 
 def evaluate(plan):
@@ -94,7 +109,8 @@ def evaluate(plan):
     for match in matches[:MAX_RESULTS]:
         dates = '、'.join(match['dates']) or '未記錄日期'
         people = '、'.join(match['attendees'])
-        lines.append(f'#{match["answer_id"]}｜{people}｜{dates}｜{match["result"]}')
+        topic = f'「{match["topic"]}」｜' if 'topic' in match else ''
+        lines.append(f'#{match["answer_id"]}｜{topic}{people}｜{dates}｜{match["result"]}')
     if len(matches) > MAX_RESULTS:
         lines.append(f'上方列出最近 {MAX_RESULTS} 筆，可再加上日期或參與者縮小範圍。')
     if plan['limited']:
@@ -105,7 +121,7 @@ def evaluate(plan):
     if matches:
         lines.append('要更正其中一版，可用「沿用會議回答 #編號」指定來源。')
     answer = '\n'.join(lines)
-    return answer, dict(schema='daily_meeting_lookup_receipt_v1', plan=plan, output=answer, model_called=False)
+    return answer, dict(schema=RECEIPTS[plan['schema']], plan=plan, output=answer, model_called=False)
 
 
 def read(store, mid):
@@ -123,9 +139,14 @@ def read(store, mid):
         context = local_answer_receipts.load_context(row['payload'])
         if not isinstance(context, dict) or context.get('response_mode') != MODE or FIELD not in context:
             return None
+        stored = context[FIELD]
+        stored_plan = stored.get('plan') if isinstance(stored, dict) else None
+        schema = stored_plan.get('schema') if isinstance(stored_plan, dict) else None
+        if not isinstance(schema, str) or schema not in RECEIPTS:
+            raise ValueError('會議查詢的紀錄版本無法核對。')
 
         def validate(receipt, delivered, question):
-            plan = lookup(db, row['session_id'], question, row['user_message_id'])
+            plan = lookup(db, row['session_id'], question, row['user_message_id'], schema=schema)
             if plan is None:
                 raise ValueError('會議查詢的原問無法核對。')
             answer, expected = evaluate(plan)
