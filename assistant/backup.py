@@ -192,6 +192,9 @@ def validate_database(path):
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
             from .goal_guidance_sources import validate_saved as validate_guidance_sources
             validate_guidance_sources(db, table_present=guidance_present)
+            from .source_decision import validate_saved as validate_source_decisions
+            validate_source_decisions(db, replies_present='autonomous_reply_sources' in actual_tables,
+                                      guidance_present=guidance_present)
             if 'autonomous_question_withdrawals' in actual_tables:
                 from .goal_question_withdrawals import validate_saved as validate_withdrawals
                 validate_withdrawals(db, replies_present='autonomous_reply_sources' in actual_tables)

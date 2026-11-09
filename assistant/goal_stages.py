@@ -160,16 +160,19 @@ def activity(row):
         outcome['calculation_details_omitted'] = True
     if tool == 'ask' and 'partial_result' in observation:
         outcome['partial_result_omitted'] = True
-    if tool == 'check_decision':
-        results = observation.get('possible_results', observation.get('recorded_results', []))
-        outcome.update(matching_row_count=len(observation['matching_rows']),
+    if tool in ('check_decision', 'check_source_decision'):
+        decision = observation['decision'] if tool == 'check_source_decision' else observation
+        results = decision.get('possible_results', decision.get('recorded_results', []))
+        outcome.update(status=decision['status'], matching_row_count=len(decision['matching_rows']),
                        decision_rows_omitted=True)
-        result_count = 'recorded_result_count' if 'recorded_results' in observation else 'possible_result_count'
+        result_count = 'recorded_result_count' if 'recorded_results' in decision else 'possible_result_count'
         outcome[result_count] = len(results)
-        if 'coverage' in observation:
-            outcome['coverage_counts'] = {key: len(value) for key, value in observation['coverage'].items()}
-        if 'max_questions' in observation:
-            outcome['max_questions'] = observation['max_questions']
+        if 'coverage' in decision:
+            outcome['coverage_counts'] = {key: len(value) for key, value in decision['coverage'].items()}
+        if 'max_questions' in decision:
+            outcome['max_questions'] = decision['max_questions']
+        if tool == 'check_source_decision':
+            outcome['source_rows_omitted'] = True
     if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
