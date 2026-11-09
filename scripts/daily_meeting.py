@@ -2,7 +2,9 @@
 from copy import deepcopy
 from datetime import date, timedelta, timezone
 import hashlib
+from itertools import product
 import json
+from math import prod
 import re
 
 from assistant import document_dates
@@ -451,6 +453,8 @@ REVISED_UNAVAILABLE = re.compile(
 MAX_BATCH_EDITS = 4
 DATE_REPLY = re.compile(rf'(?:日期(?:是|選)\s*)?({DATE})[。！]?')
 DATE_EDIT = 'meeting_date_edit'
+BATCH_DATE_EDIT = 'daily_meeting_edit_dates_v2'
+MAX_DATE_COMBINATIONS = 128
 
 
 def attendee_revision(clause):
@@ -562,9 +566,9 @@ def revise_clause(plan, clause, local_date=None):
     return (name, local_date), replacement is not None
 
 
-def revise(plan, clause, *, date_assignment=None):
+def revise(plan, clause, *, date_assignments=None):
     """Apply the whole follow-up to the detached snapshot or leave it unchanged."""
-    if date_assignment is None and not REVISION_SEPARATOR.search(clause):
+    if date_assignments is None and not REVISION_SEPARATOR.search(clause):
         revise_clause(plan, clause)
         return
     edits = [part.strip() for part in REVISION_SEPARATOR.split(clause)]
@@ -574,7 +578,7 @@ def revise(plan, clause, *, date_assignment=None):
     touched = set()
     for index, edit in enumerate(edits, 1):
         try:
-            local_date = date_assignment[1] if date_assignment and date_assignment[0] == index else None
+            local_date = date_assignments.get(index) if date_assignments else None
             scope, replacing = revise_clause(candidate, edit, local_date)
             if replacing and scope in touched:
                 if scope is None:
@@ -605,18 +609,59 @@ def missing_edit_date(plan, clause):
     return (name, sorted(dates)) if dates else None
 
 
-def prepare_revision(plan, question, selected_date=None):
+def prepare_batch_dates(plan, question, body, edits, missing, replies):
+    if len(edits) > MAX_BATCH_EDITS or not all(edits):
+        raise ValueError('同一輪請提供 2 至 4 項完整的會議更正。')
+    if prod(len(dates) for _, (_, dates) in missing) > MAX_DATE_COMBINATIONS:
+        raise ValueError('可用日期的組合太多，請先寫明部分更正的完整日期。')
+    items = []
+    reply_index = 0
+    for index, (name, dates) in missing:
+        chosen = dates[0] if len(dates) == 1 else None
+        reply = None
+        if chosen is None and reply_index < len(replies):
+            reply = replies[reply_index]
+            match = DATE_REPLY.fullmatch(reply) if isinstance(reply, str) else None
+            if match is None or match[1] not in dates:
+                raise ValueError('請回覆上一則列出的其中一個完整日期。')
+            chosen = match[1]
+            reply_index += 1
+        items.append(dict(index=index, participant=name, clause=edits[index - 1],
+                          dates=dates, selected=chosen, reply=reply))
+    if reply_index != len(replies):
+        raise ValueError('已沒有待補充的會議日期。')
+    options = [[item['selected']] if item['selected'] is not None else item['dates'] for item in items]
+    indexes = [item['index'] for item in items]
+    pending = any(item['selected'] is None for item in items)
+    for dates in product(*options):
+        candidate = deepcopy(plan)
+        try:
+            revise(candidate, body, date_assignments=dict(zip(indexes, dates, strict=True)))
+        except ValueError as exc:
+            raise ValueError(f'有些日期組合無法一起採用。請寫明各項的完整日期。{exc}') from None
+    if not pending:
+        plan.update(candidate)
+    mode = 'pending' if pending else 'selected' if replies else 'inferred'
+    return dict(schema=BATCH_DATE_EDIT, mode=mode, request=question, items=items,
+                local=plan['schema'] in ZONED_PLANS)
+
+
+def prepare_revision(plan, question, selected_date=None, *, replies=()):
     revision = FOLLOWUP.fullmatch(question)
     if revision is None:
         raise ValueError('會議更正與原問不符。')
     body = revision[1]
     edits = [part.strip() for part in REVISION_SEPARATOR.split(body)]
     missing = [(index, scope) for index, edit in enumerate(edits, 1) if (scope := missing_edit_date(plan, edit))]
+    if len(missing) > 1 and selected_date is None:
+        return prepare_batch_dates(plan, question, body, edits, missing, replies)
+    if replies:
+        raise ValueError('會議日期回覆與原更正不符。')
     if not missing and selected_date is None:
         revise(plan, body)
         return None
     if len(missing) != 1:
-        raise ValueError('每次最多補一項更正的日期。請寫出其他更正適用的完整日期。')
+        raise ValueError('日期回覆與原更正不符。')
     index, (name, dates) = missing[0]
     if selected_date is not None and selected_date not in dates:
         raise ValueError('請回覆上一則列出的其中一個完整日期。')
@@ -625,7 +670,7 @@ def prepare_revision(plan, question, selected_date=None):
     for option in dates:
         candidate = deepcopy(plan)
         try:
-            revise(candidate, body, date_assignment=(index, option))
+            revise(candidate, body, date_assignments={index: option})
         except ValueError as exc:
             raise ValueError(f'無法套用 {option} 的更正。請指定完整日期並核對時段。{exc}') from None
         if option == day:
@@ -647,6 +692,10 @@ def apply_followup(plan, question, parent):
         reply = DATE_REPLY.fullmatch(question)
         if reply is None:
             raise ValueError('請回覆上一則列出的其中一個完整日期。')
+        edit = parent[DATE_EDIT]
+        if edit['schema'] == BATCH_DATE_EDIT:
+            replies = [item['reply'] for item in edit['items'] if item['reply'] is not None]
+            return prepare_revision(plan, edit['request'], replies=[*replies, question])
         return prepare_revision(plan, parent['current_request'], reply[1])
     return prepare_revision(plan, question)
 
@@ -654,8 +703,14 @@ def apply_followup(plan, question, parent):
 def evaluate_followup(plan, edit):
     if edit is not None and edit['mode'] == 'pending':
         scope = '當地日期' if edit['local'] else '日期'
-        dates = '、'.join(edit['dates'])
-        answer = (f'第 {edit["index"]} 項對「{edit["participant"]}」的更正適用於哪個{scope}？'
+        if edit['schema'] == BATCH_DATE_EDIT:
+            item = next(item for item in edit['items'] if item['selected'] is None)
+            target = f'第 {item["index"]} 項「{item["clause"]}」'
+        else:
+            item = edit
+            target = f'第 {item["index"]} 項對「{item["participant"]}」的更正'
+        dates = '、'.join(item['dates'])
+        answer = (f'{target}適用於哪個{scope}？'
                   f'請回覆完整日期：{dates}。')
         return answer, dict(schema='daily_meeting_date_question_v1', status='clarification_required', model_called=False)
     return resolve(plan)
@@ -922,15 +977,24 @@ def describe(context):
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
+        if date_edit is not None:
+            scope = '當地日期' if date_edit['local'] else '日期'
+            if date_edit['schema'] == BATCH_DATE_EDIT:
+                for item in date_edit['items']:
+                    if item['selected'] is None:
+                        continue
+                    reason = '依你的回覆' if item['reply'] is not None else '依原排程的唯一選項'
+                    lines.append(f'第 {item["index"]} 項{reason}採用{scope} {item["selected"]}。')
+                    if item['reply'] is not None:
+                        lines.append('原回覆：' + item['reply'])
+            elif date_edit['selected'] is not None:
+                reason = '依你的回覆' if date_edit['mode'] == 'selected' else '依原排程的唯一選項'
+                lines.append(f'第 {date_edit["index"]} 項{reason}採用{scope} {date_edit["selected"]}。')
+            if date_edit['request'] != context['current_request']:
+                lines += ['原更正：' + date_edit['request']]
         if pending_date(context):
             lines += ['整批更正尚待確認日期。', evaluate_followup(plan, date_edit)[0]]
             return '\n'.join(lines)
-        if date_edit is not None:
-            scope = '當地日期' if date_edit['local'] else '日期'
-            reason = '依你的回覆' if date_edit['mode'] == 'selected' else '依原排程的唯一選項'
-            lines.append(f'第 {date_edit["index"]} 項{reason}採用{scope} {date_edit["selected"]}。')
-            if date_edit['mode'] == 'selected':
-                lines += ['原更正：' + date_edit['request']]
         original_request = date_edit['request'] if date_edit else context['current_request']
         revision = FOLLOWUP.fullmatch(original_request)
         if revision and REVISION_SEPARATOR.search(revision[1]):

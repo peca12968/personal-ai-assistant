@@ -169,8 +169,8 @@ class DailyDatedMeetingTests(unittest.TestCase):
             app = DailyAssistant(store, engine, default_chat=True)
             app.ask(sid, DAYS + FORMAT)
             for question, message in (
-                ('上一場會議，甲取消 09:00-10:00，乙取消 10:00-11:00，重算。', '最多補一項'),
                 ('上一場會議，乙取消 09:00-10:00，2028-02-29 乙的空檔改為無空檔，重算。', '請指定完整日期'),
+                ('上一場會議，乙取消 09:00-10:00，乙的空檔改為無空檔，重算。', '寫明各項的完整日期'),
             ):
                 with self.assertRaisesRegex(ValueError, message):
                     app.ask(sid, question)
@@ -185,6 +185,54 @@ class DailyDatedMeetingTests(unittest.TestCase):
             notes.write_text('另一份排程', encoding='utf-8')
             store.attach_document(sid, notes)
             self.assertEqual(app.ask(sid, '2028-02-29')['content'], '一般回答')
+
+    def test_multiple_dates_apply_only_after_each_exact_reply_and_survive_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            first = app.ask(sid, DAYS + FORMAT)
+            original = meeting.read(store, first['id'])
+            update = '上一場會議，甲取消 12:05-12:45，乙的空檔改成無空檔，會議改 20 分鐘，重算。'
+            asked = app.ask(sid, update)
+            self.assertIn('第 1 項「甲取消 12:05-12:45」', asked['content'])
+            middle = app.ask(sid, '日期是2028-02-29。')
+            self.assertIn('第 2 項「乙的空檔改成無空檔」', middle['content'])
+            pending = meeting.read(store, middle['id'])
+            self.assertEqual(pending['meeting_source']['answer_id'], asked['id'])
+            self.assertEqual(pending['meeting_plan'], original['meeting_plan'])
+            self.assertEqual([item['selected'] for item in pending[meeting.DATE_EDIT]['items']],
+                             ['2028-02-29', None])
+            with self.assertRaisesRegex(ValueError, '上一則列出'):
+                app.ask(sid, '2028-03-02')
+            bundle = create_backup(store.path, root/'batch.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            resumed = DailyAssistant(restored, None, default_chat=True)
+            final = resumed.ask(sid, '2028-02-28')
+            self.assertEqual(final['content'], '2028-03-01 08:10-08:30')
+            record = meeting.read(restored, final['id'])
+            self.assertFalse(meeting.pending_date(record))
+            self.assertEqual(record['meeting_source']['answer_id'], middle['id'])
+            edit = record[meeting.DATE_EDIT]
+            self.assertEqual(edit['request'], update)
+            self.assertEqual([item['reply'] for item in edit['items']], ['日期是2028-02-29。', '2028-02-28'])
+            self.assertEqual(meeting.read(restored, middle['id']), pending)
+            self.assertEqual(meeting.read(restored, first['id']), original)
+            changed = resumed.ask(sid, '上一場會議，會議改 15 分鐘，重算。')
+            self.assertEqual(changed['content'], '2028-02-29 12:45-13:00')
+
+    def test_excessive_date_combinations_leave_the_plan_intact(self):
+        question = '會議排程：' + ''.join(
+            f'2028-03-0{day}：甲可開會：09:00-12:00，乙為 09:00-12:00。' for day in range(1, 8)
+        ) + '兩人需要連續 20 分鐘。' + FORMAT
+        plan = meeting.parse(question)
+        expected = meeting.parse(question)
+        with self.assertRaisesRegex(ValueError, '日期的組合太多'):
+            meeting.prepare_revision(plan, '上一場會議，甲 09:00-09:05 沒空，乙 09:05-09:10 沒空，'
+                                           '甲 09:10-09:15 沒空，乙 09:15-09:20 沒空，重算。')
+        self.assertEqual(plan, expected)
 
     def test_default_retry_and_ordinary_attachment_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
