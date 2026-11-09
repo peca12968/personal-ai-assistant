@@ -407,6 +407,76 @@ class DocumentCalculationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '未指定換行的引用已變更'):
             app.ask(self.sid, followup)
 
+    def test_scenario_comparison_distinguishes_document_versions_even_without_current_imports(self):
+        first_doc = self.attach('甲重量為十二公斤。', 'a.txt')
+        second_doc = self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = DailyAssistant(self.store, NoModel(), default_chat=True)
+        first = app.ask(self.sid, question)
+        self.assertEqual(self.attach('乙重量為9公斤。', 'b.txt'), second_doc)
+        second = app.ask(self.sid, question)
+        self.store.detach_document(self.sid, first_doc)
+        self.store.detach_document(self.sid, second_doc)
+        result = app.ask(self.sid, f'比較文件試算回答 #{first["id"]} 和 #{second["id"]}。')
+        receipt = self.receipt(result)
+        self.assertEqual(receipt['schema'], document_calculation.COMPARISON_RECEIPT)
+        self.assertEqual([row['exact'] for row in receipt['originals']], ['8', '3'])
+        self.assertEqual([row['exact'] for row in receipt['hypotheticals']], ['5', '5'])
+        self.assertEqual(receipt['original_delta']['exact'], '-5')
+        self.assertEqual(receipt['scenario_delta']['exact'], '0')
+        self.assertEqual(receipt['source_versions'], ['same', 'different'])
+        self.assertEqual(result['citation_checks'], [])
+        sources = document_calculation.describe_comparison_sources(receipt)
+        self.assertIn('乙重量為4公斤。', sources)
+        self.assertIn('乙重量為9公斤。', sources)
+
+    def test_scenario_comparison_separates_missing_actual_values_and_incompatible_formulas(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = Assistant(self.store, NoModel())
+        first = app.ask(self.sid, question)
+        second = app.ask(self.sid, question.replace('7 公斤', '5 公斤'))
+        third = app.ask(self.sid, question.replace('減去', '加上'))
+        similar = self.receipt(app.ask(self.sid, f'比較文件試算回答 #{second["id"]} 與 #{first["id"]}。'))
+        self.assertEqual(similar['originals'], [None, None])
+        self.assertIsNone(similar['original_delta'])
+        self.assertEqual(similar['scenario_delta']['exact'], '-2')
+        self.assertEqual(similar['source_versions'], ['same', 'missing'])
+        other = self.receipt(app.ask(self.sid, f'比較文件試算回答 #{first["id"]} 及 #{third["id"]}。'))
+        self.assertFalse(other['compatible'])
+        self.assertIsNone(other['scenario_delta'])
+        self.assertIn('請選用相同算式比較差額', other['output'])
+
+    def test_scenario_comparison_retries_restores_and_rechecks_both_named_sources(self):
+        self.attach('甲時長為1秒。', 'a.txt')
+        self.attach('乙時長為1分鐘。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲時長 加上 [D2:L1] 的乙時長，換算成分鐘。'
+                    '假設 [D1:L1] 的甲時長改用 2 秒。')
+        app = Assistant(self.store, NoModel())
+        first = app.ask(self.sid, question)
+        second = app.ask(self.sid, question.replace('2 秒', '3 秒').replace('換算成分鐘', '換算成秒'))
+        request = f'比較文件試算回答 #{second["id"]} 和 #{first["id"]}。'
+        with self.assertRaisesRegex(ValueError, '兩個不同的文件試算回答'):
+            app.ask(self.sid, request.replace(f'和 #{first["id"]}', f'和 #{second["id"]}'))
+        with self.assertRaisesRegex(ValueError, '可核對的文件試算回答'):
+            app.ask(self.store.new_session(), request)
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, request)
+        result = app.retry(self.sid)
+        receipt = self.receipt(result)
+        self.assertEqual(receipt['comparison_factor'], '60')
+        self.assertEqual(receipt['scenario_delta']['exact'], '-1')
+        bundle = create_backup(self.store.path, self.root/'compare.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, result['id']), receipt)
+        with restored.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('已改動的試算', second['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            document_calculation.read(restored, result['id'])
+
     def test_receipt_rejects_changed_citations_and_saved_operands(self):
         self.attach('甲重量為十二公斤。', 'a.txt')
         self.attach('乙重量為4公斤。', 'b.txt')

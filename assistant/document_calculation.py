@@ -23,9 +23,11 @@ EXPLICIT_ORIGINAL_PLAN = 'document_calculation_original_plan_v2'
 EXPLICIT_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v2'
 REMAPPED_ORIGINAL_PLAN = 'document_calculation_original_plan_v3'
 REMAPPED_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v3'
+COMPARISON_PLAN = 'document_calculation_comparison_plan_v1'
+COMPARISON_RECEIPT = 'document_calculation_comparison_receipt_v1'
 ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT,
                      REMAPPED_ORIGINAL_PLAN: REMAPPED_ORIGINAL_RECEIPT}
-PINNED_PLANS = (SCENARIO_PLAN, *ORIGINAL_RECEIPTS)
+PINNED_PLANS = (SCENARIO_PLAN, COMPARISON_PLAN, *ORIGINAL_RECEIPTS)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -49,6 +51,8 @@ _EXPLICIT_ORIGINAL = re.compile(r'(?:請)?(?:依照|依|按照|按|用|沿用)�
                                 r'(?:文件原值|原值|原文件數值)[，, ]*(?:重算|重新計算|重新算)[。！!？?]?')
 _REPLACE_LINE = re.compile(rf'將 *({_REF}) *換成 *({_REF})')
 _REFRESH_LINE = re.compile(rf'重新讀取 *({_REF})')
+_COMPARE_REQUEST = re.compile(r'(?:請)?比較文件試算回答 *#([0-9]{1,30}) *(?:和|與|及) *'
+                              r'(?:文件試算回答 *)?#([0-9]{1,30})[。！!？?]?')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -158,8 +162,17 @@ def matches_original_followup(question):
     return _parse_original_followup(question) is not None
 
 
-def _original_followup(db, sid, question, before, target):
-    schema, selected, remaps = target
+def _comparison_ids(question):
+    if isinstance(question, str) and len(question) <= 100 and (match := _COMPARE_REQUEST.fullmatch(question.strip())):
+        return [int(value) for value in match.groups()]
+    return None
+
+
+def matches_scenario_comparison(question):
+    return _comparison_ids(question) is not None
+
+
+def _scenario_source(db, sid, before, selected):
     if selected is not None and not 0 < selected <= 2**63 - 1:
         return None
     row = db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
@@ -178,9 +191,17 @@ def _original_followup(db, sid, question, before, target):
     if not isinstance(stored, dict) or stored.get('schema') != SCENARIO_RECEIPT:
         return None
     receipt = local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate, True, validate_origin)
-    scenario = receipt['plan']
+    return dict(answer_id=mid, sha256=digest(raw), plan=receipt['plan'])
+
+
+def _original_followup(db, sid, question, before, target):
+    schema, selected, remaps = target
+    source = _scenario_source(db, sid, before, selected)
+    if source is None:
+        return None
+    scenario = source['plan']
     plan = dict(schema=schema, request=question, base=scenario['base'], documents=scenario['documents'],
-                scenario_source=dict(answer_id=mid, sha256=digest(raw)))
+                scenario_source=dict(answer_id=source['answer_id'], sha256=source['sha256']))
     if remaps:
         plan['remaps'] = remaps
     return plan
@@ -198,6 +219,25 @@ def capture_original(store, sid, question, before=None):
             raise ValueError(f'找不到本對話中可核對的文件試算回答 #{target[1]}。請確認回答編號。')
         raise ValueError('請緊接在文件試算回答後重算，或重新提供完整的文件算式。')
     return plan
+
+
+def _comparison_plan(db, sid, question, before):
+    ids = _comparison_ids(question)
+    if ids is None or ids[0] == ids[1]:
+        raise ValueError('請指定兩個不同的文件試算回答。')
+    scenarios = []
+    for mid in ids:
+        source = _scenario_source(db, sid, before, mid)
+        if source is None:
+            raise ValueError(f'找不到本對話中可核對的文件試算回答 #{mid}。請確認回答編號。')
+        scenarios.append(source)
+    return dict(schema=COMPARISON_PLAN, request=question, scenarios=scenarios, documents={'catalog': [], 'excerpts': []})
+
+
+def capture_comparison(store, sid, question, before=None):
+    with store.connect() as db:
+        db.execute('BEGIN')
+        return _comparison_plan(db, sid, question, before)
 
 
 def _parse_numeric_aggregate(question):
@@ -225,6 +265,8 @@ def bind_live_request(plan, previous=None):
 
 
 def snapshot(store, sid, plan):
+    if plan['schema'] == COMPARISON_PLAN:
+        return {'catalog': [], 'excerpts': []}
     if plan['schema'] in PINNED_PLANS:
         plan = _original_formula(plan)
     operands = plan['operands']
@@ -371,6 +413,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == COMPARISON_PLAN:
+        return _evaluate_comparison(plan, cancel)
     if plan.get('schema') in ORIGINAL_RECEIPTS:
         return _evaluate_original(plan, cancel)
     if plan.get('schema') == SCENARIO_PLAN:
@@ -547,6 +591,120 @@ def _evaluate_scenario(plan, cancel):
     return answer, dict(schema=SCENARIO_RECEIPT, plan=plan, model_called=False,
                         observations=evidence['observations'], result=evidence['result'],
                         scenario=dict(quantity=quantity, result=result), output=answer, output_sha256=digest(answer))
+
+
+def _scenario_versions(plan):
+    operands = plan['base']['operands']
+    catalog = _catalog(plan['documents'], operands)
+    return [(operand['citation'], catalog[operand['document_id']]['sha256']) if row['status'] == 'provided' else None
+            for operand, row in zip(operands, plan['documents']['requested_ranges'], strict=True)]
+
+
+def _comparison_factor(first_unit, second_unit):
+    if first_unit == second_unit:
+        return '1'
+    first = document_units.SCALES.get(first_unit)
+    second = document_units.SCALES.get(second_unit)
+    if first is not None and second is not None and first[0] == second[0]:
+        return str(second[1] / first[1])
+    return None
+
+
+def _comparison_delta(first, second, factor):
+    if first is None or second is None:
+        return None
+    right = second['exact']
+    if factor != '1':
+        right = exact_math.calculate(dict(operation='product', values=[right, factor]))['exact']
+    return exact_math.calculate(dict(operation='difference', values=[right, first['exact']]))
+
+
+def _comparison_value(result, unit, missing='待核對'):
+    return f'{_display_exact(result)} {unit}' if result is not None else missing
+
+
+def _evaluate_comparison(plan, cancel):
+    ids = _comparison_ids(plan['request'])
+    scenarios = plan['scenarios']
+    if (ids is None or len(set(ids)) != 2 or len(scenarios) != 2
+            or set(plan) != {'schema', 'request', 'scenarios', 'documents'}
+            or plan['documents'] != {'catalog': [], 'excerpts': []}):
+        raise ValueError('文件試算比較的計畫與原問不符。')
+
+    originals, hypotheticals, formulas, versions, blocks = [], [], [], [], []
+    for mid, source in zip(ids, scenarios, strict=True):
+        check_cancel(cancel)
+        if (set(source) != {'answer_id', 'sha256', 'plan'} or type(source['answer_id']) is not int
+                or source['answer_id'] != mid or not 0 < mid <= 2**63 - 1
+                or not re.fullmatch('[0-9a-f]{64}', source['sha256']) or source['plan']['schema'] != SCENARIO_PLAN):
+            raise ValueError('文件試算比較的保存來源無法核對。')
+        saved = source['plan']
+        _, receipt = _evaluate_scenario(saved, cancel)
+        base, assumption = saved['base'], saved['hypothesis']
+        unit = base['unit']
+        labels = [row['label'] for row in base['operands']]
+        sign = '+' if base['operation'] == 'sum' else '−'
+        originals.append(receipt['result'])
+        hypotheticals.append(receipt['scenario']['result'])
+        formulas.append((base['operation'], unit, labels))
+        versions.append(_scenario_versions(saved))
+        block = [f'文件試算回答 #{mid}｜{labels[0]} {sign} {labels[1]}（{unit}）']
+        for operand, observed, version in zip(base['operands'], receipt['observations'], versions[-1], strict=True):
+            location = f'D{operand["document_id"]} 第{operand["line_number"]}行'
+            value = (f'{observed["value"]} {observed.get("source_unit", unit)}'
+                     if observed['status'] == 'confirmed' else '待核對')
+            version_text = f'，版本 {version[1][:12]}' if version else '，缺少來源'
+            block.append(f'{operand["label"]}原值 {value}（{location}{version_text}）')
+        assumed = labels[assumption['operand_index']]
+        block += [f'原值結果 {_comparison_value(originals[-1], unit)}。',
+                  f'假設{assumed}採用 {assumption["value"]} {assumption["unit"]}。',
+                  f'試算結果 {_comparison_value(hypotheticals[-1], unit)}。']
+        blocks.append('\n'.join(block))
+
+    first_op, first_unit, first_labels = formulas[0]
+    second_op, second_unit, second_labels = formulas[1]
+    factor = _comparison_factor(first_unit, second_unit) if (first_op, first_labels) == (second_op, second_labels) else None
+    compatible = factor is not None
+    source_versions = None
+    if first_labels == second_labels:
+        source_versions = [('missing' if first is None or second is None else 'same' if first == second else 'different')
+                           for first, second in zip(*versions, strict=True)]
+        statuses = {'same': '引用行與版本相同', 'different': '引用行或版本不同', 'missing': '有來源待核對'}
+        blocks.append('\n'.join(f'{label}的{statuses[status]}。'
+                                for label, status in zip(first_labels, source_versions, strict=True)))
+    original_delta = _comparison_delta(*originals, factor) if compatible else None
+    scenario_delta = _comparison_delta(*hypotheticals, factor) if compatible else None
+    if compatible:
+        delta_lines = []
+        if first_unit != second_unit:
+            delta_lines.append(f'差額採用第一份的單位。1 {second_unit} = {factor} {first_unit}。')
+        for label, delta in (('原值結果差額', original_delta), ('試算結果差額', scenario_delta)):
+            display = _comparison_value(delta, first_unit, '待資料核對')
+            delta_lines.append(f'{label}（第二份減第一份）{display}。')
+        blocks.append('\n'.join(delta_lines))
+    else:
+        blocks.append('兩份算式的運算、欄位順序或單位類別不同。請選用相同算式比較差額。')
+    check_cancel(cancel)
+    answer = '\n\n'.join(blocks)
+    return answer, dict(schema=COMPARISON_RECEIPT, plan=plan, model_called=False, compatible=compatible,
+                        originals=originals, hypotheticals=hypotheticals, source_versions=source_versions,
+                        comparison_factor=factor, original_delta=original_delta, scenario_delta=scenario_delta,
+                        output=answer, output_sha256=digest(answer))
+
+
+def describe_comparison_sources(receipt):
+    blocks = []
+    for source in receipt['plan']['scenarios']:
+        plan = source['plan']
+        lines = [f'文件試算回答 #{source["answer_id"]} 當時的來源', plan['base']['request']]
+        for row in plan['documents']['excerpts']:
+            lines += [f'D{row["document_id"]} 第{row["start_line"]}行 · {row["name"]}',
+                      f'版本 {row["sha256"]}', row['text']]
+        for row in plan['documents']['requested_ranges']:
+            if row['status'] != 'provided':
+                lines.append(f'D{row["document_id"]} 第{row["start_line"]}行 · {row["explanation"]}')
+        blocks.append('\n'.join(lines))
+    return '\n\n'.join(blocks)
 
 
 def _same_unit(first, second):
@@ -874,6 +1032,10 @@ def scenario_ids(store, rows):
 
 
 def validate_origin(db, sid, before, plan):
+    if plan['schema'] == COMPARISON_PLAN:
+        if plan != _comparison_plan(db, sid, plan['request'], before):
+            raise ValueError('文件試算比較與指定的原始回答不符。')
+        return
     if plan['schema'] not in ORIGINAL_RECEIPTS:
         return
     target = _parse_original_followup(plan['request'])
@@ -888,6 +1050,8 @@ def validate_origin(db, sid, before, plan):
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == COMPARISON_RECEIPT:
+        return receipt['output']
     if receipt['schema'] in ORIGINAL_RECEIPTS.values():
         intro = '沿用' if receipt['schema'] == ORIGINAL_RECEIPT else '依你指定的'
         lines = [receipt['output'], f'{intro}本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',

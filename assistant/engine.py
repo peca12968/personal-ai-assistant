@@ -368,9 +368,11 @@ class Assistant:
         from . import document_calculation
         document_plan = None
         if self.allow_local_calculation and not image_metadata:
+            before = retry['user_message_id'] if retry else None
             if document_calculation.matches_original_followup(question):
-                before = retry['user_message_id'] if retry else None
                 document_plan = document_calculation.capture_original(self.store, sid, question, before)
+            elif document_calculation.matches_scenario_comparison(question):
+                document_plan = document_calculation.capture_comparison(self.store, sid, question, before)
             else:
                 document_plan = document_calculation.parse_live_request(question)
         from . import chat_transcription
@@ -447,6 +449,9 @@ class Assistant:
                             origin = document_calculation.capture_original(self.store, sid, question, uid)
                             if document_calculation.bind_live_documents(origin, sources) != document_plan:
                                 raise ValueError('提交前文件試算回答已變更，請重新確認。')
+                        if (document_plan['schema'] == document_calculation.COMPARISON_PLAN
+                                and document_calculation.capture_comparison(self.store, sid, question, uid) != document_plan):
+                            raise ValueError('提交前要比較的文件試算回答已變更，請重新確認。')
                         answer, receipt = document_calculation.evaluate(document_plan, cancel)
                     except ValueError as exc:
                         raise EngineError('本機文件計算未完成：' + str(exc), 'document_calculation_invalid') from None
