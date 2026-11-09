@@ -234,6 +234,27 @@ class DailyDatedMeetingTests(unittest.TestCase):
                                            '甲 09:10-09:15 沒空，乙 09:15-09:20 沒空，重算。')
         self.assertEqual(plan, expected)
 
+    def test_older_answer_can_start_date_clarification_but_pending_answer_cannot_be_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            first = app.ask(sid, DAYS + FORMAT)
+            app.ask(sid, '計算 1 + 1，只回答整數')
+            update = f'沿用會議回答 #{first["id"]}，乙空檔改成無空檔，重算。'
+            asked = app.ask(sid, update)
+            pending = meeting.read(store, asked['id'])
+            self.assertTrue(meeting.pending_date(pending))
+            self.assertEqual(pending['meeting_source']['answer_id'], first['id'])
+            self.assertEqual([row['id'] for row in meeting.recent_completed(store, sid)], [first['id']])
+            with self.assertRaisesRegex(ValueError, '尚待確認日期'):
+                app.ask(sid, f'沿用會議回答 #{asked["id"]}，會議改半小時，重算。')
+            answer = app.ask(sid, '2028-02-29')
+            proof = meeting.read(store, answer['id'])
+            self.assertEqual(answer['content'], '2028-03-01 08:10-08:40')
+            self.assertEqual(proof['meeting_source']['answer_id'], asked['id'])
+            self.assertEqual(proof[meeting.DATE_EDIT]['request'], update)
+
     def test_default_retry_and_ordinary_attachment_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)

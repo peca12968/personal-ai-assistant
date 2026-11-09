@@ -444,8 +444,9 @@ def bind_named_zones(plan, previous, *, fresh=False):
     return {**plan, 'zone_rules': saved}
 
 
-FOLLOWUP = re.compile(r'(?:上一場會議|上次的?會議|剛才那場會議)[，,：:]\s*(.{1,512})'
-                      r'[，,；;。]\s*(?:請)?(?:幫我)?(?:重算|重新計算|重新算|再算一次)(?:最早時段)?[。！!？?]?')
+REVISION_END = r'[，,；;。]\s*(?:請)?(?:幫我)?(?:重算|重新計算|重新算|再算一次)(?:最早時段)?[。！!？?]?'
+FOLLOWUP = re.compile(r'(?:上一場會議|上次的?會議|剛才那場會議)[，,：:]\s*(.{1,512})' + REVISION_END)
+SAVED_FOLLOWUP = re.compile(r'沿用會議回答\s*#([0-9]{1,30})[，,：:]\s*(.{1,512})' + REVISION_END)
 REVISION_SEPARATOR = re.compile(r'[，,；;。]')
 REVISED_DURATION = re.compile(rf'(?:(?:會議)?(?:時長|長度)|會議)改(?:為|成)?\s*{LENGTH}')
 REVISED_AVAILABILITY = re.compile(rf'({EDIT_NAME}){REPLACE_TIME}\s*(.+)')
@@ -462,6 +463,14 @@ DATE_EDIT = 'meeting_date_edit'
 BATCH_DATE_EDIT = 'daily_meeting_edit_dates_v2'
 SCOPE_EDIT = 'daily_meeting_edit_scope_v3'
 MAX_DATE_COMBINATIONS = 128
+
+
+def revision_parts(question):
+    if selected := SAVED_FOLLOWUP.fullmatch(question):
+        return selected[2], int(selected[1])
+    if adjacent := FOLLOWUP.fullmatch(question):
+        return adjacent[1], None
+    return None
 
 
 def attendee_revision(clause):
@@ -765,10 +774,10 @@ def prepare_batch_dates(plan, question, body, edits, missing, replies):
 
 
 def prepare_revision(plan, question, selected_date=None, *, replies=(), scope_replies=()):
-    revision = FOLLOWUP.fullmatch(question)
+    revision = revision_parts(question)
     if revision is None:
         raise ValueError('會議更正與原問不符。')
-    body = revision[1]
+    body, _ = revision
     edits = [part.strip() for part in REVISION_SEPARATOR.split(body)]
     scopes = revision_scope_options(plan, edits)
     if scopes and selected_date is None and not replies:
@@ -1139,7 +1148,9 @@ def describe(context):
     dated = zoned or plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
-        lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
+        revision = revision_parts(context['current_request'])
+        intro = '依你指定的本對話會議回答' if revision and revision[1] is not None else '沿用本對話會議回答'
+        lines.append(f'{intro} #{source["answer_id"]} 的{scope}')
         if date_edit is not None:
             scope = '當地日期' if date_edit['local'] else '日期'
             if date_edit['schema'] == SCOPE_EDIT:
@@ -1167,11 +1178,11 @@ def describe(context):
             lines += [f'整批更正尚待確認{label}。', evaluate_followup(plan, date_edit)[0]]
             return '\n'.join(lines)
         original_request = date_edit['request'] if date_edit else context['current_request']
-        revision = FOLLOWUP.fullmatch(original_request)
-        if revision and REVISION_SEPARATOR.search(revision[1]):
+        revision = revision_parts(original_request)
+        if revision and REVISION_SEPARATOR.search(revision[0]):
             lines.append('本次依序採用的更正')
             lines.extend(f'{index}. {part.strip()}'
-                         for index, part in enumerate(REVISION_SEPARATOR.split(revision[1]), 1))
+                         for index, part in enumerate(REVISION_SEPARATOR.split(revision[0]), 1))
     if anchor := plan.get('date_anchor'):
         if anchor['source'] == 'user':
             lines.append(f'依原問指定的日期 {anchor["date"]} 為今天。')
@@ -1228,6 +1239,16 @@ def previous_id(db, sid, before):
     return row['id'] if row else None
 
 
+def followup_source_id(db, sid, before, answer_id):
+    if answer_id is None:
+        return previous_id(db, sid, before)
+    if not 0 < answer_id <= 2**63 - 1 or (before is not None and answer_id >= before):
+        return None
+    row = db.execute("SELECT id FROM messages WHERE id=? AND session_id=? AND role='assistant'",
+                     (answer_id, sid)).fetchone()
+    return row['id'] if row else None
+
+
 def same_json(left, right):
     return (json.dumps(left, sort_keys=True, allow_nan=False)
             == json.dumps(right, sort_keys=True, allow_nan=False))
@@ -1277,7 +1298,10 @@ def verified_meeting(db, mid, *, choice_kind=None):
     history = [tip]
     while 'meeting_source' in history[-1][1]:
         row, saved, _ = history[-1]
-        parent = saved_meeting(db, previous_id(db, row['session_id'], row['uid']))
+        revision = revision_parts(row['question'])
+        answer_id = revision[1] if revision else None
+        parent_id = followup_source_id(db, row['session_id'], row['uid'], answer_id)
+        parent = saved_meeting(db, parent_id)
         if parent is None or saved['meeting_source'] != parent[2]:
             raise ValueError('會議的上一筆來源已變更。')
         history.append(parent)
@@ -1313,16 +1337,33 @@ def read(store, mid):
         return verified[1] if verified else None
 
 
-def previous(store, sid, before=None, *, required=True, choice_kind=None):
+def recent_completed(store, sid):
+    """List saved candidates; opening or using one still rechecks the source chain."""
+    with store.connect() as db:
+        rows = db.execute('''SELECT m.id, m.content FROM messages m
+            JOIN answer_contexts c ON c.message_id=m.id
+            WHERE m.session_id=? AND m.role='assistant'
+              AND CASE WHEN length(CAST(c.payload AS BLOB))<=? AND json_valid(c.payload)
+                       THEN json_type(c.payload, '$.meeting_plan')='object'
+                         AND json_type(c.payload, '$.calculation.result')='object'
+                  END
+            ORDER BY m.id DESC LIMIT 20''', (sid, MAX_JSON_BYTES)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def previous(store, sid, before=None, *, required=True, choice_kind=None, answer_id=None):
     message = '上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。'
     if choice_kind == 'date':
         message = '上一則回答沒有待補充的會議日期。'
     if choice_kind == 'name':
         message = '上一則回答沒有待確認的參與者姓名。'
+    if answer_id is not None:
+        message = f'找不到本對話中可核對的會議回答 #{answer_id}。請確認回答編號。'
     try:
         with store.connect() as db:
             db.execute('BEGIN')
-            verified = verified_meeting(db, previous_id(db, sid, before), choice_kind=choice_kind)
+            mid = followup_source_id(db, sid, before, answer_id)
+            verified = verified_meeting(db, mid, choice_kind=choice_kind)
     except ValueError as exc:
         raise ValueError(message) from exc
     if verified:
@@ -1331,6 +1372,8 @@ def previous(store, sid, before=None, *, required=True, choice_kind=None):
             return context, source
         if choice_kind is None:
             label = '姓名' if pending_choice_kind(context) == 'name' else '日期'
+            if answer_id is not None:
+                raise ValueError(f'會議回答 #{answer_id} 尚待確認{label}。請指定已完成的會議回答。')
             raise ValueError(f'上一則會議更正仍待確認{label}，請先回覆列出的選項。')
     if required:
         raise ValueError(message)

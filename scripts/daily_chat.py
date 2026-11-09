@@ -12,15 +12,57 @@ from scripts.daily_expenses import DailyAssistant
 
 
 def run_daily_window(store, engine, *, default_chat=False):
-    from tkinter import filedialog, messagebox, scrolledtext, simpledialog
+    from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
     from scripts import daily_container_id, daily_counts, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_necessary
 
     class DailyWindow(App):
-        def inspect_context(self):
-            answer_id = self.last_answer
+        def __init__(self, *args):
+            super().__init__(*args)
+            ttk.Button(self.context_btn.master, text='會議紀錄', command=self.meeting_history).pack(side='left', padx=6)
+
+        def meeting_history(self):
+            sid = self.sid
+            try:
+                rows = daily_meeting.recent_completed(self.store, sid)
+            except sqlite3.Error:
+                messagebox.showerror('無法讀取會議紀錄', '請重新開啟本機對話後再試。', parent=self.root)
+                return
+            if not rows:
+                messagebox.showinfo('會議紀錄', '這段對話沒有已保存的會議計算。', parent=self.root)
+                return
+            panel = tk.Toplevel(self.root)
+            panel.title('本對話的近期會議回答')
+            panel.geometry('560x300')
+            frame = ttk.Frame(panel, padding=10)
+            frame.pack(fill='both', expand=True)
+            box = tk.Listbox(frame, exportselection=False)
+            scroll = ttk.Scrollbar(frame, command=box.yview)
+            box.configure(yscrollcommand=scroll.set)
+            scroll.pack(side='right', fill='y')
+            box.pack(side='left', fill='both', expand=True)
+            for row in rows:
+                summary = ' '.join(row['content'].split())
+                box.insert('end', f'#{row["id"]}  {summary}')
+            box.selection_set(0)
+
+            def inspect(event=None):
+                if self.sid != sid:
+                    messagebox.showinfo('會議紀錄', '請回到這段對話後再查看。', parent=panel)
+                    return
+                if selection := box.curselection():
+                    self.inspect_context(meeting_answer_id=rows[selection[0]]['id'])
+
+            box.bind('<Double-Button-1>', inspect)
+            ttk.Button(panel, text='查看會議參考', command=inspect).pack(pady=(0, 10))
+
+        def inspect_context(self, *, meeting_answer_id=None):
+            answer_id = self.last_answer if meeting_answer_id is None else meeting_answer_id
             context = self.store.answer_context(answer_id) if answer_id else None
+            if meeting_answer_id is not None and (not context or 'meeting_plan' not in context):
+                messagebox.showerror('會議紀錄', '這筆會議回答已無法核對。', parent=self.root)
+                return
             meeting_schema = None
             if context and daily_explicit_json.FIELD in context:
                 title = '本機 JSON 欄位核對'
@@ -129,9 +171,10 @@ def run_daily_window(store, engine, *, default_chat=False):
                     if verified is None:
                         raise ValueError
                     lines = daily_meeting.describe(verified).splitlines()
-                    if (not daily_meeting.pending_date(verified)
-                            and verified['calculation']['result']['exact'] != '沒有可行時段'):
-                        meeting_schema = verified['meeting_plan']['schema']
+                    if not daily_meeting.pending_date(verified):
+                        lines.insert(0, f'本次會議回答 #{answer_id}')
+                        if verified['calculation']['result']['exact'] != '沒有可行時段':
+                            meeting_schema = verified['meeting_plan']['schema']
                 except (KeyError, TypeError, ValueError, sqlite3.Error):
                     lines = ['無法依原始時段與更正重算這筆會議紀錄。']
             elif context and 'expense_ledger' in context:

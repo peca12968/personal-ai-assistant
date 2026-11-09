@@ -316,6 +316,86 @@ class DailyMeetingTests(unittest.TestCase):
             self.assertNotIn(meeting.DATE_EDIT, proof)
             self.assertEqual(proof['meeting_plan']['cancelled'][0]['name'], '王')
 
+    def test_explicit_older_answer_keeps_the_chosen_version_through_retry_and_restore(self):
+        from assistant import answer_runs
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            original = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            latest = app.ask(sid, '上一場會議，甲取消整個上午，重算。')
+            app.ask(sid, '計算 1 + 1，只回答整數')
+            before = [meeting.read(store, answer['id']) for answer in (original, latest)]
+            question = f'沿用會議回答 #{original["id"]}，乙取消 09:20-09:35，時長改為 20 分鐘，重算。'
+            stop = Event()
+            begin = answer_runs.begin
+
+            def begin_then_stop(*args, **kwargs):
+                uid = begin(*args, **kwargs)
+                stop.set()
+                return uid
+
+            with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
+                app.ask(sid, question, stop)
+            resumed = app.retry(sid)
+            self.assertEqual(resumed['content'], '09:35-09:55')
+            record = meeting.read(store, resumed['id'])
+            self.assertEqual(record['meeting_source']['answer_id'], original['id'])
+            self.assertIn(f'依你指定的本對話會議回答 #{original["id"]}', meeting.describe(record))
+            self.assertEqual([meeting.read(store, answer['id']) for answer in (original, latest)], before)
+            bundle = create_backup(store.path, root/'branch.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            self.assertEqual(meeting.read(restored, resumed['id']), record)
+            changed = DailyAssistant(restored, None, default_chat=True).ask(
+                sid, '上一場會議，會議改 25 分鐘，重算。')
+            self.assertEqual(changed['content'], '09:35-10:00')
+
+    def test_explicit_meeting_source_refuses_other_sessions_nonanswers_and_changed_snapshots(self):
+        from unittest.mock import Mock
+        from assistant import answer_runs
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            engine = Mock(spec=['answer'])
+            app = DailyAssistant(store, engine, default_chat=True)
+            original = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            ordinary = app.ask(sid, '計算 1 + 1，只回答整數')
+            other = store.new_session()
+            unrelated = app.ask(other, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            for wrong in (original['user_message_id'], ordinary['id'], unrelated['id'], 0, 2**63):
+                with self.subTest(wrong=wrong), self.assertRaisesRegex(ValueError, '本對話中可核對'):
+                    app.ask(sid, f'沿用會議回答 #{wrong}，時長改為 25 分鐘，重算。')
+            self.assertEqual(len(store.messages(sid, 10)), 4)
+            q = f'沿用會議回答 #{original["id"]}，時長改為 25 分鐘，重算。'
+            notes = root/'note.txt'
+            notes.write_text('會議備註', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, '需要純文字'):
+                app.ask(sid, q, image_ids=[1])
+            doc_id = store.attach_document(sid, notes)
+            with self.assertRaisesRegex(ValueError, '需要純文字'):
+                app.ask(sid, q)
+            store.detach_document(sid, doc_id)
+            self.assertEqual([row['id'] for row in meeting.recent_completed(store, sid)], [original['id']])
+            snapshot = meeting.read(store, original['id'])
+            begin = answer_runs.begin
+
+            def reformat_then_begin(*args, **kwargs):
+                with store.connect() as db:
+                    db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                               (json.dumps(snapshot, ensure_ascii=False, indent=2), original['id']))
+                return begin(*args, **kwargs)
+
+            with patch.object(answer_runs, 'begin', side_effect=reformat_then_begin):
+                with self.assertRaisesRegex(ValueError, '提交前會議來源已變更'):
+                    app.ask(sid, q)
+            self.assertEqual(answer_runs.runs(store, sid, 1)[0]['status'], 'failed')
+            with self.assertRaisesRegex(ValueError, '重試所需的會議來源已變更'):
+                app.retry(sid)
+            engine.answer.assert_not_called()
+
     def test_afternoon_shorthand_requires_bounds_when_evening_might_be_affected(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'assistant.sqlite3')

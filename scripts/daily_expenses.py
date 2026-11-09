@@ -636,7 +636,8 @@ class DailyAssistant(Assistant):
     def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):
             return None
-        change = daily_meeting.FOLLOWUP.fullmatch(question)
+        change = daily_meeting.revision_parts(question)
+        answer_id = change[1] if change else None
         reply_kind = daily_meeting.reply_kind(question)
         observation = daily_meeting.recorded_observation(prior.get('meeting_plan'))
         meeting = (daily_meeting.parse(question, observation=observation, use_local_clock=not retry)
@@ -646,15 +647,16 @@ class DailyAssistant(Assistant):
                 raise ValueError('重試所需的會議來源已變更，請重新提供空檔。')
             return None
         if image_ids or prior.get('image_inputs') or self.store.documents(sid, include_content=False):
-            if (change and not self.default_chat) or 'meeting_plan' in prior:
+            if answer_id is not None or (change and not self.default_chat) or 'meeting_plan' in prior:
                 raise ValueError('會議更正需要純文字的原始時段；若要參考附件，請重新提供完整條件。')
             return None
         origin = None
         date_edit = None
         if change or reply_kind:
             before = retry['user_message_id'] if retry else None
-            previous = daily_meeting.previous(self.store, sid, before, choice_kind=reply_kind,
-                                              required=bool(retry or (change and not self.default_chat)))
+            previous = daily_meeting.previous(
+                self.store, sid, before, choice_kind=reply_kind, answer_id=answer_id,
+                required=bool(retry or answer_id is not None or (change and not self.default_chat)))
             if previous is None:
                 return None
             parent, origin = previous
@@ -676,7 +678,8 @@ class DailyAssistant(Assistant):
 
         def resolve_meeting(uid):
             result = daily_meeting.evaluate_followup(meeting, date_edit)
-            if origin and daily_meeting.previous(self.store, sid, uid, choice_kind=reply_kind)[1] != origin:
+            if origin and daily_meeting.previous(
+                    self.store, sid, uid, choice_kind=reply_kind, answer_id=answer_id)[1] != origin:
                 raise ValueError('提交前會議來源已變更，請核對後再更正。')
             if self.store.documents(sid, include_content=False):
                 raise ValueError('提交前已加入會議附件，請重新提供本輪要採用的資料。')
