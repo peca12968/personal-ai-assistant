@@ -24,6 +24,7 @@ from . import artifacts
 from . import autonomy_csv
 from . import date_tools
 from . import document_diff
+from . import decision_table
 from . import document_lines
 from . import json_documents
 from . import json_statistics
@@ -220,6 +221,9 @@ def validate_action(value):
     if name == 'round_number':
         number_rounding.validate(args)
         return value
+    if name == 'check_decision':
+        decision_table.validate(args)
+        return value
     if name == 'calculate_expression':
         expression_math.validate(args)
         return value
@@ -272,6 +276,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return month_schedule.calculate(args, cancel)
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
+    if name == 'check_decision':
+        return decision_table.calculate(args)
     if name == 'calculate_expression':
         return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
@@ -411,7 +417,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             engine_selection = describe_engine() if callable(describe_engine) else None
             if engine_selection is not None:
                 payload['engine_selection'] = engine_selection
-            raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
+            raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + decision_table.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +

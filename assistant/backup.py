@@ -180,6 +180,8 @@ def validate_database(path):
             for (gid,) in db.execute('SELECT goal_id FROM autonomous_handoffs'):
                 read(db, gid)
         if 'autonomous_steps' in actual_tables:
+            from .decision_table import validate_saved as validate_decisions
+            validate_decisions(db)
             from .work_plan import validate_saved
             validate_saved(db)
             from .goal_partials import validate_saved as validate_partials

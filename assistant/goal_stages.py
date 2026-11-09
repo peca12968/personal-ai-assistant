@@ -160,6 +160,12 @@ def activity(row):
         outcome['calculation_details_omitted'] = True
     if tool == 'ask' and 'partial_result' in observation:
         outcome['partial_result_omitted'] = True
+    if tool == 'check_decision':
+        outcome.update(matching_row_count=len(observation['matching_rows']),
+                       possible_result_count=len(observation['possible_results']),
+                       decision_rows_omitted=True)
+        if 'max_questions' in observation:
+            outcome['max_questions'] = observation['max_questions']
     if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True

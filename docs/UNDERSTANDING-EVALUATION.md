@@ -187,6 +187,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_withdrawn_questions.json` 離線只用合成提問檢查保存路徑。真實執行先由模型提出原問題與暫表，再保存更正，核對仍在等待且步驟相同。兩個案例明確選更正撤下原問題，保存與下一次執行分開。舊程式缺少撤下入口時，核對接續仍維持原等待，並保留實際未完成狀態。第三例的更正只改標題，照常回答原問題。分開評讀狀態、原問題與更正的關聯、接續後只問必要欄位及最後成果。
 
+### 決策表與最少必要追問
+
+`python scripts/evaluate_goal_replies.py --suite evals/goal_decision_questions.json` 離線建立四組原創文件、工作與回答。真實執行涵蓋兩輪自適應提問、結果相同的提早停止、完整條件式交付及收到一則回答後直接定稿。核對實際送入工具的欄序、表列、已知值及原文件引用，另核對實際提問與成果是否符合要求。程式保證送入表列的核算結果，文字轉錄、適用範圍及使用者意圖另外評讀。不同工具步數與使用者實際回答輪數分開計。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
