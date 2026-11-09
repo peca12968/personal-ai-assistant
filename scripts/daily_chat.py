@@ -15,7 +15,7 @@ def run_daily_window(store, engine, *, default_chat=False):
     from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_container_id, daily_counts, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_necessary
+    from scripts import daily_container_id, daily_counts, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_meeting_lookup, daily_necessary
 
     class DailyWindow(App):
         def __init__(self, *args):
@@ -164,6 +164,15 @@ def run_daily_window(store, engine, *, default_chat=False):
                     reason = '不符合：' + '、'.join(plan['limits'][key]['source'] for key in check['rejected']) if check['rejected'] else '符合'
                     lines.append(option['source'] + ' · ' + reason)
                 lines += ['', context['calculation']['result']['exact']]
+            elif context and daily_meeting_lookup.FIELD in context:
+                title = '本機會議查詢紀錄'
+                try:
+                    verified = daily_meeting_lookup.read(self.store, answer_id)
+                    if verified is None:
+                        raise ValueError
+                    lines = daily_meeting_lookup.describe(verified).splitlines()
+                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                    lines = ['無法依查詢當時的會議紀錄重建結果。']
             elif context and 'meeting_plan' in context:
                 title = '本機會議時段計算紀錄'
                 try:

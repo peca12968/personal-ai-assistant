@@ -5,7 +5,7 @@ import re
 import uuid
 from decimal import Decimal
 
-from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_deadline, daily_dialogue, daily_criteria, daily_explicit_json, daily_identifiers, daily_meeting, daily_necessary, daily_stock
+from scripts import daily_conditions, daily_clearance, daily_container_id, daily_counts, daily_deadline, daily_dialogue, daily_criteria, daily_explicit_json, daily_identifiers, daily_meeting, daily_meeting_lookup, daily_necessary, daily_stock
 from assistant import answer_runs, expression_math
 from assistant.context import CURRENT_MESSAGE_ONLY, current_message_only
 from assistant.engine import Assistant, EngineError, make_context, render_prompt
@@ -263,6 +263,10 @@ class DailyAssistant(Assistant):
                 return container
         if current_message_only(question):
             return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
+        if local and self.allow_local_evidence and (not retry or daily_meeting_lookup.FIELD in prior):
+            matches = self._meeting_lookup_answer(sid, question, cancel, retry, draft, prior)
+            if matches is not None:
+                return matches
         if self.allow_local_calculation and not image_ids:
             from assistant.document_calculation import parse_live_request
             if parse_live_request(question) is not None:
@@ -632,6 +636,32 @@ class DailyAssistant(Assistant):
             return daily_explicit_json.evaluate(plan)
 
         return self._run_recorded(sid, question, context, serialize, cancel, retry, draft, daily_explicit_json.FIELD)
+
+    def _meeting_lookup_answer(self, sid, question, cancel, retry, draft, prior):
+        field = daily_meeting_lookup.FIELD
+        if not daily_meeting_lookup.parse(question):
+            if field in prior:
+                raise EngineError('重試的會議查詢已無法核對。', 'evidence_invalid')
+            return None
+        if self.store.documents(sid, include_content=False):
+            if field in prior:
+                raise EngineError('重試的會議查詢來源已變更。', 'evidence_invalid')
+            return None
+        before = retry['user_message_id'] if retry else None
+        plan = daily_meeting_lookup.capture(self.store, sid, question, before, cancel)
+        if retry and prior.get(field) != plan:
+            raise EngineError('重試的會議查詢來源已變更。', 'evidence_invalid')
+        context = make_context(question, [], [])
+        context.update(response_mode=daily_meeting_lookup.MODE, documents={'catalog': [], 'excerpts': []},
+                       **{field: plan})
+
+        def search(uid):
+            if (self.store.documents(sid, include_content=False)
+                    or daily_meeting_lookup.capture(self.store, sid, question, uid, cancel) != plan):
+                raise EngineError('提交前的會議查詢來源已變更。', 'evidence_invalid')
+            return daily_meeting_lookup.evaluate(plan)
+
+        return self._run_recorded(sid, question, context, search, cancel, retry, draft, field)
 
     def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):

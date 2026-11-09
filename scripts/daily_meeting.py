@@ -1337,18 +1337,23 @@ def read(store, mid):
         return verified[1] if verified else None
 
 
-def recent_completed(store, sid):
-    """List saved candidates; opening or using one still rechecks the source chain."""
-    with store.connect() as db:
-        rows = db.execute('''SELECT m.id, m.content FROM messages m
+def completed_candidates(db, sid, before, limit):
+    rows = db.execute('''SELECT m.id, m.content FROM messages m
             JOIN answer_contexts c ON c.message_id=m.id
             WHERE m.session_id=? AND m.role='assistant'
+              AND (? IS NULL OR m.id<?)
               AND CASE WHEN length(CAST(c.payload AS BLOB))<=? AND json_valid(c.payload)
                        THEN json_type(c.payload, '$.meeting_plan')='object'
                          AND json_type(c.payload, '$.calculation.result')='object'
                   END
-            ORDER BY m.id DESC LIMIT 20''', (sid, MAX_JSON_BYTES)).fetchall()
+            ORDER BY m.id DESC LIMIT ?''', (sid, before, before, MAX_JSON_BYTES, limit)).fetchall()
     return [dict(row) for row in rows]
+
+
+def recent_completed(store, sid):
+    """List saved candidates; opening or using one still rechecks the source chain."""
+    with store.connect() as db:
+        return completed_candidates(db, sid, None, 20)
 
 
 def previous(store, sid, before=None, *, required=True, choice_kind=None, answer_id=None):
