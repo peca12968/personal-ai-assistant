@@ -22,6 +22,8 @@ NATURAL_BOUND_PLANS = (V10, V11)
 BOUND_PLANS = (V9, *NATURAL_BOUND_PLANS)
 DECLARED_PLANS = (V7, V8, *BOUND_PLANS)
 INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, *DECLARED_PLANS)
+CLARIFY_PLAN = 'daily_necessary_reference_clarification_v1'
+RESOLVE_PLAN = 'daily_necessary_reference_resolution_v1'
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 ROUND_PLAN = 'daily_necessary_new_round_v1'
@@ -131,6 +133,7 @@ DECLARED_COST_ITEM = re.compile(rf'「({DECLARED_NAME})」\s*([1-9][0-9]{{0,2}})
 CURRENT_OBSERVATION = re.compile(r'(?:本輪|當次|這次)\s*(.+)')
 EARLIER_OBSERVATION = re.compile(r'(?:上一次|上一輪|上輪|上次|昨天|前一日)\s*(.+)')
 BOUND_NAME = daily_observation_words.NAME
+REFERENCE_CHOICE = re.compile(rf'(?:(?:代稱指的是)?「(?P<quoted>{BOUND_NAME})」|(?P<bare>{BOUND_NAME}))。?')
 BOUND_ATOM = rf'「{BOUND_NAME}」的「{BOUND_NAME}」'
 BOUND_GROUP = rf'(?:{BOUND_ATOM}|（{BOUND_ATOM}(?:或{BOUND_ATOM}){{1,2}}）)'
 BOUND_TERMS = re.compile(rf'{BOUND_GROUP}(?:\s*(?:、|及|和|與|並且)\s*{BOUND_GROUP}){{0,3}}')
@@ -551,9 +554,9 @@ def has_observation_reference(question):
             and any(reference_parts(sentence.strip()) for sentence in re.split(r'[。\r\n]+', question)))
 
 
-def bind_bound_observations(conditions, sentences, *, current_only=False, version=V9):
+def bind_bound_observations(conditions, sentences, *, current_only=False, version=V9, choice=None):
     bound = {(c['subject'], c['predicate']): c for c in conditions}
-    seen, other, current_subjects = set(), [], set()
+    seen, other, current_sources = set(), [], {}
     anchor = None
     natural = version in NATURAL_BOUND_PLANS
     clauses = (sentence.strip() for sentence in sentences) if natural else observation_clauses(sentences)
@@ -562,13 +565,18 @@ def bind_bound_observations(conditions, sentences, *, current_only=False, versio
         reference = reference_parts(clause) if version == V11 else None
         if reference:
             earlier, body = reference
-            if earlier or anchor is None or len(current_subjects) != 1:
+            if earlier or anchor is None:
+                return None
+            if choice is not None and len(current_sources) > 1 and choice in current_sources:
+                subject, source_anchor = choice, current_sources[choice]
+            elif choice is None and len(current_sources) == 1:
+                subject, source_anchor = anchor
+            else:
                 return None
             items = daily_observation_words.reference_items(body)
-            observations = normalize_natural_observations(anchor[0], items, conditions) if items else None
+            observations = normalize_natural_observations(subject, items, conditions) if items else None
             if not observations:
                 return None
-            source_anchor = anchor[1]
         else:
             report = natural_bound_observations(clause, conditions) if natural else bound_observations(clause)
             if report is None or (current_only and report[0]):
@@ -578,7 +586,7 @@ def bind_bound_observations(conditions, sentences, *, current_only=False, versio
                 subject = observations[0][0]
                 anchor = None if earlier else (subject, clause)
                 if not earlier:
-                    current_subjects.add(subject)
+                    current_sources[subject] = clause
         for subject, predicate, state in observations:
             key = earlier, subject, predicate
             if key in seen or len(seen) == 12:
@@ -605,7 +613,7 @@ def bound_name(subject, predicate):
     return f'{subject} 的 {predicate}'
 
 
-def parse_bound(question, sentences, version):
+def parse_bound(question, sentences, version, *, choice=None):
     parts = split_code_request(sentences)
     if parts is None:
         return None
@@ -640,7 +648,7 @@ def parse_bound(question, sentences, version):
                 return None
             keys.add(key)
             condition.update(observation_field=field, observation_family=family, expected_value=value)
-    other = bind_bound_observations(conditions, facts[1:], version=version)
+    other = bind_bound_observations(conditions, facts[1:], version=version, choice=choice)
     if other is None:
         return None
     return dict(schema=version, request=question, request_sha256=evidence_logic.digest(question), rule=facts[0],
@@ -664,15 +672,19 @@ def bind_observations(conditions, sentences):
     return all('observation' in condition for condition in conditions)
 
 
-def parse_version(question, version):
-    if version not in INITIAL_PLANS:
-        return None
+def question_sentences(question):
     if not isinstance(question, str) or not 1 <= len(question) <= 1600:
         return None
     body = question.strip().rstrip('。！')
     if re.search(r'[！？?]', body):
         return None
-    sentences = [s.strip() for s in re.split(r'[。\r\n]+', body)]
+    return [s.strip() for s in re.split(r'[。\r\n]+', body)]
+
+
+def parse_version(question, version):
+    sentences = question_sentences(question)
+    if version not in INITIAL_PLANS or sentences is None:
+        return None
     if version == V3:
         return parse_roster(question, sentences)
     if version == V4:
@@ -717,6 +729,45 @@ def parse_version(question, version):
     if version == V2:
         plan['groups'] = names
     return plan
+
+
+def clarification(question):
+    sentences = question_sentences(question)
+    parts = split_code_request(sentences) if sentences else None
+    if parts is None or not 4 <= len(parts[0]) <= 13:
+        return None
+    reports = parts[0][1:]
+    references = [(index, scope) for index, clause in enumerate(reports) if (scope := reference_parts(clause))]
+    if len(references) != 1:
+        return None
+    index, (earlier, _) = references[0]
+    if earlier:
+        return None
+    choices = {}
+    for clause in reports[:index]:
+        if EARLIER_OBSERVATION.fullmatch(clause):
+            choices.clear()
+            continue
+        scope = CURRENT_OBSERVATION.fullmatch(clause)
+        report = daily_observation_words.observation(scope[1]) if scope else None
+        if report and report[0] not in daily_observation_words.REFERENCE_SUBJECTS:
+            choices[report[0]] = None
+    if len(choices) < 2 or any(parse_bound(question, sentences, V11, choice=name) is None for name in choices):
+        return None
+    return dict(schema=CLARIFY_PLAN, request=question, request_sha256=evidence_logic.digest(question),
+                reference=reports[index], choices=list(choices))
+
+
+def reference_choice(question):
+    match = REFERENCE_CHOICE.fullmatch(question) if isinstance(question, str) and len(question) <= 33 else None
+    return (match['quoted'] or match['bare']) if match else None
+
+
+def resolve_reference(question, parent, source):
+    if reference_choice(question) not in parent['choices']:
+        raise ValueError('請回覆上一則列出的其中一個完整物件名稱。')
+    return dict(schema=RESOLVE_PLAN, request=question, request_sha256=evidence_logic.digest(question),
+                original_request=parent['request'], source=source)
 
 
 def matches_revision(question):
@@ -794,13 +845,21 @@ def preserve_dispute(conditions, match, *, new_round=False):
 def effective(plan):
     if not isinstance(plan, dict):
         raise ValueError('必要條件規約與原問不符。')
+    if plan.get('schema') == RESOLVE_PLAN:
+        parent = clarification(plan.get('original_request'))
+        source = plan.get('source')
+        request = plan.get('request')
+        if parent is None or not valid_source(source) or resolve_reference(request, parent, source) != plan:
+            raise ValueError('代稱澄清與原問或選擇不符。')
+        original_request = parent['request']
+        return parse_bound(original_request, question_sentences(original_request), V11, choice=reference_choice(request))
     if plan.get('schema') in READ_ONLY_PLANS:
         if (set(plan) != {'schema', 'request', 'request_sha256', 'basis', 'source'}
                 or not isinstance(plan['request'], str)
                 or evidence_logic.digest(plan['request']) != plan['request_sha256']
                 or not valid_source(plan['source'])
                 or not isinstance(plan['basis'], dict)
-                or plan['basis'].get('schema') not in (*INITIAL_PLANS, *UPDATE_PLANS)):
+                or plan['basis'].get('schema') not in (*INITIAL_PLANS, RESOLVE_PLAN, *UPDATE_PLANS)):
             raise ValueError('待核對項目的原問或來源不符。')
         state = effective(plan['basis'])
         if plan['schema'] == COST_PLAN:
@@ -819,7 +878,7 @@ def effective(plan):
     if set(plan) != {'schema', 'request', 'request_sha256', 'original', 'revisions', 'source'}:
         raise ValueError('沿用條件的規約格式不符。')
     original, revisions, source = plan['original'], plan['revisions'], plan['source']
-    if (not isinstance(original, dict) or set(original) != {'request', 'schema'}
+    if (not isinstance(original, dict)
             or not isinstance(revisions, list) or not 1 <= len(revisions) <= MAX_REVISIONS
             or any(not isinstance(text, str) or len(text) > (
                 MAX_ROUND_CHARS if plan['schema'] == ROUND_PLAN and ROUND_PREFIX.match(text) else 150)
@@ -827,7 +886,10 @@ def effective(plan):
             or revisions[-1] != plan['request'] or evidence_logic.digest(revisions[-1]) != plan['request_sha256']
             or not valid_source(source)):
         raise ValueError('沿用條件的來源或更正範圍不符。')
-    state = parse_version(original['request'], original['schema'])
+    if original.get('schema') == RESOLVE_PLAN:
+        state = effective(original)
+    else:
+        state = parse_version(original['request'], original['schema']) if set(original) == {'request', 'schema'} else None
     if state is None:
         raise ValueError('原始條件規則無法核對。')
     has_dispute = new_round = False
@@ -866,7 +928,7 @@ def revise(question, parent, source):
         original = parent['original']
         earlier = parent['revisions']
     else:
-        original = {key: parent[key] for key in ('request', 'schema')}
+        original = parent if parent['schema'] == RESOLVE_PLAN else {key: parent[key] for key in ('request', 'schema')}
         earlier = []
     if len(earlier) >= MAX_REVISIONS:
         raise ValueError('已達沿用條件的八次更正上限，請重新列出完整條件。')
@@ -883,6 +945,8 @@ def revise(question, parent, source):
 
 
 def carry_forward(question, parent, source):
+    if parent['schema'] == CLARIFY_PLAN:
+        return resolve_reference(question, parent, source)
     order_requested = COST_PREFIX.match(question)
     if not order_requested and not matches_inquiry(question):
         return revise(question, parent, source)
@@ -980,6 +1044,13 @@ def dispute_text(conflicts):
 
 
 def evaluate(plan, cancel=None):
+    if isinstance(plan, dict) and plan.get('schema') == CLARIFY_PLAN:
+        if clarification(plan.get('request')) != plan:
+            raise ValueError('代稱澄清與原問不符。')
+        choices = '、'.join(f'「{name}」' for name in plan['choices'])
+        answer = f'「{plan["reference"]}」指的是哪個物件？請回覆完整名稱：{choices}。'
+        return answer, dict(schema='daily_necessary_reference_clarification_receipt_v1', plan=plan,
+                            status='clarification_required', model_called=False, output=answer)
     state = effective(plan)
     target = '待判 ' + state['action'] if state['schema'] in DECLARED_PLANS else state['action']
     action = '「' + target + '」'
@@ -1020,6 +1091,7 @@ def evaluate(plan, cancel=None):
               V9: 'daily_necessary_object_property_receipt_v9',
               V10: 'daily_necessary_natural_property_receipt_v10',
               V11: 'daily_necessary_adjacent_reference_receipt_v11',
+              RESOLVE_PLAN: 'daily_necessary_reference_resolution_receipt_v1',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               ROUND_PLAN: 'daily_necessary_new_round_receipt_v1',
@@ -1065,7 +1137,7 @@ def previous_id(db, sid, before):
     return row['id'] if row else None
 
 
-def saved(db, mid):
+def saved(db, mid, *, clarification_only=False):
     rows = db.execute('''SELECT m.session_id, r.user_message_id,
          CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS payload
          FROM answer_contexts c JOIN messages m ON m.id=c.message_id
@@ -1079,6 +1151,11 @@ def saved(db, mid):
     context = local_answer_receipts.load_context(row['payload'])
     if not isinstance(context, dict) or context.get('response_mode') != MODE or FIELD not in context:
         return None
+    if clarification_only:
+        receipt = context[FIELD]
+        plan = receipt.get('plan') if isinstance(receipt, dict) else None
+        if not isinstance(plan, dict) or plan.get('schema') != CLARIFY_PLAN:
+            return None
     if not 0 < row['user_message_id'] < mid:
         raise ValueError('必要條件來源的訊息順序不符。')
     receipt = local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate)
@@ -1092,9 +1169,9 @@ def verified_chain(db, mid):
         return None
     receipt, row, _ = first
     # Each state may have an inquiry followed by one check order.
-    for _ in range(3 * MAX_REVISIONS + 2):
+    for _ in range(3 * MAX_REVISIONS + 3):
         plan = receipt['plan']
-        if plan['schema'] in INITIAL_PLANS:
+        if plan['schema'] in (*INITIAL_PLANS, CLARIFY_PLAN):
             return first
         predecessor = previous_id(db, row['session_id'], row['user_message_id'])
         parent = saved(db, predecessor)
@@ -1103,7 +1180,7 @@ def verified_chain(db, mid):
         receipt, row, source = parent
         if carry_forward(plan['request'], receipt['plan'], source) != plan:
             raise ValueError('沿用條件的來源已變更。')
-    if receipt['plan']['schema'] not in INITIAL_PLANS:
+    if receipt['plan']['schema'] not in (*INITIAL_PLANS, CLARIFY_PLAN):
         raise ValueError('必要條件缺少可核對的原始規則。')
     return first
 
@@ -1115,10 +1192,11 @@ def read(store, mid):
         return record[0] if record else None
 
 
-def previous(store, sid, before=None, *, required=True):
+def previous(store, sid, before=None, *, required=True, clarification_only=False):
     with store.connect() as db:
         db.execute('BEGIN')
-        record = verified_chain(db, previous_id(db, sid, before))
+        mid = previous_id(db, sid, before)
+        record = saved(db, mid, clarification_only=True) if clarification_only else verified_chain(db, mid)
         if record is None:
             if required:
                 raise ValueError('上一則回答沒有可沿用的必要條件紀錄。')
@@ -1129,14 +1207,21 @@ def previous(store, sid, before=None, *, required=True):
 
 def describe(receipt):
     plan = receipt['plan']
+    if plan['schema'] == CLARIFY_PLAN:
+        return '\n'.join((plan['request'], '', receipt['output']))
     resolved = effective(plan)
     states = {'true': '已確認滿足', 'false': '已確認不滿足', 'unknown': '尚未核實'}
     lines = [plan['request']]
+    basis = plan['basis'] if plan['schema'] in READ_ONLY_PLANS else plan
+    original = basis['original'] if basis['schema'] in UPDATE_PLANS else basis
     if plan['schema'] in (*UPDATE_PLANS, *READ_ONLY_PLANS):
-        basis = plan['basis'] if plan['schema'] in READ_ONLY_PLANS else plan
         updates = '條件更新' if basis['schema'] in (DISPUTE_PLAN, ROUND_PLAN) else '明確更正'
         lines += ['', f'沿用上一則回答 #{plan["source"]["answer_id"]}',
                   f'已核對 {len(basis.get("revisions", []))} 次{updates}', '原始問題：' + resolved['request']]
+    if original['schema'] == RESOLVE_PLAN:
+        if plan['schema'] == RESOLVE_PLAN:
+            lines += ['', '原始問題：' + resolved['request']]
+        lines += [f'代稱澄清 #{original["source"]["answer_id"]}：{original["request"]}']
     observation_title = '沿用的觀察' if plan['schema'] in READ_ONLY_PLANS else (
         '沿用及更新後的觀察' if plan['schema'] in UPDATE_PLANS else '採用的本輪觀察')
     new_round = 'previous_round' in resolved['conditions'][0]

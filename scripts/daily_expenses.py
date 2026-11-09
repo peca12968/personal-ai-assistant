@@ -287,6 +287,17 @@ class DailyAssistant(Assistant):
                     anchor = daily_necessary.previous(self.store, sid, before, required=required)
             except ValueError as exc:
                 raise EngineError(str(exc), 'evidence_invalid') from None
+        if (anchor is None and local and self.allow_local_evidence
+                and (not retry or prior.get(daily_necessary.FIELD, {}).get('schema') == daily_necessary.RESOLVE_PLAN)
+                and (choice := daily_necessary.reference_choice(question))
+                and not self.store.documents(sid, include_content=False)):
+            try:
+                pending = daily_necessary.previous(self.store, sid, before, required=bool(retry),
+                                                   clarification_only=True)
+                if pending and (choice in pending[0]['choices'] or question.startswith('代稱指的是「') or retry):
+                    anchor = pending
+            except ValueError as exc:
+                raise EngineError(str(exc), 'evidence_invalid') from None
         if anchor is not None:
             try:
                 plan = daily_necessary.carry_forward(question, *anchor)
@@ -310,7 +321,7 @@ class DailyAssistant(Assistant):
 
             return self._run_recorded(sid, question, context, recalculate, cancel, retry, draft, daily_necessary.FIELD)
         if local and self.allow_local_evidence and (not retry or daily_necessary.FIELD in prior):
-            necessary = daily_necessary.parse(question)
+            necessary = daily_necessary.parse(question) or daily_necessary.clarification(question)
             if necessary and not self.store.documents(sid, include_content=False):
                 if retry and prior[daily_necessary.FIELD] != necessary:
                     raise EngineError('必要條件的原始規約已變更。', 'evidence_invalid')

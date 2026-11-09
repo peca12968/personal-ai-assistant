@@ -17,6 +17,8 @@ HEAD = ('判斷「交回墨盒」須同時符合「北側檢測盒」的「封�
 ANCHOR = '本輪確認北側檢測盒的封口完整'
 REFERENCE = '它的識別卡已有章'
 ASK = HEAD + ANCHOR + '。' + REFERENCE + '。' + CODES
+OTHER = '本輪確認南側檢測盒的封口完整'
+AMBIGUOUS = HEAD + ANCHOR + '。' + OTHER + '。' + REFERENCE + '。' + CODES
 
 
 class AdjacentObservationReferenceTests(unittest.TestCase):
@@ -74,8 +76,10 @@ class AdjacentObservationReferenceTests(unittest.TestCase):
     def test_ambiguous_or_noncurrent_reference_does_not_fall_through_to_the_legacy_parser(self):
         for reports in (
             '本輪確認它的識別卡已有章。',
-            ANCHOR + '。本輪確認南側檢測盒的封口完整。它的識別卡已有章。',
-            ANCHOR + '。本輪確認南側檢測盒的封口完整。本輪確認它的識別卡已有章。',
+            ANCHOR + '。' + OTHER + '。上次確認甲箱的封口完整。它的識別卡已有章。',
+            ANCHOR + '。' + OTHER + '。它的識別卡已有章。該物件的警示燈還亮著。',
+            ANCHOR + '。' + OTHER + '。它的封口不完整。',
+            ANCHOR + '。' + OTHER + '。它的識別卡已有章。再交回墨盒。',
             ANCHOR.replace('本輪', '上次') + '。它的識別卡已有章。',
             ANCHOR + '。上次確認南側檢測盒的封口完整。它的識別卡已有章。',
             ANCHOR + '。上次確認它的識別卡已有章。',
@@ -87,6 +91,84 @@ class AdjacentObservationReferenceTests(unittest.TestCase):
                 question = HEAD + reports + CODES
                 self.assertIsNone(daily.parse(question))
                 self.assertEqual(self.app.ask(self.store.new_session(), question)['content'], '模型替身')
+
+    def test_one_question_lists_both_objects_and_each_choice_recomputes_the_original(self):
+        self.assertIsNone(daily.parse(AMBIGUOUS))
+        for name, choice, code in (
+            ('北側檢測盒', '代稱指的是「北側檢測盒」。', 'R'),
+            ('南側檢測盒', '南側檢測盒', 'X'),
+        ):
+            with self.subTest(name=name):
+                sid = self.store.new_session()
+                asked = self.app.ask(sid, AMBIGUOUS)
+                receipt = daily.read(self.store, asked['id'])
+                self.assertEqual(receipt['status'], 'clarification_required')
+                self.assertNotIn('analysis', receipt)
+                self.assertIn('「北側檢測盒」、「南側檢測盒」', asked['content'])
+                with self.assertRaisesRegex(EngineError, '上一則列出'):
+                    self.app.ask(sid, '代稱指的是「西側檢測盒」')
+                answer = self.app.ask(sid, choice)
+                proof = daily.read(self.store, answer['id'])
+                self.assertEqual(answer['content'], code)
+                self.assertEqual(proof['plan']['source']['answer_id'], asked['id'])
+                state = daily.effective(proof['plan'])
+                observation = state['conditions'][1] if code == 'R' else state['other_observations'][-1]
+                self.assertEqual(observation['subject'], name)
+                self.assertEqual(observation['observation_anchor'], ANCHOR if code == 'R' else OTHER)
+                for source in (choice, AMBIGUOUS, REFERENCE, ANCHOR if code == 'R' else OTHER):
+                    self.assertIn(source, daily.describe(proof))
+        self.engine.answer.assert_not_called()
+
+    def test_choice_only_uses_immediately_preceding_clarification_in_same_session(self):
+        sid = self.store.new_session()
+        self.app.ask(sid, AMBIGUOUS)
+        self.assertEqual(self.app.ask(self.store.new_session(), '北側檢測盒')['content'], '模型替身')
+        self.assertEqual(self.app.ask(sid, '明天的工作另開討論。')['content'], '模型替身')
+        self.assertEqual(self.app.ask(sid, '北側檢測盒')['content'], '模型替身')
+        self.app.ask(sid, AMBIGUOUS)
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(sid, '北側檢測盒')['content'], '模型替身')
+        self.app.ask(sid, AMBIGUOUS)
+        path = self.path / 'notes.txt'
+        path.write_text('測試附件', encoding='utf-8')
+        self.store.attach_document(sid, path)
+        self.assertEqual(self.app.ask(sid, '北側檢測盒')['content'], '模型替身')
+        self.assertEqual(self.app.ask(sid, AMBIGUOUS)['content'], '模型替身')
+
+    def test_resolved_choice_survives_retry_updates_and_restore_with_verifiable_source(self):
+        sid = self.store.new_session()
+        asked = self.app.ask(sid, AMBIGUOUS)
+        evaluate = daily.evaluate
+
+        def stop_resolution(plan, cancel=None):
+            if plan['schema'] == daily.RESOLVE_PLAN:
+                raise EngineError('停止', 'cancelled')
+            return evaluate(plan, cancel)
+
+        with patch.object(daily, 'evaluate', side_effect=stop_resolution):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, '南側檢測盒')
+        resolved = self.app.retry(sid)
+        self.assertEqual(resolved['content'], 'X')
+        inquiry = self.app.ask(sid, '還要核對什麼？')
+        self.assertIn('北側檢測盒', inquiry['content'])
+        fixed = self.app.ask(sid, '沿用上一輪條件：本輪確認北側檢測盒的識別卡已有章。重算。')
+        self.assertEqual(fixed['content'], 'R')
+        new_round = self.app.ask(sid, '沿用上一輪規則，開始新一輪核對。' + ANCHOR + '。')
+        self.assertEqual(new_round['content'], 'X')
+        bundle = create_backup(self.store.path, self.path / 'clarification.paibackup')
+        restore_backup(bundle['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        for answer in (asked, resolved, inquiry, fixed, new_round):
+            self.assertEqual(daily.read(restored, answer['id']), answer[daily.FIELD])
+        context = restored.answer_context(asked['id'])
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False, indent=2), asked['id']))
+        self.assertEqual(daily.read(restored, asked['id']), asked[daily.FIELD])
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily.read(restored, new_round['id'])
+        self.engine.answer.assert_not_called()
 
     def test_retry_correction_and_new_round_rebuild_original_reference_after_restore(self):
         sid = self.store.new_session()
