@@ -483,3 +483,15 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 四個程序各自符合原生閒置和六分鐘上限，原答與中途權重留在本機。這項診斷定位在固定配方下首次觀察到的變化，可用來分開檢查結論與指定代碼。完整助理的實際對話表現及資格另行評估。
+
+### 對照前兩批資料的次序
+
+`replay_batch_order.py` 重讀父版本、只更新設備批次及先設備後期限的既有證據。由相同父版本另跑期限單批、先期限後設備兩組，保留批內樣本順序、種子、速率與其他設定。兩個新工作均測相同的 94 題。比較逐題原答和指定映射，再計算各組分數及與父版本的差異。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/replay_batch_order.py prepare <名稱> --reference <已完成的分步探查>
+.venv/Scripts/python.exe scripts/learning/replay_batch_order.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/replay_batch_order.py verify <名稱>
+```
+
+兩個 GPU 工作各有獨立的權重及程序紀錄。各組結果限於既定配方與測題，權重留在本機。
