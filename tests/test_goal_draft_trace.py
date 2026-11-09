@@ -79,6 +79,22 @@ class GoalDraftTraceTests(unittest.TestCase):
                 patch.object(ev.goal_drafts, 'catalog', side_effect=AssertionError('runtime used')):
             protocol.validate_report(report)
 
+    def test_named_trace_projects_only_selected_user_sources(self):
+        self.case['prompt'] = '回到「筆記整理」。把正式決定整理成草稿。'
+        self.case['history'][0]['content'] = '話題：「筆記整理」。筆記整理三個重點，不產檔。'
+        self.case['history'].append({'role': 'user', 'content': '話題：「郵件整理」。保留另一項。'})
+        self.suite.write_text(json.dumps([self.case], ensure_ascii=False), encoding='utf-8')
+        row = self.run_collector()['results'][0]
+        self.assertEqual(row['source']['context']['named_topic']['status'], 'found')
+        self.assertNotIn('郵件整理', self.actual[0])
+        self.assertNotIn('改成寄信', self.actual[0])
+        protocol.validate_draft_trace(row)
+
+        row['source']['context']['named_topic'].update(status='ambiguous', sources=[])
+        row['captured_source_sha256'] = protocol.canonical_digest(row['source'])
+        with self.assertRaisesRegex(ValueError, '不得呼叫引擎'):
+            protocol.validate_draft_trace(row)
+
     def test_tampered_fixture_request_raw_source_proposal_answer_are_rejected(self):
         original = self.run_collector()
         edits = [lambda r: r['fixture']['history'][0].update(content='不同'),

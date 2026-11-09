@@ -4,8 +4,11 @@ import threading
 
 from .acceptance import strict_json
 from . import goal_conversation as conversation
+from . import named_topics
 from .memory_drafts import catalog as user_catalog
 from .engine import EngineError
+
+MAX_REQUEST_CHARS = 4000
 
 INSTRUCTIONS = '''將本對話已明確提出的需求整理為可核對的自主目標草稿，只回傳JSON：
 {"items":[{"kind":"goal|constraint|deliverable","text":"具體內容","sources":[{"key":"來源鍵","quote":"連續逐字原話"}]}],"questions":["必要但尚未確定的事項"]}。
@@ -22,10 +25,25 @@ available_documents只有本對話已匯入文件清單，不是原文或確認�
 目前自主工具可查找與讀取已匯入文字、DOCX及文字型PDF抽取文字、比較兩份文字、依JSON欄位路徑唯讀查找與分頁、對JSON整個數字陣列或每筆指定數字欄位統計筆數／精確總和／平均／最小最大及選用中位數（奇數取中間值、偶數取中間兩數平均，空集合未定義）；也可按1至2個欄位分組並依精確統計含中位數排序／選前N組（可指定最多5個AND條件篩選；符合列缺值或非數字拒絕，不自動轉型）、查找有效記憶、做整數／有限小數／分數的精確四則與日期計算；明確選取CSV後可篩選／分組／合計／平均，明確選取檔案交付後可產生本機Markdown、TXT、JSON。DOCX抽取行號不是Word頁碼，不解析圖片／版面，不做OCR。文字型PDF可明確匯入文字層，保留原頁次順序標記但引用仍為抽取行號，無文字頁不等於空白；不辨識PDF內圖、圖表、註解、附件、表單或原版面。掃描無文字／加密／互動表單PDF拒絕。不能直接解析舊版DOC／圖片、瀏覽網路、寄信、任意執行程式或修改原檔；自我改碼另有獨立模式，不可在此草稿承諾直接執行。保留使用者原需求並指出能力缺口，不自行當作已獲授權或默默刪除。
 有省略標記時僅依已提供背景，不聲稱看過全部對話。'''
 
+NAMED_TOPIC_GUIDANCE = '''
+本次明確指定具名話題。context.named_topic.sources 是該話題按訊息編號排序的使用者原話，source_catalog 的 M 鍵對應原訊息編號。current_request 是本輪要整理的工作，話題名稱只限定來源。保留仍有效的限制和交付，分清後來的正式更正、已撤回的安排、備案與只供比較的假設。只有明確要求比較時，才把假設當成獨立交付情境。若只看見「第二個」等指代且缺實際內容，請問必要原文。此模式沒有提供其他話題、手動摘要、回饋或匯入文件清單。保留原話中的必要文件需求。'''
+
+
+def _return_title(request):
+    return named_topics.return_title(request, max_length=MAX_REQUEST_CHARS, require_followup=False)
+
 
 def capture_db(db, sid, request=''):
-    if not isinstance(request, str) or len(request) > 4000 or '\0' in request:
+    if not isinstance(request, str) or len(request) > MAX_REQUEST_CHARS or '\0' in request:
         raise ValueError('整理方向最多4000字，不可含無效字元。')
+    title = _return_title(request)
+    if title is not None:
+        session = db.execute('SELECT CURRENT_TIMESTAMP FROM sessions WHERE id=?', (sid,)).fetchone()
+        if session is None:
+            raise ValueError('找不到要帶入的對話。')
+        topic = named_topics.reference_db(db, sid, title)
+        return {'current_request': request, 'available_documents': [],
+                'context': {'session_id': sid, 'captured_at': session[0], 'named_topic': topic}}
     context = conversation.validate(conversation.capture(db, sid), sid)
     documents = [dict(row) for row in db.execute(
         'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,))]
@@ -45,11 +63,16 @@ def fingerprint(source):
 
 
 def catalog(source):
-    sources = user_catalog(source['context'])
-    for field in ('objective', 'constraints_text', 'decisions'):
-        value = source['context']['brief'].get(field, '')
-        if value.strip():
-            sources['B_' + field] = value
+    context = source['context']
+    topic = context.get('named_topic')
+    if topic is not None:
+        sources = {'M' + str(row['message_id']): row['content'] for row in topic['sources']}
+    else:
+        sources = user_catalog(context)
+        for field in ('objective', 'constraints_text', 'decisions'):
+            value = context['brief'].get(field, '')
+            if value.strip():
+                sources['B_' + field] = value
     if source['current_request'].strip():
         sources['R'] = source['current_request']
     return sources
@@ -102,11 +125,19 @@ def compose(value):
 def generate(source, engine, cancel=None):
     cancel = cancel if cancel is not None else threading.Event()
     source = strict_json(json.dumps(source, ensure_ascii=False))
+    topic = source['context'].get('named_topic')
+    if topic is not None and not named_topics.valid_topic(_return_title(source['current_request']), topic):
+        raise ValueError('具名話題來源格式不符。')
     if not catalog(source):
         raise ValueError('目前沒有可整理的使用者需求；請先輸入方向或在本對話提出工作。')
     if cancel.is_set():
         raise EngineError('已停止整理目標草稿。', 'cancelled')
-    raw = engine.answer(INSTRUCTIONS + '\n' + conversation.GUIDANCE + '\n\n整理來源：\n' +
+    guidance = conversation.GUIDANCE
+    if topic is not None:
+        if topic['status'] != 'found':
+            raise ValueError(named_topics.describe(topic) + '\n請指定唯一話題名稱，或直接提供本次已確認的工作。')
+        guidance = NAMED_TOPIC_GUIDANCE
+    raw = engine.answer(INSTRUCTIONS + '\n' + guidance + '\n\n整理來源：\n' +
                         json.dumps({**source, 'source_catalog': catalog(source)}, ensure_ascii=False), cancel)
     if cancel.is_set():
         raise EngineError('已停止整理目標草稿，未套用。', 'cancelled')
@@ -115,6 +146,13 @@ def generate(source, engine, cancel=None):
     proposal = validate(strict_json(raw), source)
     return {'source': source, 'source_fingerprint': fingerprint(source),
             'proposal': proposal, 'objective_text': compose(proposal)}
+
+
+def describe_source(source):
+    context = source['context']
+    if 'named_topic' in context:
+        return named_topics.describe(context['named_topic'])
+    return conversation.describe(context)
 
 
 def ensure_current(db, sid, result):

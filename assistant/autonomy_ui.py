@@ -211,7 +211,7 @@ class AutonomousWindow:
         for item in result['proposal']['items']:
             lines += [{'goal': '目標', 'constraint': '限制', 'deliverable': '交付'}[item['kind']] + '：' + item['text']]
             lines += [ref['key'] + ' 原話：' + ref['quote'] for ref in item['sources']]
-        lines += ['本次有限來源快照：', describe_conversation(result['source']['context']),
+        lines += ['本次有限來源快照：', goal_drafts.describe_source(result['source']),
                   '整理時的目標輸入：' + result['source']['current_request']]
         field.insert('1.0', '\n\n'.join(lines)); field.configure(state='disabled')
 

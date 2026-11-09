@@ -1,0 +1,77 @@
+[
+  {
+    "id": "older_confirmed_plan",
+    "category": "named_goal_decisions",
+    "history": [
+      {
+        "role": "user",
+        "content": "早安，先聊一會。"
+      },
+      {
+        "role": "user",
+        "content": "話題：「北門盤點」。原訂週三到松石倉做盤點，交付三欄唯讀準備清單，不通知承包商。"
+      },
+      {
+        "role": "assistant",
+        "content": "也可以改到橡木倉並通知所有承包商。"
+      },
+      {
+        "role": "user",
+        "content": "最新決定是週四到杉林倉，清單仍三欄；假設下雨才考慮橡木倉，先不用列備案。"
+      },
+      {
+        "role": "user",
+        "content": "話題：「北門演練」。週一在橡木倉辦演練，交付五欄清單並擬寫承包商通知。"
+      }
+    ],
+    "filler_pairs": 9,
+    "prompt": "回到「北門盤點」。依最後正式決定，整理成可獨立保存的目標。",
+    "criteria": [
+      "能引用較早的本話題原話，採最新週四杉林倉",
+      "交付三欄唯讀準備清單，保留不通知承包商",
+      "排除僅假設的橡木倉、原訂週三松石倉及另一話題的週一五欄通知，不重問已提供資訊"
+    ]
+  },
+  {
+    "id": "missing_named_plan",
+    "category": "named_goal_decisions",
+    "history": [
+      {
+        "role": "user",
+        "content": "話題：「赤峰巡檢」。確認週二用兩點清單做南區巡檢，先寫草稿。"
+      },
+      {
+        "role": "assistant",
+        "content": "收到。"
+      }
+    ],
+    "prompt": "回到「赤峰盤點」。依最後正式決定整理目標。",
+    "criteria": [
+      "指出找不到赤峰盤點或請補該話題，保留空白目標",
+      "不改用相似名稱赤峰巡檢，不把週二、南區及兩點清單當作當前工作"
+    ]
+  },
+  {
+    "id": "duplicate_named_plan",
+    "category": "named_goal_decisions",
+    "history": [
+      {
+        "role": "user",
+        "content": "話題：「白樺交接」。一廠的工作是週一整理三點交接草稿。"
+      },
+      {
+        "role": "user",
+        "content": "話題：「橡葉出貨」。週三盤點。"
+      },
+      {
+        "role": "user",
+        "content": "話題：「白樺交接」。二廠的工作是週五整理五點交接草稿。"
+      }
+    ],
+    "prompt": "回到「白樺交接」。依最後正式決定整理目標。",
+    "criteria": [
+      "說明話題名稱重複，保留空白目標並請使用者指定",
+      "不把另一段同名話題默認為對前段的更正，也不混併兩廠內容"
+    ]
+  }
+]

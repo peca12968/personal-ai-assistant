@@ -74,6 +74,60 @@ class GoalDraftTests(unittest.TestCase):
         empty_sid = self.store.new_session(); self.store.add_message(empty_sid, 'assistant', '我替你決定寄信')
         with self.assertRaises(ValueError): d.generate(d.capture(self.store, empty_sid), None)
 
+    def test_named_draft_recovers_exact_older_sources_and_rechecks_them_on_save(self):
+        request = '回到「北門盤點」。'
+        opening = '話題：「北門盤點」。週三松石倉，交付三欄唯讀清單，不通知。'
+        correction = '最後正式決定為週四杉林倉，若下雨才考慮橡木倉。'
+        first = self.store.add_message(self.sid, 'user', opening)
+        self.store.add_message(self.sid, 'assistant', '助理提案：對外通知。')
+        last = self.store.add_message(self.sid, 'user', correction)
+        local = self.store.add_message(self.sid, 'user', '記住：不在話題來源')
+        with self.store.connect() as db:
+            db.execute('INSERT INTO local_memory_messages VALUES (?)', (local,))
+        self.store.add_message(self.sid, 'user', '話題：「北門演練」。週一另有工作。')
+        for _ in range(17):
+            self.store.add_message(self.sid, 'user', '近期無關訊息')
+        self.store.save_session_brief(self.sid, '其他工作', '其他限制', '其他決定')
+
+        source = d.capture(self.store, self.sid, request)
+        self.assertEqual(d.catalog(source), {f'M{first}': opening, f'M{last}': correction, 'R': request})
+        self.assertEqual(source['available_documents'], [])
+        self.assertIn(correction, d.describe_source(source))
+        long_request = request + '請整理成目標。' + '僅在本話題整理。' * 160
+        self.assertEqual(d.capture(self.store, self.sid, long_request)['context']['named_topic'],
+                         source['context']['named_topic'])
+
+        answer = proposal(f'M{last}', correction)
+        answer['items'][0]['text'] = '整理週四杉林倉盤點的三欄唯讀清單，不通知。'
+        result = d.generate(source, ScriptedEngine(json.dumps(answer)))
+        gid = a.create_goal(self.store, self.sid, result['objective_text'], goal_draft=result)
+        goal = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual(goal['status'], 'pending')
+        self.assertIsNone(goal['conversation_context'])
+        self.store.add_message(self.sid, 'user', '回到「北門盤點」。正式改到週五杉林倉。')
+        with self.assertRaisesRegex(ValueError, '來源.*已變更'):
+            a.create_goal(self.store, self.sid, result['objective_text'], goal_draft=result)
+
+    def test_unresolved_named_scope_blocks_generation_and_keeps_generic_drafting_available(self):
+        cases = [
+            ('從未開立', [], 'not_found', '找不到'),
+            ('重複話題', ['話題：「重複話題」。甲場。', '話題：「重複話題」。乙場。'], 'ambiguous', '多段'),
+            ('過長話題', ['話題：「過長話題」。' + '甲' * 3600], 'source_limit', '超過'),
+        ]
+        other = self.store.new_session()
+        self.store.add_message(other, 'user', '話題：「從未開立」。只在別的對話。')
+        for title, rows, status, explanation in cases:
+            with self.subTest(status=status):
+                for row in rows:
+                    self.store.add_message(self.sid, 'user', row)
+                request = f'回到「{title}」。整理成目標。'
+                source = d.capture(self.store, self.sid, request)
+                self.assertEqual(source['context']['named_topic']['status'], status)
+                self.assertEqual(d.catalog(source), {'R': request})
+                with self.assertRaisesRegex(ValueError, explanation):
+                    d.generate(source, None)
+        self.assertEqual(self.result()['objective_text'], '目標：比較兩方案六個月費用。')
+
     def test_cancel_and_engine_failure_preserve_source_and_do_not_create_goal(self):
         stop = threading.Event(); stop.set()
         with self.assertRaises(EngineError): d.generate(self.source, None, stop)

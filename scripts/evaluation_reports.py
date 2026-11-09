@@ -230,10 +230,44 @@ def verify_suite(report, raw):
     return True
 
 
+def _named_draft_catalog(source):
+    """Frozen evidence projection for explicitly named drafts."""
+    context = source['context']
+    topic = context['named_topic']
+    if (set(context) != {'session_id', 'captured_at', 'named_topic'} or source['available_documents'] != []
+            or not isinstance(topic, dict)
+            or set(topic) != {'title', 'status', 'sources', 'scanned_user_messages', 'history_limited'}
+            or not text(topic['title']) or not 2 <= len(topic['title']) <= 48
+            or topic['status'] not in ('found', 'not_found', 'ambiguous', 'source_limit')
+            or type(topic['history_limited']) is not bool
+            or type(topic['scanned_user_messages']) is not int or not 0 <= topic['scanned_user_messages'] <= 512):
+        raise ValueError('具名草稿來源範圍不符。')
+    rows = topic['sources']
+    if (not isinstance(rows, list) or len(rows) > min(8, topic['scanned_user_messages'])
+            or bool(rows) != (topic['status'] == 'found')):
+        raise ValueError('具名草稿來源數量不符。')
+    catalog = {}
+    previous = total = 0
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'message_id', 'content'}
+                or type(row['message_id']) is not int or not previous < row['message_id'] < 2**63
+                or not text(row['content'])):
+            raise ValueError('具名草稿原話或順序不符。')
+        previous = row['message_id']
+        total += len(row['content'])
+        catalog['M' + str(previous)] = row['content']
+    if total > 3600:
+        raise ValueError('具名草稿原話超出字數。')
+    catalog['R'] = source['current_request']
+    return catalog
+
+
 def _draft_catalog(source):
     """Frozen v1 evidence projection; never import today's runtime draft code."""
     try:
         context = source['context']
+        if 'named_topic' in context:
+            return _named_draft_catalog(source)
         catalog = {}
         opening = context.get('opening_user_message')
         rows = ([opening] if opening is not None else []) + context['messages'] + context['earlier_corrections']
@@ -315,6 +349,9 @@ def validate_draft_trace(row):
     if (not isinstance(calls, list) or len(calls) > 1
             or type(row.get('engine_call_count')) is not int or row['engine_call_count'] != len(calls)):
         raise ValueError('草稿只允許一次實際引擎呼叫。')
+    topic = source['context'].get('named_topic')
+    if topic is not None and topic['status'] != 'found' and (calls or 'error' not in row):
+        raise ValueError('具名草稿來源未確定時不得呼叫引擎或交付草稿。')
     for call in calls:
         if not isinstance(call, dict):
             raise ValueError('草稿引擎追蹤格式不符。')

@@ -36,26 +36,25 @@ def _cue(text):
     return None
 
 
-def return_title(question):
-    if not isinstance(question, str) or len(question) > 1200:
+def return_title(question, *, max_length=1200, require_followup=True):
+    if not isinstance(question, str) or len(question) > max_length:
         return None
     cue = _cue(question)
-    if (cue and not cue['open'] and question.lstrip()[cue.end():].strip()
+    if (cue and not cue['open'] and (not require_followup or question.lstrip()[cue.end():].strip())
             and not context_reset(question) and not current_message_only(question)):
         return cue['title']
     return None
 
 
-def _user_rows(store, sid, through_id, exclude_id):
-    with store.connect() as db:
-        codec = sqlite_text.encoding(db)
-        rows = db.execute('''SELECT id,substr(CAST(content AS BLOB),1,?) AS prefix,
-            length(CAST(content AS BLOB)) AS byte_count FROM messages
-            WHERE session_id=? AND role='user' AND id<=? AND id<>?
-            AND id NOT IN (SELECT message_id FROM local_memory_messages)
-            ORDER BY id DESC LIMIT ?''',
-            (sqlite_text.byte_limit(MAX_SOURCE_CHARS), sid, through_id, exclude_id or -1,
-             MAX_USER_MESSAGES + 1)).fetchall()
+def _user_rows(db, sid, through_id, exclude_id):
+    codec = sqlite_text.encoding(db)
+    rows = db.execute('''SELECT id,substr(CAST(content AS BLOB),1,?) AS prefix,
+        length(CAST(content AS BLOB)) AS byte_count FROM messages
+        WHERE session_id=? AND role='user' AND id<=? AND id<>?
+        AND id NOT IN (SELECT message_id FROM local_memory_messages)
+        ORDER BY id DESC LIMIT ?''',
+        (sqlite_text.byte_limit(MAX_SOURCE_CHARS), sid, through_id, exclude_id or -1,
+         MAX_USER_MESSAGES + 1)).fetchall()
     history = [(row['id'], *sqlite_text.prefix(row['prefix'], row['byte_count'], MAX_SOURCE_CHARS, codec))
                for row in reversed(rows[:MAX_USER_MESSAGES])]
     return history, len(rows) > MAX_USER_MESSAGES
@@ -65,7 +64,13 @@ def reference(store, sid, question, tail, exclude_id=None):
     title = return_title(question)
     if title is None:
         return None
-    history, limited = _user_rows(store, sid, tail['message_id'], exclude_id) if tail else ([], False)
+    with store.connect() as db:
+        return reference_db(db, sid, title, tail['message_id'] if tail else 0, exclude_id)
+
+
+def reference_db(db, sid, title, through_id=2**63-1, exclude_id=None):
+    """Select sources for a parsed title using the caller's SQLite snapshot."""
+    history, limited = _user_rows(db, sid, through_id, exclude_id)
     sources = []
     anchors = size = 0
     active = orphan_return = incomplete = False
@@ -100,9 +105,13 @@ def reference(store, sid, question, tail, exclude_id=None):
 
 
 def valid_reference(question, value):
+    return valid_topic(return_title(question), value)
+
+
+def valid_topic(title, value):
     if (not isinstance(value, dict)
             or set(value) != {'title', 'status', 'sources', 'scanned_user_messages', 'history_limited'}
-            or not isinstance(value['title'], str) or value['title'] != return_title(question)
+            or not isinstance(value['title'], str) or value['title'] != title
             or not isinstance(value['status'], str) or value['status'] not in _STATUS
             or type(value['history_limited']) is not bool
             or type(value['scanned_user_messages']) is not int
