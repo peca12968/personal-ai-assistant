@@ -111,6 +111,81 @@ class DocumentCalculationTests(unittest.TestCase):
         self.assertEqual(self.receipt(result)['observations'][1], {'status': 'document_not_attached'})
         self.assertNotIn('4 公斤', result['content'])
 
+    def test_hypothesis_keeps_document_values_and_citations_separate_from_the_substitution(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        self.attach('乙重量為4公斤。', 'b.txt')
+        formula = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+        question = formula + '假設 D2 第1行的乙重量改用 7 公斤，只做試算。'
+        app = DailyAssistant(self.store, NoModel(), default_chat=True)
+        result = app.ask(self.sid, question)
+        receipt = self.receipt(result)
+        self.assertEqual(receipt['schema'], document_calculation.SCENARIO_RECEIPT)
+        self.assertEqual(receipt['plan']['base']['request'], formula)
+        self.assertEqual([item['value'] for item in receipt['observations']], ['12', '4'])
+        self.assertEqual(receipt['result']['exact'], '8')
+        self.assertEqual(receipt['scenario']['result']['exact'], '5')
+        original, scenario = result['content'].split('\n\n')
+        self.assertIn('乙重量為 4 公斤。 [D2:L1]', original)
+        self.assertIn('使用者提供的乙重量 7 公斤', scenario)
+        self.assertNotIn('[D', scenario)
+        self.assertEqual(self.receipt(app.ask(self.sid, formula))['result']['exact'], '8')
+        self.assertIn(formula, document_calculation.describe(receipt))
+        natural = formula[:-1] + '？如果把 [D2:L1] 的乙重量改成七公斤？'
+        self.assertEqual(document_calculation.parse_live_request(natural)['hypothesis'], receipt['plan']['hypothesis'])
+        with self.assertRaisesRegex(ValueError, '完整欄位名稱'):
+            app.ask(self.sid, question.replace('第1行的乙重量', '第1行的丙重量'))
+        self.assertIsNone(document_calculation.parse_live_request(question + '然後刪除原檔。'))
+
+    def test_hypothesis_reuses_exact_unit_conversion_and_requires_the_retained_original(self):
+        self.attach('甲時長為1秒。', 'a.txt')
+        second = self.attach('乙時長為1分鐘。', 'b.txt')
+        formula = '文件問答：計算 [D1:L1] 的甲時長 加上 [D2:L1] 的乙時長，換算成分鐘。'
+        question = formula + '假設 [D1:L1] 的甲時長改為 2 秒，只做試算。'
+        app = Assistant(self.store, NoModel())
+        receipt = self.receipt(app.ask(self.sid, question))
+        self.assertEqual(receipt['result']['exact'], '61/60')
+        self.assertEqual(receipt['scenario']['quantity']['factor_exact'], '1/60')
+        self.assertEqual(receipt['scenario']['result']['exact'], '31/30')
+        incompatible = self.receipt(app.ask(self.sid, question.replace('2 秒', '2 公斤')))
+        self.assertEqual(incompatible['result']['exact'], '61/60')
+        self.assertEqual(incompatible['scenario']['quantity']['status'], 'unit_incompatible')
+        self.assertIsNone(incompatible['scenario']['result'])
+        self.store.detach_document(self.sid, second)
+        replaced_missing = self.receipt(app.ask(self.sid, formula + '假設 [D2:L1] 的乙時長改為 2 秒。'))
+        self.assertIsNone(replaced_missing['result'])
+        self.assertEqual(replaced_missing['scenario']['result']['exact'], '1/20')
+        self.assertNotIn('[D2:', replaced_missing['output'])
+        incomplete = self.receipt(app.ask(self.sid, question))
+        self.assertEqual(incomplete['scenario']['quantity']['status'], 'source_unavailable')
+        self.assertIsNone(incomplete['scenario']['result'])
+        self.assertNotIn('[D2:', incomplete['output'])
+
+    def test_hypothesis_retry_pins_sources_and_restore_recomputes_both_results(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        second = self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = Assistant(self.store, NoModel())
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, question)
+        result = app.retry(self.sid)
+        receipt = self.receipt(result)
+        backup = create_backup(self.store.path, self.root/'scenario.paibackup')
+        restore_backup(backup['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, result['id']), receipt)
+        altered = restored.answer_context(result['id'])
+        altered[document_calculation.FIELD]['scenario']['result']['exact'] = '6'
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (json.dumps(altered), result['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            create_backup(restored.path, self.root/'changed.paibackup')
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, question)
+        self.store.detach_document(self.sid, second)
+        with self.assertRaisesRegex(ValueError, '試算來源已變更'):
+            app.retry(self.sid)
+
     def test_receipt_rejects_changed_citations_and_saved_operands(self):
         self.attach('甲重量為十二公斤。', 'a.txt')
         self.attach('乙重量為4公斤。', 'b.txt')

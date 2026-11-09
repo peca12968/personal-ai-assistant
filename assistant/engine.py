@@ -397,6 +397,9 @@ class Assistant:
             document_plan = document_calculation.bind_live_request(document_plan, previous_plan)
             sources = document_calculation.snapshot(self.store, sid, document_plan)
             document_plan['documents'] = sources
+            if (document_plan['schema'] == document_calculation.SCENARIO_PLAN and isinstance(previous_plan, dict)
+                    and previous_plan.get('schema') == document_calculation.SCENARIO_PLAN and previous_plan != document_plan):
+                raise ValueError('重試所需的文件試算來源已變更，請重新確認引用行。')
             context = make_context(question, [], [])
             context.update(response_mode=document_calculation.MODE, document_calculation=document_plan, documents=sources)
         else:
@@ -432,6 +435,9 @@ class Assistant:
                     context['calculation'] = receipt
                 elif document_plan is not None:
                     try:
+                        if (document_plan['schema'] == document_calculation.SCENARIO_PLAN
+                                and document_calculation.snapshot(self.store, sid, document_plan) != sources):
+                            raise ValueError('提交前文件試算來源已變更，請重新確認引用行。')
                         answer, receipt = document_calculation.evaluate(document_plan, cancel)
                     except ValueError as exc:
                         raise EngineError('本機文件計算未完成：' + str(exc), 'document_calculation_invalid') from None

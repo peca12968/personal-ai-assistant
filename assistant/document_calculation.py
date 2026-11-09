@@ -15,6 +15,8 @@ from .response_delivery import digest
 MODE = 'local_document_calculation'
 FIELD = 'document_calculation'
 CONVERSION_PLAN = 'document_calculation_plan_v2'
+SCENARIO_PLAN = 'document_calculation_scenario_plan_v1'
+SCENARIO_RECEIPT = 'document_calculation_scenario_receipt_v1'
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -29,6 +31,9 @@ _WEIGHT = re.compile(
     r'(?: *若無法計算, *請說明缺少哪個範圍(?:, *並可列出目前有依據的重量)?。)?(?: *不要估算。?)?')
 _DIGITS = '零一二三四五六七八九'
 _NUMBER = rf'(?:-?[0-9]{{1,18}}(?:\.[0-9]{{1,8}})?|[零一二兩三四五六七八九]|[一二三四五六七八九]?十[一二三四五六七八九]?)'
+_SCENARIO_REQUEST = re.compile(r'([^\r\n]{1,319}[。？?])\s*((?:假設|如果)[^\r\n]{1,130})')
+_SCENARIO_VALUE = re.compile(rf'(?:假設|如果) *(?:把|將)? *({_REF}) *的({_LABEL}) *改(?:用|為|成) *({_NUMBER}) *({_UNIT})'
+                             r'(?:, *只(?:做)?試算)?[。?!]?')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -68,8 +73,30 @@ def _parse_conversion(question):
     return None
 
 
+def _parse_scenario(question):
+    if not isinstance(question, str) or len(question) > 455:
+        return None
+    parts = _SCENARIO_REQUEST.fullmatch(question.strip())
+    if parts is None:
+        return None
+    original, hypothesis = parts.groups()
+    base = parse_request(original) or _parse_conversion(original)
+    match = _SCENARIO_VALUE.fullmatch(unicodedata.normalize('NFKC', hypothesis))
+    if base is None or match is None:
+        return None
+    reference, label, number, unit = match.groups()
+    ranges, _ = requested_ranges(reference)
+    selected = ranges[0]
+    for index, operand in enumerate(base['operands']):
+        if (operand['document_id'], operand['line_number'], operand['label']) == (
+                selected['document_id'], selected['start_line'], label):
+            return dict(schema=SCENARIO_PLAN, request=question, base=base,
+                        hypothesis=dict(operand_index=index, value=_number(number), unit=unit))
+    raise ValueError('請用原算式中其中一筆的文件行號和完整欄位名稱指定試算值。')
+
+
 def parse_live_request(question):
-    return (parse_request(question) or _parse_conversion(question)
+    return (parse_request(question) or _parse_conversion(question) or _parse_scenario(question)
             or document_table.parse_request(question, _UNIT, document_units.SCALES)
             or document_table.parse_aggregate(question, _UNIT, document_units.SCALES)
             or document_table.parse_multi_aggregate(question, _UNIT, document_units.SCALES)
@@ -105,6 +132,8 @@ def bind_live_request(plan, previous=None):
 
 
 def snapshot(store, sid, plan):
+    if plan['schema'] == SCENARIO_PLAN:
+        plan = plan['base']
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
@@ -208,6 +237,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == SCENARIO_PLAN:
+        return _evaluate_scenario(plan, cancel)
     if plan.get('schema') in _GROUPED_PLANS:
         return _evaluate_grouped_aggregate(plan, cancel)
     if plan.get('schema') == document_table.AGGREGATE_PLAN:
@@ -309,6 +340,56 @@ def _evaluate_conversion(plan, cancel):
                                   for operand, row in zip(operands, observed, strict=True))])
     return answer, dict(schema='document_calculation_receipt_v2', plan=plan, model_called=False,
                         observations=observed, result=result, output=answer, output_sha256=digest(answer))
+
+
+def _scenario_quantity(base, hypothesis):
+    value, unit = hypothesis['value'], hypothesis['unit']
+    if base['schema'] != CONVERSION_PLAN:
+        return dict(status='confirmed', value=value) if unit == base['unit'] else dict(status='unit_mismatch')
+    scale = document_units.SCALES.get(unit)
+    if scale is None:
+        return dict(status='unit_unsupported')
+    return _scaled_quantity(dict(value=value, source_unit=unit), scale, document_units.SCALES[base['unit']])
+
+
+def _evaluate_scenario(plan, cancel):
+    request = _parse_scenario(plan['request'])
+    documents = plan['documents']
+    if request is None or plan != {**request, 'documents': documents}:
+        raise ValueError('文件試算計畫與原問不符。')
+    base = request['base']
+    original, evidence = evaluate({**base, 'documents': documents}, cancel)
+    hypothesis = request['hypothesis']
+    index = hypothesis['operand_index']
+    label = base['operands'][index]['label']
+    unit = base['unit']
+    lines = ['依文件原值', original, '', f'假設試算採用使用者提供的{label} {hypothesis["value"]} {hypothesis["unit"]}。']
+    other = evidence['observations'][1 - index]
+    quantity = (_scenario_quantity(base, hypothesis) if other['status'] == 'confirmed'
+                else dict(status='source_unavailable'))
+    result = None
+    if quantity['status'] == 'confirmed':
+        if base['schema'] == CONVERSION_PLAN:
+            retained, replacement = other['converted']['exact'], quantity['converted']['exact']
+            if hypothesis['unit'] != unit:
+                lines.append(f'試算值換算為 {_display_exact(quantity["converted"])} {unit}。')
+        else:
+            retained, replacement = other['value'], quantity['value']
+        values = [replacement, retained] if index == 0 else [retained, replacement]
+        result = exact_math.calculate(dict(operation=base['operation'], values=values))
+        sign = '+' if base['operation'] == 'sum' else '−'
+        lines.append(f'試算結果為 {_display_exact(result)} {unit}（({values[0]}) {sign} ({values[1]})）。')
+    else:
+        reasons = dict(source_unavailable='請先補齊試算中仍採用的文件原值。',
+                       unit_mismatch=f'請以原算式指定的單位「{unit}」提供試算值。',
+                       unit_incompatible=f'試算值的單位與「{unit}」屬於不同類別。',
+                       unit_unsupported='請以支援的單位提供試算值。')
+        lines.append('試算需要核對資料。' + reasons[quantity['status']])
+    check_cancel(cancel)
+    answer = '\n'.join(lines)
+    return answer, dict(schema=SCENARIO_RECEIPT, plan=plan, model_called=False,
+                        observations=evidence['observations'], result=evidence['result'],
+                        scenario=dict(quantity=quantity, result=result), output=answer, output_sha256=digest(answer))
 
 
 def _same_unit(first, second):
@@ -622,6 +703,12 @@ def read(store, mid):
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == SCENARIO_RECEIPT:
+        lines = [receipt['output'], '依文件原值重算的算式\n' + plan['base']['request']]
+        quantity = receipt['scenario']['quantity']
+        if 'factor_exact' in quantity and quantity['source_unit'] != plan['base']['unit']:
+            lines.append(f'試算換算係數\n1 {quantity["source_unit"]} = {quantity["factor_exact"]} {plan["base"]["unit"]}')
+        return '\n\n'.join(lines)
     if receipt['schema'] in (document_table.MULTI_AGGREGATE_RECEIPT, document_table.FILTER_AGGREGATE_RECEIPT,
                              document_table.NUMERIC_AGGREGATE_RECEIPT, document_table.LOGIC_AGGREGATE_RECEIPT,
                              document_table.DATE_AGGREGATE_RECEIPT, document_table.RELATIVE_DATE_AGGREGATE_RECEIPT):
