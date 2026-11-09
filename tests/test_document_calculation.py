@@ -477,6 +477,73 @@ class DocumentCalculationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             document_calculation.read(restored, result['id'])
 
+    def test_scenario_search_matches_scoped_equivalent_quantities_and_saved_versions(self):
+        first_doc = self.attach('甲重量為十二公斤。', 'a.txt')
+        second_doc = self.attach('乙重量為4公斤。', 'b.txt')
+        formula = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，換算成公斤。'
+        app = DailyAssistant(self.store, NoModel(), default_chat=True)
+        first = app.ask(self.sid, formula + '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        self.assertEqual(self.attach('乙重量為9公斤。', 'b.txt'), second_doc)
+        second = app.ask(self.sid, formula + '假設 [D2:L1] 的乙重量改用 7000 公克。')
+        app.ask(self.sid, formula + '假設 [D1:L1] 的甲重量改用 7 公斤。')
+        app.ask(self.sid, formula + '假設 [D2:L1] 的乙重量改用 7 公克。')
+        self.store.detach_document(self.sid, first_doc)
+        self.store.detach_document(self.sid, second_doc)
+        question = '查文件試算紀錄，來源 D2，假設 [D2:L1] 的乙重量為七公斤。'
+        search = self.receipt(app.ask(self.sid, question))
+        self.assertEqual(search['schema'], document_calculation.SCENARIO_SEARCH_RECEIPT)
+        matches = search['plan']['matches']
+        self.assertEqual([row['answer_id'] for row in matches], [second['id'], first['id']])
+        self.assertEqual([row['hypothesis']['value'] for row in matches], ['7000', '7'])
+        self.assertNotEqual(matches[0]['references'][1]['sha256'], matches[1]['references'][1]['sha256'])
+        comparison = self.receipt(app.ask(self.sid, f'比較文件試算回答 #{first["id"]} 和 #{second["id"]}。'))
+        self.assertEqual(comparison['original_delta']['exact'], '-5')
+
+    def test_scenario_search_handles_limits_missing_sources_and_corrupt_or_foreign_candidates(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        formula = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+        question = formula + '假設 [D2:L1] 的乙重量改用 7 公斤。'
+        app = Assistant(self.store, NoModel())
+        app.ask(self.sid, question)
+        app.ask(self.sid, question)
+        newest = app.ask(self.sid, question)
+        broken = app.ask(self.sid, question)
+        with self.store.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('遭改動的試算', broken['id']))
+        lookup = '查文件試算紀錄，引用 [D2:L1]。'
+        with patch.object(document_calculation, 'SCENARIO_SEARCH_SCAN', 3), patch.object(document_calculation, 'SCENARIO_SEARCH_RESULTS', 1):
+            result = self.receipt(app.ask(self.sid, lookup))
+            plan = result['plan']
+            self.assertEqual(plan['match_count'], 2)
+            self.assertTrue(plan['limited'])
+            self.assertEqual(plan['checked'][0], dict(answer_id=broken['id'], sha256=None))
+            self.assertEqual([row['answer_id'] for row in plan['matches']], [newest['id']])
+            self.assertIn('D2 第1行（來源待核對）', result['output'])
+        self.assertEqual(self.receipt(app.ask(self.store.new_session(), lookup))['plan']['matches'], [])
+        self.assertIsNone(document_calculation._parse_scenario_search(lookup + '然後刪除文件。'))
+
+    def test_scenario_search_retry_restore_and_historical_boundary(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = Assistant(self.store, NoModel())
+        first = app.ask(self.sid, question)
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, '查文件試算紀錄，引用 [D2:L1]。')
+        result = app.retry(self.sid)
+        search = self.receipt(result)
+        self.assertEqual([row['answer_id'] for row in search['plan']['matches']], [first['id']])
+        app.ask(self.sid, question)
+        bundle = create_backup(self.store.path, self.root/'search.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, result['id']), search)
+        with restored.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('遭改動的試算', first['id']))
+        with self.assertRaisesRegex(ValueError, '當時保存的試算來源'):
+            document_calculation.read(restored, result['id'])
+
     def test_receipt_rejects_changed_citations_and_saved_operands(self):
         self.attach('甲重量為十二公斤。', 'a.txt')
         self.attach('乙重量為4公斤。', 'b.txt')

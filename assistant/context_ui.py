@@ -156,6 +156,9 @@ def show_context(parent, store, message_id):
         details = document_calculation.describe(math_receipt)
         if math_receipt['schema'] == document_calculation.COMPARISON_RECEIPT:
             doc_text = document_calculation.describe_comparison_sources(math_receipt)
+        if math_receipt['schema'] == document_calculation.SCENARIO_SEARCH_RECEIPT:
+            count = len(math_receipt['plan']['checked'])
+            doc_text = f'本次核對 {count} 筆同一對話保存的文件試算。可依清單中的回答編號選用或比較。'
         if math_receipt['schema'] == document_calculation.SCENARIO_RECEIPT:
             details = (f'文件試算回答 #{message_id}\n'
                        f'用文件試算回答 #{message_id} 的原值重算。\n\n' + details)

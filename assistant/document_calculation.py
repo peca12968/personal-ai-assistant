@@ -3,6 +3,7 @@ import json
 import re
 import unicodedata
 from decimal import Decimal
+from fractions import Fraction
 from itertools import groupby
 from operator import eq, ge, gt, le, lt, ne
 
@@ -25,9 +26,13 @@ REMAPPED_ORIGINAL_PLAN = 'document_calculation_original_plan_v3'
 REMAPPED_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v3'
 COMPARISON_PLAN = 'document_calculation_comparison_plan_v1'
 COMPARISON_RECEIPT = 'document_calculation_comparison_receipt_v1'
+SCENARIO_SEARCH_PLAN = 'document_calculation_scenario_search_plan_v1'
+SCENARIO_SEARCH_RECEIPT = 'document_calculation_scenario_search_receipt_v1'
+SCENARIO_SEARCH_SCAN = 100
+SCENARIO_SEARCH_RESULTS = 10
 ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT,
                      REMAPPED_ORIGINAL_PLAN: REMAPPED_ORIGINAL_RECEIPT}
-PINNED_PLANS = (SCENARIO_PLAN, COMPARISON_PLAN, *ORIGINAL_RECEIPTS)
+PINNED_PLANS = (SCENARIO_PLAN, COMPARISON_PLAN, SCENARIO_SEARCH_PLAN, *ORIGINAL_RECEIPTS)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -53,6 +58,9 @@ _REPLACE_LINE = re.compile(rf'將 *({_REF}) *換成 *({_REF})')
 _REFRESH_LINE = re.compile(rf'重新讀取 *({_REF})')
 _COMPARE_REQUEST = re.compile(r'(?:請)?比較文件試算回答 *#([0-9]{1,30}) *(?:和|與|及) *'
                               r'(?:文件試算回答 *)?#([0-9]{1,30})[。！!？?]?')
+_SEARCH_REQUEST = re.compile(r'(?:請)?(?:查(?:詢|找)?|找|搜尋)文件試算紀錄[,:] *([^\r\n]+?) *[。!?]?')
+_SEARCH_REFERENCE = re.compile(rf'(?:引用|來源) *({_REF}|D{_INDEX})')
+_SEARCH_HYPOTHESIS = re.compile(rf'假設 *(?:({_REF}) *的)? *({_LABEL}) *(?:改用|改為|為|是) *({_NUMBER}) *({_UNIT})')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -240,6 +248,99 @@ def capture_comparison(store, sid, question, before=None):
         return _comparison_plan(db, sid, question, before)
 
 
+def _parse_scenario_search(question):
+    if not isinstance(question, str) or len(question) > 240:
+        return None
+    match = _SEARCH_REQUEST.fullmatch(unicodedata.normalize('NFKC', question).strip())
+    if match is None:
+        return None
+    criteria = {}
+    for clause in re.split(r'\s*[,;]\s*', match[1]):
+        if 'reference' not in criteria and (reference := _SEARCH_REFERENCE.fullmatch(clause)):
+            text = reference[1]
+            if re.fullmatch(rf'D{_INDEX}', text):
+                criteria['reference'] = dict(document_id=int(text[1:]), line_number=None)
+            else:
+                ranges, _ = requested_ranges(text)
+                criteria['reference'] = dict(document_id=ranges[0]['document_id'], line_number=ranges[0]['start_line'])
+        elif 'hypothesis' not in criteria and (hypothesis := _SEARCH_HYPOTHESIS.fullmatch(clause)):
+            ref, label, value, unit = hypothesis.groups()
+            criteria['hypothesis'] = dict(citation=_canonical_ref(ref) if ref else None, label=label,
+                                          value=_number(value), unit=unit)
+        else:
+            return None
+    return criteria
+
+
+def matches_scenario_search(question):
+    return _parse_scenario_search(question) is not None
+
+
+def _scenario_matches(plan, criteria):
+    operands = plan['base']['operands']
+    if reference := criteria.get('reference'):
+        if not any(row['document_id'] == reference['document_id'] and
+                   (reference['line_number'] is None or row['line_number'] == reference['line_number'])
+                   for row in operands):
+            return False
+    wanted = criteria.get('hypothesis')
+    if wanted is None:
+        return True
+    assumption = plan['hypothesis']
+    operand = operands[assumption['operand_index']]
+    if operand['label'] != wanted['label'] or (wanted['citation'] is not None and wanted['citation'] != operand['citation']):
+        return False
+    factor = _comparison_factor(wanted['unit'], assumption['unit'])
+    return factor is not None and Fraction(assumption['value']) * Fraction(factor) == Fraction(wanted['value'])
+
+
+def _scenario_search_summary(source, cancel):
+    plan = source['plan']
+    _, receipt = _evaluate_scenario(plan, cancel)
+    assumption = plan['hypothesis']
+    operands = plan['base']['operands']
+    versions = _scenario_versions(plan)
+    references = [dict(document_id=row['document_id'], line_number=row['line_number'],
+                       sha256=version[1] if version else None)
+                  for row, version in zip(operands, versions, strict=True)]
+    return dict(answer_id=source['answer_id'], references=references,
+                hypothesis=dict(label=operands[assumption['operand_index']]['label'],
+                                value=assumption['value'], unit=assumption['unit']),
+                unit=plan['base']['unit'], original=receipt['result'], scenario=receipt['scenario']['result'])
+
+
+def _scenario_search_plan(db, sid, question, before, cancel=None):
+    criteria = _parse_scenario_search(question)
+    if criteria is None:
+        raise ValueError('查找文件試算的條件無法核對。')
+    rows = db.execute('''SELECT m.id FROM messages m JOIN answer_contexts c ON c.message_id=m.id
+        WHERE m.session_id=? AND m.role='assistant' AND (? IS NULL OR m.id<?)
+          AND CASE WHEN length(CAST(c.payload AS BLOB))<=? AND json_valid(c.payload)
+                   THEN json_extract(c.payload,'$.document_calculation.schema')=? END
+        ORDER BY m.id DESC LIMIT ?''', (sid, before, before, local_answer_receipts.MAX_JSON_BYTES,
+                                     SCENARIO_RECEIPT, SCENARIO_SEARCH_SCAN + 1)).fetchall()
+    checked, matches, count = [], [], 0
+    for (mid,) in rows[:SCENARIO_SEARCH_SCAN]:
+        check_cancel(cancel)
+        try:
+            source = _scenario_source(db, sid, before, mid)
+        except (KeyError, TypeError, ValueError):
+            source = None
+        checked.append(dict(answer_id=mid, sha256=source['sha256'] if source else None))
+        if source and _scenario_matches(source['plan'], criteria):
+            count += 1
+            if len(matches) < SCENARIO_SEARCH_RESULTS:
+                matches.append(_scenario_search_summary(source, cancel))
+    return dict(schema=SCENARIO_SEARCH_PLAN, request=question, criteria=criteria, checked=checked, matches=matches,
+                match_count=count, limited=len(rows) > SCENARIO_SEARCH_SCAN, documents={'catalog': [], 'excerpts': []})
+
+
+def capture_scenario_search(store, sid, question, before=None, cancel=None):
+    with store.connect() as db:
+        db.execute('BEGIN')
+        return _scenario_search_plan(db, sid, question, before, cancel)
+
+
 def _parse_numeric_aggregate(question):
     return document_table.parse_numeric_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
@@ -265,7 +366,7 @@ def bind_live_request(plan, previous=None):
 
 
 def snapshot(store, sid, plan):
-    if plan['schema'] == COMPARISON_PLAN:
+    if plan['schema'] in (COMPARISON_PLAN, SCENARIO_SEARCH_PLAN):
         return {'catalog': [], 'excerpts': []}
     if plan['schema'] in PINNED_PLANS:
         plan = _original_formula(plan)
@@ -413,6 +514,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == SCENARIO_SEARCH_PLAN:
+        return _evaluate_scenario_search(plan, cancel)
     if plan.get('schema') == COMPARISON_PLAN:
         return _evaluate_comparison(plan, cancel)
     if plan.get('schema') in ORIGINAL_RECEIPTS:
@@ -621,6 +724,41 @@ def _comparison_delta(first, second, factor):
 
 def _comparison_value(result, unit, missing='待核對'):
     return f'{_display_exact(result)} {unit}' if result is not None else missing
+
+
+def _evaluate_scenario_search(plan, cancel):
+    criteria = _parse_scenario_search(plan['request'])
+    checked, matches, count = plan['checked'], plan['matches'], plan['match_count']
+    if (criteria is None or criteria != plan['criteria'] or type(count) is not int
+            or not 0 <= count <= len(checked) <= SCENARIO_SEARCH_SCAN or type(plan['limited']) is not bool
+            or len(matches) != min(count, SCENARIO_SEARCH_RESULTS)
+            or plan['documents'] != {'catalog': [], 'excerpts': []}
+            or set(plan) != {'schema', 'request', 'criteria', 'checked', 'matches', 'match_count', 'limited', 'documents'}):
+        raise ValueError('文件試算查詢與原問或保存範圍不符。')
+    lines = ([f'找到 {count} 筆符合的文件試算。'] if count
+             else ['這段對話沒有符合條件且可核對的文件試算。'])
+    for item in matches:
+        check_cancel(cancel)
+        refs = '、'.join(f'D{row["document_id"]} 第{row["line_number"]}行'
+                        + (f'（版本 {row["sha256"][:12]}）' if row['sha256'] else '（來源待核對）')
+                        for row in item['references'])
+        hypothesis = item['hypothesis']
+        original = _comparison_value(item['original'], item['unit'])
+        scenario = _comparison_value(item['scenario'], item['unit'])
+        lines.append(f'#{item["answer_id"]}｜假設{hypothesis["label"]} {hypothesis["value"]} {hypothesis["unit"]}'
+                     f'｜原值結果 {original}｜試算結果 {scenario}｜{refs}')
+    if count > SCENARIO_SEARCH_RESULTS:
+        lines.append(f'上方列出最近 {SCENARIO_SEARCH_RESULTS} 筆，可加上引用行或假設條件縮小範圍。')
+    if plan['limited']:
+        lines.append(f'這次查詢限於最近 {SCENARIO_SEARCH_SCAN} 筆保存的試算。')
+    skipped = sum(row['sha256'] is None for row in checked)
+    if skipped:
+        lines.append(f'有 {skipped} 筆保存的試算無法核對。')
+    if len(matches) >= 2:
+        lines.append(f'可輸入「比較文件試算回答 #{matches[0]["answer_id"]} 和 #{matches[1]["answer_id"]}。」核對兩份差異。')
+    answer = '\n'.join(lines)
+    return answer, dict(schema=SCENARIO_SEARCH_RECEIPT, plan=plan, model_called=False,
+                        output=answer, output_sha256=digest(answer))
 
 
 def _evaluate_comparison(plan, cancel):
@@ -1032,6 +1170,10 @@ def scenario_ids(store, rows):
 
 
 def validate_origin(db, sid, before, plan):
+    if plan['schema'] == SCENARIO_SEARCH_PLAN:
+        if plan != _scenario_search_plan(db, sid, plan['request'], before):
+            raise ValueError('文件試算查詢與當時保存的試算來源不符。')
+        return
     if plan['schema'] == COMPARISON_PLAN:
         if plan != _comparison_plan(db, sid, plan['request'], before):
             raise ValueError('文件試算比較與指定的原始回答不符。')
@@ -1050,7 +1192,7 @@ def validate_origin(db, sid, before, plan):
 
 def describe(receipt):
     plan = receipt['plan']
-    if receipt['schema'] == COMPARISON_RECEIPT:
+    if receipt['schema'] in (COMPARISON_RECEIPT, SCENARIO_SEARCH_RECEIPT):
         return receipt['output']
     if receipt['schema'] in ORIGINAL_RECEIPTS.values():
         intro = '沿用' if receipt['schema'] == ORIGINAL_RECEIPT else '依你指定的'

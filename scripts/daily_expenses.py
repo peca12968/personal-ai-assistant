@@ -263,6 +263,7 @@ class DailyAssistant(Assistant):
             from assistant import document_calculation
             if (document_calculation.matches_original_followup(question)
                     or document_calculation.matches_scenario_comparison(question)
+                    or document_calculation.matches_scenario_search(question)
                     or document_calculation.parse_live_request(question) is not None):
                 return super()._ask(sid, question, cancel=cancel, retry=retry, draft=draft, image_ids=image_ids)
         from assistant.chat_evidence import matches_request
