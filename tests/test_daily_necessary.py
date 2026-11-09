@@ -20,6 +20,94 @@ PHYSICAL_HEAD = '啟用沖洗站須同時確認進水接頭已接妥、出水閥
 PHYSICAL_CODES = '請只回 R 代表能、B 代表不能、X 代表未定。'
 PHYSICAL_PENDING = PHYSICAL_HEAD + '進水接頭鎖好，出水閥未檢查。' + PHYSICAL_CODES
 PHYSICAL_SEPARATE = '只輸出指定代碼。確定可行回 R，確定不可行回 B，尚無法判定回 X。'
+DECLARED_HEAD = ('判斷「送交維護報告」須同時符合「檔案已完成簽署」及（「原件已登錄」或「副本已核准」），'
+                 '這些就是全部要求。')
+DECLARED_PENDING = (DECLARED_HEAD + '已確認「檔案已完成簽署」成立，已確認「原件已登錄」不成立，'
+                    '「副本已核准」尚未核對。' + PHYSICAL_SEPARATE)
+
+
+class DailyDeclaredPrerequisiteTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '一般模型回答'
+        self.app = DailyAssistant(self.store, self.engine, default_chat=True)
+
+    def test_declared_groups_match_independent_worlds_and_preserve_atomic_names(self):
+        names = ('檔案已完成簽署', '原件已登錄', '副本已核准')
+        for states in product(('T', 'F', 'U'), repeat=3):
+            observations = []
+            for name, state in zip(names, states, strict=True):
+                if state == 'U':
+                    observations.append(f'「{name}」尚未核對')
+                else:
+                    observations.append(f'已確認「{name}」' + ('成立' if state == 'T' else '不成立'))
+            possibilities = {'T': (True,), 'F': (False,), 'U': (True, False)}
+            worlds = {first and (second or third) for first, second, third in product(
+                *(possibilities[state] for state in states))}
+            expected = 'R' if worlds == {True} else ('B' if worlds == {False} else 'X')
+            request = DECLARED_HEAD + '，'.join(observations) + '。' + PHYSICAL_SEPARATE
+            self.assertEqual(daily_necessary.evaluate(daily_necessary.parse(request))[0], expected)
+        compound = DECLARED_PENDING.replace('檔案已完成簽署', '圖面和報告均已簽署')
+        reply = self.app.ask(self.store.new_session(), compound)
+        receipt = daily_necessary.read(self.store, reply['id'])
+        self.assertEqual(receipt['plan']['groups'], [['圖面和報告均已簽署'], ['原件已登錄', '副本已核准']])
+        self.assertEqual(reply['content'], 'X')
+        atoms = [f'檢核 {i}' for i in range(1, 8)]
+        groups = ['（' + '或'.join(f'「{name}」' for name in atoms[i:i + 3]) + '）' for i in (0, 3)]
+        rule = '判斷「可交付」須同時符合' + '及'.join(groups)
+        facts = '，'.join(f'已確認「{name}」成立' for name in atoms[:6])
+        self.assertEqual(daily_necessary.evaluate(daily_necessary.parse(
+            rule + '，這些就是全部要求。' + facts + '。' + PHYSICAL_SEPARATE))[0], 'R')
+        self.assertIsNone(daily_necessary.parse(rule + '及「檢核 7」，這些就是全部要求。' + facts
+                                                + '，已確認「檢核 7」成立。' + PHYSICAL_SEPARATE))
+        self.engine.answer.assert_not_called()
+
+    def test_rule_and_named_sources_reject_ambiguous_mixed_or_wrong_scope_input(self):
+        for text in (
+            DECLARED_PENDING.replace('（', '').replace('）', ''),
+            DECLARED_PENDING.replace('副本已核准', '原件已登錄'),
+            DECLARED_PENDING.replace('「副本已核准」尚未核對', '「別份副本已核准」尚未核對'),
+            DECLARED_PENDING.replace('「副本已核准」尚未核對', '猜測「副本已核准」不成立'),
+            DECLARED_PENDING.replace('尚未核對。', '尚未核對，已確認「副本已核准」成立。'),
+            DECLARED_PENDING + '順便寄出檔案。',
+            PHYSICAL_SEPARATE + DECLARED_PENDING,
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(daily_necessary.parse(text))
+                self.assertEqual(self.app.ask(self.store.new_session(), text)['content'], '一般模型回答')
+        sid = self.store.new_session()
+        path = self.path / 'proof.txt'
+        path.write_text('另一份維護紀錄。', encoding='utf-8')
+        self.store.attach_document(sid, path)
+        self.assertEqual(self.app.ask(sid, DECLARED_PENDING)['content'], '一般模型回答')
+
+    def test_quoted_revision_and_check_order_recompute_after_restore(self):
+        sid = self.store.new_session()
+        original = DECLARED_PENDING.replace('副本已核准', 'B2 副本已核准')
+        first = self.app.ask(sid, original)
+        self.assertEqual(first['content'], 'X')
+        inquiry = self.app.ask(sid, '還要核對什麼？')
+        self.assertIn('B2 副本已核准', inquiry['content'])
+        order = self.app.ask(sid, '沿用上一輪條件：檢查時間：「B2 副本已核准」3分鐘。先查哪一項最省時間？')
+        self.assertIn('B2 副本已核准', order['content'])
+        revised = self.app.ask(sid, '沿用上一輪條件：已確認「B2 副本已核准」成立。重算。')
+        self.assertEqual(revised['content'], 'R')
+        backup = create_backup(self.store.path, self.path / 'declared.paibackup')
+        restore_backup(backup['path'], self.path / 'restored-declared')
+        restored = Store(self.path / 'restored-declared/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, revised['id']), revised[daily_necessary.FIELD])
+        context = restored.answer_context(first['id'])
+        context[daily_necessary.FIELD]['plan']['groups'][1].reverse()
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), first['id']))
+        with self.assertRaisesRegex(ValueError, '必要條件規約'):
+            daily_necessary.read(restored, revised['id'])
+        self.engine.answer.assert_not_called()
 
 
 class DailyPhysicalPrerequisiteTests(unittest.TestCase):

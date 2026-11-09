@@ -508,3 +508,15 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 父版本須重現原有 94 題與 logits。獨立重載須重現候選權重、全部原答及 logits。研究門檻要求保住父版本答對的非訓練題，並讓至少一組原本未全對的陌生事實在三種映射都答對。每階段六或九分鐘的時限在準備時固定，仍須核對原生閒置及工作程序退出。結果只用於研究。
+
+### 分開量測語意判斷與代碼輸出
+
+`diagnose_label_reasoning.py` 讀取已驗證的父權重與未通過門檻的候選。每版獨立測六道原題對照、六道固定語意詞、六道加上明示判斷規則的語意詞，以及 18 道已提供正確結論的套碼題。六道原題對照須重現原始作答，並核對原權重與固定輸入 logits。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/diagnose_label_reasoning.py prepare <名稱> --reference <已完成的代碼轉移研究>
+.venv/Scripts/python.exe scripts/learning/diagnose_label_reasoning.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/diagnose_label_reasoning.py verify <名稱>
+```
+
+報告另外將模型實際回傳的語意詞按原題的三種映射轉成代碼。這項重算使用實測結論，套碼由程式執行。各組沿用既有事實，因此可檢查解題和輸出環節的差異。新場景與完整助理表現需另立測驗。

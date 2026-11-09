@@ -13,7 +13,8 @@ V3 = 'daily_necessary_roster_plan_v3'
 V4 = 'daily_necessary_grouped_roster_plan_v4'
 V5 = 'daily_necessary_physical_plan_v5'
 V6 = 'daily_necessary_physical_codes_plan_v6'
-INITIAL_PLANS = (V1, V2, V3, V4, V5, V6)
+V7 = 'daily_necessary_declared_plan_v7'
+INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, V7)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -109,6 +110,13 @@ PHYSICAL_MEANINGS = {
 }
 SEPARATE_PHYSICAL_MEANINGS = {**PHYSICAL_MEANINGS,
                               'undetermined': PHYSICAL_MEANINGS['undetermined'] + r'|尚無法判定|資料不足'}
+DECLARED_NAME = r'[\u3400-\u9fffA-Za-z0-9][\u3400-\u9fffA-Za-z0-9_ -]{0,39}'
+DECLARED_ATOM = rf'「{DECLARED_NAME}」'
+DECLARED_GROUP = rf'(?:{DECLARED_ATOM}|（{DECLARED_ATOM}(?:或{DECLARED_ATOM}){{1,2}}）)'
+DECLARED_TERMS = re.compile(rf'{DECLARED_GROUP}(?:\s*(?:、|及|和|與|並且)\s*{DECLARED_GROUP}){{0,3}}')
+DECLARED_RULE = re.compile(rf'判斷「(?P<action>{DECLARED_NAME})」須同時符合(?P<terms>[^，,]+)[，,]\s*'
+                           r'這些(?P<complete>就是全部要求|只是必要條件)')
+DECLARED_COST_ITEM = re.compile(rf'「({DECLARED_NAME})」\s*([1-9][0-9]{{0,2}})\s*分鐘')
 
 
 def alternative_groups(text):
@@ -170,6 +178,11 @@ def observation(clause, condition, *, carried=False):
     if condition.get('physical'):
         return physical_observation(clause, condition, carried)
     name = re.escape(condition['name'])
+    if condition.get('declared'):
+        checked = re.fullmatch(rf'已確認「{name}」(成立|不成立)', clause)
+        if checked:
+            return 'true' if checked[1] == '成立' else 'false'
+        return 'unknown' if re.fullmatch(rf'「{name}」(?:尚未|還沒)(?:核對|確認)', clause) else None
     prop = condition['property']
     yes, no = TYPES[prop]
     if re.fullmatch(rf'已(?:確認|確定)沒有{prop}的{name}|唯一的{name}(?:{no})', clause):
@@ -331,6 +344,21 @@ def physical_labels(text, pattern, meanings):
     return options if options.keys() == meanings.keys() else None
 
 
+def split_code_request(sentences):
+    if len(sentences) < 4:
+        return None
+    if SEPARATE_PHYSICAL_CODES.fullmatch(sentences[0]):
+        output, mapping, *facts = sentences
+    else:
+        *facts, output, mapping = sentences
+        if not SEPARATE_PHYSICAL_CODES.fullmatch(output):
+            return None
+    options = physical_labels(mapping, SEPARATE_PHYSICAL_LABEL, SEPARATE_PHYSICAL_MEANINGS)
+    if not options:
+        return None
+    return facts, output + '。' + mapping, options
+
+
 def parse_physical(question, sentences, version):
     if version == V5:
         output = PHYSICAL_CODES.fullmatch(sentences[-1])
@@ -339,15 +367,10 @@ def parse_physical(question, sentences, version):
         options = physical_labels(output[1], PHYSICAL_LABEL, PHYSICAL_MEANINGS)
         facts = sentences[:-1]
     else:
-        if len(sentences) < 4:
+        parts = split_code_request(sentences)
+        if parts is None:
             return None
-        if SEPARATE_PHYSICAL_CODES.fullmatch(sentences[0]):
-            output, mapping, *facts = sentences
-        else:
-            *facts, output, mapping = sentences
-            if not SEPARATE_PHYSICAL_CODES.fullmatch(output):
-                return None
-        options = physical_labels(mapping, SEPARATE_PHYSICAL_LABEL, SEPARATE_PHYSICAL_MEANINGS)
+        facts, output, options = parts
     if not 2 <= len(facts) <= 3:
         return None
     rule = PHYSICAL_RULE.fullmatch(facts[0])
@@ -368,8 +391,33 @@ def parse_physical(question, sentences, version):
                 action=rule['action'], rule=facts[0], sufficient=rule['complete'] == '就是全部要求',
                 conditions=conditions, labels=options)
     if version == V6:
-        plan['output'] = output + '。' + mapping
+        plan['output'] = output
     return plan
+
+
+def parse_declared(question, sentences):
+    parts = split_code_request(sentences)
+    if parts is None:
+        return None
+    facts, output, options = parts
+    if not 2 <= len(facts) <= 7:
+        return None
+    rule = DECLARED_RULE.fullmatch(facts[0])
+    if rule is None or not DECLARED_TERMS.fullmatch(rule['terms']):
+        return None
+    groups = [re.findall(rf'「({DECLARED_NAME})」', group)
+              for group in re.findall(DECLARED_GROUP, rule['terms'])]
+    names = [name for group in groups for name in group]
+    action = rule['action']
+    if (not 2 <= len(names) <= 6 or len(set(names)) != len(names) or action in names
+            or sum(len(group) > 1 for group in groups) > 2 or any(name != name.strip() for name in [action, *names])):
+        return None
+    conditions = [dict(name=name, property='', requirement=name, declared=True) for name in names]
+    if not bind_observations(conditions, facts[1:]):
+        return None
+    return dict(schema=V7, request=question, request_sha256=evidence_logic.digest(question),
+                action=action, rule=facts[0], sufficient=rule['complete'] == '就是全部要求',
+                conditions=conditions, groups=groups, labels=options, output=output)
 
 
 def bind_observations(conditions, sentences):
@@ -400,6 +448,8 @@ def parse_version(question, version):
         return parse_grouped_roster(question, sentences)
     if version in (V5, V6):
         return parse_physical(question, sentences, version)
+    if version == V7:
+        return parse_declared(question, sentences)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -589,6 +639,8 @@ def inspection_minutes(request, state):
     minutes = {}
     for part in re.split(r'[，,]', match[1]):
         item = COST_ITEM.fullmatch(part.strip())
+        if item is None and state['schema'] == V7:
+            item = DECLARED_COST_ITEM.fullmatch(part.strip())
         if not item or item[1] not in names or item[1] in minutes:
             raise ValueError('請用原本的完整條件名稱，各填一次 1 至 999 的整數分鐘。')
         minutes[item[1]] = int(item[2])
@@ -640,12 +692,13 @@ def dispute_text(conflicts):
 
 def evaluate(plan, cancel=None):
     state = effective(plan)
-    action = '「' + state['action'] + '」'
+    target = '待判 ' + state['action'] if state['schema'] == V7 else state['action']
+    action = '「' + target + '」'
     items = [f'「條件{index} {c["name"]}{c["property"]}」'
              for index, c in enumerate(state['conditions'], 1)]
     group_rules = []
     required = items
-    if state['schema'] == V2:
+    if state['schema'] in (V2, V7):
         required = []
         atoms = {c['name']: atom for c, atom in zip(state['conditions'], items, strict=True)}
         for index, names in enumerate(state['groups'], 1):
@@ -673,6 +726,7 @@ def evaluate(plan, cancel=None):
               V4: 'daily_necessary_grouped_roster_receipt_v4',
               V5: 'daily_necessary_physical_receipt_v5',
               V6: 'daily_necessary_physical_codes_receipt_v6',
+              V7: 'daily_necessary_declared_receipt_v7',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
@@ -800,7 +854,7 @@ def describe(receipt):
             if resolved['schema'] == V4:
                 source = f'{condition["participant"]}｜{source}'
             lines.append(f'{source} → {states[condition["state"]]}')
-    if resolved['schema'] == V2:
+    if resolved['schema'] in (V2, V7):
         observed = {c['name']: c['state'] for c in resolved['conditions']}
         for group in resolved['groups']:
             if len(group) > 1:
