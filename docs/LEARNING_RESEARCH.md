@@ -585,3 +585,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 原始索引及狀態保留供評分。另行檢查索引範圍與明示較早、規則及無日期媒體線索，只能把排除的狀態改成待查並記錄原因。其他來源仍須核對時間、物件及命題。原始模型結論、來源恢復和檢查後結論各自計算。原始 SQLite 和回答留在本機，這個入口供研究。
+
+### 排除來源後重查單一條件
+
+`assess_scope_recovery.py` 核對上一輪固定索引測驗的完整結果，採用所有實際被排除的三個引用。另以兩組共四個新案例控制當前反證、相近物件、缺少觀察及可恢復的肯定證據。新案例事先放入不適用的初始引用，研究衡量拒絕後的重查。兩組都只問被排除的命題，並保存另一項觀察。第一組看到全部原句，第二組只看到通過現有來源檢查的編號與原句。兩組收到相同的排除原因及回答要求。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_scope_recovery.py check
+.venv/Scripts/python.exe scripts/learning/assess_scope_recovery.py prepare <名稱> --reference <語意診斷> --previous <固定索引實測>
+.venv/Scripts/python.exe scripts/learning/assess_scope_recovery.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_scope_recovery.py verify <名稱>
+```
+
+只允許一輪重查，兩組的回答均用相同規則核對來源編號。格式失敗或來源仍無效會保留待查。逐案比較重查前後的結論，以及被排除條件的狀態和原句。歷史對話保留於完整提示中，篩選只作用於當前提供的編號清單。這個入口供研究，來源索引及時間通過後仍要核對物件。
