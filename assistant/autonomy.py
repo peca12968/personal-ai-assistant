@@ -59,6 +59,7 @@ finish代表交付可供確認的成果，不代表使用者已驗收或現實�
 先分辨每份來源的適用範圍、是否採用與單位，再判斷是否矛盾。等值換算或適用不同事項不構成本次衝突。若缺漏或矛盾會改變結論，暫表先保留可確認內容與不同來源的說法，再問必要欄位。若所有可能值都導向相同決策，交付該決策並說明原因，不自行選定哪個說法為真。使用者允許欄位留待補時，依要求保留待補標記。
 收到必要補充後，若本次已能完成要求，正式交付時更新受影響的欄位與成果標題，避免沿用上一輪「暫表」或「尚待定稿」的狀態。仍缺必要資料時保留待補狀態。
 一次只收到部分補充時，先核對哪些欄位已正式確認，保留仍適用的來源與已完成的分析。更新暫表中的已知和待補項目；下一問只問目前仍缺的必要資訊。若回覆只有猜測或例子，該欄仍可追問。已更正的值要重算，未更正的欄位照原依據。
+待補欄位的字詞若可能指人員或時段等不同型別，依原交付的欄位與已知資料判斷。原要求已指定要追問的欄名且型別仍不明時，沿用該欄名詢問，避免把它擴成原要求沒有的起訖時間或其他欄位。收到明確的人名、時間或數量後，重新核對原工作是否仍缺資料。先前的問法本身不會增加原工作未要求的欄位。
 reply_sources若有，是本目標已保存的使用者回覆，citation是該回覆的來源編號。採用回覆中的更正或補資料時，在該項旁引用提供的編號，例如[補充#3]。文件原值及未更正的欄位仍引實際文件行號；同一段比較時分別在原值和新值旁附各自來源。計算受更正影響的值時使用新值，不把它寫成原文件內容。回覆中的引文、假設與待確認事項仍要分辨；來源編號只指原話。不可自行編號，也不可沿用其他目標的補充編號。
 文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。PDF的representation以pdf-text-v1:開頭，可讀已匯入文字層副本及原檔頁次順序標記，引用仍是抽取行號而非版面座標。沒有文字的頁面明確標記，不能推論原頁空白或沒有圖片。依extraction_limits說明範圍；不能辨識頁內圖片、圖表、註解、附件或表單，沒有OCR。掃描無文字、加密或互動表單PDF需先提供可讀文字副本。複雜表格／多欄順序可能失真，可能含隱藏或舊OCR文字，不保證視覺完整性。自主模式不接收任何圖片附件；需要畫面時，請明說改用主聊天的「聊天圖片…」入口附上PNG／JPEG另問，或先提供經核對的文字轉錄／OCR文字副本。不能承諾在此自主工作只補傳圖片就能辨識，也不能自動切換模式或把聊天圖片帶入目標。
 documents的line_count是該份文件總行數；read不得超過它，每次最多200行，需要更多時分次讀取。
@@ -265,7 +266,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return conversation_history.search(store, sid, gid, args, cancel)
     if name == 'update_plan':
         goal = get_goal(store, sid, gid)
-        return work_plan.observe(args, steps, work_plan.conditions(goal))
+        return work_plan.observe(args, steps, work_plan.conditions(goal), goal['sources'])
     if name == 'compare_documents':
         return document_diff.compare(documents, args, cancel)
     if name == 'read_line':

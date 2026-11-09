@@ -97,6 +97,79 @@ class WorkPlanTests(unittest.TestCase):
         self.assertTrue(result['work_plan']['conditions_current'])
         self.assertEqual(result['work_plan']['items'][0]['evidence_steps'], [4])
 
+    def test_unchanged_read_is_reused_while_corrected_calculation_requires_fresh_step(self):
+        file = self.root / 'stock.txt'
+        file.write_text('甲批30件，原記3件不可用。\n乙批24件。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, file)
+        gid = a.create_goal(self.store, self.sid, '核對原文件及甲批可出數量')
+        read_item = item(1, '核對文件原值', 'done', [1])
+        calculation = item(2, '計算甲批數量', 'done', [2])
+        initial = self.run_actions(
+            action('read_ranges', ranges=[{'document_id': did, 'start_line': 1, 'end_line': 2}]),
+            action('calculate', operation='difference', values=['30', '3']),
+            action('update_plan', items=[read_item, calculation]), gid=gid)
+        observed = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '更正甲批不可用為4件。',
+                           expected_fingerprint=observed['fingerprint'])
+        pending = a.get_goal(self.store, self.sid, gid)
+        self.assertFalse(pending['work_plan']['conditions_current'])
+        self.assertEqual(pending['steps'], initial['steps'])
+        result = self.run_actions(
+            action('update_plan', items=[read_item, calculation], reuse_document_steps=[1, 2]),
+            action('calculate', operation='difference', values=['30', '4']),
+            action('update_plan', items=[read_item, item(2, '計算甲批數量', 'done', [5])],
+                   reuse_document_steps=[1]), gid=gid)
+        self.assertEqual(result['steps'][3]['action']['tool'], 'invalid')
+        self.assertEqual(result['steps'][4]['observation']['exact'], '26')
+        self.assertEqual(result['steps'][:3], initial['steps'])
+        self.assertTrue(result['work_plan']['conditions_current'])
+        proof, = result['work_plan']['reused_document_steps']
+        self.assertEqual((proof['sequence'], proof['document_ids']), (1, [did]))
+        self.assertIn('沿用同版本文件查讀 · 步驟 1', p.describe(result['work_plan']))
+        self.assertNotIn('excerpts', result['steps'][-1]['observation'])
+
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        with restored.connect() as db:
+            changed = copy.deepcopy(result['steps'][0]['observation'])
+            changed['excerpts'][0]['text'] += '篡改'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=1',
+                       (json.dumps(changed, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_reuse_checks_original_evidence_set_complete_reads_and_version(self):
+        file = self.root / 'sources.txt'
+        file.write_text('甲批原值。\n乙批原值。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, file)
+        gid = a.create_goal(self.store, self.sid, '核對兩行')
+        task = item(task='核對兩行', state='done', refs=[1, 2])
+        goal = self.run_actions(action('read', document_id=did, start_line=1, end_line=1),
+                                action('read', document_id=did, start_line=2, end_line=2),
+                                action('update_plan', items=[task]), gid=gid)
+        scope = 'a' * 64
+        args = {'items': [task], 'reuse_document_steps': [1, 2]}
+        p.observe(args, goal['steps'], scope, goal['sources'])
+        dropped = {'items': [item(task='核對兩行', state='done', refs=[1])],
+                   'reuse_document_steps': [1]}
+        with self.assertRaisesRegex(ValueError, '同一個原已完成'):
+            p.observe(dropped, goal['steps'], scope, goal['sources'])
+        invalid = [[], [1, 1], [True], [33]]
+        for refs in invalid:
+            with self.subTest(refs=refs), self.assertRaises(ValueError):
+                p.validate({**args, 'reuse_document_steps': refs})
+        with self.assertRaisesRegex(ValueError, '本次完成項目'):
+            p.observe({**args, 'reuse_document_steps': [1, 2, 32]}, goal['steps'], scope, goal['sources'])
+        mismatched = [{**goal['sources'][0], 'sha256': '0' * 64}]
+        with self.assertRaisesRegex(ValueError, '本目標文件版本或範圍不一致'):
+            p.observe(args, goal['steps'], scope, mismatched)
+        partial = copy.deepcopy(goal['steps'])
+        partial[1]['observation']['requested_ranges'][0]['status'] = 'line_out_of_bounds'
+        with self.assertRaisesRegex(ValueError, '不完整'):
+            p.observe(args, partial, scope, goal['sources'])
+
     def test_changed_sources_are_stale_and_parent_plan_confers_no_child_evidence(self):
         file = self.root / 'fee.txt';file.write_text('每月120元', encoding='utf-8')
         self.store.attach_document(self.sid, file)
