@@ -3,6 +3,8 @@ import random
 from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from threading import Event
 from unittest.mock import patch
 
 from assistant.backup import create_backup, restore_backup
@@ -185,6 +187,70 @@ class DailyMeetingTests(unittest.TestCase):
             app.ask(sid, '計算 1 + 1，只回答整數')
             with self.assertRaisesRegex(ValueError, '沒有可接續'):
                 app.ask(sid, follow)
+
+    def test_batch_replacement_cancellation_and_duration_survive_retry_and_restore(self):
+        from assistant import answer_runs
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            initial = app.ask(sid, BASE + '甲取消整個上午。乙取消 09:20-09:35。兩人需要連續 20 分鐘。' + FORMAT)
+            original = meeting.read(store, initial['id'])
+            question = '上一場會議，乙的空檔改為 11:50-12:50；乙取消 12:00-12:09;時長改為 25 分鐘，重算。'
+            stop = Event()
+            begin = answer_runs.begin
+
+            def begin_then_stop(*args, **kwargs):
+                uid = begin(*args, **kwargs)
+                stop.set()
+                return uid
+
+            with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
+                app.ask(sid, question, stop)
+            changed = app.retry(sid)
+            self.assertEqual(changed['content'], '12:09-12:34')
+            record = meeting.read(store, changed['id'])
+            self.assertEqual(record['meeting_source']['answer_id'], initial['id'])
+            self.assertEqual(record['retry_of']['previous_status'], 'cancelled')
+            self.assertEqual(record['meeting_plan']['cancelled'], [
+                original['meeting_plan']['cancelled'][0],
+                dict(name='乙', interval=[720,729], source='乙取消 12:00-12:09'),
+            ])
+            self.assertIn('3. 時長改為 25 分鐘', meeting.describe(record))
+            self.assertEqual(meeting.read(store, initial['id']), original)
+            bundle = create_backup(store.path, root/'schedule.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            self.assertEqual(meeting.read(restored, changed['id']), record)
+            answer = DailyAssistant(restored, None, default_chat=True).ask(sid, '上一場會議，時長改為 40 分鐘，重算。')
+            self.assertEqual(answer['content'], '12:09-12:49')
+
+    def test_invalid_batch_keeps_the_full_plan_and_session_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            first = app.ask(sid, BASE + '兩人需要連續 20 分鐘。' + FORMAT)
+            record = meeting.read(store, first['id'])
+            plan = deepcopy(record['meeting_plan'])
+            for edits, error in (
+                ('甲取消整個上午；丙取消整個上午', '第 2 項'),
+                ('時長改為 25 分鐘；時長改為 30 分鐘', '只能指定一次'),
+                ('甲取消整個上午；甲的空檔改為 09:00-11:00', '請先列一次完整新空檔'),
+                ('甲取消整個上午；甲取消 12:00-12:10；乙取消整個上午；乙取消 12:00-12:10；時長改為 10 分鐘',
+                 '2 至 4 項'),
+                ('甲取消整個上午；', '2 至 4 項'),
+                ('甲取消整個上午；請寄出邀請', '第 2 項'),
+            ):
+                with self.subTest(edits=edits):
+                    with self.assertRaisesRegex(ValueError, error):
+                        meeting.revise(plan, edits)
+                    self.assertEqual(plan, record['meeting_plan'])
+                    with self.assertRaisesRegex(ValueError, error):
+                        app.ask(sid, f'上一場會議，{edits}，重算。')
+                    self.assertEqual(len(store.messages(sid, 10)), 2)
+                    self.assertEqual(meeting.read(store, first['id']), record)
 
     def test_followup_revalidates_tail_during_submission_and_retry(self):
         from assistant import answer_runs

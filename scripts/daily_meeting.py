@@ -1,4 +1,5 @@
 """Read-only earliest common slot in explicitly listed availability."""
+from copy import deepcopy
 from datetime import date, timedelta, timezone
 import hashlib
 import json
@@ -437,20 +438,24 @@ def bind_named_zones(plan, previous, *, fresh=False):
 
 
 FOLLOWUP = re.compile(r'上一場會議[，,]\s*(.{1,512})[，,]\s*(?:請)?(?:重算|重新計算)(?:最早時段)?[。！]?')
+REVISION_SEPARATOR = re.compile(r'[；;]')
+MAX_BATCH_EDITS = 4
 
 
 def revise_zoned(plan, clause):
     edit = ZONED_REVISION.fullmatch(clause)
     if not edit:
         raise ValueError('請先列出參與者與完整的當地日期，再取消或更改當日空檔。')
-    person = plan['people'].get(edit[1].strip('「」'))
-    day = person['days'].get(edit[2]) if person else None
+    name, local_date = edit[1].strip('「」'), edit[2]
+    person = plan['people'].get(name)
+    day = person['days'].get(local_date) if person else None
     if day is None:
         raise ValueError('請使用原先列出的參與者及該人的當地日期。')
     named = plan['schema'] in NAMED_ZONED_PLANS
     overnight = plan['schema'] == OVERNIGHT_ZONED_PLAN
-    if edit[3] != '取消':
-        slots = overnight_slots(edit[2], edit[4]) if overnight else zoned_slots(edit[4], named=named)
+    replacing = edit[3] != '取消'
+    if replacing:
+        slots = overnight_slots(local_date, edit[4]) if overnight else zoned_slots(edit[4], named=named)
         if slots is None:
             raise ValueError('請列出當日完整空檔，或寫「無空檔」。')
         day.update(available=slots, cancelled=[])
@@ -458,17 +463,17 @@ def revise_zoned(plan, clause):
         if re.fullmatch(MORNING, edit[4]):
             cut = [0, 720]
         else:
-            cut = overnight_span(edit[2], edit[4]) if overnight else zoned_span(edit[4], named=named)
+            cut = overnight_span(local_date, edit[4]) if overnight else zoned_span(edit[4], named=named)
         if not cut or len(day['cancelled']) >= 24:
             raise ValueError('請提供有效的當地取消時段，每日最多 24 筆。')
         day['cancelled'].append(dict(interval=cut, source=clause))
         slots = [cut]
     if not overnight and any(isinstance(slot, dict) for slot in slots):
         plan['schema'] = FOLD_ZONED_PLAN
+    return (name, local_date), replacing
 
 
-def revise(plan, clause):
-    """Change the detached prior snapshot, retaining unaffected attendees and constraints."""
+def revise_clause(plan, clause):
     duration = re.fullmatch(r'(?:會議)?時長改為\s*([1-9][0-9]{0,3})\s*分鐘', clause)
     if duration:
         length = int(duration[1])
@@ -477,17 +482,18 @@ def revise(plan, clause):
                 raise ValueError('請指定 1 至 1440 分鐘的會議時長。')
             raise ValueError('請指定同一天內的會議時長（1 至 1440 分鐘）。')
         plan['duration'] = length
-        return
+        return None, True
     if plan.get('schema') in ZONED_PLANS:
-        revise_zoned(plan, clause)
-        return
+        return revise_zoned(plan, clause)
     dated = plan.get('schema') in DATE_PLANS
     availability = plan
+    local_date = None
     if dated:
         day = re.fullmatch(rf'({DATE})(?:\s+|[：:]\s*)(.+)', clause)
         if not day or day[1] not in plan['days']:
             raise ValueError('請先指定原先列出的完整日期，再更正當天的空檔。')
-        availability, clause = plan['days'][day[1]], day[2]
+        local_date, clause = day.groups()
+        availability = plan['days'][local_date]
     replacement = re.fullmatch(rf'({NATURAL_NAME})的(?:空檔|可用時段)改為\s*(.+)', clause)
     removal = CANCEL.fullmatch(clause)
     if not (replacement or removal):
@@ -508,6 +514,32 @@ def revise(plan, clause):
         if not cut or len(availability['cancelled']) >= 24:
             raise ValueError('請提供有效的同日取消時段；累計超過 24 筆時，請重新列出空檔。')
         availability['cancelled'].append(dict(name=name, interval=cut, source=clause))
+    return (name, local_date), replacement is not None
+
+
+def revise(plan, clause):
+    """Apply the whole follow-up to the detached snapshot or leave it unchanged."""
+    if not REVISION_SEPARATOR.search(clause):
+        revise_clause(plan, clause)
+        return
+    edits = [part.strip() for part in REVISION_SEPARATOR.split(clause)]
+    if not 2 <= len(edits) <= MAX_BATCH_EDITS or not all(edits):
+        raise ValueError('同一輪請提供 2 至 4 項完整的會議更正，每項以分號分隔。')
+    candidate = deepcopy(plan)
+    touched = set()
+    for index, edit in enumerate(edits, 1):
+        try:
+            scope, replacing = revise_clause(candidate, edit)
+            if replacing and scope in touched:
+                if scope is None:
+                    raise ValueError('同一輪只能指定一次會議時長。')
+                raise ValueError('同一人同一日請先列一次完整新空檔，再列要扣除的時段。')
+            touched.add(scope)
+        except ValueError as exc:
+            raise ValueError(f'第 {index} 項更正無法採用。{exc}') from None
+    # Check combined constraints, including local times, before a chat run can be saved.
+    resolve(candidate)
+    plan.update(candidate)
 
 
 def ranges(mask):
@@ -770,6 +802,11 @@ def describe(context):
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
+        revision = FOLLOWUP.fullmatch(context['current_request'])
+        if revision and REVISION_SEPARATOR.search(revision[1]):
+            lines.append('本次依序採用的更正')
+            lines.extend(f'{index}. {part.strip()}'
+                         for index, part in enumerate(REVISION_SEPARATOR.split(revision[1]), 1))
     if anchor := plan.get('date_anchor'):
         if anchor['source'] == 'user':
             lines.append(f'依原問指定的日期 {anchor["date"]} 為今天。')
