@@ -559,3 +559,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 分開統計可解析輸出、最後結論、同時正確的狀態與來源、引用規則或舊輪，以及一整對答案或證據是否都正確。來源落在本輪仍須核對物件及狀態。兩個命題和句子邊界事先明列，因此這項研究衡量已知命題的證據歸屬。驗證使用原生閒置、完整 token 預檢、實際原答和兩份 SQLite。所有實測證據留在本機。
+
+### 從未分段原文標示範圍線索
+
+`assess_natural_scope.py` 使用六道未標範圍的新場景、一個歷史反證和一個相同提示的控制。程式按原文字元範圍保留完整句子，只讀取引文外的句型及時間線索。可辨認的句子加上規則、較早或當前線索的提示。缺少或混有多種線索時標示範圍待辨。引文與括號內的標點保留，邊界有誤或輸入超過上限時維持原文。兩組保存相同原問與前文，提示的差異限於當前問題的標題與換行。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_natural_scope.py check
+.venv/Scripts/python.exe scripts/learning/assess_natural_scope.py prepare <名稱> --reference <已完成的語意診斷>
+.venv/Scripts/python.exe scripts/learning/assess_natural_scope.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_natural_scope.py verify <名稱>
+```
+
+兩組都回兩項事先明列命題的狀態與整句原文。缺少當前觀察時可用待查及空來源。報告分開計算結論、狀態、整句與狀態配對、找不到完全相同原句的引文，以及無來源的肯定或否定。分段只提供線索，原始來源與證據歸屬仍要各自核對。所有作答及 SQLite 證據留在本機。
