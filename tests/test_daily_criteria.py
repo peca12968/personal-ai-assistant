@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from assistant import answer_runs
+from assistant.backup import create_backup, restore_backup
 from assistant.engine import EngineError
 from assistant.store import Store
 from scripts import daily_criteria as options
@@ -126,7 +127,7 @@ class OptionTests(unittest.TestCase):
             app = DailyAssistant(store, None)
             sid = store.new_session()
             origin = app.ask(sid, QUERY)
-            with patch.object(options, 'resolve', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
                 app.ask(sid, '預算再加 35 元。')
             result = app.retry(sid)
             ctx = store.answer_context(result['id'])
@@ -143,7 +144,7 @@ class OptionTests(unittest.TestCase):
             app=DailyAssistant(store,Raw())
             sid=store.new_session()
             first=app.ask(sid,QUERY)
-            with patch.object(options,'resolve',side_effect=EngineError('停止','cancelled')), self.assertRaises(EngineError):
+            with patch.object(answer_runs,'finish',side_effect=EngineError('停止','cancelled')), self.assertRaises(EngineError):
                 app.ask(sid,CHANGE)
             self.assertEqual(app.retry(sid)['content'],'棕袋')
             self.assertEqual(len(store.messages(sid,10)),4)
@@ -157,3 +158,70 @@ class OptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'已變動'):app.ask(sid,CHANGE)
             store.add_message(sid,'user','新的主題')
             self.assertEqual(app.ask(sid,CHANGE)['content'],'原始引擎')
+
+    def test_ordinal_views_original_order_and_keeps_the_current_limits_for_recalculation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            initial = app.ask(sid, QUERY)
+            revised = app.ask(sid, '預算再加 35 元。')
+            listing = app.ask(sid, '列出剛才的方案。')
+            self.assertIn('第 1 個｜白袋：90 元、4 公斤｜符合限制', listing['content'])
+            self.assertIn('第 2 個｜棕袋：130 元、2 公斤｜符合限制，依規則首選', listing['content'])
+            self.assertIn('第 3 個｜灰袋：150 元、1 公斤｜未符合', listing['content'])
+            selected = app.ask(sid, '用第 2 筆。')
+            saved = options.read(store, selected['id'])
+            self.assertEqual(saved['option_review'], dict(kind='choice', position=2))
+            self.assertEqual(saved['option_source']['answer_id'], listing['id'])
+            self.assertEqual(options.read(store, listing['id'])['option_source']['answer_id'], revised['id'])
+            self.assertIn('棕袋', selected['content'])
+            result = app.ask(sid, '預算再降 20 元。')
+            self.assertEqual(result['content'], '白袋')
+            self.assertEqual(options.read(store, result['id'])['option_plan']['last_adjustment']['before'], 135)
+            self.assertEqual(options.read(store, initial['id'])['option_plan']['limits']['元']['value'], 100)
+
+    def test_ordinal_requires_a_visible_list_and_preserves_unrelated_routes(self):
+        class Raw:
+            def answer(self, prompt, cancel=None):
+                return '原始引擎'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, Raw(), default_chat=True)
+            sid = store.new_session()
+            app.ask(sid, QUERY)
+            with self.assertRaisesRegex(ValueError, '緊接在方案清單'):
+                app.ask(sid, '方案清單的第二個。')
+            app.ask(sid, '列出方案清單。')
+            with self.assertRaisesRegex(ValueError, '列出 3 個方案'):
+                app.ask(sid, '第四個。')
+            with self.assertRaisesRegex(ValueError, '緊接在方案清單'):
+                app.ask(store.new_session(), '方案清單的第二個。')
+            self.assertEqual(app.ask(sid, '換個話題。先聊明天。')['content'], '原始引擎')
+            with self.assertRaisesRegex(ValueError, '緊接在方案清單'):
+                app.ask(sid, '方案清單的第二個。')
+            self.assertEqual(app.ask(sid, '第二個。')['content'], '原始引擎')
+
+    def test_review_retry_restore_and_ancestor_source_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            original = app.ask(sid, QUERY)
+            app.ask(sid, '列出方案清單。')
+            with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+                app.ask(sid, '看第二個。')
+            selected = app.retry(sid)
+            saved = options.read(store, selected['id'])
+            self.assertIn('未符合「預算最多 100 元」', selected['content'])
+            bundle = create_backup(store.path, root/'review.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            self.assertEqual(options.read(restored, selected['id']), saved)
+            with restored.connect() as db:
+                db.execute('UPDATE messages SET content=? WHERE id=?',
+                           (QUERY.replace('130 元', '95 元'), original['user_message_id']))
+            with self.assertRaisesRegex(ValueError, '原|來源'):
+                options.read(restored, selected['id'])

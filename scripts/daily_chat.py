@@ -15,7 +15,7 @@ def run_daily_window(store, engine, *, default_chat=False):
     from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
     from assistant.gui import App, tk
     from assistant.chat_calculation import describe
-    from scripts import daily_container_id, daily_counts, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_meeting_lookup, daily_necessary
+    from scripts import daily_container_id, daily_counts, daily_criteria, daily_deadline, daily_explicit_json, daily_meeting, daily_meeting_export, daily_meeting_lookup, daily_necessary
 
     class DailyWindow(App):
         def __init__(self, *args):
@@ -151,21 +151,13 @@ def run_daily_window(store, engine, *, default_chat=False):
                              '', '按本機核對交付：' + check['delivered']]
             elif context and 'option_plan' in context:
                 title = '本機方案比較紀錄'
-                plan = context['option_plan']
-                lines = [context['current_request'], '', '有效限制']
-                if context.get('option_source'):
-                    lines.insert(1, f"沿用本對話方案回答 #{context['option_source']['answer_id']}")
-                if context.get('option_question'):
-                    lines.insert(1, '更正尚待確認，沿用上一份有效條件。')
-                elif change := plan.get('last_adjustment'):
-                    mode = '相對增減' if change['mode'] == 'relative' else '指定新值'
-                    lines.insert(1, f"{change['field']}（{mode}）：{change['before']} → {change['after']} {change['unit']}")
-                lines.extend(rule['source'] for rule in plan['limits'].values())
-                lines += ['', '依序比較（數值較小者優先）：' + '、'.join(plan['ranking']), '逐項核對']
-                for option, check in zip(plan['options'], context['calculation']['checks'], strict=True):
-                    reason = '不符合：' + '、'.join(plan['limits'][key]['source'] for key in check['rejected']) if check['rejected'] else '符合'
-                    lines.append(option['source'] + ' · ' + reason)
-                lines += ['', context['calculation']['result']['exact']]
+                try:
+                    verified = daily_criteria.read(self.store, answer_id)
+                    if verified is None:
+                        raise ValueError
+                    lines = daily_criteria.describe(verified)
+                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                    lines = ['無法依原始條件與清單順序重建這筆方案結果。']
             elif context and (daily_meeting_lookup.FIELD in context or daily_meeting_lookup.CHOICE_FIELD in context):
                 title = '本機會議查詢紀錄'
                 field = (daily_meeting_lookup.CHOICE_FIELD if daily_meeting_lookup.CHOICE_FIELD in context

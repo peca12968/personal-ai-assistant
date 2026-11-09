@@ -5,6 +5,23 @@ import re
 TOPIC_RETURN = re.compile(r'^(?:回到(?:剛才|之前|先前)?)(?:的)?([\u4e00-\u9fff]{2,12}?)'
                           r'(?:的事情|的話題|的問題|的事)[。，,]\s*(.+)$')
 SWITCH = re.compile(r'^(?:換個話題|換個問題|換個題目|說別的事|另外一件事)[。，,：:]')
+CHINESE_NUMBERS = '零一二三四五六七八九'
+
+
+def ordinal_pattern(scope):
+    return re.compile(r'(?:請)?(?:我選|選擇|選|用|查看|看)?\s*'
+                      rf'(?P<scope>{scope})?\s*第\s*'
+                      rf'(?P<number>[0-9]{{1,2}}|十[{CHINESE_NUMBERS[1:]}]?|[{CHINESE_NUMBERS}])\s*'
+                      r'(?:個|筆|項)(?:[。！!？?])?')
+
+
+def ordinal_position(match):
+    number = match['number']
+    if number.isascii():
+        return int(number)
+    if number.startswith('十'):
+        return 10 + CHINESE_NUMBERS.index(number[-1]) if len(number) > 1 else 10
+    return CHINESE_NUMBERS.index(number)
 
 
 def resumed_topic(context):

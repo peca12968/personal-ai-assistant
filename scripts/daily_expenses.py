@@ -170,18 +170,6 @@ def apply_followup(ledger, target, question, *, can_prompt=False):
     row['included'] = row['status'] == '已核准' and row['currency'] == ledger['currency']
 
 
-def option_source_valid(row, saved):
-    initial = json.loads(row['context_json'])
-    calc = saved.get('calculation', {})
-    return (isinstance(saved.get('option_plan'), dict) and saved['option_plan'].get('schema') == 'daily_option_table_v1'
-            and saved['option_plan'] == initial.get('option_plan') and saved.get('option_source') == initial.get('option_source')
-            and saved.get('option_question') == initial.get('option_question') and saved.get('response_mode') == 'local_calculation'
-            and row['question'] == initial.get('current_request') == saved.get('current_request')
-            and isinstance(calc, dict) and isinstance(calc.get('result'), dict)
-            and calc.get('schema') == 'daily_option_selection_v1' and calc.get('model_called') is False
-            and calc.get('status') == 'complete' and row['content'] == calc.get('result', {}).get('exact'))
-
-
 def stock_clarification_ids(db, sid, context, before):
     """Identify saved clarification answers immediately preceding a quantity-only user turn."""
     history = context['recent_conversation']
@@ -358,6 +346,10 @@ class DailyAssistant(Assistant):
             if daily_necessary.FIELD in prior:
                 raise EngineError('目前無法核對原先的必要條件，請重新提供純文字條件。', 'evidence_invalid')
         if self.default_chat:
+            if local and self.allow_local_evidence and (not retry or 'option_plan' in prior):
+                result = self._option_answer(sid, question, cancel, retry, draft, prior)
+                if result is not None:
+                    return result
             result = self._meeting_answer(sid, question, cancel, retry, draft, image_ids, prior)
             if result is not None:
                 return result
@@ -470,42 +462,10 @@ class DailyAssistant(Assistant):
                     return daily_stock.verified_answer(context, raw)
 
                 return self._run_recorded(sid, question, context, verify_stock, cancel, retry, draft, 'inventory_check')
-        selection_change = daily_criteria.revision(question) if local else None
-        option_plan = daily_criteria.parse(question) if local else None
-        if (option_plan or selection_change) and not self.store.documents(sid, include_content=False):
-            origin = None
-            clarification = None
-            if selection_change:
-                previous = previous_answer(self.store, sid, before)
-                saved = json.loads(previous['payload']) if previous else {}
-                if 'option_plan' in saved:
-                    if not option_source_valid(previous, saved):
-                        raise ValueError('上一份方案紀錄已變動，請重新提供條件。')
-                    origin = source_ref(previous)
-                    option_plan = saved['option_plan']
-                    clarification = daily_criteria.revise(option_plan, selection_change)
-                elif prior.get('option_source'):
-                    raise ValueError('已無法核對原先的方案紀錄，請重新提供條件。')
-            if option_plan and (not retry or 'option_plan' in prior):
-                if retry and (prior['option_plan'] != option_plan or prior.get('option_source') != origin
-                              or prior.get('option_question') != clarification):
-                    raise ValueError('重試所需的方案來源已變更。')
-                context = make_context(question, [], [])
-                context.update(response_mode='local_calculation', option_plan=option_plan,
-                               documents={'catalog': [], 'excerpts': []})
-                if origin:
-                    context['option_source'] = origin
-                if clarification:
-                    context['option_question'] = clarification
-
-                def resolve_options(uid):
-                    if origin:
-                        row = previous_answer(self.store, sid, uid)
-                        if not row or source_ref(row) != origin or not option_source_valid(row, json.loads(row['payload'])):
-                            raise ValueError('提交前方案來源已變更，請重新核對。')
-                    return daily_criteria.resolve(option_plan, clarification)
-
-                return self._run_recorded(sid, question, context, resolve_options, cancel, retry, draft)
+        if local and (not retry or 'option_plan' in prior):
+            result = self._option_answer(sid, question, cancel, retry, draft, prior)
+            if result is not None:
+                return result
         if not (followup or choice):
             result = self._meeting_answer(sid, question, cancel, retry, draft, image_ids, prior)
             if result is not None:
@@ -640,6 +600,27 @@ class DailyAssistant(Assistant):
             return daily_explicit_json.evaluate(plan)
 
         return self._run_recorded(sid, question, context, serialize, cancel, retry, draft, daily_explicit_json.FIELD)
+
+    def _option_answer(self, sid, question, cancel, retry, draft, prior):
+        def capture(before):
+            return daily_criteria.capture(self.store, sid, question, before, allow_review=self.allow_local_evidence)
+
+        state = capture(retry['user_message_id'] if retry else None)
+        if retry and state is None:
+            raise ValueError('已無法核對原先的方案紀錄，請重新提供條件。')
+        if state is None:
+            return None
+        if retry and not daily_criteria.fields_equal(state, {key: prior[key] for key in daily_criteria.FIELDS if key in prior}):
+            raise ValueError('重試所需的方案來源已變更。')
+        context = make_context(question, [], [])
+        context.update(response_mode='local_calculation', documents={'catalog': [], 'excerpts': []}, **state)
+
+        def resolve_options(uid):
+            if not daily_criteria.fields_equal(capture(uid), state):
+                raise ValueError('提交前方案來源已變更，請重新核對。')
+            return daily_criteria.render(state)
+
+        return self._run_recorded(sid, question, context, resolve_options, cancel, retry, draft)
 
     def _meeting_lookup_answer(self, sid, question, cancel, retry, draft, prior):
         field = daily_meeting_lookup.FIELD

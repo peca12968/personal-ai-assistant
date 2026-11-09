@@ -3,7 +3,7 @@ from datetime import date
 import re
 
 from assistant import local_answer_receipts
-from scripts import daily_meeting as meeting
+from scripts import daily_dialogue, daily_meeting as meeting
 
 FIELD = 'meeting_lookup'
 CHOICE_FIELD = 'meeting_lookup_choice'
@@ -26,10 +26,7 @@ DATE_RANGE = re.compile(rf'({meeting.DATE})\s*[至到～~]\s*({meeting.DATE})')
 ATTENDEE_FILTER = re.compile(r'(?:參與者|人員)(?:是|為)?\s*(.+)')
 PERSON = re.compile(r'「([\u4e00-\u9fffA-Za-z0-9]{1,16})」|([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,19})')
 TOPIC_FILTER = re.compile(rf'(?:會議)?主題(?:(?P<contains>包含|含有|含|有)|是|為)?\s*{meeting.TOPIC_TEXT}')
-CHINESE_NUMBERS = '零一二三四五六七八九'
-CHOICE = re.compile(r'(?:請)?(?:我選|選擇|選|用|查看|看)?\s*(?P<scope>會議(?:清單|紀錄)(?:中的?|的))?\s*'
-                    rf'第\s*(?P<number>[0-9]{{1,2}}|十[{CHINESE_NUMBERS[1:]}]?|[{CHINESE_NUMBERS}])\s*'
-                    r'(?:個|筆|項)(?:[。！!？?])?')
+CHOICE = daily_dialogue.ordinal_pattern(r'會議(?:清單|紀錄)(?:中的?|的)')
 
 
 def parse_ranges(text):
@@ -239,13 +236,7 @@ def choose(db, sid, question, before, cancel=None):
         if match['scope']:
             raise ValueError('請緊接在會議查詢結果後選擇，或指定會議回答編號。')
         return None
-    number = match['number']
-    if number.isascii():
-        position = int(number)
-    elif number.startswith('十'):
-        position = 10 + CHINESE_NUMBERS.index(number[-1]) if len(number) > 1 else 10
-    else:
-        position = CHINESE_NUMBERS.index(number)
+    position = daily_dialogue.ordinal_position(match)
     source_plan = receipt['plan']
     shown = source_plan['matches'][:MAX_RESULTS]
     if not 1 <= position <= len(shown):
