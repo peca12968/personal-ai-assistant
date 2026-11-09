@@ -267,6 +267,10 @@ class DailyAssistant(Assistant):
             matches = self._meeting_lookup_answer(sid, question, cancel, retry, draft, prior)
             if matches is not None:
                 return matches
+        if local and self.allow_local_evidence and (not retry or daily_meeting_lookup.CHOICE_FIELD in prior):
+            selected = self._meeting_lookup_choice(sid, question, cancel, retry, draft, prior)
+            if selected is not None:
+                return selected
         if self.allow_local_calculation and not image_ids:
             from assistant.document_calculation import parse_live_request
             if parse_live_request(question) is not None:
@@ -664,6 +668,30 @@ class DailyAssistant(Assistant):
             return daily_meeting_lookup.evaluate(plan)
 
         return self._run_recorded(sid, question, context, search, cancel, retry, draft, field)
+
+    def _meeting_lookup_choice(self, sid, question, cancel, retry, draft, prior):
+        field = daily_meeting_lookup.CHOICE_FIELD
+        if not daily_meeting_lookup.CHOICE.fullmatch(question) or self.store.documents(sid, include_content=False):
+            if field in prior:
+                raise ValueError('重試的會議選擇已無法核對。')
+            return None
+        before = retry['user_message_id'] if retry else None
+        plan = daily_meeting_lookup.capture_choice(self.store, sid, question, before, cancel)
+        if retry and prior.get(field) != plan:
+            raise ValueError('重試的會議查詢來源已變更。')
+        if plan is None:
+            return None
+        context = make_context(question, [], [])
+        context.update(response_mode=daily_meeting_lookup.MODE, documents={'catalog': [], 'excerpts': []},
+                       **{field: plan})
+
+        def select(uid):
+            if (self.store.documents(sid, include_content=False)
+                    or daily_meeting_lookup.capture_choice(self.store, sid, question, uid, cancel) != plan):
+                raise ValueError('提交前的會議查詢來源已變更，請重新查詢。')
+            return daily_meeting_lookup.evaluate_choice(plan)
+
+        return self._run_recorded(sid, question, context, select, cancel, retry, draft, field)
 
     def _meeting_answer(self, sid, question, cancel, retry, draft, image_ids, prior):
         if not self.allow_local_calculation or (retry and 'meeting_plan' not in prior):

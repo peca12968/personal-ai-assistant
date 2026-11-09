@@ -6,14 +6,17 @@ from assistant import local_answer_receipts
 from scripts import daily_meeting as meeting
 
 FIELD = 'meeting_lookup'
+CHOICE_FIELD = 'meeting_lookup_choice'
 MODE = 'local_calculation'
 PLAN_V1 = 'daily_meeting_lookup_plan_v1'
 PLAN_V2 = 'daily_meeting_lookup_plan_v2'
 PLAN_V3 = 'daily_meeting_lookup_plan_v3'
 PLAN_V4 = 'daily_meeting_lookup_plan_v4'
-CURRENT_PLAN = PLAN_V4
+PLAN_V5 = 'daily_meeting_lookup_plan_v5'
+CURRENT_PLAN = PLAN_V5
 RECEIPTS = {PLAN_V1: 'daily_meeting_lookup_receipt_v1', PLAN_V2: 'daily_meeting_lookup_receipt_v2',
-            PLAN_V3: 'daily_meeting_lookup_receipt_v3', PLAN_V4: 'daily_meeting_lookup_receipt_v4'}
+            PLAN_V3: 'daily_meeting_lookup_receipt_v3', PLAN_V4: 'daily_meeting_lookup_receipt_v4',
+            PLAN_V5: 'daily_meeting_lookup_receipt_v5'}
 MAX_SCAN = 100
 MAX_RESULTS = 10
 REQUEST = re.compile(r'(?:請)?(?:查詢?|找)會議紀錄[，,：:]\s*(.{1,240}?)[。！!？?]?')
@@ -23,6 +26,10 @@ DATE_RANGE = re.compile(rf'({meeting.DATE})\s*[至到～~]\s*({meeting.DATE})')
 ATTENDEE_FILTER = re.compile(r'(?:參與者|人員)(?:是|為)?\s*(.+)')
 PERSON = re.compile(r'「([\u4e00-\u9fffA-Za-z0-9]{1,16})」|([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,19})')
 TOPIC_FILTER = re.compile(rf'(?:會議)?主題(?:(?P<contains>包含|含有|含|有)|是|為)?\s*{meeting.TOPIC_TEXT}')
+CHINESE_NUMBERS = '零一二三四五六七八九'
+CHOICE = re.compile(r'(?:請)?(?:我選|選擇|選|用|查看|看)?\s*(?P<scope>會議(?:清單|紀錄)(?:中的?|的))?\s*'
+                    rf'第\s*(?P<number>[0-9]{{1,2}}|十[{CHINESE_NUMBERS[1:]}]?|[{CHINESE_NUMBERS}])\s*'
+                    r'(?:個|筆|項)(?:[。！!？?])?')
 
 
 def parse_ranges(text):
@@ -47,7 +54,8 @@ def parse(question, *, schema=CURRENT_PLAN):
         return None
     day, attendees, topic, ranges = None, [], None, []
     topic_mode = None
-    supports_ranges = schema in (PLAN_V3, PLAN_V4)
+    supports_ranges = schema in (PLAN_V3, PLAN_V4, PLAN_V5)
+    supports_contains = schema in (PLAN_V4, PLAN_V5)
     separator = r'[，,；;]' if schema == PLAN_V1 else r'[，,；;](?![^「]*」)'
     for clause in re.split(rf'\s*{separator}\s*', request[1]):
         if day is None and not ranges and (match := DATE_FILTER.fullmatch(clause)):
@@ -68,7 +76,7 @@ def parse(question, *, schema=CURRENT_PLAN):
                 return None
         elif schema != PLAN_V1 and topic is None and (match := TOPIC_FILTER.fullmatch(clause)):
             contains, text = match.groups()
-            if (contains and schema != PLAN_V4) or not meeting.valid_topic(text):
+            if (contains and not supports_contains) or not meeting.valid_topic(text):
                 return None
             topic = text
             topic_mode = 'contains' if contains else 'exact'
@@ -79,7 +87,7 @@ def parse(question, *, schema=CURRENT_PLAN):
         criteria['topic'] = topic
     if supports_ranges:
         criteria['date_ranges'] = ranges
-    if schema == PLAN_V4:
+    if supports_contains:
         criteria['topic_mode'] = topic_mode
     return criteria
 
@@ -173,44 +181,102 @@ def evaluate(plan):
     if skipped:
         lines.append(f'有 {skipped} 筆保存的會議回答無法核對。')
     if matches:
+        if plan['schema'] == PLAN_V5:
+            lines.append('要查看某一筆，可依清單順序回「第一個」等選項。')
         lines.append('要更正其中一版，可用「沿用會議回答 #編號」指定來源。')
     answer = '\n'.join(lines)
     return answer, dict(schema=RECEIPTS[plan['schema']], plan=plan, output=answer, model_called=False)
 
 
-def read(store, mid):
+def read_saved(db, mid, field, cancel=None):
+    rows = db.execute('''SELECT r.session_id, r.user_message_id,
+        CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS payload
+        FROM answer_runs r JOIN answer_contexts c ON c.message_id=r.answer_message_id
+        WHERE r.answer_message_id=? LIMIT 2''', (local_answer_receipts.MAX_JSON_BYTES, mid)).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1 or not 0 < rows[0]['user_message_id'] < mid:
+        raise ValueError('會議查詢缺少唯一且有效的回答流程。')
+    row = rows[0]
+    context = local_answer_receipts.load_context(row['payload'])
+    if not isinstance(context, dict) or context.get('response_mode') != MODE or field not in context:
+        return None
+
+    def validate(receipt, delivered, question):
+        if field == CHOICE_FIELD:
+            plan = choose(db, row['session_id'], question, row['user_message_id'], cancel)
+            render = evaluate_choice
+        else:
+            stored = receipt.get('plan') if isinstance(receipt, dict) else None
+            schema = stored.get('schema') if isinstance(stored, dict) else None
+            if not isinstance(schema, str) or schema not in RECEIPTS:
+                raise ValueError('會議查詢的紀錄版本無法核對。')
+            plan = lookup(db, row['session_id'], question, row['user_message_id'], cancel, schema=schema)
+            render = evaluate
+        if plan is None:
+            raise ValueError('會議查詢的原問無法核對。')
+        answer, expected = render(plan)
+        if delivered != answer or not meeting.same_json(receipt, expected):
+            raise ValueError('會議查詢與原始來源或交付不符。')
+        return receipt
+
+    return local_answer_receipts.checked_row(db, mid, context, MODE, field, validate)
+
+
+def read(store, mid, *, field=FIELD):
     with store.connect() as db:
         db.execute('BEGIN')
-        rows = db.execute('''SELECT r.session_id, r.user_message_id,
-            CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END AS payload
-            FROM answer_runs r JOIN answer_contexts c ON c.message_id=r.answer_message_id
-            WHERE r.answer_message_id=? LIMIT 2''', (local_answer_receipts.MAX_JSON_BYTES, mid)).fetchall()
-        if not rows:
-            return None
-        if len(rows) != 1 or not 0 < rows[0]['user_message_id'] < mid:
-            raise ValueError('會議查詢缺少唯一且有效的回答流程。')
-        row = rows[0]
-        context = local_answer_receipts.load_context(row['payload'])
-        if not isinstance(context, dict) or context.get('response_mode') != MODE or FIELD not in context:
-            return None
-        stored = context[FIELD]
-        stored_plan = stored.get('plan') if isinstance(stored, dict) else None
-        schema = stored_plan.get('schema') if isinstance(stored_plan, dict) else None
-        if not isinstance(schema, str) or schema not in RECEIPTS:
-            raise ValueError('會議查詢的紀錄版本無法核對。')
+        return read_saved(db, mid, field)
 
-        def validate(receipt, delivered, question):
-            plan = lookup(db, row['session_id'], question, row['user_message_id'], schema=schema)
-            if plan is None:
-                raise ValueError('會議查詢的原問無法核對。')
-            answer, expected = evaluate(plan)
-            if delivered != answer or not meeting.same_json(receipt, expected):
-                raise ValueError('會議查詢與原始來源或交付不符。')
-            return receipt
 
-        return local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate)
+def choose(db, sid, question, before, cancel=None):
+    match = CHOICE.fullmatch(question) if isinstance(question, str) else None
+    if not match:
+        return None
+    lookup_id = meeting.previous_id(db, sid, before)
+    receipt = read_saved(db, lookup_id, FIELD, cancel)
+    if receipt is None:
+        if match['scope']:
+            raise ValueError('請緊接在會議查詢結果後選擇，或指定會議回答編號。')
+        return None
+    number = match['number']
+    if number.isascii():
+        position = int(number)
+    elif number.startswith('十'):
+        position = 10 + CHINESE_NUMBERS.index(number[-1]) if len(number) > 1 else 10
+    else:
+        position = CHINESE_NUMBERS.index(number)
+    source_plan = receipt['plan']
+    shown = source_plan['matches'][:MAX_RESULTS]
+    if not 1 <= position <= len(shown):
+        if not shown:
+            raise ValueError('上一則會議查詢沒有符合的版本，請調整查詢條件。')
+        raise ValueError(f'上一則會議查詢列出 {len(shown)} 筆，請選清單中的順序。')
+    selected = shown[position - 1]
+    source = next(item for item in source_plan['checked'] if item['answer_id'] == selected['answer_id'])
+    return dict(schema='daily_meeting_lookup_choice_plan_v1', request=question, lookup_answer_id=lookup_id,
+                position=position, selected=selected, meeting_source=source)
+
+
+def capture_choice(store, sid, question, before=None, cancel=None):
+    with store.connect() as db:
+        db.execute('BEGIN')
+        return choose(db, sid, question, before, cancel)
+
+
+def evaluate_choice(plan):
+    selected = plan['selected']
+    mid = selected['answer_id']
+    topic = f'「{selected["topic"]}」' if 'topic' in selected else ''
+    answer = '\n'.join((f'第 {plan["position"]} 筆是會議回答 #{mid}{topic}。',
+                        f'原排程結果為 {selected["result"]}。',
+                        f'要從這版重算，可以輸入「沿用會議回答 #{mid}，時長改為 30 分鐘，重算。」'))
+    return answer, dict(schema='daily_meeting_lookup_choice_receipt_v1', plan=plan, output=answer, model_called=False)
 
 
 def describe(receipt):
     plan = receipt['plan']
+    if 'lookup_answer_id' in plan:
+        return '\n'.join((plan['request'], '', f'依會議查詢回答 #{plan["lookup_answer_id"]} 的顯示順序。',
+                          receipt['output']))
     return '\n'.join((plan['request'], '', f'已檢查 {len(plan["checked"])} 筆保存的會議快照。', receipt['output']))

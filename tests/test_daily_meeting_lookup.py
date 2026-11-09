@@ -143,7 +143,7 @@ class DailyMeetingLookupTests(unittest.TestCase):
         self.app.ask(self.sid, DATED)
         result = self.app.ask(self.sid, f'查會議紀錄，主題「{title}」，日期 2028-02-29，參與者「王小晴」。')
         proof = lookup.read(self.store, result['id'])
-        self.assertEqual(proof['plan']['schema'], lookup.PLAN_V4)
+        self.assertEqual(proof['plan']['schema'], lookup.PLAN_V5)
         self.assertEqual(proof['plan']['criteria']['topic_mode'], 'exact')
         self.assertEqual([item['answer_id'] for item in proof['plan']['matches']], [selected['id']])
         self.assertIn(f'#{selected["id"]}｜「{title}」', result['content'])
@@ -249,13 +249,74 @@ class DailyMeetingLookupTests(unittest.TestCase):
         self.assertIsNone(lookup.parse(query[:-1] + '，然後通知所有人。'))
         self.engine.answer.assert_not_called()
 
+    def test_ordinal_selects_the_visible_version_and_can_handoff_to_an_explicit_edit(self):
+        first = self.app.ask(self.sid, '會議主題：「盤點」。' + DATED)
+        latest = self.app.ask(self.sid, '上一場會議，時長改為 25 分鐘，重算。')
+        query = self.app.ask(self.sid, '查會議紀錄，主題「盤點」。')
+        original = meeting.read(self.store, first['id'])
+        self.assertIn('依清單順序', query['content'])
+        selected = self.app.ask(self.sid, '第二個。')
+        proof = lookup.read(self.store, selected['id'], field=lookup.CHOICE_FIELD)
+        self.assertEqual(proof['plan']['lookup_answer_id'], query['id'])
+        self.assertEqual(proof['plan']['position'], 2)
+        self.assertEqual(proof['plan']['meeting_source']['answer_id'], first['id'])
+        self.assertIn(f'#{first["id"]}「盤點」', selected['content'])
+        self.assertIsNone(meeting.read(self.store, selected['id']))
+        self.assertEqual([item['id'] for item in meeting.recent_completed(self.store, self.sid)],
+                         [latest['id'], first['id']])
+        changed = self.app.ask(self.sid, f'沿用會議回答 #{first["id"]}，時長改為 30 分鐘，重算。')
+        self.assertEqual(changed['content'], '2028-02-28 09:10-09:40')
+        self.assertEqual(meeting.read(self.store, first['id']), original)
+        self.assertEqual(lookup.read(self.store, selected['id'], field=lookup.CHOICE_FIELD), proof)
+        self.engine.answer.assert_not_called()
+
+    def test_ordinal_cannot_select_a_hidden_item_or_a_stale_or_foreign_list(self):
+        self.app.ask(self.sid, DATED)
+        self.app.ask(self.sid, DATED)
+        with patch.object(lookup, 'MAX_RESULTS', 1):
+            self.app.ask(self.sid, QUERY)
+            with self.assertRaisesRegex(ValueError, '列出 1 筆'):
+                self.app.ask(self.sid, '第 2 筆。')
+        self.app.ask(self.sid, SAME_DAY)
+        for sid in (self.sid, self.store.new_session()):
+            with self.subTest(sid=sid), self.assertRaisesRegex(ValueError, '緊接在會議查詢結果'):
+                self.app.ask(sid, '會議清單的第二個。')
+        self.engine.answer.assert_not_called()
+        self.assertEqual(self.app.ask(self.sid, '第二個。')['content'], '一般回答')
+
+    def test_ordinal_retry_and_restore_rebuild_the_lookup_and_refuse_its_changed_answer(self):
+        first = self.app.ask(self.sid, DATED)
+        query = self.app.ask(self.sid, QUERY)
+        stop = Event()
+        begin = answer_runs.begin
+
+        def begin_then_stop(*args, **kwargs):
+            uid = begin(*args, **kwargs)
+            stop.set()
+            return uid
+
+        with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
+            self.app.ask(self.sid, '用第一個。', stop)
+        selected = self.app.retry(self.sid)
+        proof = lookup.read(self.store, selected['id'], field=lookup.CHOICE_FIELD)
+        self.assertEqual(proof['plan']['selected']['answer_id'], first['id'])
+        bundle = create_backup(self.store.path, self.root/'choice.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(lookup.read(restored, selected['id'], field=lookup.CHOICE_FIELD), proof)
+        with restored.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('異動後的查詢', query['id']))
+        with self.assertRaisesRegex(ValueError, '原始來源或交付不符'):
+            lookup.read(restored, selected['id'], field=lookup.CHOICE_FIELD)
+        self.engine.answer.assert_not_called()
+
     def test_legacy_lookup_retry_replays_its_original_schema(self):
         def stop(_):
             raise EngineError('停止', 'cancelled')
 
         first = self.app.ask(self.sid, '會議主題：「盤點」。' + DATED)
         for schema, query in ((lookup.PLAN_V1, QUERY), (lookup.PLAN_V2, '查會議紀錄，主題「盤點」。'),
-                              (lookup.PLAN_V3, RANGE_QUERY)):
+                              (lookup.PLAN_V3, RANGE_QUERY), (lookup.PLAN_V4, '查會議紀錄，主題含「盤」。')):
             with self.subTest(schema=schema):
                 plan = lookup.capture(self.store, self.sid, query, schema=schema)
                 context = make_context(query, [], [])
@@ -267,9 +328,13 @@ class DailyMeetingLookupTests(unittest.TestCase):
                 proof = lookup.read(self.store, retried['id'])
                 self.assertEqual(proof['plan'], plan)
                 self.assertEqual(proof['schema'], lookup.RECEIPTS[schema])
-                self.assertNotIn('topic_mode', proof['plan']['criteria'])
-                self.assertEqual('date_ranges' in proof['plan']['criteria'], schema == lookup.PLAN_V3)
+                self.assertEqual('topic_mode' in proof['plan']['criteria'], schema == lookup.PLAN_V4)
+                self.assertEqual('date_ranges' in proof['plan']['criteria'], schema in (lookup.PLAN_V3, lookup.PLAN_V4))
                 self.assertEqual('topic' in proof['plan']['criteria'], schema != lookup.PLAN_V1)
                 self.assertEqual(proof['plan']['matches'][0]['answer_id'], first['id'])
+        selected = self.app.ask(self.sid, '第一個。')
+        choice = lookup.read(self.store, selected['id'], field=lookup.CHOICE_FIELD)
+        self.assertEqual(choice['plan']['lookup_answer_id'], retried['id'])
+        self.assertEqual(choice['plan']['meeting_source']['answer_id'], first['id'])
         self.engine.answer.assert_not_called()
 

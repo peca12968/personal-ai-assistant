@@ -166,10 +166,12 @@ def run_daily_window(store, engine, *, default_chat=False):
                     reason = '不符合：' + '、'.join(plan['limits'][key]['source'] for key in check['rejected']) if check['rejected'] else '符合'
                     lines.append(option['source'] + ' · ' + reason)
                 lines += ['', context['calculation']['result']['exact']]
-            elif context and daily_meeting_lookup.FIELD in context:
+            elif context and (daily_meeting_lookup.FIELD in context or daily_meeting_lookup.CHOICE_FIELD in context):
                 title = '本機會議查詢紀錄'
+                field = (daily_meeting_lookup.CHOICE_FIELD if daily_meeting_lookup.CHOICE_FIELD in context
+                         else daily_meeting_lookup.FIELD)
                 try:
-                    verified = daily_meeting_lookup.read(self.store, answer_id)
+                    verified = daily_meeting_lookup.read(self.store, answer_id, field=field)
                     if verified is None:
                         raise ValueError
                     lines = daily_meeting_lookup.describe(verified).splitlines()
