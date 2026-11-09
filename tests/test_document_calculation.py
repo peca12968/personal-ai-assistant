@@ -333,6 +333,80 @@ class DocumentCalculationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '來源或結果'):
             document_calculation.read(restored, result['id'])
 
+    def test_remapped_original_refreshes_the_same_document_id_without_reusing_the_hypothesis(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        second = self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = DailyAssistant(self.store, NoModel(), default_chat=True)
+        source = app.ask(self.sid, question)
+        self.assertEqual(self.attach('乙重量為9公斤。', 'b.txt'), second)
+        head = f'用文件試算回答 #{source["id"]} 的原值重算'
+        with self.assertRaisesRegex(ValueError, '引用行已變更'):
+            app.ask(self.sid, head + '。')
+        result = self.receipt(app.ask(self.sid, head + '，重新讀取 D2 第1行。'))
+        self.assertEqual(result['schema'], document_calculation.REMAPPED_ORIGINAL_RECEIPT)
+        self.assertEqual(result['plan']['remaps'], [dict(old='[D2:L1]', new='[D2:L1]')])
+        self.assertEqual(result['result']['exact'], '3')
+        self.assertEqual(result['observations'][1]['value'], '9')
+        self.assertIn('本次引用的算式', document_calculation.describe(result))
+        old = self.receipt(source)
+        self.assertEqual(old['result']['exact'], '8')
+        self.assertEqual(old['scenario']['result']['exact'], '5')
+        self.assertNotEqual(old['observations'][1]['sha256'], result['observations'][1]['sha256'])
+
+    def test_remapped_original_converts_two_new_lines_and_pins_them_on_retry_and_restore(self):
+        self.attach('甲時長為1秒。', 'a.txt')
+        self.attach('乙時長為1分鐘。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲時長 加上 [D2:L1] 的乙時長，換算成分鐘。'
+                    '假設 [D1:L1] 的甲時長改用 2 秒。')
+        app = Assistant(self.store, NoModel())
+        source = app.ask(self.sid, question)
+        self.attach('甲時長為3秒。', 'new-a.txt')
+        self.attach('乙時長為2分鐘。', 'new-b.txt')
+        self.store.detach_document(self.sid, 1)
+        self.store.detach_document(self.sid, 2)
+        followup = (f'用文件試算回答 #{source["id"]} 的原值重算，'
+                    '將 [D1:L1] 換成 [D3:L1]，將 [D2:L1] 換成 [D4:L1]。')
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, followup)
+        result = app.retry(self.sid)
+        receipt = self.receipt(result)
+        self.assertEqual(receipt['result']['exact'], '41/20')
+        self.assertEqual([item['citation'] for item in result['citation_checks']], ['[D3:L1]', '[D4:L1]'])
+        bundle = create_backup(self.store.path, self.root/'remapped.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, result['id']), receipt)
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, followup)
+        self.attach('乙時長為3分鐘。', 'new-b.txt')
+        with self.assertRaisesRegex(ValueError, '試算來源已變更'):
+            app.retry(self.sid)
+
+    def test_remapped_original_refuses_collisions_implicit_changes_and_wrong_field_values(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = Assistant(self.store, NoModel())
+        source = app.ask(self.sid, question)
+        head = f'用文件試算回答 #{source["id"]} 的原值重算，'
+        with self.assertRaisesRegex(ValueError, '兩個來源行須不同'):
+            app.ask(self.sid, head + '將 [D2:L1] 換成 [D1:L1]。')
+        with self.assertRaisesRegex(ValueError, '原算式中的引用行'):
+            app.ask(self.sid, head + '重新讀取 [D9:L1]。')
+        self.attach('丙重量為9公斤。', 'new-b.txt')
+        self.store.detach_document(self.sid, 2)
+        followup = head + '將 [D2:L1] 換成 [D3:L1]。'
+        result = self.receipt(app.ask(self.sid, followup))
+        self.assertIsNone(result['result'])
+        self.assertNotIn('[D3:L1]', result['output'])
+        self.assertIn('乙重量（D3 第1行）', result['output'])
+        self.store.detach_document(self.sid, 1)
+        with self.assertRaisesRegex(ValueError, '未指定換行的引用已變更'):
+            app.ask(self.sid, followup)
+
     def test_receipt_rejects_changed_citations_and_saved_operands(self):
         self.attach('甲重量為十二公斤。', 'a.txt')
         self.attach('乙重量為4公斤。', 'b.txt')

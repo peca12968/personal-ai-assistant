@@ -21,7 +21,10 @@ ORIGINAL_PLAN = 'document_calculation_original_plan_v1'
 ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v1'
 EXPLICIT_ORIGINAL_PLAN = 'document_calculation_original_plan_v2'
 EXPLICIT_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v2'
-ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT}
+REMAPPED_ORIGINAL_PLAN = 'document_calculation_original_plan_v3'
+REMAPPED_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v3'
+ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT,
+                     REMAPPED_ORIGINAL_PLAN: REMAPPED_ORIGINAL_RECEIPT}
 PINNED_PLANS = (SCENARIO_PLAN, *ORIGINAL_RECEIPTS)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
@@ -44,6 +47,8 @@ _ORIGINAL_REQUEST = re.compile(r'(?:請)?(?:回到|改用|依照|依|按照|按|
                                r'(?:重算|重新計算|重新算)[。！!？?]?')
 _EXPLICIT_ORIGINAL = re.compile(r'(?:請)?(?:依照|依|按照|按|用|沿用)文件試算回答 *#([0-9]{1,30}) *的'
                                 r'(?:文件原值|原值|原文件數值)[，, ]*(?:重算|重新計算|重新算)[。！!？?]?')
+_REPLACE_LINE = re.compile(rf'將 *({_REF}) *換成 *({_REF})')
+_REFRESH_LINE = re.compile(rf'重新讀取 *({_REF})')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -118,14 +123,35 @@ def parse_live_request(question):
 
 
 def _parse_original_followup(question):
-    if not isinstance(question, str) or len(question) > 80:
+    if not isinstance(question, str) or len(question) > 240:
         return None
     text = question.strip()
     if len(question) <= 36 and _ORIGINAL_REQUEST.fullmatch(text):
-        return ORIGINAL_PLAN, None
-    if match := _EXPLICIT_ORIGINAL.fullmatch(text):
-        return EXPLICIT_ORIGINAL_PLAN, int(match[1])
-    return None
+        return ORIGINAL_PLAN, None, []
+    if len(question) <= 80 and (match := _EXPLICIT_ORIGINAL.fullmatch(text)):
+        return EXPLICIT_ORIGINAL_PLAN, int(match[1]), []
+    if text.endswith(('。', '！', '!', '？', '?')):
+        text = text[:-1]
+    parts = re.split(r'\s*[，,；;]\s*', text)
+    head = _EXPLICIT_ORIGINAL.fullmatch(parts[0])
+    if head is None or not 2 <= len(parts) <= 3:
+        return None
+    remaps = []
+    for clause in parts[1:]:
+        if match := _REPLACE_LINE.fullmatch(clause):
+            old, new = map(_canonical_ref, match.groups())
+        elif match := _REFRESH_LINE.fullmatch(clause):
+            old = new = _canonical_ref(match[1])
+        else:
+            return None
+        remaps.append(dict(old=old, new=new))
+    return REMAPPED_ORIGINAL_PLAN, int(head[1]), remaps
+
+
+def _canonical_ref(reference):
+    ranges, _ = requested_ranges(reference)
+    row = ranges[0]
+    return f'[D{row["document_id"]}:L{row["start_line"]}]'
 
 
 def matches_original_followup(question):
@@ -133,7 +159,7 @@ def matches_original_followup(question):
 
 
 def _original_followup(db, sid, question, before, target):
-    schema, selected = target
+    schema, selected, remaps = target
     if selected is not None and not 0 < selected <= 2**63 - 1:
         return None
     row = db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
@@ -153,8 +179,11 @@ def _original_followup(db, sid, question, before, target):
         return None
     receipt = local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate, True, validate_origin)
     scenario = receipt['plan']
-    return dict(schema=schema, request=question, base=scenario['base'], documents=scenario['documents'],
+    plan = dict(schema=schema, request=question, base=scenario['base'], documents=scenario['documents'],
                 scenario_source=dict(answer_id=mid, sha256=digest(raw)))
+    if remaps:
+        plan['remaps'] = remaps
+    return plan
 
 
 def capture_original(store, sid, question, before=None):
@@ -197,7 +226,7 @@ def bind_live_request(plan, previous=None):
 
 def snapshot(store, sid, plan):
     if plan['schema'] in PINNED_PLANS:
-        plan = plan['base']
+        plan = _original_formula(plan)
     operands = plan['operands']
     ids = {operand['document_id'] for operand in operands}
     sources = store.documents(sid, include_content=True, document_ids=ids)
@@ -211,6 +240,47 @@ def snapshot(store, sid, plan):
     covered = {(row['document_id'], line) for row in excerpts for line in range(row['start_line'], row['end_line'] + 1)}
     return dict(catalog=catalog, excerpts=excerpts, requested_ranges=ranges, requested_ranges_limited=limited,
                 coverage_limited=sum(row['total_lines'] for row in catalog) > len(covered))
+
+
+def _original_formula(plan):
+    base = plan['base']
+    if plan['schema'] != REMAPPED_ORIGINAL_PLAN:
+        return base
+    mapping = {row['old']: row['new'] for row in plan['remaps']}
+    original = base['operands']
+    if len(mapping) != len(plan['remaps']) or not mapping.keys() <= {row['citation'] for row in original}:
+        raise ValueError('請逐一指定原算式中的引用行，每行只能替換一次。')
+    left, right = [mapping.get(row['citation'], row['citation']) for row in original]
+    if left == right:
+        raise ValueError('更換後的兩個來源行須不同。')
+    question = unicodedata.normalize('NFKC', base['request']).strip()
+    question = re.sub(_REF, lambda match: mapping.get(_canonical_ref(match[0]), match[0]), question)
+    question = re.sub(' +', ' ', question)
+    updated = _parse_conversion(question) if base['schema'] == CONVERSION_PLAN else parse_request(question)
+    if updated is None:
+        raise ValueError('更換文件行後無法核對原算式。')
+    return updated
+
+
+def bind_live_documents(plan, documents):
+    schema = plan['schema']
+    if schema == REMAPPED_ORIGINAL_PLAN:
+        base = plan['base']
+        updated = _original_formula(plan)
+        prior = plan['documents']
+        before = _read_sources({**base, 'documents': prior}, base)
+        after = _read_sources({**updated, 'documents': documents}, updated)
+        old_catalog = _catalog(prior, base['operands'])
+        new_catalog = _catalog(documents, updated['operands'])
+        replaced = {row['old'] for row in plan['remaps']}
+        for operand, old, new in zip(base['operands'], before, after, strict=True):
+            did = operand['document_id']
+            if operand['citation'] not in replaced and (old != new or old_catalog.get(did) != new_catalog.get(did)):
+                line = operand['line_number']
+                raise ValueError(f'未指定換行的引用已變更（D{did} 第{line}行），請指定重新讀取或更換。')
+    elif schema in ORIGINAL_RECEIPTS and plan['documents'] != documents:
+        raise ValueError('這則試算的引用行已變更，請重新提供完整的文件算式。')
+    return {**plan, 'documents': documents}
 
 
 def _number(value):
@@ -421,15 +491,19 @@ def _scenario_quantity(base, hypothesis):
 def _evaluate_original(plan, cancel):
     base, source = plan['base'], plan['scenario_source']
     target = _parse_original_followup(plan['request'])
-    if (target is None or target[0] != plan['schema']
+    keys = {'schema', 'request', 'base', 'documents', 'scenario_source'}
+    if plan['schema'] == REMAPPED_ORIGINAL_PLAN:
+        keys.add('remaps')
+    if (target is None or target[0] != plan['schema'] or target[2] != plan.get('remaps', [])
             or base != (parse_request(base['request']) or _parse_conversion(base['request']))
             or set(source) != {'answer_id', 'sha256'} or type(source['answer_id']) is not int
             or not 0 < source['answer_id'] <= 2**63 - 1 or not re.fullmatch('[0-9a-f]{64}', source['sha256'])
             or (target[1] is not None and source['answer_id'] != target[1])
-            or set(plan) != {'schema', 'request', 'base', 'documents', 'scenario_source'}):
+            or set(plan) != keys):
         raise ValueError('文件原值重算的請求或來源無法核對。')
-    original, evidence = evaluate({**base, 'documents': plan['documents']}, cancel)
-    answer = '依文件原值重算\n' + original
+    original, evidence = evaluate({**_original_formula(plan), 'documents': plan['documents']}, cancel)
+    intro = '依重新指定的文件行重算' if plan['schema'] == REMAPPED_ORIGINAL_PLAN else '依文件原值重算'
+    answer = intro + '\n' + original
     return answer, dict(schema=ORIGINAL_RECEIPTS[plan['schema']], plan=plan, model_called=False,
                         observations=evidence['observations'], result=evidence['result'],
                         output=answer, output_sha256=digest(answer))
@@ -804,8 +878,10 @@ def validate_origin(db, sid, before, plan):
         return
     target = _parse_original_followup(plan['request'])
     origin = _original_followup(db, sid, plan['request'], before, target)
+    if origin is not None and plan['schema'] == REMAPPED_ORIGINAL_PLAN:
+        origin = bind_live_documents(origin, plan['documents'])
     if plan != origin:
-        if plan['schema'] == EXPLICIT_ORIGINAL_PLAN:
+        if plan['schema'] != ORIGINAL_PLAN:
             raise ValueError('文件原值重算與指定試算回答的算式或來源不符。')
         raise ValueError('文件原值重算與上一則試算的算式或來源不符。')
 
@@ -813,9 +889,12 @@ def validate_origin(db, sid, before, plan):
 def describe(receipt):
     plan = receipt['plan']
     if receipt['schema'] in ORIGINAL_RECEIPTS.values():
-        intro = '依你指定的' if receipt['schema'] == EXPLICIT_ORIGINAL_RECEIPT else '沿用'
-        return '\n\n'.join((receipt['output'], f'{intro}本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',
-                             plan['base']['request']))
+        intro = '沿用' if receipt['schema'] == ORIGINAL_RECEIPT else '依你指定的'
+        lines = [receipt['output'], f'{intro}本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',
+                 plan['base']['request']]
+        if receipt['schema'] == REMAPPED_ORIGINAL_RECEIPT:
+            lines += ['本次引用的算式', _original_formula(plan)['request']]
+        return '\n\n'.join(lines)
     if receipt['schema'] == SCENARIO_RECEIPT:
         lines = [receipt['output'], '依文件原值重算的算式\n' + plan['base']['request']]
         quantity = receipt['scenario']['quantity']
