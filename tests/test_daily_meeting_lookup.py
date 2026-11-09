@@ -24,6 +24,7 @@ ZONED = ('跨時區會議：基準時區 UTC+08:00。候選日期：2026-11-09�
          '「李小安」 UTC-08:00：2026-11-08 17:30-19:00。兩人需要連續 30 分鐘。'
          '只輸出最早可行日期及時段，格式 YYYY-MM-DD HH:MM-HH:MM UTC±HH:MM。')
 QUERY = '查會議紀錄，日期 2028-02-29，參與者「王小晴」。'
+RANGE_QUERY = '查會議紀錄，日期範圍 2028-02-29 到 2028-03-01，參與者「王小晴」。'
 
 
 class DailyMeetingLookupTests(unittest.TestCase):
@@ -84,10 +85,11 @@ class DailyMeetingLookupTests(unittest.TestCase):
             return uid
 
         with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
-            self.app.ask(self.sid, QUERY, stop)
+            self.app.ask(self.sid, RANGE_QUERY, stop)
         result = self.app.retry(self.sid)
         proof = lookup.read(self.store, result['id'])
         self.assertEqual(proof['plan']['matches'][0]['answer_id'], first['id'])
+        self.assertEqual(proof['plan']['matches'][0]['matched_dates'], ['2028-02-29'])
         bundle = create_backup(self.store.path, self.root/'lookup.paibackup')
         restore_backup(bundle['path'], self.root/'restored')
         restored = Store(self.root/'restored'/'assistant.sqlite3')
@@ -141,7 +143,7 @@ class DailyMeetingLookupTests(unittest.TestCase):
         self.app.ask(self.sid, DATED)
         result = self.app.ask(self.sid, f'查會議紀錄，主題「{title}」，日期 2028-02-29，參與者「王小晴」。')
         proof = lookup.read(self.store, result['id'])
-        self.assertEqual(proof['plan']['schema'], lookup.PLAN_V2)
+        self.assertEqual(proof['plan']['schema'], lookup.PLAN_V3)
         self.assertEqual([item['answer_id'] for item in proof['plan']['matches']], [selected['id']])
         self.assertIn(f'#{selected["id"]}｜「{title}」', result['content'])
         self.assertIn(f'會議主題「{title}」', meeting.describe(meeting.read(self.store, selected['id'])))
@@ -174,22 +176,59 @@ class DailyMeetingLookupTests(unittest.TestCase):
         self.assertEqual({mid: meeting.read(restored, mid) for mid in snapshots}, snapshots)
         self.engine.answer.assert_not_called()
 
-    def test_legacy_lookup_retry_replays_its_original_schema(self):
-        first = self.app.ask(self.sid, DATED)
-        plan = lookup.capture(self.store, self.sid, QUERY, schema=lookup.PLAN_V1)
-        context = make_context(QUERY, [], [])
-        context.update(response_mode=lookup.MODE, documents={'catalog': [], 'excerpts': []}, **{lookup.FIELD: plan})
+    def test_disjoint_ranges_return_each_version_once_with_only_qualifying_candidate_dates(self):
+        tag = '會議主題：「年度盤點」。'
+        first = self.app.ask(self.sid, tag + DATED)
+        later_dates = DATED.replace('2028-02-28', '2028-03-01').replace('2028-02-29', '2028-03-02')
+        second = self.app.ask(self.sid, tag + later_dates)
+        self.app.ask(self.sid, tag + SAME_DAY)
+        self.app.ask(self.sid, tag + DATED.replace('王小晴', '王小安'))
+        self.app.ask(self.sid, tag.replace('盤點', '盤點補充') + DATED)
+        self.app.ask(self.store.new_session(), tag + DATED)
+        result = self.app.ask(self.sid, '查會議紀錄，日期 2028-02-29 到 2028-02-29 或 2028-03-02～2028-03-03'
+                                       ' 或 2028-03-02 至 2028-03-02，主題「年度盤點」，參與者王小晴。')
+        matches = lookup.read(self.store, result['id'])['plan']['matches']
+        self.assertEqual([(item['answer_id'], item['matched_dates']) for item in matches],
+                         [(second['id'], ['2028-03-02']), (first['id'], ['2028-02-29'])])
+        self.assertIn(f'#{first["id"]}｜「年度盤點」｜王小晴、李小安｜2028-02-29｜2028-02-28 09:10-09:30',
+                      result['content'])
+        self.assertEqual(matches[0]['dates'], ['2028-03-01', '2028-03-02'])
+        self.engine.answer.assert_not_called()
 
+    def test_range_validation_and_non_search_requests_keep_their_routes(self):
+        for phrase in ('2027-02-29 到 2027-03-01', '2028-03-02 到 2028-03-01'):
+            with self.subTest(phrase=phrase), self.assertRaisesRegex(ValueError, '有效的完整日期|起日必須'):
+                self.app.ask(self.sid, f'查會議紀錄，日期範圍 {phrase}。')
+        self.assertIsNone(lookup.parse(RANGE_QUERY, schema=lookup.PLAN_V2))
+        self.assertIsNone(lookup.parse(RANGE_QUERY[:-1] + '，日期 2028-02-28。'))
+        self.assertIsNone(lookup.parse(RANGE_QUERY[:-1] + '，然後通知所有人。'))
+        self.assertIsNone(lookup.parse('查會議紀錄，日期 ' + ' 或 '.join(['2028-02-29 到 2028-03-01'] * 4) + '。'))
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.sid, RANGE_QUERY)['content'], '一般回答')
+        notes = self.root/'notes.txt'
+        notes.write_text('參考事項', encoding='utf-8')
+        self.store.attach_document(self.sid, notes)
+        self.assertEqual(self.app.ask(self.sid, RANGE_QUERY)['content'], '一般回答')
+
+    def test_legacy_lookup_retry_replays_its_original_schema(self):
         def stop(_):
             raise EngineError('停止', 'cancelled')
 
-        with self.assertRaises(EngineError):
-            self.app._run_recorded(self.sid, QUERY, context, stop, None, None, None, lookup.FIELD)
-        retried = self.app.retry(self.sid)
-        proof = lookup.read(self.store, retried['id'])
-        self.assertEqual(proof['plan'], plan)
-        self.assertEqual(proof['schema'], 'daily_meeting_lookup_receipt_v1')
-        self.assertNotIn('topic', proof['plan']['criteria'])
-        self.assertEqual(proof['plan']['matches'][0]['answer_id'], first['id'])
+        first = self.app.ask(self.sid, '會議主題：「盤點」。' + DATED)
+        for schema, query in ((lookup.PLAN_V1, QUERY), (lookup.PLAN_V2, '查會議紀錄，主題「盤點」。')):
+            with self.subTest(schema=schema):
+                plan = lookup.capture(self.store, self.sid, query, schema=schema)
+                context = make_context(query, [], [])
+                context.update(response_mode=lookup.MODE, documents={'catalog': [], 'excerpts': []},
+                               **{lookup.FIELD: plan})
+                with self.assertRaises(EngineError):
+                    self.app._run_recorded(self.sid, query, context, stop, None, None, None, lookup.FIELD)
+                retried = self.app.retry(self.sid)
+                proof = lookup.read(self.store, retried['id'])
+                self.assertEqual(proof['plan'], plan)
+                self.assertEqual(proof['schema'], lookup.RECEIPTS[schema])
+                self.assertNotIn('date_ranges', proof['plan']['criteria'])
+                self.assertEqual('topic' in proof['plan']['criteria'], schema == lookup.PLAN_V2)
+                self.assertEqual(proof['plan']['matches'][0]['answer_id'], first['id'])
         self.engine.answer.assert_not_called()
 

@@ -640,7 +640,7 @@ class DailyAssistant(Assistant):
     def _meeting_lookup_answer(self, sid, question, cancel, retry, draft, prior):
         field = daily_meeting_lookup.FIELD
         saved = prior.get(field, {})
-        schema = saved.get('schema', daily_meeting_lookup.PLAN_V2) if isinstance(saved, dict) else None
+        schema = saved.get('schema', daily_meeting_lookup.PLAN_V3) if isinstance(saved, dict) else None
         if not daily_meeting_lookup.parse(question, schema=schema):
             if field in prior:
                 raise EngineError('重試的會議查詢已無法核對。', 'evidence_invalid')

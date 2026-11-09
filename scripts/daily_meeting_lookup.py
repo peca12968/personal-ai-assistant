@@ -9,28 +9,52 @@ FIELD = 'meeting_lookup'
 MODE = 'local_calculation'
 PLAN_V1 = 'daily_meeting_lookup_plan_v1'
 PLAN_V2 = 'daily_meeting_lookup_plan_v2'
-RECEIPTS = {PLAN_V1: 'daily_meeting_lookup_receipt_v1', PLAN_V2: 'daily_meeting_lookup_receipt_v2'}
+PLAN_V3 = 'daily_meeting_lookup_plan_v3'
+RECEIPTS = {PLAN_V1: 'daily_meeting_lookup_receipt_v1', PLAN_V2: 'daily_meeting_lookup_receipt_v2',
+            PLAN_V3: 'daily_meeting_lookup_receipt_v3'}
 MAX_SCAN = 100
 MAX_RESULTS = 10
 REQUEST = re.compile(r'(?:請)?(?:查詢?|找)會議紀錄[，,：:]\s*(.{1,240}?)[。！!？?]?')
 DATE_FILTER = re.compile(rf'(?:基準)?日期(?:是|為)?\s*({meeting.DATE})')
+RANGE_FILTER = re.compile(r'(?:基準)?日期(?:範圍)?(?:是|為|從)?\s*(.+)')
+DATE_RANGE = re.compile(rf'({meeting.DATE})\s*[至到～~]\s*({meeting.DATE})')
 ATTENDEE_FILTER = re.compile(r'(?:參與者|人員)(?:是|為)?\s*(.+)')
 PERSON = re.compile(r'「([\u4e00-\u9fffA-Za-z0-9]{1,16})」|([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,19})')
 TOPIC_FILTER = re.compile(rf'(?:會議)?主題(?:是|為)?\s*{meeting.TOPIC_TEXT}')
 
 
-def parse(question, *, schema=PLAN_V2):
+def parse_ranges(text):
+    parts = [DATE_RANGE.fullmatch(part.strip()) for part in text.split('或')]
+    if not 1 <= len(parts) <= 3 or not all(parts):
+        return None
+    ranges = []
+    for part in parts:
+        try:
+            start, end = (date.fromisoformat(value).isoformat() for value in part.groups())
+        except ValueError:
+            raise ValueError('請輸入有效的完整日期，例如 2028-02-29。') from None
+        if start > end:
+            raise ValueError('日期範圍的起日必須早於或等於迄日。')
+        ranges.append([start, end])
+    return ranges
+
+
+def parse(question, *, schema=PLAN_V3):
     request = REQUEST.fullmatch(question) if isinstance(question, str) else None
     if not request or not isinstance(schema, str) or schema not in RECEIPTS:
         return None
-    day, attendees, topic = None, [], None
-    separator = r'[，,；;](?![^「]*」)' if schema == PLAN_V2 else r'[，,；;]'
+    day, attendees, topic, ranges = None, [], None, []
+    separator = r'[，,；;]' if schema == PLAN_V1 else r'[，,；;](?![^「]*」)'
     for clause in re.split(rf'\s*{separator}\s*', request[1]):
-        if day is None and (match := DATE_FILTER.fullmatch(clause)):
+        if day is None and not ranges and (match := DATE_FILTER.fullmatch(clause)):
             try:
                 day = date.fromisoformat(match[1]).isoformat()
             except ValueError:
                 raise ValueError('請輸入有效的完整日期，例如 2028-02-29。') from None
+        elif schema == PLAN_V3 and day is None and not ranges and (match := RANGE_FILTER.fullmatch(clause)):
+            ranges = parse_ranges(match[1])
+            if ranges is None:
+                return None
         elif not attendees and (match := ATTENDEE_FILTER.fullmatch(clause)):
             names = [PERSON.fullmatch(part.strip()) for part in re.split(r'[、與及和](?![^「]*」)', match[1])]
             if not 1 <= len(names) <= 8 or not all(names):
@@ -38,15 +62,17 @@ def parse(question, *, schema=PLAN_V2):
             attendees = [name[1] or name[2] for name in names]
             if len(set(attendees)) != len(attendees):
                 return None
-        elif schema == PLAN_V2 and topic is None and (match := TOPIC_FILTER.fullmatch(clause)):
+        elif schema != PLAN_V1 and topic is None and (match := TOPIC_FILTER.fullmatch(clause)):
             if not meeting.valid_topic(match[1]):
                 return None
             topic = match[1]
         else:
             return None
     criteria = dict(date=day, attendees=attendees)
-    if schema == PLAN_V2:
+    if schema != PLAN_V1:
         criteria['topic'] = topic
+    if schema == PLAN_V3:
+        criteria['date_ranges'] = ranges
     return criteria
 
 
@@ -63,10 +89,11 @@ def summary(context):
     return dict(dates=dates, attendees=attendees, result=context['calculation']['result']['exact'])
 
 
-def lookup(db, sid, question, before, cancel=None, *, schema=PLAN_V2):
+def lookup(db, sid, question, before, cancel=None, *, schema=PLAN_V3):
     criteria = parse(question, schema=schema)
     if criteria is None:
         return None
+    ranges = criteria.get('date_ranges', [])
     candidates = meeting.completed_candidates(db, sid, before, MAX_SCAN + 1)
     checked, matches = [], []
     for row in candidates[:MAX_SCAN]:
@@ -84,8 +111,13 @@ def lookup(db, sid, question, before, cancel=None, *, schema=PLAN_V2):
         _, context, source = verified
         checked.append(source)
         item = summary(context)
-        if schema == PLAN_V2 and (topic := context['meeting_plan'].get('topic')):
+        if schema != PLAN_V1 and (topic := context['meeting_plan'].get('topic')):
             item['topic'] = topic
+        if ranges:
+            matched_dates = [day for day in item['dates'] if any(start <= day <= end for start, end in ranges)]
+            if not matched_dates:
+                continue
+            item['matched_dates'] = matched_dates
         if ((criteria['date'] is None or criteria['date'] in item['dates'])
                 and (criteria.get('topic') is None or criteria['topic'] == item.get('topic'))
                 and set(criteria['attendees']).issubset(item['attendees'])):
@@ -94,7 +126,7 @@ def lookup(db, sid, question, before, cancel=None, *, schema=PLAN_V2):
                 matches=matches, limited=len(candidates) > MAX_SCAN)
 
 
-def capture(store, sid, question, before=None, cancel=None, *, schema=PLAN_V2):
+def capture(store, sid, question, before=None, cancel=None, *, schema=PLAN_V3):
     with store.connect() as db:
         db.execute('BEGIN')
         return lookup(db, sid, question, before, cancel, schema=schema)
@@ -104,10 +136,12 @@ def evaluate(plan):
     matches = plan['matches']
     lines = ([f'找到 {len(matches)} 筆符合的會議回答。'] if matches
              else ['這段對話沒有符合條件的可核對會議回答。'])
-    if plan['criteria']['date'] is not None:
+    if plan['criteria'].get('date_ranges'):
+        lines.append('日期欄列出符合範圍的原候選日期，含起訖日。時段保留原回答。')
+    elif plan['criteria']['date'] is not None:
         lines.append('日期依原排程列出的候選日期比對。')
     for match in matches[:MAX_RESULTS]:
-        dates = '、'.join(match['dates']) or '未記錄日期'
+        dates = '、'.join(match.get('matched_dates', match['dates'])) or '未記錄日期'
         people = '、'.join(match['attendees'])
         topic = f'「{match["topic"]}」｜' if 'topic' in match else ''
         lines.append(f'#{match["answer_id"]}｜{topic}{people}｜{dates}｜{match["result"]}')
