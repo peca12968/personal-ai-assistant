@@ -1,0 +1,19 @@
+{
+  "schema": "paired_adapter_replay_v1",
+  "training": [
+    {"id":"mixing_rig","kind":"veto","rule":"試轉攪拌架只需確認護罩已扣緊且驅動帶完整。驅動帶已確認完整。","observations":["護罩卡扣已確認鎖緊。","護罩卡扣確定沒有扣上。","護罩還沒檢查。"],"codes":["Q2","L6","Z3"]},
+    {"id":"sample_pickup","kind":"deadline","rule":"今天領取試片只需出示仍在有效時段內的唯一領取條。這張領取條今天 15:40 截止，15:40 整也算有效。","observations":["同日現場時鐘顯示 15:37。","同日現場時鐘顯示 15:43。","15:37 是昨日照片中的讀值，今天的時鐘尚未核對。"],"codes":["P5","R8","N4"]},
+    {"id":"crate_codes","kind":"json","name":"木箱批次碼","key":"crate_codes","value":"C03"},
+    {"id":"cooling_bench","kind":"veto","rule":"啟用冷卻臺的兩個條件缺一不可，而且已涵蓋全部要求。電源線必須接妥，旁通塞必須取出。電源線已確認接妥。","observations":["旁通塞確實已取出。","旁通塞確定仍留在座內。","旁通塞位置尚無檢查紀錄。"],"codes":["K8","F2","J5"]},
+    {"id":"room_release","kind":"deadline","rule":"能借用隔音室的唯一要求是有效預留條尚在期限內。預留條當天 09:18 失效。","observations":["今天是條上所載日期，實際時刻是 09:17。","今天是條上所載日期，實際時刻是 09:18。","09:17 是另一張預留條的時段，這一張所載日期的當前時刻未測得。"],"codes":["D3","Y6","G7"]},
+    {"id":"shelf_marks","kind":"json","name":"層板檢查標記","key":"shelf_marks","value":"S-17"}
+  ],
+  "holdout": [
+    {"id":"projection_table","kind":"veto","rule":"投影臺開機需要保險插銷完全取出，並且光罩固定，這兩項已足夠。光罩的確固定好了。","observations":["已核對插銷取下並放到盒內。","已核對插銷還插在底座。","尚未看過底座，插銷在哪裡仍無法確認。"],"codes":["H3","V9","A7"]},
+    {"id":"map_counter","kind":"deadline","rule":"憑手上的唯一導覽票領地圖，期限仍有效便可領取。票上記載本日 12:05 截止，截止那一刻仍有效。","observations":["本日已確認當下為 12:05。","本日已確認當下為 12:07。","12:05 來自上一個開放日；本日當下時刻還無紀錄。"],"codes":["W6","B8","T4"]},
+    {"id":"survey_tags","kind":"json","name":"樣區識別字串","key":"survey_tags","value":"北-12"},
+    {"id":"water_gate","kind":"veto","rule":"要開啟模型水道，必須裝妥濾網並移開限流片，這兩項也已足夠。濾網已確認放妥。","observations":["限流片已經移走，有當次紀錄。","限流片還在原位，有當次紀錄。","限流片有沒有移開，當次尚未核對。"],"codes":["E5","U3","M9"]},
+    {"id":"archive_slot","kind":"deadline","rule":"當日投件只要求手上的唯一回條仍然有效。回條於今天 18:11 失效。","observations":["已核對今天當下為 18:09。","已核對今天當下為 18:11。","18:09 是開門登記時刻；沒有今天現在的時間。"],"codes":["X2","C7","S6"]},
+    {"id":"drawer_labels","kind":"json","name":"抽屜索引碼","key":"drawer_labels","value":"零件甲"}
+  ]
+}

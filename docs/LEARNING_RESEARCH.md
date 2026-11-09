@@ -458,3 +458,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 報告把父版本已錯的題目和更新後首次觀察到的退步分開。各點重算同一套保留題，歷史題、全新題和訓練例分組呈現。固定點只代表觀察到的時間區間，實際變化可能在兩個檢查點之間。每個 GPU 程序採原生閒置及六分鐘時限，中斷會留存已完成檔案和退出證據。完整助理資格仍另行驗收。
+
+### 逐段驗收成組回放
+
+`paired_adapter_replay.py` 從已完成軌跡的原始父版本開始，每段三次更新。每次更新使用同一新場景的三種觀察及先前的三個回放例。期限和必要條件成組區分成立、不成立和待查。JSON 成組區分空陣列、只有一個空字串及只有一個非空字串。固定學習率為 0.000025，每段重設最佳化器和隨機種子。這個規約同時調整取樣、速率及接續方式。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/paired_adapter_replay.py check
+.venv/Scripts/python.exe scripts/learning/paired_adapter_replay.py prepare <名稱> --reference <已完成的分段觀察>
+.venv/Scripts/python.exe scripts/learning/paired_adapter_replay.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/paired_adapter_replay.py verify <名稱>
+```
+
+每段都用獨立程序重載並驗證同一套 88 題，分開呈現 52 道歷史題、18 道未參與訓練的新題及 18 道訓練例。原父版本或前一段答對的任何非訓練題退步，後續訓練便停止。要通過完整研究，兩段都須完成、歷史受保護題均答對，且至少改善一道全新保留題。各程序採原生閒置及六分鐘時限，原答與權重留在本機。
