@@ -76,6 +76,41 @@ def apply_amendments(store, sid, gid, case):
     return {'before': read, 'saved': saved}
 
 
+def waiting_change(case):
+    if 'waiting_change' not in case:
+        return None
+    change = case['waiting_change']
+    if (not isinstance(change, dict) or set(change) != {'correction', 'withdraw'}
+            or type(change['withdraw']) is not bool):
+        raise ValueError('等待更正案例須指定原話與是否撤下問題。')
+    autonomy.text(change['correction'], 4000)
+    return change
+
+
+def change_while_waiting(store, sid, gid, state, change):
+    if state['status'] != 'needs_input':
+        raise ValueError('原工作未停下提問，未追加更正。')
+    review = goal_replies.snapshot(store, sid, gid)
+    saved = goal_guidance.save(store, sid, gid, change['correction'], expected_fingerprint=review['fingerprint'])
+    amended = autonomy.get_goal(store, sid, gid)
+    if (amended['status'] != 'needs_input' or amended['steps'] != state['steps']
+            or amended['question'] != state['question']):
+        raise ValueError('只保存更正時應保留原問題及步驟。')
+    result = {'asked': state, 'amended': amended}
+    if change['withdraw']:
+        withdraw = getattr(goal_replies, 'withdraw', None)
+        if withdraw is None:
+            result['withdrawal_unavailable'] = True
+        else:
+            number = saved['goal']['guidance_sources'][-1]['number']
+            withdraw(store, sid, gid, number, expected_fingerprint=saved['fingerprint'])
+            withdrawn = autonomy.get_goal(store, sid, gid)
+            if withdrawn['status'] != 'paused' or withdrawn['steps'] != state['steps'] or withdrawn['question']:
+                raise ValueError('撤下後應只解除等待，原步驟需保留。')
+            result['withdrawn'] = withdrawn
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -87,6 +122,7 @@ def main():
         for case in cases:
             autonomy.text(case['prompt'], 4000)
             replies_for(case)
+            waiting_change(case)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -94,6 +130,12 @@ def main():
                     store, sid, gid = prepare(Path(temp)/f'{index}.sqlite3', case)
                     assert goal_replies.snapshot(store, sid, gid)['goal']['status'] == 'pending'
                     apply_amendments(store, sid, gid, case)
+                    change = waiting_change(case)
+                    if change is not None:
+                        action = {'tool': 'ask', 'args': {'question': '初始等待補充？'}, 'note': '合成等待狀態'}
+                        engine = SimpleNamespace(answer=lambda prompt, cancel: json.dumps(action, ensure_ascii=False))
+                        state = autonomy.run_goal(store, sid, gid, engine, max_steps=1)
+                        change_while_waiting(store, sid, gid, state, change)
             print(f'Validated {len(cases)} reply scenarios; no model calls or quality grades.')
             return
         if not args.report: raise ValueError('真實評估需指定新的本機報告路徑。')
@@ -135,9 +177,24 @@ def main():
                     return raw
             try:
                 state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                replies = replies_for(case)
+                change = waiting_change(case)
+                if change is not None:
+                    calls_before = len(row['calls'])
+                    setup = change_while_waiting(store, sid, gid, state, change)
+                    assert len(row['calls']) == calls_before
+                    row['waiting_change'] = setup
+                    state = setup.get('withdrawn', setup['amended'])
+                    save_report(trace_path, row)
+                    if change['withdraw']:
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                        if setup.get('withdrawal_unavailable'):
+                            if state != setup['amended'] or len(row['calls']) != calls_before:
+                                raise ValueError('舊入口未維持原等待狀態。')
+                            replies = []
                 if 'replies' in case:
                     row['rounds'] = []
-                for reply in replies_for(case):
+                for reply in replies:
                     turn = {'asked': state}
                     if 'rounds' in row:
                         row['rounds'].append(turn)

@@ -157,6 +157,12 @@ class Store:
                     notes_start INTEGER NOT NULL CHECK(notes_start>=0),
                     steps_seen INTEGER NOT NULL CHECK(steps_seen BETWEEN 0 AND 31),
                     stamp TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(goal_id,number));
+                CREATE TABLE IF NOT EXISTS autonomous_question_withdrawals (
+                    goal_id TEXT NOT NULL, ask_sequence INTEGER NOT NULL, guidance_number INTEGER NOT NULL,
+                    question_sha256 TEXT NOT NULL, guidance_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(goal_id,ask_sequence),
+                    FOREIGN KEY(goal_id,ask_sequence) REFERENCES autonomous_steps(goal_id,sequence),
+                    FOREIGN KEY(goal_id,guidance_number) REFERENCES autonomous_guidance_sources(goal_id,number));
                 CREATE TABLE IF NOT EXISTS autonomous_handoffs (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     parent_goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),

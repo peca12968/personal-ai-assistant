@@ -18,6 +18,7 @@ from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import goal_partials
 from . import goal_guidance_sources
+from . import goal_question_withdrawals
 from . import goal_reply_sources
 from . import artifacts
 from . import autonomy_csv
@@ -167,6 +168,10 @@ def get_goal(store, sid, gid):
         guidance_sources = goal_guidance_sources.read(db, gid, result['notes'], len(result['steps']))
         if guidance_sources:
             result['guidance_sources'] = guidance_sources
+        waiting_step = len(result['steps']) if result['status'] == 'needs_input' else None
+        withdrawals = goal_question_withdrawals.read(db, gid, guidance_sources, reply_sources, waiting_step=waiting_step)
+        if withdrawals:
+            result['withdrawn_questions'] = withdrawals
         if result['status'] == 'needs_input' and result['steps']:
             last = result['steps'][-1]
             result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
@@ -398,12 +403,17 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
                 payload['reply_sources'] = reply_sources
+            withdrawals = goal.get('withdrawn_questions', ())
+            if withdrawals:
+                payload['withdrawn_questions'] = [
+                    {key: row[key] for key in ('ask_sequence', 'guidance_citation')} for row in withdrawals]
             describe_engine = getattr(engine, 'describe', None)
             engine_selection = describe_engine() if callable(describe_engine) else None
             if engine_selection is not None:
                 payload['engine_selection'] = engine_selection
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
+                ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)

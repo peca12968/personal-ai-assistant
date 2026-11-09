@@ -183,6 +183,10 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_scoped_amendments.json` 離線建立三個固定情境。先執行受控查讀，再用正式入口追加主動更正。核對前置查讀、目標狀態與保存結果。明確加上 `--live --report` 才實測後續動作，其中一題另以保存回答及接續流程核對等待、暫表和定稿。分開檢查更正引用是否對應原話、文件與回覆是否各有來源，以及正式更正、取代值和未採用提案的含義。保留固定案例及實際請求與回傳，原始資料庫、完整報告與開發評讀留在本機。
 
+### 原問題已因更正失效
+
+`python scripts/evaluate_goal_replies.py --suite evals/goal_withdrawn_questions.json` 離線只用合成提問檢查保存路徑。真實執行先由模型提出原問題與暫表，再保存更正，核對仍在等待且步驟相同。兩個案例明確選更正撤下原問題，保存與下一次執行分開。舊程式缺少撤下入口時，核對接續仍維持原等待，並保留實際未完成狀態。第三例的更正只改標題，照常回答原問題。分開評讀狀態、原問題與更正的關聯、接續後只問必要欄位及最後成果。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

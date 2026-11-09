@@ -6,7 +6,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import goal_guidance_sources, goal_partials, goal_reply_sources, goal_review
+from . import goal_guidance_sources, goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review
 
 
 def _snapshot(db, sid, gid):
@@ -24,6 +24,13 @@ def _snapshot(db, sid, gid):
     if guidance:
         goal['guidance_sources'] = guidance
         fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in guidance)).encode('utf-8')).hexdigest()
+    waiting_step = review['step_count'] if goal['status'] == 'needs_input' else None
+    withdrawals = goal_question_withdrawals.read(db, gid, guidance, sources, waiting_step=waiting_step)
+    if withdrawals:
+        goal['withdrawn_questions'] = withdrawals
+        fingerprint = hashlib.sha256((fingerprint + ''.join(item['question_sha256'] + item['guidance_sha256']
+                                                             for item in withdrawals)).encode('utf-8')).hexdigest()
+    options = None
     if goal['status'] == 'needs_input':
         details = goal_partials.read_waiting(db, gid, goal['question'])
         goal.update(details)
@@ -32,8 +39,15 @@ def _snapshot(db, sid, gid):
         if 'question_citations' in details:
             citations = json.dumps(details['question_citations'], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             fingerprint = hashlib.sha256((fingerprint + '\0' + citations).encode('utf-8')).hexdigest()
-    return {'goal':goal, 'fingerprint':fingerprint,
-            'step_count':review['step_count'], 'sources_match':review['sources_match']}
+        if review['sources_match'] and waiting_step < MAX_STEPS:
+            options = goal_question_withdrawals.options(db, gid, goal['question'], waiting_step, guidance)
+            if options:
+                fingerprint = hashlib.sha256((fingerprint + options['question_sha256']).encode('utf-8')).hexdigest()
+    result = {'goal':goal, 'fingerprint':fingerprint,
+              'step_count':review['step_count'], 'sources_match':review['sources_match']}
+    if options:
+        result['question_withdrawal'] = options
+    return result
 
 
 def snapshot(store, sid, gid):

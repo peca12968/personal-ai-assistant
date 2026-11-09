@@ -30,6 +30,11 @@ class GoalReplyWindow:
         self.save_button.pack(side='left')
         self.resume_button = ttk.Button(controls, text='保存補充並接續一輪', command=lambda: self.save(resume=True))
         self.resume_button.pack(side='left', padx=8)
+        self.withdrawal = ttk.Frame(body, padding=12)
+        ttk.Label(self.withdrawal, text='選擇使原問題不再適用的更正編號').pack(side='left')
+        self.correction = ttk.Combobox(self.withdrawal, state='readonly', width=5)
+        self.correction.pack(side='left', padx=8)
+        ttk.Button(self.withdrawal, text='依所選更正撤下目前問題', command=self.withdraw).pack(side='left')
         self.reload_button = ttk.Button(body, text='重新載入問題（保留回答文字）', command=self.reload)
         self.reload_button.pack(anchor='w', padx=12)
         self.notice = tk.StringVar()
@@ -52,6 +57,16 @@ class GoalReplyWindow:
                 lines.insert(-1, '目前問題的來源位置 ' + '、'.join(tokens))
                 lines[-1:-1] = [f"{source['citation']} · {source['content']}"
                                for source in goal.get('guidance_sources', []) if source['citation'] in tokens]
+            options = self.current.get('question_withdrawal', {}).get('correction_numbers', [])
+            if options:
+                lines += ['這次提問後保存的更正。若原問題已不適用，可選擇依據後撤下。']
+                lines += [f"{source['citation']} · {source['content']}"
+                          for source in goal.get('guidance_sources', []) if source['number'] in options]
+                self.correction.configure(values=options)
+                self.correction.set('')
+                self.withdrawal.pack(fill='x', before=self.reload_button)
+            else:
+                self.withdrawal.pack_forget()
             self.context.configure(state='normal')
             self.context.delete('1.0', 'end'); self.context.insert('1.0', '\n\n'.join(lines))
             self.context.configure(state='disabled')
@@ -62,6 +77,7 @@ class GoalReplyWindow:
                             '目前沒有等待回答的問題；未保存文字仍留在此視窗。')
         except Exception as exc:
             self.current = None
+            self.withdrawal.pack_forget()
             self.save_button.configure(state='disabled'); self.resume_button.configure(state='disabled')
             self.notice.set(str(exc))
 
@@ -84,3 +100,23 @@ class GoalReplyWindow:
                             '回答已保存；尚未接續，可回原視窗按開始／接續。')
         except Exception as exc:
             self.notice.set('回答已保存，但未能啟動接續；可回原視窗查看並開始。' + str(exc))
+
+    def withdraw(self):
+        if self.current is None:
+            return
+        chosen = self.correction.get()
+        if not chosen:
+            self.notice.set('請先核對並選擇一筆已保存的更正。')
+            return
+        try:
+            goal_replies.withdraw(self.store, self.sid, self.gid, int(chosen),
+                                  expected_fingerprint=self.current['fingerprint'])
+        except Exception as exc:
+            messagebox.showerror('問題尚未撤下', str(exc), parent=self.window)
+            return
+        self.reload()
+        try:
+            self.saved(self.gid, None)
+            self.notice.set('問題已撤下，原提問與暫表可在目標詳情查看。請回原視窗開始／接續。')
+        except Exception as exc:
+            self.notice.set('問題已撤下。請回原視窗重新整理後接續。' + str(exc))

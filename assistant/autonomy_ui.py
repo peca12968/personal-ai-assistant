@@ -341,6 +341,10 @@ class AutonomousWindow:
             lines += ['待補期間的成果（尚待定稿）', goal['partial_result']]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
+        if goal.get('withdrawn_questions'):
+            lines += ['已依更正撤下的問題（原步驟保留）']
+            lines += [f"步驟 {row['ask_sequence']} · {row['guidance_citation']} · {row['question']}"
+                      for row in goal['withdrawn_questions']]
         if goal.get('reply_sources'):
             lines += ['使用者回覆來源（本目標）']
             lines += [f"{source['citation']} · {source['question']}\n{source['answer']}"

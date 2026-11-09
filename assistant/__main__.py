@@ -55,6 +55,8 @@ def main():
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
     mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session、--goal-reply 與 --goal-fingerprint')
     parser.add_argument('--goal-reply', help='搭配 --reply-goal 的回答')
+    mode.add_argument('--withdraw-goal-question', help='依選定更正撤下自主目標目前的問題，保存後仍需明確接續')
+    parser.add_argument('--goal-correction', type=int, help='搭配 --withdraw-goal-question 選擇已保存的更正編號')
     mode.add_argument('--goal-guidance-status', '--goal-reply-status', help='查看目標、目前問題、補充與指紋；需 --session')
     mode.add_argument('--amend-goal', help='追加目標更正；需 --session、--goal-guidance、--goal-fingerprint')
     parser.add_argument('--goal-guidance', help='追加到目標的使用者更正或條件')
@@ -124,15 +126,23 @@ def main():
         parser.error('--profile-revision 只能搭配儲存／重設夥伴設定。')
     if profile_mode and (args.session or args.file):
         parser.error('夥伴設定套用整份資料庫，不搭配 --session 或 --file。')
-    autonomous = any(value is not None for value in (args.draft_goal, args.new_goal, args.run_goal, args.goal_status, args.reply_goal, args.rebuild_goal_files, args.goal_guidance_status, args.amend_goal))
+    goal_changes = (args.amend_goal, args.reply_goal, args.withdraw_goal_question)
+    autonomous = any(value is not None for value in (*goal_changes, args.draft_goal, args.new_goal, args.run_goal,
+                     args.goal_status, args.rebuild_goal_files, args.goal_guidance_status))
     if args.amend_goal is not None:
         if args.goal_guidance is None or args.goal_fingerprint is None:
             parser.error('--amend-goal需要 --goal-guidance 與 --goal-fingerprint。')
-    elif args.goal_guidance is not None or (args.goal_fingerprint is not None and args.reply_goal is None):
-        parser.error('補充內容需搭配 --amend-goal；指紋需搭配 --amend-goal 或 --reply-goal。')
+    elif args.goal_guidance is not None:
+        parser.error('補充內容需搭配 --amend-goal。')
+    if args.goal_fingerprint is not None and all(value is None for value in goal_changes):
+        parser.error('目標指紋需搭配保存更正、回答或撤下問題。')
     if args.reply_goal is not None and args.goal_fingerprint is None:
         parser.error('--reply-goal需先以 --goal-reply-status 讀取問題，並提供 --goal-fingerprint。')
-    if (args.amend_goal is not None or args.goal_guidance_status is not None or args.reply_goal is not None) and args.file:
+    if (args.withdraw_goal_question is not None) != (args.goal_correction is not None):
+        parser.error('--withdraw-goal-question 與 --goal-correction 需一起使用。')
+    if args.withdraw_goal_question is not None and args.goal_fingerprint is None:
+        parser.error('--withdraw-goal-question需先以 --goal-reply-status 讀取問題、更正及 --goal-fingerprint。')
+    if any(value is not None for value in (*goal_changes, args.goal_guidance_status)) and args.file:
         parser.error('補充目標不會匯入或替換來源，不能搭配 --file。')
     if autonomous and not args.session:
         parser.error('自主目標需要 --session 指定對話。')
@@ -329,6 +339,10 @@ def main():
             elif args.reply_goal is not None:
                 reply(store, args.session, args.reply_goal, args.goal_reply, expected_fingerprint=args.goal_fingerprint)
                 result = get_goal(store, args.session, args.reply_goal)
+            elif args.withdraw_goal_question is not None:
+                from .goal_replies import withdraw
+                result = withdraw(store, args.session, args.withdraw_goal_question, args.goal_correction,
+                                  expected_fingerprint=args.goal_fingerprint)
             elif args.rebuild_goal_files is not None:
                 from .artifacts import rebuild
                 result = rebuild(store, args.session, args.rebuild_goal_files)
