@@ -449,11 +449,30 @@ AFTERNOON = ('下午', '整個下午')
 REVISED_UNAVAILABLE = re.compile(
     rf'({NATURAL_NAME})\s*((?:整個)?(?:上午|早上|下午)|[0-9].*?)\s*{UNAVAILABLE_END}')
 MAX_BATCH_EDITS = 4
+DATE_REPLY = re.compile(rf'(?:日期(?:是|選)\s*)?({DATE})[。！]?')
+DATE_EDIT = 'meeting_date_edit'
 
 
-def revise_zoned(plan, clause):
-    edit = ZONED_REVISION.fullmatch(clause)
-    if edit:
+def attendee_revision(clause):
+    return (REVISED_AVAILABILITY.fullmatch(clause), CANCEL.fullmatch(clause),
+            REVISED_UNAVAILABLE.fullmatch(clause))
+
+
+def revise_zoned(plan, clause, local_date=None):
+    if local_date is not None:
+        replacement, removal, unavailable = attendee_revision(clause)
+        if replacement:
+            name, windows = replacement.groups()
+            action = 'replace'
+        elif removal:
+            name, windows = removal[1], removal[2] or removal[3]
+            action = '取消'
+        elif unavailable and unavailable[2][0] in '0123456789':
+            name, windows = unavailable.groups()
+            action = '取消'
+        else:
+            raise ValueError('跨時區的取消請寫出具體的當地時段。')
+    elif edit := ZONED_REVISION.fullmatch(clause):
         name, local_date, action, windows = edit.groups()
     elif unavailable := ZONED_UNAVAILABLE.fullmatch(clause):
         name, local_date, windows = unavailable.groups()
@@ -499,7 +518,7 @@ def revised_unavailable_interval(text, availability, name):
     return span(text)
 
 
-def revise_clause(plan, clause):
+def revise_clause(plan, clause, local_date=None):
     duration = REVISED_DURATION.fullmatch(clause)
     if duration:
         term = duration[1]
@@ -511,19 +530,16 @@ def revise_clause(plan, clause):
         plan['duration'] = length
         return None, True
     if plan.get('schema') in ZONED_PLANS:
-        return revise_zoned(plan, clause)
+        return revise_zoned(plan, clause, local_date)
     dated = plan.get('schema') in DATE_PLANS
     availability = plan
-    local_date = None
     if dated:
-        day = re.fullmatch(rf'({DATE})(?:\s+|[：:]\s*)(.+)', clause)
-        if not day or day[1] not in plan['days']:
+        if local_date is None and (day := re.fullmatch(rf'({DATE})(?:\s+|[：:]\s*)(.+)', clause)):
+            local_date, clause = day.groups()
+        if local_date not in plan['days']:
             raise ValueError('請先指定原先列出的完整日期，再更正當天的空檔。')
-        local_date, clause = day.groups()
         availability = plan['days'][local_date]
-    replacement = REVISED_AVAILABILITY.fullmatch(clause)
-    removal = CANCEL.fullmatch(clause)
-    unavailable = REVISED_UNAVAILABLE.fullmatch(clause)
+    replacement, removal, unavailable = attendee_revision(clause)
     if not (replacement or removal or unavailable):
         raise ValueError('請指明要更正哪位參與者（' + '、'.join(availability['available'])
                          + '）及其同日空檔；若要換日期，請重新列出當天每人的空檔。')
@@ -546,19 +562,20 @@ def revise_clause(plan, clause):
     return (name, local_date), replacement is not None
 
 
-def revise(plan, clause):
+def revise(plan, clause, *, date_assignment=None):
     """Apply the whole follow-up to the detached snapshot or leave it unchanged."""
-    if not REVISION_SEPARATOR.search(clause):
+    if date_assignment is None and not REVISION_SEPARATOR.search(clause):
         revise_clause(plan, clause)
         return
     edits = [part.strip() for part in REVISION_SEPARATOR.split(clause)]
-    if not 2 <= len(edits) <= MAX_BATCH_EDITS or not all(edits):
+    if len(edits) > MAX_BATCH_EDITS or not all(edits):
         raise ValueError('同一輪請提供 2 至 4 項完整的會議更正。各項可用逗號、分號或句號分隔。')
     candidate = deepcopy(plan)
     touched = set()
     for index, edit in enumerate(edits, 1):
         try:
-            scope, replacing = revise_clause(candidate, edit)
+            local_date = date_assignment[1] if date_assignment and date_assignment[0] == index else None
+            scope, replacing = revise_clause(candidate, edit, local_date)
             if replacing and scope in touched:
                 if scope is None:
                     raise ValueError('同一輪只能指定一次會議時長。')
@@ -569,6 +586,79 @@ def revise(plan, clause):
     # Check combined constraints, including local times, before a chat run can be saved.
     resolve(candidate)
     plan.update(candidate)
+
+
+def missing_edit_date(plan, clause):
+    if plan['schema'] not in (*DATE_PLANS, *ZONED_PLANS):
+        return None
+    if ZONED_REVISION.fullmatch(clause) or ZONED_UNAVAILABLE.fullmatch(clause):
+        return None
+    replacement, removal, unavailable = attendee_revision(clause)
+    match = replacement or removal or unavailable
+    if match is None:
+        return None
+    name = match[1].strip('「」')
+    if plan['schema'] in ZONED_PLANS:
+        dates = plan['people'].get(name, {}).get('days', {})
+    else:
+        dates = [day for day, record in plan['days'].items() if name in record['available']]
+    return (name, sorted(dates)) if dates else None
+
+
+def prepare_revision(plan, question, selected_date=None):
+    revision = FOLLOWUP.fullmatch(question)
+    if revision is None:
+        raise ValueError('會議更正與原問不符。')
+    body = revision[1]
+    edits = [part.strip() for part in REVISION_SEPARATOR.split(body)]
+    missing = [(index, scope) for index, edit in enumerate(edits, 1) if (scope := missing_edit_date(plan, edit))]
+    if not missing and selected_date is None:
+        revise(plan, body)
+        return None
+    if len(missing) != 1:
+        raise ValueError('每次最多補一項更正的日期。請寫出其他更正適用的完整日期。')
+    index, (name, dates) = missing[0]
+    if selected_date is not None and selected_date not in dates:
+        raise ValueError('請回覆上一則列出的其中一個完整日期。')
+    day = selected_date or (dates[0] if len(dates) == 1 else None)
+    chosen = None
+    for option in dates:
+        candidate = deepcopy(plan)
+        try:
+            revise(candidate, body, date_assignment=(index, option))
+        except ValueError as exc:
+            raise ValueError(f'無法套用 {option} 的更正。請指定完整日期並核對時段。{exc}') from None
+        if option == day:
+            chosen = candidate
+    if chosen is not None:
+        plan.update(chosen)
+    mode = 'selected' if selected_date is not None else 'inferred' if day else 'pending'
+    return dict(schema='daily_meeting_edit_date_v1', mode=mode, request=question, index=index,
+                participant=name, dates=dates, selected=day, local=plan['schema'] in ZONED_PLANS)
+
+
+def pending_date(context):
+    edit = context.get(DATE_EDIT)
+    return isinstance(edit, dict) and edit.get('mode') == 'pending'
+
+
+def apply_followup(plan, question, parent):
+    if pending_date(parent):
+        reply = DATE_REPLY.fullmatch(question)
+        if reply is None:
+            raise ValueError('請回覆上一則列出的其中一個完整日期。')
+        return prepare_revision(plan, parent['current_request'], reply[1])
+    return prepare_revision(plan, question)
+
+
+def evaluate_followup(plan, edit):
+    if edit is not None and edit['mode'] == 'pending':
+        scope = '當地日期' if edit['local'] else '日期'
+        dates = '、'.join(edit['dates'])
+        answer = (f'第 {edit["index"]} 項對「{edit["participant"]}」的更正適用於哪個{scope}？'
+                  f'請回覆完整日期：{dates}。')
+        return answer, dict(schema='daily_meeting_date_question_v1', status='clarification_required', model_called=False)
+    return resolve(plan)
 
 
 def ranges(mask):
@@ -825,13 +915,24 @@ def visible_answer(plan, receipt):
 def describe(context):
     plan, receipt = context['meeting_plan'], context['calculation']
     lines = [context['current_request']]
+    date_edit = context.get(DATE_EDIT)
     zoned = plan['schema'] in ZONED_PLANS
     overnight = plan['schema'] == OVERNIGHT_ZONED_PLAN
     dated = zoned or plan['schema'] in DATE_PLANS
     if source := context.get('meeting_source'):
         scope = '日期與時段' if dated else '同日時段與條件'
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
-        revision = FOLLOWUP.fullmatch(context['current_request'])
+        if pending_date(context):
+            lines += ['整批更正尚待確認日期。', evaluate_followup(plan, date_edit)[0]]
+            return '\n'.join(lines)
+        if date_edit is not None:
+            scope = '當地日期' if date_edit['local'] else '日期'
+            reason = '依你的回覆' if date_edit['mode'] == 'selected' else '依原排程的唯一選項'
+            lines.append(f'第 {date_edit["index"]} 項{reason}採用{scope} {date_edit["selected"]}。')
+            if date_edit['mode'] == 'selected':
+                lines += ['原更正：' + date_edit['request']]
+        original_request = date_edit['request'] if date_edit else context['current_request']
+        revision = FOLLOWUP.fullmatch(original_request)
         if revision and REVISION_SEPARATOR.search(revision[1]):
             lines.append('本次依序採用的更正')
             lines.extend(f'{index}. {part.strip()}'
@@ -925,6 +1026,7 @@ def saved_meeting(db, mid):
             or initial.get('response_mode') != 'local_calculation'
             or not same_json(saved.get('meeting_source'), initial.get('meeting_source'))
             or not same_json(saved.get('meeting_plan'), initial.get('meeting_plan'))
+            or not same_json(saved.get(DATE_EDIT), initial.get(DATE_EDIT))
             or saved.get('image_inputs') or saved.get('engine_selection') is not None
             or saved.get('documents') != {'catalog': [], 'excerpts': []}
             or load_context(row['checks']) != []):
@@ -950,22 +1052,22 @@ def verified_meeting(db, mid):
         raise ValueError('會議紀錄缺少可核對的原始時段。')
     plan = bind_named_zones(plan, original[1].get('meeting_plan'))
 
-    def check(record, effective):
+    def check(record, effective, edit=None):
         row, saved, _ = record
-        answer, calculation = resolve(effective)
+        answer, calculation = evaluate_followup(effective, edit)
         if (not same_json(saved.get('meeting_plan'), effective)
+                or not same_json(saved.get(DATE_EDIT), edit)
                 or not same_json(saved.get('calculation'), calculation)):
             raise ValueError('會議紀錄與重算結果不符。')
         if answer != row['content']:
             raise ValueError('會議回答與重算結果不符。')
 
     check(original, plan)
+    parent = original[1]
     for record in reversed(history):
-        revision = FOLLOWUP.fullmatch(record[0]['question'])
-        if not revision:
-            raise ValueError('會議更正與原問不符。')
-        revise(plan, revision[1])
-        check(record, plan)
+        edit = apply_followup(plan, record[0]['question'], parent)
+        check(record, plan, edit)
+        parent = record[1]
     return tip
 
 
@@ -976,15 +1078,21 @@ def read(store, mid):
         return verified[1] if verified else None
 
 
-def previous(store, sid, before=None, *, required=True):
+def previous(store, sid, before=None, *, required=True, pending=False):
     message = '上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。'
+    if pending:
+        message = '上一則回答沒有待補充的會議日期。'
     try:
         with store.connect() as db:
             db.execute('BEGIN')
             verified = verified_meeting(db, previous_id(db, sid, before))
-            if verified:
-                return verified[1]['meeting_plan'], verified[2]
     except ValueError as exc:
         raise ValueError(message) from exc
+    if verified:
+        context, source = verified[1:]
+        if pending_date(context) == pending:
+            return context, source
+        if not pending:
+            raise ValueError('上一則會議更正仍待確認日期，請先回覆列出的日期。')
     if required:
         raise ValueError(message)

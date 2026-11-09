@@ -129,7 +129,8 @@ def run_daily_window(store, engine, *, default_chat=False):
                     if verified is None:
                         raise ValueError
                     lines = daily_meeting.describe(verified).splitlines()
-                    if verified['calculation']['result']['exact'] != '沒有可行時段':
+                    if (not daily_meeting.pending_date(verified)
+                            and verified['calculation']['result']['exact'] != '沒有可行時段'):
                         meeting_schema = verified['meeting_plan']['schema']
                 except (KeyError, TypeError, ValueError, sqlite3.Error):
                     lines = ['無法依原始時段與更正重算這筆會議紀錄。']

@@ -2,12 +2,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, patch
 
 from assistant.backup import create_backup, restore_backup
 from assistant.engine import EngineError
 from assistant.store import Store
 from scripts import daily_meeting as meeting
+from scripts import daily_meeting_export as calendar
 from scripts.daily_expenses import DailyAssistant
 
 
@@ -73,7 +75,7 @@ class DailyDatedMeetingTests(unittest.TestCase):
             sid = store.new_session()
             app = DailyAssistant(store, None, default_chat=True)
             first = app.ask(sid, DAYS + FORMAT)
-            for invalid in ('乙取消 12:00-13:00', '2028-03-02 乙取消 12:00-13:00',
+            for invalid in ('2028-03-02 乙取消 12:00-13:00',
                             '2028-02-29 丙取消 12:00-13:00'):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     app.ask(sid, f'上一場會議，{invalid}，重算。')
@@ -99,6 +101,90 @@ class DailyDatedMeetingTests(unittest.TestCase):
                            (json.dumps(expected, ensure_ascii=False), third['id']))
             with self.assertRaisesRegex(ValueError, '重算結果不符'):
                 meeting.read(restored, third['id'])
+
+    def test_missing_date_waits_for_same_session_choice_and_retries_after_restore(self):
+        from assistant import answer_runs
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            engine = Mock(spec=['answer'])
+            engine.answer.return_value = '一般回答'
+            app = DailyAssistant(store, engine, default_chat=True)
+            first = app.ask(sid, DAYS + FORMAT)
+            original = meeting.read(store, first['id'])
+            change = '上一場會議，乙的空檔改成無空檔，會議改成 35 分鐘，重算。'
+            asked = app.ask(sid, change)
+            pending = meeting.read(store, asked['id'])
+            self.assertTrue(meeting.pending_date(pending))
+            self.assertEqual(pending['meeting_plan'], original['meeting_plan'])
+            self.assertEqual(pending[meeting.DATE_EDIT]['dates'], ['2028-02-28', '2028-02-29', '2028-03-01'])
+            self.assertEqual(pending['meeting_source']['answer_id'], first['id'])
+            self.assertIn('整批更正尚待確認日期', meeting.describe(pending))
+            destination = root/'unconfirmed.ics'
+            with self.assertRaisesRegex(ValueError, '仍待確認日期'):
+                calendar.export(store, asked['id'], '會議', destination, zone='Asia/Taipei')
+            self.assertFalse(destination.exists())
+            self.assertEqual(app.ask(store.new_session(), '2028-02-29')['content'], '一般回答')
+            with self.assertRaisesRegex(ValueError, '上一則列出'):
+                app.ask(sid, '2028-03-02')
+            self.assertEqual(len(store.messages(sid, 10)), 4)
+            bundle = create_backup(store.path, root/'choice.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored/assistant.sqlite3')
+            restored_app = DailyAssistant(restored, engine, default_chat=True)
+            stop = Event()
+            begin = answer_runs.begin
+
+            def begin_then_stop(*args, **kwargs):
+                uid = begin(*args, **kwargs)
+                stop.set()
+                return uid
+
+            with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
+                restored_app.ask(sid, '日期是 2028-02-29。', stop)
+            resolved = restored_app.retry(sid)
+            self.assertEqual(resolved['content'], '2028-03-01 08:10-08:45')
+            record = meeting.read(restored, resolved['id'])
+            self.assertEqual(record['meeting_source']['answer_id'], asked['id'])
+            self.assertEqual(record['current_request'], '日期是 2028-02-29。')
+            self.assertEqual(record[meeting.DATE_EDIT]['request'], change)
+            self.assertEqual(record[meeting.DATE_EDIT]['selected'], '2028-02-29')
+            self.assertEqual(meeting.read(restored, asked['id']), pending)
+            self.assertIn('依你的回覆採用日期 2028-02-29', meeting.describe(record))
+            with restored.connect() as db:
+                db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                           (json.dumps(pending, ensure_ascii=False, indent=2), asked['id']))
+            self.assertEqual(meeting.read(restored, asked['id']), pending)
+            with self.assertRaisesRegex(ValueError, '上一筆來源已變更'):
+                meeting.read(restored, resolved['id'])
+            engine.answer.assert_called_once()
+
+    def test_unresolved_date_does_not_override_other_edits_or_cross_a_topic_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            sid = store.new_session()
+            engine = Mock(spec=['answer'])
+            engine.answer.return_value = '一般回答'
+            app = DailyAssistant(store, engine, default_chat=True)
+            app.ask(sid, DAYS + FORMAT)
+            for question, message in (
+                ('上一場會議，甲取消 09:00-10:00，乙取消 10:00-11:00，重算。', '最多補一項'),
+                ('上一場會議，乙取消 09:00-10:00，2028-02-29 乙的空檔改為無空檔，重算。', '請指定完整日期'),
+            ):
+                with self.assertRaisesRegex(ValueError, message):
+                    app.ask(sid, question)
+                self.assertEqual(len(store.messages(sid, 10)), 2)
+            asked = app.ask(sid, '上一場會議，乙取消 12:00-13:00，重算。')
+            self.assertTrue(meeting.pending_date(meeting.read(store, asked['id'])))
+            self.assertEqual(app.ask(sid, '換個話題。')['content'], '一般回答')
+            self.assertEqual(app.ask(sid, '2028-02-29')['content'], '一般回答')
+            app.ask(sid, DAYS + FORMAT)
+            app.ask(sid, '上一場會議，乙取消 12:00-13:00，重算。')
+            notes = Path(tmp)/'notes.txt'
+            notes.write_text('另一份排程', encoding='utf-8')
+            store.attach_document(sid, notes)
+            self.assertEqual(app.ask(sid, '2028-02-29')['content'], '一般回答')
 
     def test_default_retry_and_ordinary_attachment_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
