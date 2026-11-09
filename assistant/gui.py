@@ -288,11 +288,16 @@ class App:
         if recovery_notice:
             self.append('note', recovery_notice)
         rows = self.store.messages(self.sid, 500)
+        from .document_calculation import scenario_ids
+        document_scenarios = scenario_ids(self.store, rows)
         self.last_answer = None
         if not rows:
             self.append("note", "告訴我你想完成什麼。\n我可以協助釐清需求、規劃步驟、分析問題與檢查解法。\n\n你可以在「管理長期記憶」保存偏好，並對回答留下更正。")
         for row in rows:
-            self.append(row["role"], row["content"])
+            content = row['content']
+            if row['id'] in document_scenarios:
+                content = f'文件試算回答 #{row["id"]}\n' + content
+            self.append(row["role"], content)
             attempt = attempts.get(row['id'])
             if attempt and attempt['status'] != 'succeeded':
                 self.append('note', '回答狀態：' + ('本機流程尚未保存完成狀態。' if attempt['status'] == 'running' else

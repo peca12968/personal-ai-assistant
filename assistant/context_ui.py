@@ -153,7 +153,11 @@ def show_context(parent, store, message_id):
     if evidence:
         sections = [('條件核對', '當時請求：\n' + context['current_request'] + '\n\n' + chat_evidence.describe(evidence_receipt))]
     if document_math:
-        sections = [('文件計算', '當時請求：\n' + context['current_request'] + '\n\n' + document_calculation.describe(math_receipt)),
+        details = document_calculation.describe(math_receipt)
+        if math_receipt['schema'] == document_calculation.SCENARIO_RECEIPT:
+            details = (f'文件試算回答 #{message_id}\n'
+                       f'用文件試算回答 #{message_id} 的原值重算。\n\n' + details)
+        sections = [('文件計算', '當時請求：\n' + context['current_request'] + '\n\n' + details),
                     ('文件來源', doc_text)]
     from .response_delivery import describe, VIEW_TAB
     if delivery_text := describe(store, message_id):

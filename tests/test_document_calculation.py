@@ -270,6 +270,69 @@ class DocumentCalculationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '上一則試算的算式或來源'):
             create_backup(restored.path, self.root/'tampered-original.paibackup')
 
+    def test_explicit_original_source_selects_an_earlier_scenario_even_after_a_newer_one(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        self.attach('乙重量為4公斤。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+                    '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        app = DailyAssistant(self.store, NoModel(), default_chat=True)
+        earlier = app.ask(self.sid, question)
+        later = app.ask(self.sid, question.replace('減去', '加上'))
+        self.assertEqual(self.receipt(later)['result']['exact'], '16')
+        request = f'用文件試算回答 #{earlier["id"]} 的原值重算。'
+        result = self.receipt(app.ask(self.sid, request))
+        self.assertEqual(result['schema'], document_calculation.EXPLICIT_ORIGINAL_RECEIPT)
+        self.assertEqual(result['plan']['scenario_source']['answer_id'], earlier['id'])
+        self.assertEqual(result['plan']['request'], request)
+        self.assertEqual(result['result']['exact'], '8')
+        self.assertIn('依你指定的', document_calculation.describe(result))
+        latest_request = f'依文件試算回答 #{later["id"]} 的文件原值重新計算。'
+        self.assertEqual(self.receipt(app.ask(self.sid, latest_request))['result']['exact'], '16')
+        self.store.add_message(self.sid, 'assistant', '依文件原值\n尚未核對的文字')
+        self.assertEqual(document_calculation.scenario_ids(self.store, self.store.messages(self.sid)),
+                         {earlier['id'], later['id']})
+
+    def test_explicit_original_source_rejects_wrong_session_type_and_reference_state(self):
+        self.attach('甲重量為十二公斤。', 'a.txt')
+        second = self.attach('乙重量為4公斤。', 'b.txt')
+        formula = '文件問答：計算 [D1:L1] 的甲重量 減去 [D2:L1] 的乙重量，單位為公斤。'
+        app = Assistant(self.store, NoModel())
+        normal = app.ask(self.sid, formula)
+        scenario = app.ask(self.sid, formula + '假設 [D2:L1] 的乙重量改用 7 公斤。')
+        request = f'用文件試算回答 #{scenario["id"]} 的原值重算。'
+        foreign = self.store.new_session()
+        for sid, query in ((self.sid, request.replace(f'#{scenario["id"]}', f'#{normal["id"]}')),
+                           (foreign, request), (self.sid, '用文件試算回答 #9999999999999999999999 的原值重算。')):
+            with self.subTest(sid=sid, query=query), self.assertRaisesRegex(ValueError, '可核對的文件試算回答'):
+                app.ask(sid, query)
+        with self.assertRaisesRegex(ValueError, '可核對的文件試算回答'):
+            document_calculation.capture_original(self.store, self.sid, request, before=scenario['id'])
+        self.store.detach_document(self.sid, second)
+        with self.assertRaisesRegex(ValueError, '引用行已變更'):
+            app.ask(self.sid, request)
+
+    def test_explicit_original_source_survives_retry_restore_and_rechecks_parent_delivery(self):
+        self.attach('甲時長為1秒。', 'a.txt')
+        self.attach('乙時長為1分鐘。', 'b.txt')
+        question = ('文件問答：計算 [D1:L1] 的甲時長 加上 [D2:L1] 的乙時長，換算成分鐘。'
+                    '假設 [D1:L1] 的甲時長改用 2 秒。')
+        app = Assistant(self.store, NoModel())
+        scenario = app.ask(self.sid, question)
+        app.ask(self.sid, '計算 2 + 2，只回答整數。')
+        with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+            app.ask(self.sid, f'用文件試算回答 #{scenario["id"]} 的原值重算。')
+        result = app.retry(self.sid)
+        receipt = self.receipt(result)
+        self.assertEqual(receipt['result']['exact'], '61/60')
+        bundle = create_backup(self.store.path, self.root/'named-source.paibackup')
+        restore_backup(bundle['path'], self.root/'restored')
+        restored = Store(self.root/'restored'/'assistant.sqlite3')
+        self.assertEqual(document_calculation.read(restored, result['id']), receipt)
+        with restored.connect() as db:
+            db.execute('UPDATE messages SET content=? WHERE id=?', ('已改動的試算', scenario['id']))
+        with self.assertRaisesRegex(ValueError, '來源或結果'):
+            document_calculation.read(restored, result['id'])
+
     def test_receipt_rejects_changed_citations_and_saved_operands(self):
         self.attach('甲重量為十二公斤。', 'a.txt')
         self.attach('乙重量為4公斤。', 'b.txt')

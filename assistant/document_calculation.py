@@ -19,7 +19,10 @@ SCENARIO_PLAN = 'document_calculation_scenario_plan_v1'
 SCENARIO_RECEIPT = 'document_calculation_scenario_receipt_v1'
 ORIGINAL_PLAN = 'document_calculation_original_plan_v1'
 ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v1'
-PINNED_PLANS = (SCENARIO_PLAN, ORIGINAL_PLAN)
+EXPLICIT_ORIGINAL_PLAN = 'document_calculation_original_plan_v2'
+EXPLICIT_ORIGINAL_RECEIPT = 'document_calculation_original_receipt_v2'
+ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT}
+PINNED_PLANS = (SCENARIO_PLAN, *ORIGINAL_RECEIPTS)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -39,6 +42,8 @@ _SCENARIO_VALUE = re.compile(rf'(?:假設|如果) *(?:把|將)? *({_REF}) *的({
                              r'(?:, *只(?:做)?試算)?[。?!]?')
 _ORIGINAL_REQUEST = re.compile(r'(?:請)?(?:回到|改用|依照|依|按照|按|用)(?:文件原值|原文件數值)[，, ]*'
                                r'(?:重算|重新計算|重新算)[。！!？?]?')
+_EXPLICIT_ORIGINAL = re.compile(r'(?:請)?(?:依照|依|按照|按|用|沿用)文件試算回答 *#([0-9]{1,30}) *的'
+                                r'(?:文件原值|原值|原文件數值)[，, ]*(?:重算|重新計算|重新算)[。！!？?]?')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -112,16 +117,31 @@ def parse_live_request(question):
             or _parse_date_aggregate(question, relative=True))
 
 
+def _parse_original_followup(question):
+    if not isinstance(question, str) or len(question) > 80:
+        return None
+    text = question.strip()
+    if len(question) <= 36 and _ORIGINAL_REQUEST.fullmatch(text):
+        return ORIGINAL_PLAN, None
+    if match := _EXPLICIT_ORIGINAL.fullmatch(text):
+        return EXPLICIT_ORIGINAL_PLAN, int(match[1])
+    return None
+
+
 def matches_original_followup(question):
-    return isinstance(question, str) and len(question) <= 36 and _ORIGINAL_REQUEST.fullmatch(question.strip()) is not None
+    return _parse_original_followup(question) is not None
 
 
-def _original_followup(db, sid, question, before):
+def _original_followup(db, sid, question, before, target):
+    schema, selected = target
+    if selected is not None and not 0 < selected <= 2**63 - 1:
+        return None
     row = db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
         FROM messages m JOIN answer_contexts c ON c.message_id=m.id
-        WHERE m.role='assistant' AND m.id=(SELECT id FROM messages
-            WHERE session_id=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 1)''',
-        (local_answer_receipts.MAX_JSON_BYTES, sid, before, before)).fetchone()
+        WHERE m.session_id=? AND m.role='assistant' AND (? IS NULL OR m.id<?)
+          AND m.id=COALESCE(?, (SELECT id FROM messages WHERE session_id=?
+            AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 1))''',
+        (local_answer_receipts.MAX_JSON_BYTES, sid, before, before, selected, sid, before, before)).fetchone()
     if row is None:
         return None
     mid, raw = row
@@ -133,15 +153,20 @@ def _original_followup(db, sid, question, before):
         return None
     receipt = local_answer_receipts.checked_row(db, mid, context, MODE, FIELD, validate, True, validate_origin)
     scenario = receipt['plan']
-    return dict(schema=ORIGINAL_PLAN, request=question, base=scenario['base'], documents=scenario['documents'],
+    return dict(schema=schema, request=question, base=scenario['base'], documents=scenario['documents'],
                 scenario_source=dict(answer_id=mid, sha256=digest(raw)))
 
 
 def capture_original(store, sid, question, before=None):
+    target = _parse_original_followup(question)
+    if target is None:
+        raise ValueError('文件原值重算的請求無法核對。')
     with store.connect() as db:
         db.execute('BEGIN')
-        plan = _original_followup(db, sid, question, before)
+        plan = _original_followup(db, sid, question, before, target)
     if plan is None:
+        if target[1] is not None:
+            raise ValueError(f'找不到本對話中可核對的文件試算回答 #{target[1]}。請確認回答編號。')
         raise ValueError('請緊接在文件試算回答後重算，或重新提供完整的文件算式。')
     return plan
 
@@ -276,7 +301,7 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
-    if plan.get('schema') == ORIGINAL_PLAN:
+    if plan.get('schema') in ORIGINAL_RECEIPTS:
         return _evaluate_original(plan, cancel)
     if plan.get('schema') == SCENARIO_PLAN:
         return _evaluate_scenario(plan, cancel)
@@ -395,15 +420,17 @@ def _scenario_quantity(base, hypothesis):
 
 def _evaluate_original(plan, cancel):
     base, source = plan['base'], plan['scenario_source']
-    if (not matches_original_followup(plan['request'])
+    target = _parse_original_followup(plan['request'])
+    if (target is None or target[0] != plan['schema']
             or base != (parse_request(base['request']) or _parse_conversion(base['request']))
             or set(source) != {'answer_id', 'sha256'} or type(source['answer_id']) is not int
-            or source['answer_id'] <= 0 or not re.fullmatch('[0-9a-f]{64}', source['sha256'])
+            or not 0 < source['answer_id'] <= 2**63 - 1 or not re.fullmatch('[0-9a-f]{64}', source['sha256'])
+            or (target[1] is not None and source['answer_id'] != target[1])
             or set(plan) != {'schema', 'request', 'base', 'documents', 'scenario_source'}):
         raise ValueError('文件原值重算的請求或來源無法核對。')
     original, evidence = evaluate({**base, 'documents': plan['documents']}, cancel)
     answer = '依文件原值重算\n' + original
-    return answer, dict(schema=ORIGINAL_RECEIPT, plan=plan, model_called=False,
+    return answer, dict(schema=ORIGINAL_RECEIPTS[plan['schema']], plan=plan, model_called=False,
                         observations=evidence['observations'], result=evidence['result'],
                         output=answer, output_sha256=digest(answer))
 
@@ -758,18 +785,36 @@ def read(store, mid):
                                      validate_origin=validate_origin)
 
 
+def scenario_ids(store, rows):
+    """Label visible scenario candidates. Selection still verifies the complete receipt."""
+    candidates = [row['id'] for row in rows if row['role'] == 'assistant' and row['content'].startswith('依文件原值\n')]
+    if not candidates:
+        return set()
+    placeholders = ','.join('?' for _ in candidates)
+    with store.connect() as db:
+        saved = db.execute(f'''SELECT message_id FROM answer_contexts WHERE message_id IN ({placeholders})
+            AND CASE WHEN length(CAST(payload AS BLOB))<=? AND json_valid(payload)
+                THEN json_extract(payload,'$.response_mode')=? AND json_extract(payload,'$.document_calculation.schema')=?
+                END''', (*candidates, local_answer_receipts.MAX_JSON_BYTES, MODE, SCENARIO_RECEIPT)).fetchall()
+    return {row[0] for row in saved}
+
+
 def validate_origin(db, sid, before, plan):
-    if plan['schema'] != ORIGINAL_PLAN:
+    if plan['schema'] not in ORIGINAL_RECEIPTS:
         return
-    origin = _original_followup(db, sid, plan['request'], before)
+    target = _parse_original_followup(plan['request'])
+    origin = _original_followup(db, sid, plan['request'], before, target)
     if plan != origin:
+        if plan['schema'] == EXPLICIT_ORIGINAL_PLAN:
+            raise ValueError('文件原值重算與指定試算回答的算式或來源不符。')
         raise ValueError('文件原值重算與上一則試算的算式或來源不符。')
 
 
 def describe(receipt):
     plan = receipt['plan']
-    if receipt['schema'] == ORIGINAL_RECEIPT:
-        return '\n\n'.join((receipt['output'], f'沿用本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',
+    if receipt['schema'] in ORIGINAL_RECEIPTS.values():
+        intro = '依你指定的' if receipt['schema'] == EXPLICIT_ORIGINAL_RECEIPT else '沿用'
+        return '\n\n'.join((receipt['output'], f'{intro}本對話文件試算回答 #{plan["scenario_source"]["answer_id"]} 的原算式',
                              plan['base']['request']))
     if receipt['schema'] == SCENARIO_RECEIPT:
         lines = [receipt['output'], '依文件原值重算的算式\n' + plan['base']['request']]

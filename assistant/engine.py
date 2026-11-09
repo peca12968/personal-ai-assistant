@@ -401,8 +401,8 @@ class Assistant:
             previous_plan = previous.get(document_calculation.FIELD) if retry else None
             document_plan = document_calculation.bind_live_request(document_plan, previous_plan)
             sources = document_calculation.snapshot(self.store, sid, document_plan)
-            if document_plan['schema'] == document_calculation.ORIGINAL_PLAN and document_plan['documents'] != sources:
-                raise ValueError('上一則試算的引用行已變更，請重新提供完整的文件算式。')
+            if document_plan['schema'] in document_calculation.ORIGINAL_RECEIPTS and document_plan['documents'] != sources:
+                raise ValueError('這則試算的引用行已變更，請重新提供完整的文件算式。')
             document_plan['documents'] = sources
             if (document_plan['schema'] in document_calculation.PINNED_PLANS and isinstance(previous_plan, dict)
                     and previous_plan.get('schema') == document_plan['schema'] and previous_plan != document_plan):
@@ -442,9 +442,9 @@ class Assistant:
                     context['calculation'] = receipt
                 elif document_plan is not None:
                     try:
-                        if (document_plan['schema'] == document_calculation.ORIGINAL_PLAN
+                        if (document_plan['schema'] in document_calculation.ORIGINAL_RECEIPTS
                                 and document_calculation.capture_original(self.store, sid, question, uid) != document_plan):
-                            raise ValueError('提交前上一則文件試算回答已變更，請重新確認。')
+                            raise ValueError('提交前文件試算回答已變更，請重新確認。')
                         if (document_plan['schema'] in document_calculation.PINNED_PLANS
                                 and document_calculation.snapshot(self.store, sid, document_plan) != sources):
                             raise ValueError('提交前文件試算來源已變更，請重新確認引用行。')
