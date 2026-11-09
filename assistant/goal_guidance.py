@@ -5,7 +5,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import goal_partials, goal_review
+from . import goal_partials, goal_reply_sources, goal_review
 
 
 def _snapshot(db, sid, gid):
@@ -15,6 +15,10 @@ def _snapshot(db, sid, gid):
     review = next(goal_review._rows(db,gid))
     goal = dict(goal)
     fingerprint = review['fingerprint']
+    sources = goal_reply_sources.read(db, gid, goal['notes'])
+    if sources:
+        goal['reply_sources'] = sources
+        fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in sources)).encode('utf-8')).hexdigest()
     if goal['status'] == 'needs_input':
         partial = goal_partials.read_waiting(db, gid, goal['question'])
         if partial is not None:

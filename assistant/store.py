@@ -146,6 +146,11 @@ class Store:
                     id INTEGER PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
                     sequence INTEGER NOT NULL, action_json TEXT NOT NULL, observation_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(goal_id,sequence));
+                CREATE TABLE IF NOT EXISTS autonomous_reply_sources (
+                    goal_id TEXT NOT NULL, ask_sequence INTEGER NOT NULL CHECK(ask_sequence BETWEEN 1 AND 32),
+                    notes_start INTEGER NOT NULL CHECK(notes_start>=0), answer TEXT NOT NULL,
+                    PRIMARY KEY(goal_id,ask_sequence),
+                    FOREIGN KEY(goal_id,ask_sequence) REFERENCES autonomous_steps(goal_id,sequence));
                 CREATE TABLE IF NOT EXISTS autonomous_handoffs (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     parent_goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),

@@ -341,6 +341,10 @@ class AutonomousWindow:
             lines += ['待補期間的成果（尚待定稿）', goal['partial_result']]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
+        if goal.get('reply_sources'):
+            lines += ['使用者回覆來源（本目標）']
+            lines += [f"{source['citation']} · {source['question']}\n{source['answer']}"
+                      for source in goal['reply_sources']]
         if goal['notes']:
             lines += ['本階段的問題與補充紀錄：', goal['notes']]
         if goal.get('conversation_history') is not None:

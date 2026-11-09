@@ -476,6 +476,8 @@ manifest區分draft_failed、draft_needs_input、goal_failed及goal_collected；
 
 `evals/open_work_drafts.json` 與 `evals/open_work_handoff.json` 分開評讀目標草稿、等待期間可見的交付，以及直接完成的表格和文字。等待狀態的 `answer` 仍記保存問題。暫定正文另外核對 `goal.partial_result`、同一步的動作與觀察、原始模型回應和引用檢查。較長的逐字暫表核對每列原文和順序，避免只看等待狀態就判定交付成功。
 
+`scripts/evaluate_goal_replies.py --suite evals/goal_multisource_replies.json` 會從固定合成文字建立匯入副本。加 `--live --report` 及新本機路徑可測量暫表、回答保存和接續定稿。每次模型請求先寫側錄，並留存原回覆與前後狀態。逐項核對正式更正、未採用的引文及未更正欄位，另外比對實際輸入的回覆來源、已讀文件行與定稿引用。位置和原話一致性由程式核對，是否足以支持結論仍需評讀。
+
 ## 理解評估的失敗邊界保存（2026-11-05）
 
 `evaluate_understanding.py --live --report data/evaluations/<新名稱>.json`在正常Codex及明確選用本機模型兩種模式，都先將實際請求寫入`<報告完整檔名>.attempts/<序號>.request.json`，flush及fsync成功後才呼叫引擎。側錄綁定報告路徑、建立時間、全部選取ID、完整案例及來源／提示／收集器／驗證器／側錄器指紋，本機模式另綁定模型選用指紋。序號檔名不採用使用者案例ID作為路徑。

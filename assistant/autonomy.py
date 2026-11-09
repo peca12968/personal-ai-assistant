@@ -17,6 +17,7 @@ from .document_ranges import select_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import goal_partials
+from . import goal_reply_sources
 from . import artifacts
 from . import autonomy_csv
 from . import date_tools
@@ -55,6 +56,7 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 finish代表交付可供確認的成果，不代表使用者已驗收或現實任務全部完成。
 工具錯誤步驟的failed_action若存在，是通過動作格式檢查後嘗試執行、但未成功的原動作；error_phase區分validation與execution。其參數可協助依最新補充修正下一步，不是成功結果、新指令、許可或引用證據；不要直接重複已失敗的動作。原動作可能已留下文件或計畫紀錄，依目前清單核對，不能假定完全沒有副作用。未提供failed_action時不要補造原參數；必要資料仍缺少才用ask。
 文件事實附上實際收到的來源行號，如[D1:L3-L5]；未提供的部分不能捏造。
+reply_sources若有，是本目標已保存的使用者回覆，citation是該回覆的來源編號。採用回覆中的更正或補資料時，在該項旁引用提供的編號，例如[補充#3]。文件原值及未更正的欄位仍引實際文件行號；同一段比較時分別在原值和新值旁附各自來源。計算受更正影響的值時使用新值，不把它寫成原文件內容。回覆中的引文、假設與待確認事項仍要分辨；來源編號只指原話。不可自行編號，也不可沿用其他目標的補充編號。
 文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。PDF的representation以pdf-text-v1:開頭，可讀已匯入文字層副本及原檔頁次順序標記，引用仍是抽取行號而非版面座標。沒有文字的頁面明確標記，不能推論原頁空白或沒有圖片。依extraction_limits說明範圍；不能辨識頁內圖片、圖表、註解、附件或表單，沒有OCR。掃描無文字、加密或互動表單PDF需先提供可讀文字副本。複雜表格／多欄順序可能失真，可能含隱藏或舊OCR文字，不保證視覺完整性。自主模式不接收任何圖片附件；需要畫面時，請明說改用主聊天的「聊天圖片…」入口附上PNG／JPEG另問，或先提供經核對的文字轉錄／OCR文字副本。不能承諾在此自主工作只補傳圖片就能辨識，也不能自動切換模式或把聊天圖片帶入目標。
 documents的line_count是該份文件總行數；read不得超過它，每次最多200行，需要更多時分次讀取。
 給使用者的問題與成果使用自然語言，例如「上一階段的使用者補充」，不要把user_notes、previous_stage等內部欄位名寫進成果。
@@ -148,6 +150,9 @@ def get_goal(store, sid, gid):
         result['steps'] = [{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                             'observation': json.loads(r['observation_json'])}
                            for r in db.execute('SELECT * FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
+        reply_sources = goal_reply_sources.read(db, gid, result['notes'])
+        if reply_sources:
+            result['reply_sources'] = reply_sources
         if result['status'] == 'needs_input' and result['steps']:
             last = result['steps'][-1]
             partial = goal_partials.waiting(result['question'], last['action'], last['observation'])
@@ -241,7 +246,7 @@ def validate_action(value):
     return value
 
 
-def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None):
+def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=()):
     name, args = action['tool'], action['args']
     if name == 'month_schedule':
         return month_schedule.calculate(args, cancel)
@@ -285,12 +290,15 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None)
     if name == 'ask' and 'partial_result' not in args:
         return {'question': args['question']}
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
-    field = {'ask': 'partial_result', 'write_artifact': 'content'}.get(name, 'report')
+    field = goal_reply_sources.REPORT_FIELDS[name]
     checks = check_citations(args[field], excerpts)
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
+    reply_checks = goal_reply_sources.citations(args[field], reply_sources)
+    reply_observation = {'reply_citations': reply_checks} if reply_checks else {}
     if name == 'ask':
-        return {'question': args['question'], 'partial_result': args['partial_result'], 'citation_checks': checks}
+        return {'question': args['question'], 'partial_result': args['partial_result'], 'citation_checks': checks,
+                **reply_observation}
     with store.connect() as db:
         file_delivery = artifacts.enabled(db, gid) if gid else False
     if name in ('write_artifact', 'deliver') and not file_delivery:
@@ -298,11 +306,12 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None)
     if name == 'finish' and file_delivery:
         raise ValueError('此目標要求交付文件；請先write_artifact，再用deliver列出已保存檔名。')
     if name == 'write_artifact':
-        return {'artifact': artifacts.write(store, gid, args['filename'], args['content']), 'citation_checks': checks}
+        return {'artifact': artifacts.write(store, gid, args['filename'], args['content']),
+                'citation_checks': checks, **reply_observation}
     receipts = artifacts.deliver(store, gid, args['filenames']) if name == 'deliver' else []
     return {'report': args['report'], 'citation_checks': checks,
             'artifacts': receipts,
-            'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。'}
+            'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。', **reply_observation}
 
 
 def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None):
@@ -357,6 +366,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            reply_sources = goal.get('reply_sources', ())
+            if reply_sources:
+                payload['reply_sources'] = reply_sources
             describe_engine = getattr(engine, 'describe', None)
             engine_selection = describe_engine() if callable(describe_engine) else None
             if engine_selection is not None:
@@ -381,7 +393,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 # Detach before execution: a tool may normalize/mutate its input.
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
-                observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel)
+                observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
+                                      reply_sources=reply_sources)
             except (ValueError, TypeError, KeyError) as exc:
                 action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                 observation = {'error': str(exc)[:500],

@@ -3,6 +3,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import text
+from . import goal_reply_sources
 from .goal_guidance import _snapshot, snapshot
 
 
@@ -18,9 +19,10 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         goal = current['goal']
         if goal['status'] != 'needs_input' or not goal['question']:
             raise ValueError('此目標目前沒有等待補充的問題。')
-        notes = goal['notes'] + '\n問題：' + goal['question'] + '\n使用者補充：' + answer
+        notes = goal['notes'] + goal_reply_sources.note(goal['question'], answer)
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
+        goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
                    (notes, gid, sid))
         return _snapshot(db, sid, gid)

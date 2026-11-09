@@ -152,6 +152,57 @@ class AutonomyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '成果引用與保存來源不一致'):
             validate_database(self.store.path)
 
+    def test_reply_source_binds_original_question_and_separate_file_citations(self):
+        did = self.attach('原始不可用3件')
+        gid = self.goal('依更正交付，保留原值來源。')
+        question = '誰收貨？'
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=did, start_line=1, end_line=1),
+            action('ask', question=question, partial_result=f'原始不可用3件。[D{did}:L1]')))
+        answer = '李同仁收貨；不可用改為4件。\n問題：這行只是回覆原文的一部分。'
+        token = reply_snapshot(self.store, self.sid, gid)['fingerprint']
+        a.reply(self.store, self.sid, gid, answer, expected_fingerprint=token)
+        saved = a.get_goal(self.store, self.sid, gid)['reply_sources'][0]
+        self.assertEqual((saved['citation'], saved['ask_sequence'], saved['question'], saved['answer']),
+                         ('[補充#2]', 2, question, answer))
+
+        report = f'原始不可用3件。[D{did}:L1] 現在不可用4件，李同仁收貨。[補充#2]'
+        resumed = ScriptedEngine(action('finish', report='未來才可能收到的回覆。[補充#4]'),
+                                 action('finish', report=report))
+        final = a.run_goal(self.store, self.sid, gid, resumed)
+        self.assertIn('"reply_sources"', resumed.prompts[0])
+        self.assertEqual(final['steps'][-2]['action']['tool'], 'invalid')
+        observation = final['steps'][-1]['observation']
+        self.assertEqual(observation['reply_citations'], [
+            {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': saved['sha256']}])
+        self.assertEqual(observation['citation_checks'], [{'citation': f'[D{did}:L1]', 'range_valid': True}])
+        self.assertEqual(final['result'], report)
+
+        backup = self.root / 'reply-source.paibackup'
+        create_backup(self.store.path, backup)
+        target = self.root / 'restored'
+        restore_backup(backup, target)
+        restored = Store(target / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+        with restored.connect() as db:
+            db.execute("UPDATE autonomous_reply_sources SET answer='被換掉的回覆' WHERE goal_id=?", (gid,))
+        with self.assertRaisesRegex(ValueError, '補充原文不一致'):
+            validate_database(restored.path)
+
+    def test_reply_citation_cannot_use_another_goal_or_the_current_unanswered_step(self):
+        old_goal = self.goal()
+        a.run_goal(self.store, self.sid, old_goal, ScriptedEngine(action('ask', question='先前名稱？')))
+        a.reply(self.store, self.sid, old_goal, '先前答案',
+                expected_fingerprint=reply_snapshot(self.store, self.sid, old_goal)['fingerprint'])
+        gid = self.goal('目前工作另問。')
+        engine = ScriptedEngine(action('ask', question='本次名稱？', partial_result='沿用名稱。[補充#1]'),
+                                action('ask', question='本次名稱？', partial_result='提前引用。[補充#2]'),
+                                action('ask', question='本次名稱？'))
+        waiting = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual([step['action']['tool'] for step in waiting['steps']], ['invalid', 'invalid', 'ask'])
+        self.assertNotIn('reply_sources', waiting)
+        self.assertEqual(waiting['question'], '本次名稱？')
+
     def test_read_cannot_access_other_session_and_reports_incomplete_range(self):
         other = self.store.new_session()
         secret = self.attach('PRIVATE_OTHER_SESSION', other)
@@ -252,6 +303,7 @@ class AutonomyTests(unittest.TestCase):
             db.execute('DROP TABLE autonomous_artifacts')
             db.execute('DROP TABLE autonomous_delivery')
             db.execute('DROP TABLE autonomous_handoffs')
+            db.execute('DROP TABLE autonomous_reply_sources')
             db.execute('DROP TABLE autonomous_steps')
             db.execute('DROP TABLE autonomous_goals')
         self.assertNotIn('autonomous_goals', validate_database(restored.path))
