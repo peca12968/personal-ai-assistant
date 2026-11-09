@@ -99,6 +99,135 @@ class DailyScopedDeclaredTests(unittest.TestCase):
             daily_necessary.read(restored, fixed['id'])
         self.engine.answer.assert_not_called()
 
+    NEW_ROUND = '沿用上一輪規則，開始新一輪核對。'
+    CONFIRM_LOCK = '本輪已確認「封條已完整」成立'
+    CONFIRM_PERMIT = '本輪已確認「許可仍有效」成立'
+
+    def test_new_round_separates_previous_confirmations_and_vetoes_from_current_observations(self):
+        for old_permit in ('成立', '不成立'):
+            for latest, expected in (('', 'X'), (self.CONFIRM_LOCK + '。', 'X'),
+                                     (self.CONFIRM_PERMIT.replace('」成立', '」不成立') + '。', 'B'),
+                                     (self.CONFIRM_LOCK + '。' + self.CONFIRM_PERMIT + '。', 'R')):
+                with self.subTest(old_permit=old_permit, latest=latest):
+                    sid = self.store.new_session()
+                    prior = '本輪已確認「許可仍有效」' + old_permit
+                    first = self.app.ask(sid, SCOPED_REQUEST.replace(SCOPED_CURRENT, prior))
+                    original = daily_necessary.read(self.store, first['id'])
+                    reply = self.app.ask(sid, self.NEW_ROUND + latest)
+                    proof = daily_necessary.read(self.store, reply['id'])
+                    conditions = daily_necessary.effective(proof['plan'])['conditions']
+                    self.assertEqual(reply['content'], expected)
+                    self.assertEqual(proof['plan']['source']['answer_id'], first['id'])
+                    self.assertEqual(proof['plan']['schema'], daily_necessary.ROUND_PLAN)
+                    self.assertEqual(conditions[0]['previous_round']['observation'], prior)
+                    self.assertIn(prior, daily_necessary.describe(proof).split('上一輪的觀察（供查閱）')[1])
+                    self.assertNotIn(prior, proof['canonical'])
+                    self.assertEqual(daily_necessary.read(self.store, first['id']), original)
+        self.engine.answer.assert_not_called()
+
+    def test_new_round_keeps_alternatives_current_and_supports_inquiry_and_another_reset(self):
+        sid = self.store.new_session()
+        self.app.ask(sid, DECLARED_PENDING.replace('「副本已核准」尚未核對', '已確認「副本已核准」成立'))
+        first = self.app.ask(sid, self.NEW_ROUND + '本輪已確認「檔案已完成簽署」成立。')
+        self.assertEqual(first['content'], 'X')
+        asked = self.app.ask(sid, '還要核對什麼？')
+        self.assertEqual(asked[daily_necessary.FIELD]['inquiry']['support'], [['原件已登錄', '副本已核准']])
+        self.app.ask(sid, '沿用上一輪條件：檢查時間：「原件已登錄」3分鐘，「副本已核准」1分鐘。先查哪項最省時間？')
+        with self.assertRaisesRegex(EngineError, '本輪'):
+            self.app.ask(sid, '沿用上一輪條件：已確認「原件已登錄」成立。重算。')
+        fixed = self.app.ask(sid, '沿用上一輪條件：本輪已確認「原件已登錄」成立。重算。')
+        self.assertEqual(fixed['content'], 'R')
+        second = self.app.ask(sid, self.NEW_ROUND)
+        receipt = daily_necessary.read(self.store, second['id'])
+        self.assertEqual(second['content'], 'X')
+        proof = daily_necessary.describe(receipt)
+        self.assertIn('原件已登錄 → 尚未核實（本輪未提供觀察）', proof)
+        self.assertIn('副本已核准 → 上一輪未提供觀察', proof)
+        self.assertIn('本輪已確認「原件已登錄」成立 → 已確認滿足', proof)
+        self.engine.answer.assert_not_called()
+
+    def test_new_round_rejects_unsupported_sources_and_preserves_the_raw_route(self):
+        sid = self.store.new_session()
+        first = self.app.ask(sid, PHYSICAL_PENDING)
+        for request in (
+            self.NEW_ROUND + '昨天出水閥已開。',
+            self.NEW_ROUND + '出水閥已開。',
+            self.NEW_ROUND + '本輪已確認接頭鎖好。',
+            self.NEW_ROUND + '本輪出水閥已開，本輪出水閥已關閉。',
+            self.NEW_ROUND + '本輪出水閥已開。把結果傳給其他人。',
+        ):
+            with self.subTest(request=request), self.assertRaises(EngineError) as error:
+                self.app.ask(sid, request)
+            self.assertEqual(error.exception.code, 'evidence_invalid')
+        self.assertEqual(self.store.messages(sid, 1)[0]['id'], first['id'])
+        with self.assertRaisesRegex(EngineError, '沒有可沿用'):
+            self.app.ask(self.store.new_session(), self.NEW_ROUND)
+        roster = self.store.new_session()
+        self.app.ask(roster, '今天兩位講者都須有有效同意書才能錄音。第一位今天的文件還沒核對，'
+                     '第二位已撤回唯一的同意書。依今天的已知條件，可錄音回「可錄」，確定不能錄回「不可錄」，'
+                     '仍有可能但不能確定回「待核」。只輸出一個標籤。')
+        with self.assertRaisesRegex(EngineError, '重新列出人員'):
+            self.app.ask(roster, self.NEW_ROUND)
+
+        path = self.path / 'attached.txt'
+        path.write_text('附件的觀察', encoding='utf-8')
+        self.store.attach_document(sid, path)
+        strict = DailyAssistant(self.store, self.engine)
+        with self.assertRaisesRegex(EngineError, '只接受純文字'):
+            strict.ask(sid, self.NEW_ROUND)
+        self.store.detach_document(sid, self.store.documents(sid, include_content=False)[0]['id'])
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(sid, self.NEW_ROUND)['content'], '一般模型回答')
+        self.engine.answer.assert_called_once()
+
+    def test_new_round_retry_and_restored_source_validation(self):
+        sid = self.store.new_session()
+        first = self.app.ask(sid, SCOPED_REQUEST)
+        evaluate = daily_necessary.evaluate
+
+        def cancelled(plan, cancel=None):
+            if plan['schema'] == daily_necessary.ROUND_PLAN:
+                raise EngineError('停止', 'cancelled')
+            return evaluate(plan, cancel)
+
+        with patch.object(daily_necessary, 'evaluate', side_effect=cancelled), self.assertRaisesRegex(EngineError, '停止'):
+            self.app.ask(sid, self.NEW_ROUND + self.CONFIRM_PERMIT + '。')
+        reply = self.app.retry(sid)
+        self.assertEqual(reply['content'], 'X')
+        self.assertEqual(len(self.store.messages(sid, 10)), 4)
+        receipt = daily_necessary.read(self.store, reply['id'])
+        saved = create_backup(self.store.path, self.path / 'new-round.paibackup')
+        restore_backup(saved['path'], self.path / 'restored-new-round')
+        restored = Store(self.path / 'restored-new-round/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, reply['id']), receipt)
+        context = restored.answer_context(first['id'])
+        context['extra_saved_data'] = True
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), first['id']))
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily_necessary.read(restored, reply['id'])
+        self.engine.answer.assert_not_called()
+
+    def test_new_round_keeps_earlier_disputes_for_reference_but_does_not_use_them(self):
+        sid = self.store.new_session()
+        self.app.ask(sid, PHYSICAL_PENDING.replace('出水閥未檢查', '出水閥已開'))
+        disputed = self.app.ask(sid, '沿用上一輪條件：交班表回報「出水閥已關閉」。保留分歧。')
+        reply = self.app.ask(sid, self.NEW_ROUND)
+        proof = daily_necessary.read(self.store, reply['id'])
+        self.assertIn('conflicts', disputed[daily_necessary.FIELD])
+        self.assertNotIn('conflicts', proof)
+        self.assertIn('交班表「出水閥已關閉」', daily_necessary.describe(proof).split('上一輪的觀察（供查閱）')[1])
+        with self.assertRaisesRegex(EngineError, '一正一反'):
+            self.app.ask(sid, '沿用上一輪條件：交班表回報「本輪出水閥已關閉」。保留分歧。')
+        updated = self.app.ask(sid, '沿用上一輪條件：交班表回報「本輪出水閥已關閉」，'
+                               '核對單回報「本輪出水閥已開」。保留分歧。')
+        self.assertIn('conflicts', daily_necessary.read(self.store, updated['id']))
+        resolved = self.app.ask(sid, '沿用上一輪條件：本輪出水閥已關閉。重算。')
+        self.assertEqual(resolved['content'], 'B')
+        self.assertNotIn('conflicts', daily_necessary.read(self.store, resolved['id']))
+        self.engine.answer.assert_not_called()
+
 
 class DailyDeclaredPrerequisiteTests(unittest.TestCase):
     def setUp(self):
