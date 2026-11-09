@@ -1,0 +1,81 @@
+{
+  "schema": "object_attribute_assay_v1",
+  "cases": [
+    {
+      "id": "label_only",
+      "group": "fresh",
+      "history": "上次青色樣品盒的封口還完整。",
+      "records": ["本輪確認青色樣品盒的登錄碼已入冊。"],
+      "claims": [
+        {"object": "青色樣品盒", "property": "封口完整", "source": 1, "gold": [true, false, "U"]},
+        {"object": "青色樣品盒", "property": "登錄碼已入冊", "source": 1, "gold": [true, true, "T"]}
+      ]
+    },
+    {
+      "id": "label_and_seal",
+      "group": "fresh",
+      "history": "上次青色樣品盒的封口還完整。",
+      "records": ["本輪確認青色樣品盒的登錄碼已入冊，封口也查明完整。"],
+      "claims": [
+        {"object": "青色樣品盒", "property": "封口完整", "source": 1, "gold": [true, true, "T"]},
+        {"object": "青色樣品盒", "property": "登錄碼已入冊", "source": 1, "gold": [true, true, "T"]}
+      ]
+    },
+    {
+      "id": "similar_cabinet",
+      "group": "fresh",
+      "history": "前次東側備品櫃的通氣閥關著。",
+      "records": ["這回東側維修櫃的通氣閥確定關閉。", "本輪東側備品櫃的工作單已簽收。"],
+      "claims": [
+        {"object": "東側備品櫃", "property": "通氣閥已關閉", "source": 1, "gold": [false, true, "U"]},
+        {"object": "東側備品櫃", "property": "工作單已簽收", "source": 2, "gold": [true, true, "T"]}
+      ]
+    },
+    {
+      "id": "same_cabinet_veto",
+      "group": "fresh",
+      "history": "前次東側備品櫃的通氣閥關著。",
+      "records": ["這回東側備品櫃的通氣閥確定還開著。", "本輪東側備品櫃的工作單已簽收。"],
+      "claims": [
+        {"object": "東側備品櫃", "property": "通氣閥已關閉", "source": 1, "gold": [true, true, "F"]},
+        {"object": "東側備品櫃", "property": "工作單已簽收", "source": 2, "gold": [true, true, "T"]}
+      ]
+    },
+    {
+      "id": "shared_opposite",
+      "group": "fresh",
+      "history": "昨天測試座的紅色警示燈熄了。",
+      "records": ["當場查明測試座支架鎖緊，紅色警示燈還亮著。"],
+      "claims": [
+        {"object": "測試座", "property": "支架已鎖緊", "source": 1, "gold": [true, true, "T"]},
+        {"object": "測試座", "property": "紅色警示燈已熄滅", "source": 1, "gold": [true, true, "F"]}
+      ]
+    },
+    {
+      "id": "shared_partial",
+      "group": "fresh",
+      "history": "昨天測試座的紅色警示燈熄了。",
+      "records": ["當場查明測試座支架鎖緊，綠色指示燈還亮著。"],
+      "claims": [
+        {"object": "測試座", "property": "支架已鎖緊", "source": 1, "gold": [true, true, "T"]},
+        {"object": "測試座", "property": "紅色警示燈已熄滅", "source": 1, "gold": [true, false, "U"]}
+      ]
+    },
+    {
+      "id": "strap_missing",
+      "group": "historical",
+      "history": "舊的裝箱照片仍留在作業區。",
+      "records": ["剛才確認甲號核對卡已有章。"],
+      "claims": [
+        {"object": "甲號載箱", "property": "束帶已扣緊", "source": 1, "gold": [false, false, "U"]},
+        {"object": "甲號核對卡", "property": "已蓋章", "source": 1, "gold": [true, true, "T"]}
+      ]
+    },
+    {
+      "id": "literal_control",
+      "group": "control",
+      "question": "本次留存碼是 SET-612K。請只逐字回覆留存碼。",
+      "answer": "SET-612K"
+    }
+  ]
+}

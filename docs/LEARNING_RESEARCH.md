@@ -598,3 +598,27 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 只允許一輪重查，兩組的回答均用相同規則核對來源編號。格式失敗或來源仍無效會保留待查。逐案比較重查前後的結論，以及被排除條件的狀態和原句。歷史對話保留於完整提示中，篩選只作用於當前提供的編號清單。這個入口供研究，來源索引及時間通過後仍要核對物件。
+
+### 指定原句的物件及屬性對照
+
+`assess_object_attribute.py` 將原句和待查命題固定，給每項命題指定同一個觀察編號供兩組核對。六道新題分三對，分別測相近屬性、相近物件及同一句同時出現兩項狀態。歷史對照綁定前一輪錯選的實際句子。一般輸出控制使用相同提示。每組使用相同本機適配器和完整助理背景。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute.py check
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute.py prepare <名稱> --reference <語意診斷> --previous <已完成重查測量>
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute.py verify <名稱>
+```
+
+一組只輸出各命題狀態，另一組另回物件是否相符、屬性是否相符。程式另外將有不相符旗標的狀態降為待查，原答保留。旗標由同一次模型呼叫提供，逐項與獨立題目標準核對。相同原句可用於兩項條件，兩項仍各自評分。此測量驗證指定來源的歸屬，來源搜尋及完整自由問答另行驗收。
+
+巢狀格式首輪保留嚴格原分數。直接組輸出的平面 A/B 字串另行計算可讀狀態，這項補充分析在觀察到格式差異後加入。它只接受完整平面 JSON 的兩項狀態，並保留分項組的原格式限制。
+
+`assess_object_attribute_flat.py` 另凍結相同案例，兩組都改用明示的平面 JSON 欄位。直接組回 A_state、B_state，分項組另外回四個布林欄位。只在核對完整欄位和結束標記後轉成內部結構評分，原始輸出保留。新規約會核對第一輪來源、原句、命題、前文及權重。指示與格式範例一同調整，結果用於已知題目的開發對照。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute_flat.py check
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute_flat.py prepare <名稱> --reference <語意診斷> --previous <已完成物件屬性測量>
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute_flat.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_object_attribute_flat.py verify <名稱>
+```
