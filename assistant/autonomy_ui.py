@@ -360,6 +360,8 @@ class AutonomousWindow:
                       '歷史成果（未代表已驗收）：', previous['report'],
                       '當時的問題與補充紀錄：', previous['user_notes'] or '無',
                       '上一階段與本階段的文件版本：' + ('相同，引用仍需重新讀取' if previous['sources_match_current'] else '不同，需重新核對')]
+            if previous.get('source_comparison'):
+                lines += [autonomy.goal_stages.describe_source_comparison(previous['source_comparison'])]
             if 'checkpoint' in previous:
                 saved = previous['checkpoint']
                 if saved.get('work_plan'):

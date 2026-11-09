@@ -1,10 +1,14 @@
 """Explicit one-stage handoffs of reports or bounded, historical work checkpoints."""
 import hashlib
 import json
+import re
 from . import work_plan
+from .documents import MAX_DOCUMENTS
 
 
 STOPPED = {'paused', 'failed', 'needs_input'}
+SOURCE_LABELS = {'unchanged': '版本相同', 'different': '同編號版本不同',
+                 'removed': '本階段未收錄', 'added': '本階段新增'}
 
 
 def eligible(status, step_count):
@@ -22,6 +26,90 @@ def bounded(value, limit=1200):
     if len(encoded) <= limit:
         return {'value': value, 'truncated': False}
     return {'json_preview': encoded[:limit], 'truncated': True, 'original_chars': len(encoded)}
+
+
+def _source_index(sources):
+    if not isinstance(sources, list) or len(sources) > MAX_DOCUMENTS:
+        return None
+    result = {}
+    for row in sources:
+        if (not isinstance(row, dict) or set(row) != {'document_id', 'name', 'sha256'}
+                or type(row['document_id']) is not int or row['document_id'] < 1 or row['document_id'] in result
+                or not isinstance(row['name'], str) or not isinstance(row['sha256'], str)
+                or not re.fullmatch(r'[a-f0-9]{64}', row['sha256'])):
+            return None
+        result[row['document_id']] = row
+    return result
+
+
+def _prior_source_steps(previous):
+    checkpoint = previous.get('checkpoint')
+    activity = checkpoint.get('activity') if isinstance(checkpoint, dict) else None
+    excerpts, incomplete = {}, {}
+    if not isinstance(activity, list) or len(activity) > 32:
+        return excerpts, incomplete
+    for step in activity:
+        if not isinstance(step, dict) or type(step.get('sequence')) is not int or not 1 <= step['sequence'] <= 32:
+            continue
+        bounded_metadata = step.get('observation_metadata')
+        if not isinstance(bounded_metadata, dict) or bounded_metadata.get('truncated') is not False:
+            continue
+        metadata = bounded_metadata.get('value')
+        if not isinstance(metadata, dict):
+            continue
+        for field, target in (('provided_ranges', excerpts), ('requested_ranges', incomplete)):
+            rows = metadata.get(field)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or type(row.get('document_id')) is not int:
+                    continue
+                if field == 'requested_ranges' and row.get('status') in (None, 'provided'):
+                    continue
+                target.setdefault(row['document_id'], set()).add(step['sequence'])
+    return excerpts, incomplete
+
+
+def source_comparison(previous, sources):
+    """Compare captured catalogs, without reopening files or importing old evidence."""
+    old = _source_index(previous.get('sources'))
+    new = _source_index(sources)
+    if old is None or new is None or old == new:
+        return None
+    excerpts, incomplete = _prior_source_steps(previous)
+    result = []
+    for did in sorted(old.keys() | new.keys()):
+        earlier, current = old.get(did), new.get(did)
+        if earlier is None:
+            status = 'added'
+        elif current is None:
+            status = 'removed'
+        else:
+            status = 'unchanged' if earlier == current else 'different'
+        row = {'document_id': did, 'status': status, 'previous': earlier, 'current': current}
+        if earlier is not None and did in excerpts:
+            row['prior_excerpt_steps'] = sorted(excerpts[did])
+        if earlier is not None and did in incomplete:
+            row['prior_incomplete_steps'] = sorted(incomplete[did])
+        result.append(row)
+    return result
+
+
+def describe_source_comparison(rows):
+    lines = ['兩階段保存的來源比對']
+    for row in rows:
+        versions = []
+        earlier, current = row['previous'], row['current']
+        if earlier is not None:
+            versions.append(f"原階段 {earlier['name']} {earlier['sha256'][:12]}")
+        if current is not None and current != earlier:
+            versions.append(f"本階段 {current['name']} {current['sha256'][:12]}")
+        line = f"D{row['document_id']} · {SOURCE_LABELS[row['status']]} · " + ' → '.join(versions)
+        for field, label in (('prior_excerpt_steps', '舊片段步驟'), ('prior_incomplete_steps', '舊未完整查讀步驟')):
+            if field in row:
+                line += ' · ' + label + ' ' + '、'.join(map(str, row[field]))
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def activity(row):

@@ -59,6 +59,7 @@ jobs:
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py
       - run: python scripts/evaluate_tool_recovery.py
+      - run: python scripts/evaluate_tool_recovery.py --suite evals/goal_source_handoffs.json
       - run: python scripts/evaluate_date_months.py
       - run: python scripts/evaluate_docx_reading.py
       - run: python scripts/evaluate_pdf_reading.py

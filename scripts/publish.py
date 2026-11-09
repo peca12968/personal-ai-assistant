@@ -85,6 +85,7 @@ def main():
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")
     run(sys.executable, "scripts/evaluate_tool_recovery.py")
+    run(sys.executable, "scripts/evaluate_tool_recovery.py", "--suite", "evals/goal_source_handoffs.json")
     run(sys.executable, "scripts/evaluate_date_months.py")
     run(sys.executable, "scripts/evaluate_docx_reading.py")
     run(sys.executable, "scripts/evaluate_pdf_reading.py")

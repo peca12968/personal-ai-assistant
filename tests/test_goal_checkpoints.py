@@ -153,6 +153,73 @@ class GoalCheckpointTests(unittest.TestCase):
         removed = a.create_goal(self.store, self.sid, '來源已移除', parent_id=parent)
         self.assertEqual(a.get_goal(self.store, self.sid, removed)['sources'], [])
 
+    def test_source_comparison_uses_saved_catalogs_and_prior_range_metadata(self):
+        def attach(name, content):
+            path = self.root / name
+            path.write_text(content, encoding='utf-8')
+            return self.store.attach_document(self.sid, path)
+
+        removed = attach('archived.txt', 'ARCHIVED_BODY')
+        revised = attach('fees.txt', 'OLD_FEE_BODY')
+        stable = attach('contact.txt', 'CONTACT_BODY')
+        parent = self.paused(action('read_ranges', ranges=[
+            {'document_id': revised, 'start_line': 1, 'end_line': 1},
+            {'document_id': revised, 'start_line': 2, 'end_line': 2},
+            {'document_id': stable, 'start_line': 1, 'end_line': 1},
+        ]))
+        old = a.get_goal(self.store, self.sid, parent)
+        self.store.detach_document(self.sid, removed)
+        self.assertEqual(attach('fees.txt', '項目\n12元'), revised)
+        added = attach('reserve.txt', 'RESERVE_BODY')
+        child = a.create_goal(self.store, self.sid, '依新副本核對第二行', parent_id=parent)
+        saved = a.get_goal(self.store, self.sid, child)
+        previous = saved['previous_stage']
+        old_sources = {row['document_id']: row for row in old['sources']}
+        new_sources = {row['document_id']: row for row in saved['sources']}
+        comparison = previous['source_comparison']
+        self.assertEqual(comparison, [
+            {'document_id': removed, 'status': 'removed', 'previous': old_sources[removed], 'current': None},
+            {'document_id': revised, 'status': 'different', 'previous': old_sources[revised],
+             'current': new_sources[revised], 'prior_excerpt_steps': [1], 'prior_incomplete_steps': [1]},
+            {'document_id': stable, 'status': 'unchanged', 'previous': old_sources[stable],
+             'current': new_sources[stable], 'prior_excerpt_steps': [1]},
+            {'document_id': added, 'status': 'added', 'previous': None, 'current': new_sources[added]},
+        ])
+        for body in ('ARCHIVED_BODY', 'OLD_FEE_BODY', 'CONTACT_BODY', 'RESERVE_BODY'):
+            self.assertNotIn(body, json.dumps(comparison))
+        self.assertIn('舊未完整查讀步驟 1', goal_stages.describe_source_comparison(comparison))
+        self.assertEqual(old, a.get_goal(self.store, self.sid, parent))
+        attach('fees.txt', '又一次更新\n30元')
+        self.assertEqual(a.get_goal(self.store, self.sid, child)['previous_stage'], previous)
+        engine = ScriptedEngine()
+        self.assertEqual(a.run_goal(self.store, self.sid, child, engine)['status'], 'paused')
+        self.assertEqual(engine.prompts, [])
+
+    def test_reused_source_number_and_name_do_not_grant_child_citation_coverage(self):
+        stable = self.attach('共同規則')
+        old_path = self.root / 'inventory.txt'
+        old_path.write_text('北區 14 件', encoding='utf-8')
+        did = self.store.attach_document(self.sid, old_path)
+        parent = self.paused(action('read', document_id=did, start_line=1, end_line=1))
+        self.store.detach_document(self.sid, did)
+        new_path = self.root / 'other' / old_path.name
+        new_path.parent.mkdir()
+        new_path.write_text('南區 29 件', encoding='utf-8')
+        self.assertEqual(self.store.attach_document(self.sid, new_path), did)
+        child = a.create_goal(self.store, self.sid, '只採用新匯入的副本', parent_id=parent)
+        stable_row, revised = a.get_goal(self.store, self.sid, child)['previous_stage']['source_comparison']
+        self.assertEqual((stable_row['document_id'], stable_row['status']), (stable, 'unchanged'))
+        self.assertEqual((revised['document_id'], revised['status']), (did, 'different'))
+        self.assertEqual(revised['previous']['name'], revised['current']['name'])
+        self.assertNotEqual(revised['previous']['sha256'], revised['current']['sha256'])
+        result = a.run_goal(self.store, self.sid, child, ScriptedEngine(
+            action('finish', report=f'北區 14 件 [D{did}:L1]'),
+            action('read', document_id=did, start_line=1, end_line=1),
+            action('finish', report=f'南區 29 件 [D{did}:L1]')))
+        self.assertEqual([row['action']['tool'] for row in result['steps']], ['invalid', 'read', 'finish'])
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][1]['observation']['excerpts'][0]['text'], 'L1: 南區 29 件')
+
     def test_pending_running_other_session_and_active_lease_are_rejected_atomically(self):
         parent = self.paused(action('calculate', operation='sum', values=['1']))
         before = a.goals(self.store, self.sid)

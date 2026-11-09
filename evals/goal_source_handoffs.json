@@ -1,0 +1,165 @@
+[
+  {
+    "id": "stage_revised_divisor_after_failure",
+    "category": "goal_source_handoff",
+    "fixture": "source_handoff",
+    "documents": [
+      {
+        "name": "amount.txt",
+        "before": "對帳原值\n待分配金額為 731.25 元。\n",
+        "after": "對帳原值\n待分配金額為 731.25 元。\n"
+      },
+      {
+        "name": "divisor.txt",
+        "before": "分配規則舊版\n有效分配組數為 0。\n",
+        "after": "分配規則修正版\n有效分配組數為 3。\n"
+      }
+    ],
+    "seed": [
+      {
+        "tool": "read_ranges",
+        "args": {
+          "ranges": [
+            {
+              "document_id": 1,
+              "start_line": 2,
+              "end_line": 2
+            },
+            {
+              "document_id": 2,
+              "start_line": 2,
+              "end_line": 2
+            }
+          ]
+        },
+        "note": "核對原待分配金額及組數"
+      },
+      {
+        "tool": "calculate",
+        "args": {
+          "operation": "quotient",
+          "values": [
+            "731.25",
+            "0"
+          ]
+        },
+        "note": "計算每組金額"
+      }
+    ],
+    "parent_prompt": "使用金額及分配組數算出每組金額，若失敗保留原因。",
+    "prompt": "接續原對帳工作。先辨識兩份來源哪份改版，說明上一階段為何失敗。依本階段實際查讀的金額與有效分配組數，重新計算並附文件行號。交純文字，不產檔。",
+    "criteria": [
+      "指出組數文件改版、金額來源相同，舊除以0是失敗而無可用結果",
+      "本階段重讀D1與D2，採731.25與3，用工具計算243.75",
+      "交付243.75並附本階段實讀的兩份來源，不把舊版本當現行"
+    ]
+  },
+  {
+    "id": "stage_reused_identifier_same_name_different_scope",
+    "category": "goal_source_handoff",
+    "fixture": "source_handoff",
+    "documents": [
+      {
+        "name": "contact.txt",
+        "before": "兩個場地共用的窗口資料\n內部窗口為范同仁。\n",
+        "after": "兩個場地共用的窗口資料\n內部窗口為范同仁。\n"
+      },
+      {
+        "name": "inventory.txt",
+        "before": "北場清點表\n北場可用設備 14 件。\n",
+        "after": null
+      },
+      {
+        "name": "inventory.txt",
+        "before": null,
+        "after": "南場清點表\n南場可用設備 29 件，僅適用南場。\n"
+      }
+    ],
+    "seed": [
+      {
+        "tool": "read_ranges",
+        "args": {
+          "ranges": [
+            {
+              "document_id": 1,
+              "start_line": 2,
+              "end_line": 2
+            },
+            {
+              "document_id": 2,
+              "start_line": 1,
+              "end_line": 2
+            }
+          ]
+        },
+        "note": "核對北場庫存與窗口"
+      }
+    ],
+    "parent_prompt": "整理北場可用設備和內部窗口。",
+    "prompt": "接續北場工作，核對目前文件與上一階段相比的差異。先交可用暫表。若目前沒有可用的北場清點資料，只問應補的北場數量或新版來源，其他場地的資料僅說明其範圍。不產檔、不發送。",
+    "criteria": [
+      "即使編號與文件名稱相同也區分版本，查閱當前文件確認29件是南場",
+      "保留范同仁與本階段來源，北場仍缺，不採舊14或南場29",
+      "提出只針對北場資料的問題，保持等待補充"
+    ]
+  },
+  {
+    "id": "stage_removed_added_and_repaired_range",
+    "category": "goal_source_handoff",
+    "fixture": "source_handoff",
+    "documents": [
+      {
+        "name": "archived.txt",
+        "before": "撤銷的口頭備忘\n數量以前暫寫 11 件。\n",
+        "after": null
+      },
+      {
+        "name": "checklist.txt",
+        "before": "交接表（未完）\n內部收貨記錄。\n",
+        "after": "交接表（正式）\n內部收貨記錄。\n本次已完成清點。\n確認數量 12 件。\n"
+      },
+      {
+        "name": "window.txt",
+        "before": "內部窗口\n交接由詹同仁負責。\n",
+        "after": "內部窗口\n交接由詹同仁負責。\n"
+      },
+      {
+        "name": "reserve.txt",
+        "before": null,
+        "after": "另附備援說明\n備援 20 件只供試想，未採用。\n"
+      }
+    ],
+    "seed": [
+      {
+        "tool": "read_ranges",
+        "args": {
+          "ranges": [
+            {
+              "document_id": 1,
+              "start_line": 2,
+              "end_line": 2
+            },
+            {
+              "document_id": 2,
+              "start_line": 4,
+              "end_line": 4
+            },
+            {
+              "document_id": 3,
+              "start_line": 2,
+              "end_line": 2
+            }
+          ]
+        },
+        "note": "核對撤銷備忘、交接表指定欄位及內部窗口"
+      }
+    ],
+    "parent_prompt": "核對交接表第4行的正式數量和內部窗口。",
+    "prompt": "接續交接工作。分別指出哪個匯入來源移除、哪個改版、哪個新增及哪個維持。重讀正式交接表第4行、內部窗口及新增備援說明，交付正式數量及窗口。備援若未採用只列狀態。不要產檔。",
+    "criteria": [
+      "指出D1移除、D2改版、D3維持、D4新增",
+      "本階段查讀D2第4行，取得12件並保留詹同仁",
+      "備援20件未採用，不把舊11件或備援混成正式值"
+    ]
+  }
+]

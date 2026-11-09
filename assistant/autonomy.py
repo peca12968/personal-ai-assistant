@@ -45,6 +45,7 @@ previous_stage若存在，是使用者明確選取的上一階段歷史背景；
 目前目標與本階段user_notes優先。沿用前階段明確的使用者補充時標示來源，不因相同資料未在文件中出現而重問。
 本階段user_notes依追加順序保留歷史；其中最新明確的使用者更正優先於原目標數值、較早補充及聊天／上一階段背景，未被更正的要求仍保留。引文、假設或舉例不等於已改決定，不明確時才詢問。舊步驟是在舊條件下的結果；條件改變後需重新計算或讀取適用證據，不可直接把舊答案當作新成果。補充不增加任何工具、文件或CSV權限，不會撤銷已執行的動作；已保存文件不能覆寫，必要時在原限制內另存新檔。
 sources_match_current為false表示文件清單或版本已不同，舊成果只作背景。即使為true，也要重新讀取本階段需要的來源與計算。
+source_comparison若有，逐份比較上一階段與本階段保存的匯入副本。different表示同編號的名稱或指紋不同，可能是替換，應讀本階段原文核對適用範圍；removed表示舊編號本階段未收錄，added表示新編號，unchanged表示兩份保存的版本相同。prior_excerpt_steps和prior_incomplete_steps只標示上一階段保留下來的片段與未完整查讀步驟。先依本階段要求重讀需要的來源，再核對舊錯誤是否仍適用。不可把舊值或相似檔名當成本階段依據。
 上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
 如果本目標有csv_source，另可使用後附CSV工具處理所選副本；沒有時不可使用CSV工具。
@@ -151,7 +152,11 @@ def get_goal(store, sid, gid):
         result['conversation_history'] = conversation_history.inventory(db, sid, gid)
         result['previous_stage'] = goal_stages.read(db, gid)
         if result['previous_stage'] is not None:
-            result['previous_stage']['sources_match_current'] = result['previous_stage']['sources'] == result['sources']
+            previous = result['previous_stage']
+            previous['sources_match_current'] = previous['sources'] == result['sources']
+            comparison = goal_stages.source_comparison(previous, result['sources'])
+            if comparison is not None:
+                previous['source_comparison'] = comparison
         result['steps'] = [{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                             'observation': json.loads(r['observation_json'])}
                            for r in db.execute('SELECT * FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]

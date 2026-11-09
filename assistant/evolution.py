@@ -50,6 +50,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_progre
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_dependencies.json'))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
+CHECKS.append(('scripts/evaluate_tool_recovery.py', '--suite', 'evals/goal_source_handoffs.json'))
 CHECKS.append(('scripts/evaluate_date_months.py',))
 CHECKS.append(('scripts/evaluate_docx_reading.py',))
 CHECKS.append(('scripts/evaluate_exact_calculation.py',))
