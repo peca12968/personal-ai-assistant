@@ -8,5 +8,6 @@ assistant/idle_learning.py text eol=crlf
 evals/continued_evidence_cases.json text eol=lf
 evals/paired_adapter_replay.json text eol=lf
 evals/prerequisite_observation_language.json text eol=lf
+evals/replay_label_transfer.json text eol=lf
 scripts/learning/model.json text eol=crlf
 scripts/learning/requirements.txt text eol=lf

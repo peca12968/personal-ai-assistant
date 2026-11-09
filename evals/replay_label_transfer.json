@@ -1,0 +1,47 @@
+{
+  "schema": "replay_label_transfer_v1",
+  "training": [
+    {
+      "id": "settling_unit",
+      "rule": "試轉沉砂機只有兩項要求，隔離桿已插妥，且排氣蓋已扣緊。",
+      "codes": ["N5", "J7", "G2"],
+      "observations": [
+        {"states": "TT", "fact": "隔離桿已插妥，排氣蓋已確認扣緊。"},
+        {"states": "TF", "fact": "隔離桿已插妥，排氣蓋已確認仍敞開。"},
+        {"states": "TU", "fact": "隔離桿已插妥，排氣蓋是否扣緊還沒看過。"}
+      ]
+    },
+    {
+      "id": "workshop_card",
+      "rule": "發出陶藝工坊入席卡的完整要求是名冊有本次姓名，且本次費用已結清。",
+      "codes": ["C9", "U4", "L3"],
+      "observations": [
+        {"states": "TT", "fact": "本次名冊已核對有姓名，當次費用也已結清。"},
+        {"states": "FU", "fact": "整份本次名冊已查完，確定沒有這個姓名。本次費用還未查。"},
+        {"states": "UT", "fact": "這次費用已結清。上次名冊有姓名，但本次名冊還沒核對。"}
+      ]
+    }
+  ],
+  "holdout": [
+    {
+      "id": "reading_case",
+      "rule": "借出閱覽匣以本次領用單已蓋章、封存扣已解除為完整要求。",
+      "codes": ["Y6", "D8", "P2"],
+      "observations": [
+        {"states": "TT", "fact": "當次單子上有章，封存扣也已取下。"},
+        {"states": "TF", "fact": "當次單子上有章，檢查確認封存扣仍在。"},
+        {"states": "TU", "fact": "當次單子上有章。尚無檢查紀錄能確認封存扣是否已取下。"}
+      ]
+    },
+    {
+      "id": "atrium_access",
+      "rule": "重新開放中庭需要確認過道已清空，且防滑墊已鋪好，這兩項就足夠。",
+      "codes": ["F7", "Q1", "V3"],
+      "observations": [
+        {"states": "TT", "fact": "巡查記錄確認當日過道清空，而且防滑墊鋪妥。"},
+        {"states": "UF", "fact": "當日過道尚未巡查。已看到防滑墊仍然收在櫃子裡。"},
+        {"states": "UT", "fact": "已看到防滑墊鋪好。過道清空是前一天的記錄，當日狀況未巡查。"}
+      ]
+    }
+  ]
+}

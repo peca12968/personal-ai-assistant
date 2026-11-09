@@ -12,7 +12,8 @@ V2 = 'daily_necessary_plan_v2'
 V3 = 'daily_necessary_roster_plan_v3'
 V4 = 'daily_necessary_grouped_roster_plan_v4'
 V5 = 'daily_necessary_physical_plan_v5'
-INITIAL_PLANS = (V1, V2, V3, V4, V5)
+V6 = 'daily_necessary_physical_codes_plan_v6'
+INITIAL_PLANS = (V1, V2, V3, V4, V5, V6)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -98,12 +99,16 @@ PHYSICAL_TERMS = {
              r'確定仍(?:留在座內|插在底座)'),
 }
 PHYSICAL_CODES = re.compile(r'(?:請)?只(?:回|輸出)\s*(.+)')
-PHYSICAL_LABEL = re.compile(r'([A-Za-z0-9]{1,12})\s*(?:代表|表示)\s*([\u4e00-\u9fff]{1,12})')
+PHYSICAL_LABEL = re.compile(r'(?P<code>[A-Za-z0-9]{1,12})\s*(?:代表|表示)\s*(?P<meaning>[\u4e00-\u9fff]{1,12})')
+SEPARATE_PHYSICAL_CODES = re.compile(r'(?:請)?只輸出(?:指定)?代碼')
+SEPARATE_PHYSICAL_LABEL = re.compile(r'(?P<meaning>[\u4e00-\u9fff]{1,12})\s*回\s*(?P<code>[A-Za-z0-9]{1,12})')
 PHYSICAL_MEANINGS = {
     'supported': '能|確定能|可行|確定可行',
     'refuted': '不能|確定不能|不可行|確定不可行',
     'undetermined': '未定|待查|待確認|無法判定',
 }
+SEPARATE_PHYSICAL_MEANINGS = {**PHYSICAL_MEANINGS,
+                              'undetermined': PHYSICAL_MEANINGS['undetermined'] + r'|尚無法判定|資料不足'}
 
 
 def alternative_groups(text):
@@ -177,8 +182,7 @@ def observation(clause, condition, *, carried=False):
 
 
 def parse(question):
-    return (parse_version(question, V1) or parse_version(question, V2)
-            or parse_version(question, V3) or parse_version(question, V4) or parse_version(question, V5))
+    return next((plan for version in INITIAL_PLANS if (plan := parse_version(question, version))), None)
 
 
 def roster_conditions(count, credential, scope):
@@ -314,27 +318,39 @@ def physical_condition(text):
     return None
 
 
-def physical_labels(text):
-    output = PHYSICAL_CODES.fullmatch(text)
-    if output is None:
-        return None
+def physical_labels(text, pattern, meanings):
     options = {}
-    for clause in re.split(r'[、，,；;]', output[1]):
-        match = PHYSICAL_LABEL.fullmatch(clause.strip())
-        if match is None or match[1] in options.values():
+    for clause in re.split(r'[、，,；;]', text):
+        match = pattern.fullmatch(clause.strip())
+        if match is None or match['code'] in options.values():
             return None
-        state = next((name for name, meaning in PHYSICAL_MEANINGS.items() if re.fullmatch(meaning, match[2])), None)
+        state = next((name for name, meaning in meanings.items() if re.fullmatch(meaning, match['meaning'])), None)
         if state is None or state in options:
             return None
-        options[state] = match[1]
-    return options if options.keys() == PHYSICAL_MEANINGS.keys() else None
+        options[state] = match['code']
+    return options if options.keys() == meanings.keys() else None
 
 
-def parse_physical(question, sentences):
-    if not 3 <= len(sentences) <= 4:
+def parse_physical(question, sentences, version):
+    if version == V5:
+        output = PHYSICAL_CODES.fullmatch(sentences[-1])
+        if not output:
+            return None
+        options = physical_labels(output[1], PHYSICAL_LABEL, PHYSICAL_MEANINGS)
+        facts = sentences[:-1]
+    else:
+        if len(sentences) < 4:
+            return None
+        if SEPARATE_PHYSICAL_CODES.fullmatch(sentences[0]):
+            output, mapping, *facts = sentences
+        else:
+            *facts, output, mapping = sentences
+            if not SEPARATE_PHYSICAL_CODES.fullmatch(output):
+                return None
+        options = physical_labels(mapping, SEPARATE_PHYSICAL_LABEL, SEPARATE_PHYSICAL_MEANINGS)
+    if not 2 <= len(facts) <= 3:
         return None
-    rule = PHYSICAL_RULE.fullmatch(sentences[0])
-    options = physical_labels(sentences[-1])
+    rule = PHYSICAL_RULE.fullmatch(facts[0])
     if rule is None or not options or UNBOUND.search(rule['action']):
         return None
     terms = re.split(r'、|與|和|並且', rule['terms'])
@@ -346,11 +362,14 @@ def parse_physical(question, sentences):
     connectors = [c for c in conditions if c['name'].endswith('接頭')]
     if len(connectors) == 1 and connectors[0]['name'] != '接頭':
         connectors[0]['alias'] = '接頭'
-    if not bind_observations(conditions, sentences[1:-1]):
+    if not bind_observations(conditions, facts[1:]):
         return None
-    return dict(schema=V5, request=question, request_sha256=evidence_logic.digest(question),
-                action=rule['action'], rule=sentences[0], sufficient=rule['complete'] == '就是全部要求',
+    plan = dict(schema=version, request=question, request_sha256=evidence_logic.digest(question),
+                action=rule['action'], rule=facts[0], sufficient=rule['complete'] == '就是全部要求',
                 conditions=conditions, labels=options)
+    if version == V6:
+        plan['output'] = output + '。' + mapping
+    return plan
 
 
 def bind_observations(conditions, sentences):
@@ -379,8 +398,8 @@ def parse_version(question, version):
         return parse_roster(question, sentences)
     if version == V4:
         return parse_grouped_roster(question, sentences)
-    if version == V5:
-        return parse_physical(question, sentences)
+    if version in (V5, V6):
+        return parse_physical(question, sentences, version)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -653,6 +672,7 @@ def evaluate(plan, cancel=None):
               V3: 'daily_necessary_roster_receipt_v3',
               V4: 'daily_necessary_grouped_roster_receipt_v4',
               V5: 'daily_necessary_physical_receipt_v5',
+              V6: 'daily_necessary_physical_codes_receipt_v6',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',

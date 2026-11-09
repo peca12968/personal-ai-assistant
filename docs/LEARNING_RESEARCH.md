@@ -495,3 +495,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 兩個 GPU 工作各有獨立的權重及程序紀錄。各組結果限於既定配方與測題，權重留在本機。
+
+### 同事實的三種代碼映射
+
+`replay_label_transfer.py` 由已驗證的先期限後設備權重接續。兩個訓練場景各有成立、不成立及待查。每組事實輪換三種代碼映射，同一批保留這三個版本，再加入三個既有訓練例，共六次更新。另凍結兩個不同場景的 18 道保留題，與原有 94 題及 18 道新訓練例分開計分。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/replay_label_transfer.py check
+.venv/Scripts/python.exe scripts/learning/replay_label_transfer.py prepare <名稱> --reference <已完成的批次次序對照> --phase-seconds 540
+.venv/Scripts/python.exe scripts/learning/replay_label_transfer.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/replay_label_transfer.py verify <名稱>
+```
+
+父版本須重現原有 94 題與 logits。獨立重載須重現候選權重、全部原答及 logits。研究門檻要求保住父版本答對的非訓練題，並讓至少一組原本未全對的陌生事實在三種映射都答對。每階段六或九分鐘的時限在準備時固定，仍須核對原生閒置及工作程序退出。結果只用於研究。

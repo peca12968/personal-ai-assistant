@@ -19,6 +19,7 @@ FALSE_AND_UNKNOWN = HEAD + '水位計尚未校驗，唯一的操作證已確定�
 PHYSICAL_HEAD = '啟用沖洗站須同時確認進水接頭已接妥、出水閥已開，兩項就是全部要求。'
 PHYSICAL_CODES = '請只回 R 代表能、B 代表不能、X 代表未定。'
 PHYSICAL_PENDING = PHYSICAL_HEAD + '進水接頭鎖好，出水閥未檢查。' + PHYSICAL_CODES
+PHYSICAL_SEPARATE = '只輸出指定代碼。確定可行回 R，確定不可行回 B，尚無法判定回 X。'
 
 
 class DailyPhysicalPrerequisiteTests(unittest.TestCase):
@@ -106,6 +107,60 @@ class DailyPhysicalPrerequisiteTests(unittest.TestCase):
                        (json.dumps(context, ensure_ascii=False), first['id']))
         with self.assertRaisesRegex(ValueError, '必要條件規約'):
             daily_necessary.read(other, revised['id'])
+        self.engine.answer.assert_not_called()
+
+    def test_separate_code_mapping_can_precede_or_follow_the_same_observations(self):
+        facts = PHYSICAL_PENDING.removesuffix(PHYSICAL_CODES)
+        remapped = '請只輸出代碼。資料不足回 Q，確定能回 X，確定不能回 R。'
+        for text, expected in (
+            (PHYSICAL_SEPARATE + facts, 'X'),
+            (facts + PHYSICAL_SEPARATE, 'X'),
+            (remapped + facts, 'Q'),
+            (facts.replace('出水閥未檢查', '出水閥已開') + remapped, 'X'),
+            (remapped + facts.replace('出水閥未檢查', '出水閥確定仍關閉'), 'R'),
+        ):
+            with self.subTest(text=text):
+                reply = self.app.ask(self.store.new_session(), text)
+                receipt = daily_necessary.read(self.store, reply['id'])
+                self.assertEqual(reply['content'], expected)
+                self.assertEqual(receipt['plan']['schema'], daily_necessary.V6)
+                self.assertIn('回 ', receipt['plan']['output'])
+        self.engine.answer.assert_not_called()
+
+    def test_separate_mapping_rejects_second_directive_wrong_action_and_attachments(self):
+        facts = PHYSICAL_PENDING.removesuffix(PHYSICAL_CODES)
+        for text in (
+            PHYSICAL_SEPARATE + facts + PHYSICAL_SEPARATE,
+            PHYSICAL_SEPARATE.replace('確定可行', '確定可以停止') + facts,
+            PHYSICAL_SEPARATE.replace('回 X', '回 R') + facts,
+            PHYSICAL_SEPARATE + facts + '再執行啟用。',
+            PHYSICAL_SEPARATE + facts.replace('，出水閥未檢查', ''),
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(daily_necessary.parse(text))
+                self.assertEqual(self.app.ask(self.store.new_session(), text)['content'], '模型原答')
+        sid = self.store.new_session()
+        path = self.path / 'codes.txt'
+        path.write_text('另一份代碼和設備紀錄。', encoding='utf-8')
+        self.store.attach_document(sid, path)
+        self.assertEqual(self.app.ask(sid, PHYSICAL_SEPARATE + facts)['content'], '模型原答')
+
+    def test_v6_followup_and_backup_revalidate_the_initial_mapping(self):
+        sid = self.store.new_session()
+        initial = self.app.ask(sid, PHYSICAL_SEPARATE + PHYSICAL_PENDING.removesuffix(PHYSICAL_CODES))
+        followup = self.app.ask(sid, '沿用上一輪條件：出水閥已開。重算。')
+        self.assertEqual((initial['content'], followup['content']), ('X', 'R'))
+        backup = create_backup(self.store.path, self.path / 'codes.paibackup')
+        restore_backup(backup['path'], self.path / 'restored-codes')
+        restored = Store(self.path / 'restored-codes/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(restored, followup['id']), followup[daily_necessary.FIELD])
+        context = restored.answer_context(initial['id'])
+        context[daily_necessary.FIELD]['plan']['labels']['undetermined'] = 'R'
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), initial['id']))
+        with self.assertRaisesRegex(ValueError, '必要條件規約'):
+            daily_necessary.read(restored, followup['id'])
         self.engine.answer.assert_not_called()
 
 
