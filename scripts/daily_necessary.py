@@ -3,7 +3,7 @@ import json
 import re
 
 from assistant import chat_evidence, evidence_logic, local_answer_receipts
-from scripts import daily_prerequisite_order
+from scripts import daily_observation_words, daily_prerequisite_order
 
 MODE = 'local_calculation'
 FIELD = 'necessary_conditions'
@@ -16,7 +16,9 @@ V6 = 'daily_necessary_physical_codes_plan_v6'
 V7 = 'daily_necessary_declared_plan_v7'
 V8 = 'daily_necessary_scoped_declared_plan_v8'
 V9 = 'daily_necessary_object_property_plan_v9'
-DECLARED_PLANS = (V7, V8, V9)
+V10 = 'daily_necessary_natural_property_plan_v10'
+BOUND_PLANS = (V9, V10)
+DECLARED_PLANS = (V7, V8, *BOUND_PLANS)
 INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, *DECLARED_PLANS)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
@@ -126,7 +128,7 @@ DECLARED_RULE = re.compile(rf'判斷「(?P<action>{DECLARED_NAME})」須同時�
 DECLARED_COST_ITEM = re.compile(rf'「({DECLARED_NAME})」\s*([1-9][0-9]{{0,2}})\s*分鐘')
 CURRENT_OBSERVATION = re.compile(r'(?:本輪|當次|這次)\s*(.+)')
 EARLIER_OBSERVATION = re.compile(r'(?:上一次|上一輪|上輪|上次|昨天|前一日)\s*(.+)')
-BOUND_NAME = r'[\u3400-\u9fffA-Za-z0-9][\u3400-\u9fffA-Za-z0-9_ -]{0,23}'
+BOUND_NAME = daily_observation_words.NAME
 BOUND_ATOM = rf'「{BOUND_NAME}」的「{BOUND_NAME}」'
 BOUND_GROUP = rf'(?:{BOUND_ATOM}|（{BOUND_ATOM}(?:或{BOUND_ATOM}){{1,2}}）)'
 BOUND_TERMS = re.compile(rf'{BOUND_GROUP}(?:\s*(?:、|及|和|與|並且)\s*{BOUND_GROUP}){{0,3}}')
@@ -198,7 +200,8 @@ def observation(clause, condition, *, carried=False):
     if condition.get('physical'):
         return physical_observation(clause, condition, carried)
     if 'subject' in condition:
-        report = bound_observations(clause)
+        report = (natural_bound_observations(clause, (condition,)) if 'observation_family' in condition
+                  else bound_observations(clause))
         if report and not report[0] and len(report[1]) == 1:
             subject, predicate, state = report[1][0]
             if (subject, predicate) == (condition['subject'], condition['predicate']):
@@ -500,11 +503,36 @@ def bound_observations(clause):
     return bool(earlier), [(report[1], item[1], BOUND_STATES[item[2]]) for item in items]
 
 
-def bind_bound_observations(conditions, sentences, *, current_only=False):
+def natural_bound_observations(clause, conditions):
+    earlier = EARLIER_OBSERVATION.fullmatch(clause)
+    scope = earlier or CURRENT_OBSERVATION.fullmatch(clause)
+    report = daily_observation_words.observation(scope[1]) if scope else None
+    if report is None or not valid_bound_name(report[0]):
+        return None
+    subject, items = report
+    observations = []
+    for field, family, value in items:
+        matches = [c for c in conditions if c['subject'] == subject and c['observation_field'] == field
+                   and (family is None or c['observation_family'] == family)]
+        if len(matches) > 1:
+            return None
+        if matches:
+            condition, = matches
+            predicate, expected = condition['predicate'], condition['expected_value']
+        else:
+            predicate = field + daily_observation_words.CANONICAL.get(family, '')
+            expected = True
+        state = 'unknown' if value is None else ('true' if value == expected else 'false')
+        observations.append((subject, predicate, state))
+    return bool(earlier), observations
+
+
+def bind_bound_observations(conditions, sentences, *, current_only=False, natural=False):
     bound = {(c['subject'], c['predicate']): c for c in conditions}
     seen, other = set(), []
-    for clause in observation_clauses(sentences):
-        report = bound_observations(clause)
+    clauses = (sentence.strip() for sentence in sentences) if natural else observation_clauses(sentences)
+    for clause in clauses:
+        report = natural_bound_observations(clause, conditions) if natural else bound_observations(clause)
         if report is None or (current_only and report[0]):
             return None
         earlier, observations = report
@@ -529,7 +557,7 @@ def bound_name(subject, predicate):
     return f'{subject} 的 {predicate}'
 
 
-def parse_bound(question, sentences):
+def parse_bound(question, sentences, version):
     parts = split_code_request(sentences)
     if parts is None:
         return None
@@ -549,10 +577,22 @@ def parse_bound(question, sentences):
     conditions = [dict(name=bound_name(subject, predicate), subject=subject, predicate=predicate, property='',
                        requirement=f'「{subject}」的「{predicate}」', scoped=True, state='unknown', observation=None)
                   for subject, predicate in identities]
-    other = bind_bound_observations(conditions, facts[1:])
+    if version == V10:
+        keys = set()
+        for condition in conditions:
+            observed = daily_observation_words.property_status(condition['predicate'])
+            if observed is None:
+                return None
+            field, family, value = observed
+            key = condition['subject'], field, family
+            if key in keys:
+                return None
+            keys.add(key)
+            condition.update(observation_field=field, observation_family=family, expected_value=value)
+    other = bind_bound_observations(conditions, facts[1:], natural=version == V10)
     if other is None:
         return None
-    return dict(schema=V9, request=question, request_sha256=evidence_logic.digest(question), rule=facts[0],
+    return dict(schema=version, request=question, request_sha256=evidence_logic.digest(question), rule=facts[0],
                 action=rule['action'], sufficient=rule['complete'] == '就是全部要求', conditions=conditions,
                 groups=groups, labels=options, output=output, other_observations=other)
 
@@ -588,8 +628,8 @@ def parse_version(question, version):
         return parse_grouped_roster(question, sentences)
     if version in (V5, V6):
         return parse_physical(question, sentences, version)
-    if version == V9:
-        return parse_bound(question, sentences)
+    if version in BOUND_PLANS:
+        return parse_bound(question, sentences, version)
     if version in DECLARED_PLANS:
         return parse_declared(question, sentences, version)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
@@ -668,8 +708,8 @@ def start_round(state, match):
     if facts is None:
         return
     sentences = facts.split('。')
-    if state['schema'] == V9:
-        if bind_bound_observations(conditions, sentences, current_only=True) is None:
+    if state['schema'] in BOUND_PLANS:
+        if bind_bound_observations(conditions, sentences, current_only=True, natural=state['schema'] == V10) is None:
             raise ValueError('新一輪須用原本的完整物件和屬性，各提供至多一筆本輪觀察。')
         return
     for clause in observation_clauses(sentences):
@@ -716,7 +756,10 @@ def effective(plan):
             raise ValueError('待核對項目的原問或來源不符。')
         return state
     if plan.get('schema') not in UPDATE_PLANS:
-        if parse_version(plan.get('request'), plan.get('schema')) != plan or type(plan['sufficient']) is not bool:
+        schema = plan.get('schema')
+        reconstructed = parse_version(plan.get('request'), schema)
+        if (reconstructed != plan or type(plan['sufficient']) is not bool
+                or (schema == V10 and json.dumps(reconstructed, sort_keys=True) != json.dumps(plan, sort_keys=True))):
             raise ValueError('必要條件規約與原問不符。')
         return plan
 
@@ -818,14 +861,14 @@ def inspection_groups(state):
 
 
 def inspection_minutes(request, state):
-    pattern = BOUND_COST_REQUEST if state['schema'] == V9 else COST_REQUEST
+    pattern = BOUND_COST_REQUEST if state['schema'] in BOUND_PLANS else COST_REQUEST
     match = pattern.fullmatch(request)
     if not match:
         raise ValueError('請用「檢查時間：條件名稱3分鐘，另一項5分鐘。先查哪一項最省時間？」列出時間。')
     names = {condition['name'] for condition in state['conditions']}
     minutes = {}
     for part in re.split(r'[，,]', match[1]):
-        if state['schema'] == V9:
+        if state['schema'] in BOUND_PLANS:
             item = BOUND_COST_ITEM.fullmatch(part.strip())
             name = bound_name(item[1], item[2]) if item else None
         else:
@@ -921,6 +964,7 @@ def evaluate(plan, cancel=None):
               V7: 'daily_necessary_declared_receipt_v7',
               V8: 'daily_necessary_scoped_declared_receipt_v8',
               V9: 'daily_necessary_object_property_receipt_v9',
+              V10: 'daily_necessary_natural_property_receipt_v10',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               ROUND_PLAN: 'daily_necessary_new_round_receipt_v1',
@@ -1054,7 +1098,7 @@ def describe(receipt):
         else:
             if resolved['schema'] == V4:
                 source = f'{condition["participant"]}｜{source}'
-            elif resolved['schema'] == V9:
+            elif resolved['schema'] in BOUND_PLANS:
                 source = f'{condition["requirement"]}｜{source}'
             lines.append(f'{source} → {states[condition["state"]]}')
     if resolved['schema'] in (V2, *DECLARED_PLANS):
@@ -1066,7 +1110,7 @@ def describe(receipt):
                 lines.append('備援（' + '或'.join(group) + '） → ' + states[state])
     earlier = [c['earlier_observation']['source'] for c in resolved['conditions'] if 'earlier_observation' in c]
     if earlier:
-        if resolved['schema'] == V9:
+        if resolved['schema'] in BOUND_PLANS:
             earlier = list(dict.fromkeys(earlier))
         lines += ['', '原問中的舊輪觀察' if new_round else '舊輪觀察', *earlier]
     if resolved.get('other_observations'):
