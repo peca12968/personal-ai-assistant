@@ -23,7 +23,9 @@ BOUND_PLANS = (V9, *NATURAL_BOUND_PLANS)
 DECLARED_PLANS = (V7, V8, *BOUND_PLANS)
 INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, *DECLARED_PLANS)
 CLARIFY_PLAN = 'daily_necessary_reference_clarification_v1'
+AGREEMENT_PLAN = 'daily_necessary_reference_agreement_v1'
 RESOLVE_PLAN = 'daily_necessary_reference_resolution_v1'
+REFERENCE_PLANS = (CLARIFY_PLAN, AGREEMENT_PLAN)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 ROUND_PLAN = 'daily_necessary_new_round_v1'
@@ -731,7 +733,7 @@ def parse_version(question, version):
     return plan
 
 
-def clarification(question):
+def reference_cases(question):
     sentences = question_sentences(question)
     parts = split_code_request(sentences) if sentences else None
     if parts is None or not 4 <= len(parts[0]) <= 13:
@@ -752,15 +754,41 @@ def clarification(question):
         report = daily_observation_words.observation(scope[1]) if scope else None
         if report and report[0] not in daily_observation_words.REFERENCE_SUBJECTS:
             choices[report[0]] = None
-    if len(choices) < 2 or any(parse_bound(question, sentences, V11, choice=name) is None for name in choices):
+    if len(choices) < 2:
         return None
-    return dict(schema=CLARIFY_PLAN, request=question, request_sha256=evidence_logic.digest(question),
-                reference=reports[index], choices=list(choices))
+    states = {}
+    for name in choices:
+        state = parse_bound(question, sentences, V11, choice=name)
+        if state is None:
+            return None
+        states[name] = state
+    plan = dict(schema=CLARIFY_PLAN, request=question, request_sha256=evidence_logic.digest(question),
+                reference=reports[index], choices=list(states))
+    return plan, states
+
+
+def clarification(question):
+    cases = reference_cases(question)
+    return cases[0] if cases else None
+
+
+def plan_reference(question, cancel=None):
+    cases = reference_cases(question)
+    if cases is None:
+        return None
+    plan, states = cases
+    if len({check_state(state, cancel)[1]['status'] for state in states.values()}) == 1:
+        plan['schema'] = AGREEMENT_PLAN
+    return plan
 
 
 def reference_choice(question):
     match = REFERENCE_CHOICE.fullmatch(question) if isinstance(question, str) and len(question) <= 33 else None
     return (match['quoted'] or match['bare']) if match else None
+
+
+def explicit_reference_choice(question):
+    return question.startswith('代稱指的是「')
 
 
 def resolve_reference(question, parent, source):
@@ -846,13 +874,12 @@ def effective(plan):
     if not isinstance(plan, dict):
         raise ValueError('必要條件規約與原問不符。')
     if plan.get('schema') == RESOLVE_PLAN:
-        parent = clarification(plan.get('original_request'))
+        cases = reference_cases(plan.get('original_request'))
         source = plan.get('source')
         request = plan.get('request')
-        if parent is None or not valid_source(source) or resolve_reference(request, parent, source) != plan:
+        if cases is None or not valid_source(source) or resolve_reference(request, cases[0], source) != plan:
             raise ValueError('代稱澄清與原問或選擇不符。')
-        original_request = parent['request']
-        return parse_bound(original_request, question_sentences(original_request), V11, choice=reference_choice(request))
+        return cases[1][reference_choice(request)]
     if plan.get('schema') in READ_ONLY_PLANS:
         if (set(plan) != {'schema', 'request', 'request_sha256', 'basis', 'source'}
                 or not isinstance(plan['request'], str)
@@ -945,7 +972,9 @@ def revise(question, parent, source):
 
 
 def carry_forward(question, parent, source):
-    if parent['schema'] == CLARIFY_PLAN:
+    if parent['schema'] in REFERENCE_PLANS:
+        if parent['schema'] == AGREEMENT_PLAN and not explicit_reference_choice(question):
+            raise ValueError('上一則結論適用於所有候選物件。若要接續核對，請先用「代稱指的是」加上完整名稱。')
         return resolve_reference(question, parent, source)
     order_requested = COST_PREFIX.match(question)
     if not order_requested and not matches_inquiry(question):
@@ -1043,15 +1072,7 @@ def dispute_text(conflicts):
     return '\n'.join(lines)
 
 
-def evaluate(plan, cancel=None):
-    if isinstance(plan, dict) and plan.get('schema') == CLARIFY_PLAN:
-        if clarification(plan.get('request')) != plan:
-            raise ValueError('代稱澄清與原問不符。')
-        choices = '、'.join(f'「{name}」' for name in plan['choices'])
-        answer = f'「{plan["reference"]}」指的是哪個物件？請回覆完整名稱：{choices}。'
-        return answer, dict(schema='daily_necessary_reference_clarification_receipt_v1', plan=plan,
-                            status='clarification_required', model_called=False, output=answer)
-    state = effective(plan)
+def check_state(state, cancel):
     target = '待判 ' + state['action'] if state['schema'] in DECLARED_PLANS else state['action']
     action = '「' + target + '」'
     items = [f'「條件{index} {c["name"]}{c["property"]}」'
@@ -1080,7 +1101,41 @@ def evaluate(plan, cancel=None):
             clauses.append('已確認' + ('並非' if condition['state'] == 'false' else '') + atom)
     canonical = '。'.join(clauses) + '。能否確定' + action + '？'
     _, checked = chat_evidence.evaluate(chat_evidence.parse_request(canonical), cancel)
-    status = checked['analysis']['status']
+    return canonical, checked['analysis']
+
+
+def evaluate_reference_agreement(plan, cancel):
+    cases = reference_cases(plan.get('request'))
+    if cases is None or dict(cases[0], schema=AGREEMENT_PLAN) != plan:
+        raise ValueError('代稱結論的原問或候選物件不符。')
+    branches = []
+    for subject, state in cases[1].items():
+        canonical, analysis = check_state(state, cancel)
+        status = analysis['status']
+        evidence = state['conditions'] + state['other_observations']
+        anchor = next(item['observation_anchor'] for item in evidence if 'observation_anchor' in item)
+        branches.append(dict(subject=subject, observation_anchor=anchor, conclusion=status,
+                             code=state['labels'][status], conditions=state['conditions'], canonical=canonical))
+    if len({branch['conclusion'] for branch in branches}) != 1:
+        raise ValueError('候選物件會改變結論，必須先確認代稱所指的物件。')
+    answer = branches[0]['code']
+    return answer, dict(schema='daily_necessary_reference_agreement_receipt_v1', plan=plan,
+                        status='complete', model_called=False, branches=branches, output=answer)
+
+
+def evaluate(plan, cancel=None):
+    if isinstance(plan, dict) and plan.get('schema') == AGREEMENT_PLAN:
+        return evaluate_reference_agreement(plan, cancel)
+    if isinstance(plan, dict) and plan.get('schema') == CLARIFY_PLAN:
+        if clarification(plan.get('request')) != plan:
+            raise ValueError('代稱澄清與原問不符。')
+        choices = '、'.join(f'「{name}」' for name in plan['choices'])
+        answer = f'「{plan["reference"]}」指的是哪個物件？請回覆完整名稱：{choices}。'
+        return answer, dict(schema='daily_necessary_reference_clarification_receipt_v1', plan=plan,
+                            status='clarification_required', model_called=False, output=answer)
+    state = effective(plan)
+    canonical, analysis = check_state(state, cancel)
+    status = analysis['status']
     schema = {V1: 'daily_necessary_receipt_v1', V2: 'daily_necessary_receipt_v2',
               V3: 'daily_necessary_roster_receipt_v3',
               V4: 'daily_necessary_grouped_roster_receipt_v4',
@@ -1098,7 +1153,7 @@ def evaluate(plan, cancel=None):
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
               COST_PLAN: 'daily_necessary_check_order_receipt_v1'}[plan['schema']]
     receipt = dict(schema=schema, plan=plan, status='complete', model_called=False,
-                   analysis=checked['analysis'], canonical=canonical)
+                   analysis=analysis, canonical=canonical)
     answer = state['labels'][status]
     if plan['schema'] == INQUIRY_PLAN:
         result = inquiry_result(state, status)
@@ -1154,7 +1209,7 @@ def saved(db, mid, *, clarification_only=False):
     if clarification_only:
         receipt = context[FIELD]
         plan = receipt.get('plan') if isinstance(receipt, dict) else None
-        if not isinstance(plan, dict) or plan.get('schema') != CLARIFY_PLAN:
+        if not isinstance(plan, dict) or plan.get('schema') not in REFERENCE_PLANS:
             return None
     if not 0 < row['user_message_id'] < mid:
         raise ValueError('必要條件來源的訊息順序不符。')
@@ -1171,7 +1226,7 @@ def verified_chain(db, mid):
     # Each state may have an inquiry followed by one check order.
     for _ in range(3 * MAX_REVISIONS + 3):
         plan = receipt['plan']
-        if plan['schema'] in (*INITIAL_PLANS, CLARIFY_PLAN):
+        if plan['schema'] in (*INITIAL_PLANS, *REFERENCE_PLANS):
             return first
         predecessor = previous_id(db, row['session_id'], row['user_message_id'])
         parent = saved(db, predecessor)
@@ -1180,7 +1235,7 @@ def verified_chain(db, mid):
         receipt, row, source = parent
         if carry_forward(plan['request'], receipt['plan'], source) != plan:
             raise ValueError('沿用條件的來源已變更。')
-    if receipt['plan']['schema'] not in (*INITIAL_PLANS, CLARIFY_PLAN):
+    if receipt['plan']['schema'] not in (*INITIAL_PLANS, *REFERENCE_PLANS):
         raise ValueError('必要條件缺少可核對的原始規則。')
     return first
 
@@ -1209,8 +1264,19 @@ def describe(receipt):
     plan = receipt['plan']
     if plan['schema'] == CLARIFY_PLAN:
         return '\n'.join((plan['request'], '', receipt['output']))
-    resolved = effective(plan)
     states = {'true': '已確認滿足', 'false': '已確認不滿足', 'unknown': '尚未核實'}
+    if plan['schema'] == AGREEMENT_PLAN:
+        lines = [plan['request'], '', '所有候選物件都得到相同結論。',
+                 '待確認的原句：' + plan['reference']]
+        for branch in receipt['branches']:
+            lines += ['', f'若指「{branch["subject"]}」，結論為「{branch["code"]}」。',
+                      '候選物件的具名回報：' + branch['observation_anchor']]
+            for condition in branch['conditions']:
+                observation = condition['observation'] or '本輪未提供觀察'
+                lines.append(f'{condition["requirement"]} → {states[condition["state"]]}（{observation}）')
+        lines += ['', '交付：' + receipt['output']]
+        return '\n'.join(lines)
+    resolved = effective(plan)
     lines = [plan['request']]
     basis = plan['basis'] if plan['schema'] in READ_ONLY_PLANS else plan
     original = basis['original'] if basis['schema'] in UPDATE_PLANS else basis

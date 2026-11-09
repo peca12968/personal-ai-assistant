@@ -294,7 +294,9 @@ class DailyAssistant(Assistant):
             try:
                 pending = daily_necessary.previous(self.store, sid, before, required=bool(retry),
                                                    clarification_only=True)
-                if pending and (choice in pending[0]['choices'] or question.startswith('代稱指的是「') or retry):
+                explicit_choice = daily_necessary.explicit_reference_choice(question)
+                if (pending and (pending[0]['schema'] == daily_necessary.CLARIFY_PLAN or explicit_choice)
+                        and (choice in pending[0]['choices'] or explicit_choice or retry)):
                     anchor = pending
             except ValueError as exc:
                 raise EngineError(str(exc), 'evidence_invalid') from None
@@ -321,8 +323,17 @@ class DailyAssistant(Assistant):
 
             return self._run_recorded(sid, question, context, recalculate, cancel, retry, draft, daily_necessary.FIELD)
         if local and self.allow_local_evidence and (not retry or daily_necessary.FIELD in prior):
-            necessary = daily_necessary.parse(question) or daily_necessary.clarification(question)
-            if necessary and not self.store.documents(sid, include_content=False):
+            necessary = daily_necessary.parse(question)
+            if ((necessary or daily_necessary.has_observation_reference(question))
+                    and not self.store.documents(sid, include_content=False)):
+                if necessary is None:
+                    if retry and prior[daily_necessary.FIELD]['schema'] == daily_necessary.CLARIFY_PLAN:
+                        necessary = daily_necessary.clarification(question)
+                    else:
+                        necessary = daily_necessary.plan_reference(question, cancel)
+            else:
+                necessary = None
+            if necessary:
                 if retry and prior[daily_necessary.FIELD] != necessary:
                     raise EngineError('必要條件的原始規約已變更。', 'evidence_invalid')
                 context = make_context(question, [], [])

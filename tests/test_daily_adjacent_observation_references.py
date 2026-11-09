@@ -19,6 +19,7 @@ REFERENCE = '它的識別卡已有章'
 ASK = HEAD + ANCHOR + '。' + REFERENCE + '。' + CODES
 OTHER = '本輪確認南側檢測盒的封口完整'
 AMBIGUOUS = HEAD + ANCHOR + '。' + OTHER + '。' + REFERENCE + '。' + CODES
+VETO = AMBIGUOUS.replace(ANCHOR, ANCHOR.replace('完整', '不完整'))
 
 
 class AdjacentObservationReferenceTests(unittest.TestCase):
@@ -134,6 +135,76 @@ class AdjacentObservationReferenceTests(unittest.TestCase):
         self.store.attach_document(sid, path)
         self.assertEqual(self.app.ask(sid, '北側檢測盒')['content'], '模型替身')
         self.assertEqual(self.app.ask(sid, AMBIGUOUS)['content'], '模型替身')
+
+    def test_unanimous_candidates_return_the_exact_code_with_separate_hypothetical_sources(self):
+        alternative = AMBIGUOUS.replace('「北側檢測盒」的「識別卡已蓋章」',
+                                       '（「北側檢測盒」的「識別卡已蓋章」或「南側檢測盒」的「識別卡已蓋章」）')
+        necessary_only = AMBIGUOUS.replace('就是全部要求', '只是必要條件')
+        for question, code, states in (
+            (VETO, 'B', [['false', 'true'], ['false', 'unknown']]),
+            (alternative, 'R', [['true', 'true', 'unknown'], ['true', 'unknown', 'true']]),
+            (necessary_only, 'X', [['true', 'true'], ['true', 'unknown']]),
+        ):
+            with self.subTest(code=code):
+                answer = self.app.ask(self.store.new_session(), question)
+                receipt = daily.read(self.store, answer['id'])
+                self.assertEqual((answer['content'], receipt['plan']['schema']), (code, daily.AGREEMENT_PLAN))
+                north_report = ANCHOR.replace('完整', '不完整') if question == VETO else ANCHOR
+                self.assertEqual([row['observation_anchor'] for row in receipt['branches']], [north_report, OTHER])
+                self.assertEqual([[condition['state'] for condition in row['conditions']]
+                                  for row in receipt['branches']], states)
+                rendered = daily.describe(receipt)
+                self.assertIn('若指「北側檢測盒」', rendered)
+                self.assertIn('若指「南側檢測盒」', rendered)
+        forged = dict(daily.clarification(AMBIGUOUS), schema=daily.AGREEMENT_PLAN)
+        with self.assertRaisesRegex(ValueError, '必須先確認'):
+            daily.evaluate(forged)
+        self.engine.answer.assert_not_called()
+
+    def test_agreement_keeps_the_identity_open_until_an_explicit_choice(self):
+        sid = self.store.new_session()
+        self.app.ask(sid, VETO)
+        self.assertEqual(self.app.ask(sid, '北側檢測盒')['content'], '模型替身')
+        agreed = self.app.ask(sid, VETO)
+        with self.assertRaisesRegex(EngineError, '完整名稱'):
+            self.app.ask(sid, '還要核對什麼？')
+        resolved = self.app.ask(sid, '代稱指的是「北側檢測盒」。')
+        self.assertEqual(resolved['content'], 'B')
+        proof = daily.read(self.store, resolved['id'])
+        self.assertEqual(proof['plan']['source']['answer_id'], agreed['id'])
+        self.assertEqual(daily.effective(proof['plan'])['conditions'][1]['observation'], REFERENCE)
+        fixed = self.app.ask(sid, '沿用上一輪條件：本輪確認北側檢測盒的封口完整。重算。')
+        self.assertEqual(fixed['content'], 'R')
+        self.engine.answer.assert_called_once()
+
+    def test_cancelled_legacy_clarification_and_agreement_retry_keep_their_saved_decision(self):
+        old = self.store.new_session()
+        with patch.object(daily, 'plan_reference', side_effect=lambda question, _: daily.clarification(question)), \
+             patch.object(daily, 'evaluate', side_effect=EngineError('停止', 'cancelled')):
+            with self.assertRaises(EngineError):
+                self.app.ask(old, VETO)
+        legacy = self.app.retry(old)
+        self.assertEqual(legacy[daily.FIELD]['status'], 'clarification_required')
+        self.assertEqual(self.app.ask(old, '南側檢測盒')['content'], 'B')
+
+        sid = self.store.new_session()
+        with patch.object(daily, 'evaluate', side_effect=EngineError('停止', 'cancelled')):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, VETO)
+        agreed = self.app.retry(sid)
+        self.assertEqual(agreed['content'], 'B')
+        bundle = create_backup(self.store.path, self.path / 'agreement.paibackup')
+        restore_backup(bundle['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        self.assertEqual(daily.read(restored, agreed['id']), agreed[daily.FIELD])
+        context = restored.answer_context(agreed['id'])
+        context[daily.FIELD]['branches'][0]['observation_anchor'] = OTHER
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), agreed['id']))
+        with self.assertRaisesRegex(ValueError, '原問或推論不符'):
+            daily.read(restored, agreed['id'])
+        self.engine.answer.assert_not_called()
 
     def test_resolved_choice_survives_retry_updates_and_restore_with_verifiable_source(self):
         sid = self.store.new_session()
