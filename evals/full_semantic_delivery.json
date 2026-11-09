@@ -1,0 +1,19 @@
+{
+  "schema": "full_semantic_delivery_v1",
+  "fresh": [
+    {"id":"exhibit_inventory","states":"TT","codes":["A17","K41","W83"],"body":"可以登記模型展品的完整要求是本批保護袋已封好，而且清單已覆核。現場確認本批保護袋封好，覆核人也在本批清單簽了名。能否登記？","history":[]},
+    {"id":"workshop_dispatch","states":"TT","codes":["M4","F5","H6"],"body":"工作坊這一批教材只要封面經確認、列印張數等於十二就能寄送。這批封面已經核對，現場重數為十二張。這一批能寄送嗎？","history":[["user","前一批多印兩張。先記錄就好。"],["assistant","已記錄前一批的張數差異。"]]},
+    {"id":"cabinet_handoff","states":"UF","codes":["P2","Q9","D8"],"body":"交接工藝櫃只有兩項要求，層架已固定，且手上的封存扣已解除。層架今天還沒核對。這一把封存扣經檢查仍裝在櫃門，確定沒解除。能交接嗎？","history":[]},
+    {"id":"rehearsal_room","states":"TF","codes":["G24","S16","B95"],"body":"能使用彩排室需要本次預約已核實、南側緩衝區已清空，兩項就是全部要求。本次預約已核實。北側空著，南側仍確定有兩箱道具。彩排室可以使用嗎？","history":[["user","昨天南側已清空。今天重檢後才算。"],["assistant","知道了，今天以重檢結果為準。"]]},
+    {"id":"binder_sample","states":"TU","codes":["H7","V4","X8"],"body":"封存裝訂樣本的兩個完整要求是當次標籤已貼、紙夾已取下。當次標籤已核對貼妥。只看到上一批的紙夾都取下，這批紙夾的狀態尚未核對。能封存嗎？","history":[]},
+    {"id":"reading_zone","states":"UT","codes":["U3","R5","E8"],"body":"要借出同區閱覽盒，唯一兩項要求是盒號已核對且領用條已簽。當次領用條已簽。昨天看過盒號，今天的盒號仍未核對。今天可借出嗎？","history":[["user","昨天的盒號紀錄只能參考，今天會另查。"],["assistant","這次會等今天的資料。"]]}
+  ],
+  "historical": [
+    {"id":"known_blocked","scene":"reading_case","states":"TF","codes":["D8","P2","Y6"]},
+    {"id":"known_pending","scene":"atrium_access","states":"UT","codes":["V3","F7","Q1"]}
+  ],
+  "controls": [
+    {"id":"literal_id","question":"當次保存的辨識編號是 BOX-027A。只回完整編號。","answer":"BOX-027A"},
+    {"id":"typed_output","question":"請只回緊湊 JSON 物件，鍵為 ok，值為布林值 false，不要空白或程式碼框。","answer":"{\"ok\":false}"}
+  ]
+}

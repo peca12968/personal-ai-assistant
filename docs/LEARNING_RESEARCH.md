@@ -520,3 +520,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 報告另外將模型實際回傳的語意詞按原題的三種映射轉成代碼。這項重算使用實測結論，套碼由程式執行。各組沿用既有事實，因此可檢查解題和輸出環節的差異。新場景與完整助理表現需另立測驗。
+
+### 完整助理中的語意交付對照
+
+`assess_semantic_delivery.py` 用已驗證的父權重測六道新情境、兩道歷史對照和兩道一般輸出控制。兩組各複製同一份合成會話資料庫，透過正式 `Assistant.ask` 保存原問和回答。直接組使用完整原提示。分離組只在送入模型的當前問題中，以固定語意詞指示替換末段的代碼要求。收到有效語意詞時，按該題原映射交付。每組以完整助理提示和本機分塊推論，先做 token 預檢。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_semantic_delivery.py check
+.venv/Scripts/python.exe scripts/learning/assess_semantic_delivery.py prepare <名稱> --reference <已完成的語意診斷>
+.venv/Scripts/python.exe scripts/learning/assess_semantic_delivery.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_semantic_delivery.py verify <名稱>
+```
+
+兩組須核對模型與裝置、送出提示、原答、結束標記、SQLite 回答與程序退出。逐組呈現答對、未能套碼及個案進退。一般輸出控制使用相同提示與原答。所有原答和合成資料庫留本機，測試入口只用於研究。

@@ -6,6 +6,7 @@
 # Preserve the exact bytes bound by the adapter continuation studies.
 assistant/idle_learning.py text eol=crlf
 evals/continued_evidence_cases.json text eol=lf
+evals/full_semantic_delivery.json text eol=lf
 evals/paired_adapter_replay.json text eol=lf
 evals/prerequisite_observation_language.json text eol=lf
 evals/replay_label_transfer.json text eol=lf
