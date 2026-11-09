@@ -1,4 +1,5 @@
 import json
+from itertools import product
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,6 +21,11 @@ ASK = HEAD + ANCHOR + '。' + REFERENCE + '。' + CODES
 OTHER = '本輪確認南側檢測盒的封口完整'
 AMBIGUOUS = HEAD + ANCHOR + '。' + OTHER + '。' + REFERENCE + '。' + CODES
 VETO = AMBIGUOUS.replace(ANCHOR, ANCHOR.replace('完整', '不完整'))
+SEPARATOR = '當次確認南側檢測盒的警示燈已熄滅'
+MULTI_SELECTIVE = HEAD + ANCHOR + '。' + OTHER + '。它的編號已入冊。' + SEPARATOR + '。' + REFERENCE + '。' + CODES
+MULTI_VETO = MULTI_SELECTIVE.replace(ANCHOR, ANCHOR.replace('完整', '不完整'))
+MULTI_ADAPTIVE = (HEAD + '本輪確認北側檢測盒的通氣閥已關閉。' + OTHER.replace('封口完整', '通氣閥已關閉')
+                  + '。它的識別卡沒有章。' + SEPARATOR + '。它的封口不完整。' + CODES)
 
 
 class AdjacentObservationReferenceTests(unittest.TestCase):
@@ -205,6 +211,97 @@ class AdjacentObservationReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '原問或推論不符'):
             daily.read(restored, agreed['id'])
         self.engine.answer.assert_not_called()
+
+    def test_multiple_references_ask_only_for_the_effective_choice_or_answer_directly(self):
+        sid = self.store.new_session()
+        first = self.app.ask(sid, MULTI_SELECTIVE)
+        proof = daily.read(self.store, first['id'])
+        self.assertEqual(proof['questions_left'], 1)
+        self.assertEqual(proof['plan']['target']['number'], 2)
+        self.assertIn(f'第2處「{REFERENCE}」', first['content'])
+        with self.assertRaisesRegex(EngineError, '上一則列出'):
+            self.app.ask(sid, '代稱指的是「西側檢測盒」')
+        final = self.app.ask(sid, '北側檢測盒')
+        receipt = daily.read(self.store, final['id'])
+        self.assertEqual(final['content'], 'R')
+        self.assertEqual(receipt['plan']['source']['answer_id'], first['id'])
+        self.assertEqual(receipt['selections'], [dict(number=2, subject='北側檢測盒', reply='北側檢測盒')])
+        self.assertEqual(len(receipt['branches']), 2)
+        self.assertIn('第2處的原始回覆：北側檢測盒', daily.describe(receipt))
+        with self.assertRaisesRegex(EngineError, '身份未確認'):
+            self.app.ask(sid, '沿用上一輪條件：本輪確認北側檢測盒的識別卡沒有章。重算。')
+        direct = self.app.ask(self.store.new_session(), MULTI_VETO)
+        self.assertEqual(direct['content'], 'B')
+        self.assertEqual(len(daily.read(self.store, direct['id'])['branches']), 4)
+        self.engine.answer.assert_not_called()
+
+    def test_reference_order_minimizes_worst_case_and_can_stop_after_the_first_answer(self):
+        rows = [(choices, choices[0] if choices[1] == 'A' else choices[2])
+                for choices in product(('A', 'B'), repeat=3)]
+        self.assertEqual(daily.reference_question(rows), (2, 1))
+        for first_name, expected_remaining, expected in (('北側檢測盒', 0, 'B'), ('南側檢測盒', 1, 'X')):
+            with self.subTest(name=first_name):
+                sid = self.store.new_session()
+                first = self.app.ask(sid, MULTI_ADAPTIVE)
+                self.assertEqual(daily.read(self.store, first['id'])['questions_left'], 2)
+                second = self.app.ask(sid, first_name)
+                self.assertEqual(daily.read(self.store, second['id'])['questions_left'], expected_remaining)
+                if expected_remaining:
+                    self.assertIn('第2處', second['content'])
+                    second = self.app.ask(sid, '南側檢測盒')
+                self.assertEqual(second['content'], expected)
+        self.engine.answer.assert_not_called()
+
+    def test_multiple_reference_reply_retry_restore_and_correction_rebuild_the_chain(self):
+        sid = self.store.new_session()
+        initial = self.app.ask(sid, MULTI_ADAPTIVE)
+        second = self.app.ask(sid, '南側檢測盒')
+        evaluate = daily.evaluate
+
+        def stop_final(plan, cancel=None):
+            if plan['schema'] == daily.MULTI_REFERENCE_STEP and plan['target'] is None:
+                raise EngineError('停止', 'cancelled')
+            return evaluate(plan, cancel)
+
+        with patch.object(daily, 'evaluate', side_effect=stop_final):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, '北側檢測盒')
+        final = self.app.retry(sid)
+        self.assertEqual(final['content'], 'B')
+        self.assertEqual(final[daily.FIELD]['plan']['source']['answer_id'], second['id'])
+        fixed = self.app.ask(sid, '沿用上一輪條件：本輪確認北側檢測盒的封口完整。重算。')
+        self.assertEqual(fixed['content'], 'X')
+        bundle = create_backup(self.store.path, self.path / 'multiple.paibackup')
+        restore_backup(bundle['path'], self.path / 'restored')
+        restored = Store(self.path / 'restored/assistant.sqlite3')
+        for answer in (initial, second, final, fixed):
+            self.assertEqual(daily.read(restored, answer['id']), answer[daily.FIELD])
+        context = restored.answer_context(initial['id'])
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False, indent=2), initial['id']))
+        with self.assertRaisesRegex(ValueError, '來源已變更'):
+            daily.read(restored, fixed['id'])
+        self.engine.answer.assert_not_called()
+
+    def test_multiple_reference_scope_and_route_guards(self):
+        for question in (
+            MULTI_SELECTIVE.replace(SEPARATOR + '。', ''),
+            MULTI_SELECTIVE.replace(SEPARATOR, SEPARATOR.replace('當次', '上次')),
+            MULTI_SELECTIVE.replace(REFERENCE, '同一物件的識別卡已有章'),
+            MULTI_SELECTIVE.replace(REFERENCE, '它的編號已入冊'),
+            MULTI_SELECTIVE + '再把檔案寄給同事。',
+        ):
+            self.assertEqual(self.app.ask(self.store.new_session(), question)['content'], '模型替身')
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.store.new_session(), MULTI_SELECTIVE)['content'], '模型替身')
+        sid = self.store.new_session()
+        self.app.ask(sid, MULTI_SELECTIVE)
+        self.assertEqual(self.app.ask(self.store.new_session(), '北側檢測盒')['content'], '模型替身')
+        path = self.path / 'notes.txt'
+        path.write_text('測試附件', encoding='utf-8')
+        self.store.attach_document(sid, path)
+        self.assertEqual(self.app.ask(sid, '北側檢測盒')['content'], '模型替身')
 
     def test_resolved_choice_survives_retry_updates_and_restore_with_verifiable_source(self):
         sid = self.store.new_session()

@@ -288,15 +288,14 @@ class DailyAssistant(Assistant):
             except ValueError as exc:
                 raise EngineError(str(exc), 'evidence_invalid') from None
         if (anchor is None and local and self.allow_local_evidence
-                and (not retry or prior.get(daily_necessary.FIELD, {}).get('schema') == daily_necessary.RESOLVE_PLAN)
-                and (choice := daily_necessary.reference_choice(question))
+                and (not retry or prior.get(daily_necessary.FIELD, {}).get('schema') in
+                     (daily_necessary.RESOLVE_PLAN, daily_necessary.MULTI_REFERENCE_STEP))
+                and daily_necessary.reference_choice(question)
                 and not self.store.documents(sid, include_content=False)):
             try:
                 pending = daily_necessary.previous(self.store, sid, before, required=bool(retry),
                                                    clarification_only=True)
-                explicit_choice = daily_necessary.explicit_reference_choice(question)
-                if (pending and (pending[0]['schema'] == daily_necessary.CLARIFY_PLAN or explicit_choice)
-                        and (choice in pending[0]['choices'] or explicit_choice or retry)):
+                if pending and daily_necessary.accepts_reference_choice(question, pending[0], bool(retry)):
                     anchor = pending
             except ValueError as exc:
                 raise EngineError(str(exc), 'evidence_invalid') from None

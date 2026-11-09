@@ -1,5 +1,7 @@
 """Exact local checks for a closed natural-language prerequisite request."""
 import json
+from itertools import product
+from math import prod
 import re
 
 from assistant import chat_evidence, evidence_logic, local_answer_receipts
@@ -26,6 +28,11 @@ CLARIFY_PLAN = 'daily_necessary_reference_clarification_v1'
 AGREEMENT_PLAN = 'daily_necessary_reference_agreement_v1'
 RESOLVE_PLAN = 'daily_necessary_reference_resolution_v1'
 REFERENCE_PLANS = (CLARIFY_PLAN, AGREEMENT_PLAN)
+MULTI_REFERENCE = 'daily_necessary_multiple_references_v1'
+MULTI_REFERENCE_STEP = 'daily_necessary_multiple_reference_reply_v1'
+MULTI_REFERENCE_PLANS = (MULTI_REFERENCE, MULTI_REFERENCE_STEP)
+MAX_REFERENCE_QUESTIONS = 3
+MAX_REFERENCE_BRANCHES = 27
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 ROUND_PLAN = 'daily_necessary_new_round_v1'
@@ -556,17 +563,18 @@ def has_observation_reference(question):
             and any(reference_parts(sentence.strip()) for sentence in re.split(r'[。\r\n]+', question)))
 
 
-def bind_bound_observations(conditions, sentences, *, current_only=False, version=V9, choice=None):
+def bind_bound_observations(conditions, sentences, *, current_only=False, version=V9, choices=None):
     bound = {(c['subject'], c['predicate']): c for c in conditions}
     seen, other, current_sources = set(), [], {}
     anchor = None
     natural = version in NATURAL_BOUND_PLANS
     clauses = (sentence.strip() for sentence in sentences) if natural else observation_clauses(sentences)
-    for clause in clauses:
+    for index, clause in enumerate(clauses):
         source_anchor = None
         reference = reference_parts(clause) if version == V11 else None
         if reference:
             earlier, body = reference
+            choice = choices.get(index) if choices else None
             if earlier or anchor is None:
                 return None
             if choice is not None and len(current_sources) > 1 and choice in current_sources:
@@ -615,7 +623,7 @@ def bound_name(subject, predicate):
     return f'{subject} 的 {predicate}'
 
 
-def parse_bound(question, sentences, version, *, choice=None):
+def parse_bound(question, sentences, version, *, choices=None):
     parts = split_code_request(sentences)
     if parts is None:
         return None
@@ -650,7 +658,7 @@ def parse_bound(question, sentences, version, *, choice=None):
                 return None
             keys.add(key)
             condition.update(observation_field=field, observation_family=family, expected_value=value)
-    other = bind_bound_observations(conditions, facts[1:], version=version, choice=choice)
+    other = bind_bound_observations(conditions, facts[1:], version=version, choices=choices)
     if other is None:
         return None
     return dict(schema=version, request=question, request_sha256=evidence_logic.digest(question), rule=facts[0],
@@ -758,7 +766,7 @@ def reference_cases(question):
         return None
     states = {}
     for name in choices:
-        state = parse_bound(question, sentences, V11, choice=name)
+        state = parse_bound(question, sentences, V11, choices={index: name})
         if state is None:
             return None
         states[name] = state
@@ -775,7 +783,8 @@ def clarification(question):
 def plan_reference(question, cancel=None):
     cases = reference_cases(question)
     if cases is None:
-        return None
+        multi = multi_reference_check(question, cancel=cancel)
+        return multi[0] if multi else None
     plan, states = cases
     if len({check_state(state, cancel)[1]['status'] for state in states.values()}) == 1:
         plan['schema'] = AGREEMENT_PLAN
@@ -789,6 +798,109 @@ def reference_choice(question):
 
 def explicit_reference_choice(question):
     return question.startswith('代稱指的是「')
+
+
+def accepts_reference_choice(question, plan, retry=False):
+    choice = reference_choice(question)
+    explicit = explicit_reference_choice(question)
+    if plan['schema'] in MULTI_REFERENCE_PLANS:
+        target = plan['target']
+        return target is not None and (choice in target['choices'] or explicit or retry)
+    return ((plan['schema'] == CLARIFY_PLAN or explicit)
+            and (choice in plan['choices'] or explicit or retry))
+
+
+def multiple_reference_slots(reports):
+    names, slots = {}, {}
+    named_since_reference = True
+    for index, clause in enumerate(reports):
+        reference = reference_parts(clause)
+        if reference:
+            earlier, body = reference
+            if (earlier or not named_since_reference or len(names) < 2
+                    or re.match(r'(?:確認\s*)?同一物件的', body)):
+                return None
+            slots[index] = dict(clause=clause, sources=names.copy())
+            named_since_reference = False
+            continue
+        if EARLIER_OBSERVATION.fullmatch(clause):
+            if slots:
+                return None
+            names.clear()
+            continue
+        scope = CURRENT_OBSERVATION.fullmatch(clause)
+        report = daily_observation_words.observation(scope[1]) if scope else None
+        if report is None or report[0] in daily_observation_words.REFERENCE_SUBJECTS:
+            return None
+        names[report[0]] = clause
+        named_since_reference = True
+    return slots if 2 <= len(slots) <= MAX_REFERENCE_QUESTIONS else None
+
+
+def reference_question(rows):
+    # A row is (assigned subjects, outcome). Minimize the worst number of questions left.
+    if len({code for _, code in rows}) == 1:
+        return 0, None
+    options = []
+    for index in range(len(rows[0][0])):
+        groups = {}
+        for subjects, code in rows:
+            groups.setdefault(subjects[index], []).append((subjects, code))
+        if len(groups) > 1:
+            depth = 1 + max(reference_question(group)[0] for group in groups.values())
+            options.append((depth, index))
+    return min(options)
+
+
+def multi_reference_check(question, replies=(), source=None, cancel=None):
+    sentences = question_sentences(question)
+    parts = split_code_request(sentences) if sentences else None
+    if parts is None or not 6 <= len(parts[0]) <= 13:
+        return None
+    slots = multiple_reference_slots(parts[0][1:])
+    if slots is None:
+        return None
+    subjects = [tuple(slot['sources']) for slot in slots.values()]
+    if prod(map(len, subjects)) > MAX_REFERENCE_BRANCHES:
+        return None
+    if (not isinstance(replies, (tuple, list)) or len(replies) > len(slots)
+            or (not replies and source is not None) or (replies and not valid_source(source))):
+        raise ValueError('多處代稱的回覆或來源不符。')
+    states, rows = {}, []
+    for assignment in product(*subjects):
+        state = parse_bound(question, sentences, V11, choices=dict(zip(slots, assignment, strict=True)))
+        if state is None:
+            return None
+        code = state['labels'][check_state(state, cancel)[1]['status']]
+        states[assignment] = state
+        rows.append((assignment, code))
+    slots = list(slots.values())
+    selections = []
+    depth, target_index = reference_question(rows)
+    for reply in replies:
+        name = reference_choice(reply)
+        if target_index is None or name not in subjects[target_index]:
+            raise ValueError('請回覆上一則列出的其中一個完整物件名稱。')
+        rows = [row for row in rows if row[0][target_index] == name]
+        selections.append(dict(number=target_index + 1, subject=name, reply=reply))
+        depth, target_index = reference_question(rows)
+    target = None
+    if target_index is not None:
+        target = dict(number=target_index + 1, clause=slots[target_index]['clause'], choices=list(subjects[target_index]))
+    request = replies[-1] if replies else question
+    plan = dict(schema=MULTI_REFERENCE_STEP if replies else MULTI_REFERENCE, request=request,
+                request_sha256=evidence_logic.digest(request), target=target)
+    if replies:
+        plan.update(original_request=question, replies=list(replies), source=source)
+    return plan, slots, rows, states, selections, depth
+
+
+def checked_multiple_references(plan, cancel=None):
+    check = multi_reference_check(plan.get('original_request', plan.get('request')),
+                                  plan.get('replies', ()), plan.get('source'), cancel)
+    if check is None or check[0] != plan:
+        raise ValueError('多處代稱的規約與原問或回覆不符。')
+    return check
 
 
 def resolve_reference(question, parent, source):
@@ -873,6 +985,11 @@ def preserve_dispute(conditions, match, *, new_round=False):
 def effective(plan):
     if not isinstance(plan, dict):
         raise ValueError('必要條件規約與原問不符。')
+    if plan.get('schema') in MULTI_REFERENCE_PLANS:
+        _, _, rows, states, _, _ = checked_multiple_references(plan)
+        if len(rows) != 1:
+            raise ValueError('仍有物件身份未確認。要沿用條件，請以完整名稱重新列出規則及本輪觀察。')
+        return states[rows[0][0]]
     if plan.get('schema') == RESOLVE_PLAN:
         cases = reference_cases(plan.get('original_request'))
         source = plan.get('source')
@@ -886,7 +1003,7 @@ def effective(plan):
                 or evidence_logic.digest(plan['request']) != plan['request_sha256']
                 or not valid_source(plan['source'])
                 or not isinstance(plan['basis'], dict)
-                or plan['basis'].get('schema') not in (*INITIAL_PLANS, RESOLVE_PLAN, *UPDATE_PLANS)):
+                or plan['basis'].get('schema') not in (*INITIAL_PLANS, RESOLVE_PLAN, MULTI_REFERENCE_STEP, *UPDATE_PLANS)):
             raise ValueError('待核對項目的原問或來源不符。')
         state = effective(plan['basis'])
         if plan['schema'] == COST_PLAN:
@@ -913,7 +1030,7 @@ def effective(plan):
             or revisions[-1] != plan['request'] or evidence_logic.digest(revisions[-1]) != plan['request_sha256']
             or not valid_source(source)):
         raise ValueError('沿用條件的來源或更正範圍不符。')
-    if original.get('schema') == RESOLVE_PLAN:
+    if original.get('schema') in (RESOLVE_PLAN, MULTI_REFERENCE_STEP):
         state = effective(original)
     else:
         state = parse_version(original['request'], original['schema']) if set(original) == {'request', 'schema'} else None
@@ -955,7 +1072,8 @@ def revise(question, parent, source):
         original = parent['original']
         earlier = parent['revisions']
     else:
-        original = parent if parent['schema'] == RESOLVE_PLAN else {key: parent[key] for key in ('request', 'schema')}
+        original = parent if parent['schema'] in (RESOLVE_PLAN, MULTI_REFERENCE_STEP) else {
+            key: parent[key] for key in ('request', 'schema')}
         earlier = []
     if len(earlier) >= MAX_REVISIONS:
         raise ValueError('已達沿用條件的八次更正上限，請重新列出完整條件。')
@@ -972,6 +1090,14 @@ def revise(question, parent, source):
 
 
 def carry_forward(question, parent, source):
+    if parent['schema'] in MULTI_REFERENCE_PLANS and parent['target'] is not None:
+        if reference_choice(question) not in parent['target']['choices']:
+            raise ValueError('請回覆上一則列出的其中一個完整物件名稱。')
+        original = parent.get('original_request', parent['request'])
+        check = multi_reference_check(original, [*parent.get('replies', []), question], source)
+        if check is None:
+            raise ValueError('多處代稱的原始規則無法核對。')
+        return check[0]
     if parent['schema'] in REFERENCE_PLANS:
         if parent['schema'] == AGREEMENT_PLAN and not explicit_reference_choice(question):
             raise ValueError('上一則結論適用於所有候選物件。若要接續核對，請先用「代稱指的是」加上完整名稱。')
@@ -1123,7 +1249,25 @@ def evaluate_reference_agreement(plan, cancel):
                         status='complete', model_called=False, branches=branches, output=answer)
 
 
+def evaluate_multiple_references(plan, cancel):
+    _, slots, rows, _, selections, depth = checked_multiple_references(plan, cancel)
+    receipt = dict(schema='daily_necessary_multiple_references_receipt_v1', plan=plan,
+                   status='complete', model_called=False, slots=slots, selections=selections, questions_left=depth)
+    target = plan['target']
+    if target is None:
+        answer = rows[0][1]
+        receipt['branches'] = [dict(subjects=list(subjects), code=code) for subjects, code in rows]
+    else:
+        choices = '、'.join(f'「{name}」' for name in target['choices'])
+        answer = f'第{target["number"]}處「{target["clause"]}」指的是哪個物件？請回覆完整名稱：{choices}。'
+        receipt['status'] = 'clarification_required'
+    receipt['output'] = answer
+    return answer, receipt
+
+
 def evaluate(plan, cancel=None):
+    if isinstance(plan, dict) and plan.get('schema') in MULTI_REFERENCE_PLANS:
+        return evaluate_multiple_references(plan, cancel)
     if isinstance(plan, dict) and plan.get('schema') == AGREEMENT_PLAN:
         return evaluate_reference_agreement(plan, cancel)
     if isinstance(plan, dict) and plan.get('schema') == CLARIFY_PLAN:
@@ -1209,7 +1353,7 @@ def saved(db, mid, *, clarification_only=False):
     if clarification_only:
         receipt = context[FIELD]
         plan = receipt.get('plan') if isinstance(receipt, dict) else None
-        if not isinstance(plan, dict) or plan.get('schema') not in REFERENCE_PLANS:
+        if not isinstance(plan, dict) or plan.get('schema') not in (*REFERENCE_PLANS, *MULTI_REFERENCE_PLANS):
             return None
     if not 0 < row['user_message_id'] < mid:
         raise ValueError('必要條件來源的訊息順序不符。')
@@ -1218,15 +1362,16 @@ def saved(db, mid, *, clarification_only=False):
     return receipt, row, source
 
 
-def verified_chain(db, mid):
-    first = saved(db, mid)
+def verified_chain(db, mid, *, clarification_only=False):
+    first = saved(db, mid, clarification_only=clarification_only)
     if first is None:
         return None
     receipt, row, _ = first
     # Each state may have an inquiry followed by one check order.
-    for _ in range(3 * MAX_REVISIONS + 3):
+    roots = (*INITIAL_PLANS, *REFERENCE_PLANS, MULTI_REFERENCE)
+    for _ in range(3 * MAX_REVISIONS + 3 + MAX_REFERENCE_QUESTIONS):
         plan = receipt['plan']
-        if plan['schema'] in (*INITIAL_PLANS, *REFERENCE_PLANS):
+        if plan['schema'] in roots:
             return first
         predecessor = previous_id(db, row['session_id'], row['user_message_id'])
         parent = saved(db, predecessor)
@@ -1235,7 +1380,7 @@ def verified_chain(db, mid):
         receipt, row, source = parent
         if carry_forward(plan['request'], receipt['plan'], source) != plan:
             raise ValueError('沿用條件的來源已變更。')
-    if receipt['plan']['schema'] not in (*INITIAL_PLANS, *REFERENCE_PLANS):
+    if receipt['plan']['schema'] not in roots:
         raise ValueError('必要條件缺少可核對的原始規則。')
     return first
 
@@ -1251,7 +1396,7 @@ def previous(store, sid, before=None, *, required=True, clarification_only=False
     with store.connect() as db:
         db.execute('BEGIN')
         mid = previous_id(db, sid, before)
-        record = saved(db, mid, clarification_only=True) if clarification_only else verified_chain(db, mid)
+        record = verified_chain(db, mid, clarification_only=clarification_only)
         if record is None:
             if required:
                 raise ValueError('上一則回答沒有可沿用的必要條件紀錄。')
@@ -1262,6 +1407,22 @@ def previous(store, sid, before=None, *, required=True, clarification_only=False
 
 def describe(receipt):
     plan = receipt['plan']
+    if plan['schema'] in MULTI_REFERENCE_PLANS:
+        lines = [plan.get('original_request', plan['request']), '']
+        for number, slot in enumerate(receipt['slots'], 1):
+            lines.append(f'第{number}處原句：{slot["clause"]}')
+            lines.extend(f'  若指「{name}」，具名回報為「{source}」。' for name, source in slot['sources'].items())
+        for selection in receipt['selections']:
+            lines.append(f'第{selection["number"]}處的原始回覆：{selection["reply"]}')
+        if plan['target'] is not None:
+            lines += ['', receipt['output'], f'最多還需確認 {receipt["questions_left"]} 處。']
+        else:
+            lines += ['', '符合已確認回覆的解讀']
+            for branch in receipt['branches']:
+                choices = '、'.join(f'第{number}處指「{name}」' for number, name in enumerate(branch['subjects'], 1))
+                lines.append(f'{choices} → {branch["code"]}')
+            lines += ['', '交付：' + receipt['output']]
+        return '\n'.join(lines)
     if plan['schema'] == CLARIFY_PLAN:
         return '\n'.join((plan['request'], '', receipt['output']))
     states = {'true': '已確認滿足', 'false': '已確認不滿足', 'unknown': '尚未核實'}
@@ -1288,6 +1449,8 @@ def describe(receipt):
         if plan['schema'] == RESOLVE_PLAN:
             lines += ['', '原始問題：' + resolved['request']]
         lines += [f'代稱澄清 #{original["source"]["answer_id"]}：{original["request"]}']
+    if original['schema'] == MULTI_REFERENCE_STEP:
+        lines += ['明確回覆：' + '／'.join(original['replies'])]
     observation_title = '沿用的觀察' if plan['schema'] in READ_ONLY_PLANS else (
         '沿用及更新後的觀察' if plan['schema'] in UPDATE_PLANS else '採用的本輪觀察')
     new_round = 'previous_round' in resolved['conditions'][0]
