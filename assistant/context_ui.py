@@ -158,7 +158,14 @@ def show_context(parent, store, message_id):
             doc_text = document_calculation.describe_comparison_sources(math_receipt)
         if math_receipt['schema'] == document_calculation.SCENARIO_SEARCH_RECEIPT:
             count = len(math_receipt['plan']['checked'])
-            doc_text = f'本次核對 {count} 筆同一對話保存的文件試算。可依清單中的回答編號選用或比較。'
+            doc_text = (f'本次核對 {count} 筆同一對話保存的文件試算。可依清單中的回答編號選用或比較。\n'
+                        '緊接查詢清單可回「第二個」查看，或輸入「比較第一個和第二個」。')
+        if math_receipt['schema'] == document_calculation.SCENARIO_SELECTION_RECEIPT:
+            kind = math_receipt['plan']['kind']
+            if kind == 'compare':
+                doc_text = document_calculation.describe_comparison_sources(math_receipt['action_receipt'])
+            elif kind == 'view':
+                doc_text = '以下是所選試算當時保存的文件版本。\n\n' + doc_text
         if math_receipt['schema'] == document_calculation.SCENARIO_RECEIPT:
             details = (f'文件試算回答 #{message_id}\n'
                        f'用文件試算回答 #{message_id} 的原值重算。\n\n' + details)

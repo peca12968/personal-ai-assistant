@@ -375,6 +375,9 @@ class Assistant:
                 document_plan = document_calculation.capture_comparison(self.store, sid, question, before)
             elif document_calculation.matches_scenario_search(question):
                 document_plan = document_calculation.capture_scenario_search(self.store, sid, question, before, cancel)
+            elif document_calculation.matches_scenario_selection(question):
+                previous_plan = previous.get(document_calculation.FIELD) if retry else None
+                document_plan = document_calculation.capture_scenario_selection(self.store, sid, question, before, previous_plan)
             else:
                 document_plan = document_calculation.parse_live_request(question)
         from . import chat_transcription
@@ -457,6 +460,10 @@ class Assistant:
                         if (document_plan['schema'] == document_calculation.SCENARIO_SEARCH_PLAN
                                 and document_calculation.capture_scenario_search(self.store, sid, question, uid, cancel) != document_plan):
                             raise ValueError('提交前要查找的文件試算已變更，請重新查詢。')
+                        if (document_plan['schema'] == document_calculation.SCENARIO_SELECTION_PLAN
+                                and document_calculation.capture_scenario_selection(self.store, sid, question, uid, required=True)
+                                != document_plan):
+                            raise ValueError('提交前文件試算清單已變更，請重新查詢。')
                         answer, receipt = document_calculation.evaluate(document_plan, cancel)
                     except ValueError as exc:
                         raise EngineError('本機文件計算未完成：' + str(exc), 'document_calculation_invalid') from None

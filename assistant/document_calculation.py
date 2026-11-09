@@ -7,6 +7,8 @@ from fractions import Fraction
 from itertools import groupby
 from operator import eq, ge, gt, le, lt, ne
 
+from scripts.daily_dialogue import ordinal_pattern, ordinal_position
+
 from . import document_boolean, document_dates, document_table, document_units, exact_math, local_answer_receipts
 from .document_ranges import STATUS_TEXT, requested_ranges, select_ranges
 from .expression_math import check_cancel
@@ -28,11 +30,13 @@ COMPARISON_PLAN = 'document_calculation_comparison_plan_v1'
 COMPARISON_RECEIPT = 'document_calculation_comparison_receipt_v1'
 SCENARIO_SEARCH_PLAN = 'document_calculation_scenario_search_plan_v1'
 SCENARIO_SEARCH_RECEIPT = 'document_calculation_scenario_search_receipt_v1'
+SCENARIO_SELECTION_PLAN = 'document_calculation_scenario_selection_plan_v1'
+SCENARIO_SELECTION_RECEIPT = 'document_calculation_scenario_selection_receipt_v1'
 SCENARIO_SEARCH_SCAN = 100
 SCENARIO_SEARCH_RESULTS = 10
 ORIGINAL_RECEIPTS = {ORIGINAL_PLAN: ORIGINAL_RECEIPT, EXPLICIT_ORIGINAL_PLAN: EXPLICIT_ORIGINAL_RECEIPT,
                      REMAPPED_ORIGINAL_PLAN: REMAPPED_ORIGINAL_RECEIPT}
-PINNED_PLANS = (SCENARIO_PLAN, COMPARISON_PLAN, SCENARIO_SEARCH_PLAN, *ORIGINAL_RECEIPTS)
+PINNED_PLANS = (SCENARIO_PLAN, COMPARISON_PLAN, SCENARIO_SEARCH_PLAN, SCENARIO_SELECTION_PLAN, *ORIGINAL_RECEIPTS)
 _LABEL = r'[\u4e00-\u9fffA-Za-z0-9_]{1,24}'
 _UNIT = r'(?:[\u4e00-\u9fff]{1,8}|[A-Za-z]{1,8})'
 _INDEX = r'[1-9][0-9]{0,11}'
@@ -61,6 +65,10 @@ _COMPARE_REQUEST = re.compile(r'(?:請)?比較文件試算回答 *#([0-9]{1,30})
 _SEARCH_REQUEST = re.compile(r'(?:請)?(?:查(?:詢|找)?|找|搜尋)文件試算紀錄[,:] *([^\r\n]+?) *[。!?]?')
 _SEARCH_REFERENCE = re.compile(rf'(?:引用|來源) *({_REF}|D{_INDEX})')
 _SEARCH_HYPOTHESIS = re.compile(rf'假設 *(?:({_REF}) *的)? *({_LABEL}) *(?:改用|改為|為|是) *({_NUMBER}) *({_UNIT})')
+_SCENARIO_ORDINAL = ordinal_pattern(r'文件試算清單(?:中的?|的)')
+_COMPARE_ORDINALS = re.compile(r'(?:請)?比較 *(.{1,28}?) *(?:和|與|及) *(.{1,28})')
+_ORIGINAL_ORDINAL = re.compile(r'(?:請)?(?:改用|用|依照|依|按) *(.{1,28}?) *的文件原值[ ,]*'
+                               r'(?:重算|重新計算|重新算)[。!?]?')
 _COMPARISONS = dict(eq=eq, ne=ne, ge=ge, gt=gt, le=le, lt=lt)
 _GROUPED_PLANS = (document_table.MULTI_AGGREGATE_PLAN, document_table.FILTER_AGGREGATE_PLAN,
                   document_table.NUMERIC_AGGREGATE_PLAN, document_table.LOGIC_AGGREGATE_PLAN,
@@ -180,15 +188,19 @@ def matches_scenario_comparison(question):
     return _comparison_ids(question) is not None
 
 
-def _scenario_source(db, sid, before, selected):
+def _historical_context(db, sid, before, selected=None):
     if selected is not None and not 0 < selected <= 2**63 - 1:
         return None
-    row = db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
+    return db.execute('''SELECT m.id, CASE WHEN length(CAST(c.payload AS BLOB))<=? THEN c.payload END
         FROM messages m JOIN answer_contexts c ON c.message_id=m.id
         WHERE m.session_id=? AND m.role='assistant' AND (? IS NULL OR m.id<?)
           AND m.id=COALESCE(?, (SELECT id FROM messages WHERE session_id=?
             AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 1))''',
         (local_answer_receipts.MAX_JSON_BYTES, sid, before, before, selected, sid, before, before)).fetchone()
+
+
+def _scenario_source(db, sid, before, selected):
+    row = _historical_context(db, sid, before, selected)
     if row is None:
         return None
     mid, raw = row
@@ -341,6 +353,89 @@ def capture_scenario_search(store, sid, question, before=None, cancel=None):
         return _scenario_search_plan(db, sid, question, before, cancel)
 
 
+def _parse_scenario_selection(question):
+    if not isinstance(question, str) or len(question) > 72:
+        return None
+    text = unicodedata.normalize('NFKC', question).strip()
+    if match := _SCENARIO_ORDINAL.fullmatch(text):
+        return 'view', [ordinal_position(match)], bool(match['scope'])
+    if original := _ORIGINAL_ORDINAL.fullmatch(text):
+        if match := _SCENARIO_ORDINAL.fullmatch(original[1]):
+            return 'original', [ordinal_position(match)], True
+    if comparison := _COMPARE_ORDINALS.fullmatch(text):
+        matches = [_SCENARIO_ORDINAL.fullmatch(part.strip()) for part in comparison.groups()]
+        if all(matches):
+            return 'compare', [ordinal_position(match) for match in matches], any(match['scope'] for match in matches)
+    return None
+
+
+def matches_scenario_selection(question):
+    return _parse_scenario_selection(question) is not None
+
+
+def _search_context(db, sid, before):
+    row = _historical_context(db, sid, before)
+    if row is None:
+        return None
+    mid, raw = row
+    context = local_answer_receipts.load_context(raw)
+    if not isinstance(context, dict) or context.get('response_mode') != MODE:
+        return None
+    receipt = context.get(FIELD)
+    if not isinstance(receipt, dict) or receipt.get('schema') != SCENARIO_SEARCH_RECEIPT:
+        return None
+    return mid, raw, context
+
+
+def scenario_selection_applicable(store, sid, question, before=None, previous=None):
+    selection = _parse_scenario_selection(question)
+    if selection is None:
+        return False
+    if selection[2] or (isinstance(previous, dict) and previous.get('schema') == SCENARIO_SELECTION_PLAN):
+        return True
+    with store.connect() as db:
+        return _search_context(db, sid, before) is not None
+
+
+def _scenario_selection_plan(db, sid, question, before, required=False):
+    selection = _parse_scenario_selection(question)
+    if selection is None:
+        return None
+    kind, positions, scoped = selection
+    context = _search_context(db, sid, before)
+    if context is None:
+        if scoped or required:
+            raise ValueError('請緊接在文件試算查詢清單後選擇，或指定文件試算回答編號。')
+        return None
+    mid, raw, saved = context
+    receipt = local_answer_receipts.checked_row(db, mid, saved, MODE, FIELD, validate, True, validate_origin)
+    shown = receipt['plan']['matches']
+    if not shown:
+        raise ValueError('上一則文件試算查詢沒有符合的紀錄，請調整查詢條件。')
+    if any(not 1 <= position <= len(shown) for position in positions):
+        raise ValueError(f'上一則文件試算查詢實際列出 {len(shown)} 筆，請選清單中的順序。')
+    ids = [shown[position - 1]['answer_id'] for position in positions]
+    if kind == 'compare':
+        action = _comparison_plan(db, sid, f'比較文件試算回答 #{ids[0]} 和 #{ids[1]}。', before)
+    elif kind == 'original':
+        request = f'用文件試算回答 #{ids[0]} 的原值重算。'
+        action = _original_followup(db, sid, request, before, _parse_original_followup(request))
+    else:
+        source = _scenario_source(db, sid, before, ids[0])
+        action = source['plan'] if source else None
+    if action is None:
+        raise ValueError('選中的文件試算已無法核對，請重新查詢。')
+    return dict(schema=SCENARIO_SELECTION_PLAN, request=question, kind=kind, positions=positions, selected=ids,
+                search_source=dict(answer_id=mid, sha256=digest(raw)), action=action, documents=action['documents'])
+
+
+def capture_scenario_selection(store, sid, question, before=None, previous=None, *, required=False):
+    required = required or (isinstance(previous, dict) and previous.get('schema') == SCENARIO_SELECTION_PLAN)
+    with store.connect() as db:
+        db.execute('BEGIN')
+        return _scenario_selection_plan(db, sid, question, before, required)
+
+
 def _parse_numeric_aggregate(question):
     return document_table.parse_numeric_aggregate(question, _UNIT, document_units.SCALES, _parse_table_quantity)
 
@@ -366,6 +461,9 @@ def bind_live_request(plan, previous=None):
 
 
 def snapshot(store, sid, plan):
+    if plan['schema'] == SCENARIO_SELECTION_PLAN:
+        action = plan['action']
+        return snapshot(store, sid, action) if plan['kind'] == 'original' else action['documents']
     if plan['schema'] in (COMPARISON_PLAN, SCENARIO_SEARCH_PLAN):
         return {'catalog': [], 'excerpts': []}
     if plan['schema'] in PINNED_PLANS:
@@ -407,6 +505,11 @@ def _original_formula(plan):
 
 def bind_live_documents(plan, documents):
     schema = plan['schema']
+    if schema == SCENARIO_SELECTION_PLAN:
+        action = plan['action']
+        if plan['kind'] == 'original':
+            action = bind_live_documents(action, documents)
+        return {**plan, 'action': action, 'documents': documents}
     if schema == REMAPPED_ORIGINAL_PLAN:
         base = plan['base']
         updated = _original_formula(plan)
@@ -514,6 +617,8 @@ def _observe_v1(operand, row, unit):
 
 def evaluate(plan, cancel=None):
     check_cancel(cancel)
+    if plan.get('schema') == SCENARIO_SELECTION_PLAN:
+        return _evaluate_scenario_selection(plan, cancel)
     if plan.get('schema') == SCENARIO_SEARCH_PLAN:
         return _evaluate_scenario_search(plan, cancel)
     if plan.get('schema') == COMPARISON_PLAN:
@@ -758,6 +863,28 @@ def _evaluate_scenario_search(plan, cancel):
         lines.append(f'可輸入「比較文件試算回答 #{matches[0]["answer_id"]} 和 #{matches[1]["answer_id"]}。」核對兩份差異。')
     answer = '\n'.join(lines)
     return answer, dict(schema=SCENARIO_SEARCH_RECEIPT, plan=plan, model_called=False,
+                        output=answer, output_sha256=digest(answer))
+
+
+def _evaluate_scenario_selection(plan, cancel):
+    parsed = _parse_scenario_selection(plan['request'])
+    kind, positions, ids = plan['kind'], plan['positions'], plan['selected']
+    schemas = {'view': SCENARIO_PLAN, 'original': EXPLICIT_ORIGINAL_PLAN, 'compare': COMPARISON_PLAN}
+    source, action = plan['search_source'], plan['action']
+    if (parsed is None or parsed[:2] != (kind, positions) or len(positions) != len(ids)
+            or any(type(position) is not int or not 1 <= position <= SCENARIO_SEARCH_RESULTS for position in positions)
+            or any(type(mid) is not int or not 0 < mid <= 2**63 - 1 for mid in ids)
+            or len(set(ids)) != len(ids) or action['schema'] != schemas[kind]
+            or type(source['answer_id']) is not int or source['answer_id'] <= 0
+            or not re.fullmatch('[0-9a-f]{64}', source['sha256']) or set(source) != {'answer_id', 'sha256'}
+            or action['documents'] != plan['documents']
+            or set(plan) != {'schema', 'request', 'kind', 'positions', 'selected', 'search_source', 'action', 'documents'}):
+        raise ValueError('文件試算序號與保存的查詢或請求不符。')
+    answer, evidence = evaluate(action, cancel)
+    choices = '、'.join(f'第 {position} 筆為文件試算回答 #{mid}' for position, mid in zip(positions, ids, strict=True))
+    intro = choices + '。' + ('以下依該回答當時的文件版本。' if kind == 'view' else '')
+    answer = intro + '\n\n' + answer
+    return answer, dict(schema=SCENARIO_SELECTION_RECEIPT, plan=plan, model_called=False, action_receipt=evidence,
                         output=answer, output_sha256=digest(answer))
 
 
@@ -1170,6 +1297,10 @@ def scenario_ids(store, rows):
 
 
 def validate_origin(db, sid, before, plan):
+    if plan['schema'] == SCENARIO_SELECTION_PLAN:
+        if plan != _scenario_selection_plan(db, sid, plan['request'], before, required=True):
+            raise ValueError('文件試算序號與上一則查詢或選中的回答不符。')
+        return
     if plan['schema'] == SCENARIO_SEARCH_PLAN:
         if plan != _scenario_search_plan(db, sid, plan['request'], before):
             raise ValueError('文件試算查詢與當時保存的試算來源不符。')
@@ -1192,6 +1323,9 @@ def validate_origin(db, sid, before, plan):
 
 def describe(receipt):
     plan = receipt['plan']
+    if receipt['schema'] == SCENARIO_SELECTION_RECEIPT:
+        return (receipt['output'] + '\n\n'
+                + f'依文件試算查詢回答 #{plan["search_source"]["answer_id"]} 的顯示順序。')
     if receipt['schema'] in (COMPARISON_RECEIPT, SCENARIO_SEARCH_RECEIPT):
         return receipt['output']
     if receipt['schema'] in ORIGINAL_RECEIPTS.values():
