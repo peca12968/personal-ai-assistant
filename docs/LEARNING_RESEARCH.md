@@ -546,3 +546,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 分開計算精確結論和同時核對狀態及原句的成績。編號合法只代表指到題中某句。題目提供兩個待核對命題，研究涵蓋明列命題的證據擷取。工作須符合本機閒置，原問、原答、會話副本與退出證據均留本機。
+
+### 同一物件的跨輪證據配對
+
+`assess_scope_evidence.py` 固定三組事實配對、歷史反證和一般輸出控制。每對共享規則、舊輪及另一項觀察，只有一條本輪原句不同。兩組使用同一個父適配器、相同的合成歷史和編號原句。第一組連續呈現原句，第二組加上規則、舊輪紀錄及本輪觀察三個標題與換行。兩組的會話都保存原問題及完整前文。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_scope_evidence.py check
+.venv/Scripts/python.exe scripts/learning/assess_scope_evidence.py prepare <名稱> --reference <已完成的語意診斷>
+.venv/Scripts/python.exe scripts/learning/assess_scope_evidence.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_scope_evidence.py verify <名稱>
+```
+
+分開統計可解析輸出、最後結論、同時正確的狀態與來源、引用規則或舊輪，以及一整對答案或證據是否都正確。來源落在本輪仍須核對物件及狀態。兩個命題和句子邊界事先明列，因此這項研究衡量已知命題的證據歸屬。驗證使用原生閒置、完整 token 預檢、實際原答和兩份 SQLite。所有實測證據留在本機。
