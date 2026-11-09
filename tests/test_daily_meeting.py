@@ -252,6 +252,51 @@ class DailyMeetingTests(unittest.TestCase):
                     self.assertEqual(len(store.messages(sid, 10)), 2)
                     self.assertEqual(meeting.read(store, first['id']), record)
 
+    def test_natural_followup_uses_original_availability_and_keeps_each_exact_clause(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            first = app.ask(sid, '甲可開會：09:20-11:00，乙為 09:30-10:30。兩人需要連續 20 分鐘。' + FORMAT)
+            question = '上次會議：甲 09:30 到 09:50 沒空。乙空檔改成 09:10-11:00，會議改成一刻鐘，幫我重新算？'
+            changed = app.ask(sid, question)
+            self.assertEqual(changed['content'], '09:50-10:05')
+            record = meeting.read(store, changed['id'])
+            self.assertEqual(record['current_request'], question)
+            self.assertEqual(record['meeting_source']['answer_id'], first['id'])
+            self.assertEqual(record['meeting_plan']['cancelled'],
+                             [dict(name='甲', interval=[570,590], source='甲 09:30 到 09:50 沒空')])
+            self.assertIn('3. 會議改成一刻鐘', meeting.describe(record))
+            backup = create_backup(store.path, root/'natural.paibackup')
+            restore_backup(backup['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            self.assertEqual(meeting.read(restored, changed['id']), record)
+
+    def test_afternoon_shorthand_requires_bounds_when_evening_might_be_affected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            app.ask(sid, ('小晴可開會：09:20-09:50 和 13:00-15:00 和 18:00-19:00，'
+                          '小陳為 09:30-10:00 和 13:15-15:00 和 18:15-19:00。'
+                          '兩人需要連續 20 分鐘。' + FORMAT))
+            for invalid, error in (
+                ('小晴下午沒空，會議改半小時', '18:00 後'),
+                ('小晴 12:00-18:00 可能沒空，會議改半小時', '第 1 項'),
+                ('小晴 12:00-18:00 沒空，會議改半小時，順便寄出邀請', '第 3 項'),
+                ('小晴 12:00-18:00 沒空，對方上午沒空', '第 2 項'),
+            ):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, error):
+                    app.ask(sid, f'上一場會議，{invalid}，重算。')
+            self.assertEqual(len(store.messages(sid, 10)), 2)
+            explicit = app.ask(sid, '上一場會議，小晴 12:00-18:00 沒空，會議改半小時，重算。')
+            self.assertEqual(explicit['content'], '18:15-18:45')
+            next_edit = app.ask(sid, '上一場會議，小晴 18:00-19:00 沒空，重算。')
+            self.assertEqual(next_edit['content'], '沒有可行時段')
+            shorthand = app.ask(sid, '上一場會議，小晴下午沒空，重算。')
+            self.assertEqual(shorthand['content'], '沒有可行時段')
+
     def test_followup_revalidates_tail_during_submission_and_retry(self):
         from assistant import answer_runs
         with tempfile.TemporaryDirectory() as tmp:

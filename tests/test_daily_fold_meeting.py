@@ -117,6 +117,24 @@ class DailyFoldMeetingTests(unittest.TestCase):
                 self.assertEqual(current['meeting_plan']['schema'], meeting.FOLD_ZONED_PLAN)
                 self.assertEqual(current['meeting_plan']['zone_rules'], previous['meeting_plan']['zone_rules'])
 
+    def test_natural_zoned_clauses_still_require_the_persons_exact_local_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            original = (NY + '甲 America/New_York：2026-11-01 00:30-03:00。'
+                        '乙 Etc/UTC：2026-11-01 04:45-08:00。兩人需要連續 20 分鐘。' + FORMAT)
+            first = app.ask(sid, original)
+            with self.assertRaisesRegex(ValueError, '完整的當地日期'):
+                app.ask(sid, '上一場會議，乙 04:45-05:05 沒空，會議改半小時，重算。')
+            changed = app.ask(sid, '上一場會議，甲 2026-11-01 01:00（第一次）-01:20（第一次）沒空，'
+                                  '乙 2026-11-01 04:45-05:05不能開會，會議改半小時，重新算。')
+            self.assertEqual(changed['content'], '2026-11-01 01:20 UTC-04:00 至 01:50 UTC-04:00')
+            record = meeting.read(store, changed['id'])
+            self.assertEqual(record['meeting_source']['answer_id'], first['id'])
+            self.assertEqual(record['meeting_plan']['people']['乙']['days']['2026-11-01']['cancelled'][0]['source'],
+                             '乙 2026-11-01 04:45-05:05不能開會')
+
     def test_retry_preserves_annotations_and_reference_rendering(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / 'assistant.sqlite3')
