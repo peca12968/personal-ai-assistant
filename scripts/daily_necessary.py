@@ -14,7 +14,9 @@ V4 = 'daily_necessary_grouped_roster_plan_v4'
 V5 = 'daily_necessary_physical_plan_v5'
 V6 = 'daily_necessary_physical_codes_plan_v6'
 V7 = 'daily_necessary_declared_plan_v7'
-INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, V7)
+V8 = 'daily_necessary_scoped_declared_plan_v8'
+DECLARED_PLANS = (V7, V8)
+INITIAL_PLANS = (V1, V2, V3, V4, V5, V6, *DECLARED_PLANS)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -117,6 +119,8 @@ DECLARED_TERMS = re.compile(rf'{DECLARED_GROUP}(?:\s*(?:、|及|和|與|並且)\
 DECLARED_RULE = re.compile(rf'判斷「(?P<action>{DECLARED_NAME})」須同時符合(?P<terms>[^，,]+)[，,]\s*'
                            r'這些(?P<complete>就是全部要求|只是必要條件)')
 DECLARED_COST_ITEM = re.compile(rf'「({DECLARED_NAME})」\s*([1-9][0-9]{{0,2}})\s*分鐘')
+CURRENT_OBSERVATION = re.compile(r'(?:本輪|當次|這次)\s*(.+)')
+EARLIER_OBSERVATION = re.compile(r'(?:上一次|上一輪|上輪|上次|昨天|前一日)\s*(.+)')
 
 
 def alternative_groups(text):
@@ -177,12 +181,14 @@ def observation(clause, condition, *, carried=False):
         return roster_observation(clause, condition, carried)
     if condition.get('physical'):
         return physical_observation(clause, condition, carried)
-    name = re.escape(condition['name'])
     if condition.get('declared'):
-        checked = re.fullmatch(rf'已確認「{name}」(成立|不成立)', clause)
-        if checked:
-            return 'true' if checked[1] == '成立' else 'false'
-        return 'unknown' if re.fullmatch(rf'「{name}」(?:尚未|還沒)(?:核對|確認)', clause) else None
+        if condition.get('scoped'):
+            current = CURRENT_OBSERVATION.fullmatch(clause)
+            if current is None:
+                return None
+            clause = current[1]
+        return declared_observation(clause, condition['name'])
+    name = re.escape(condition['name'])
     prop = condition['property']
     yes, no = TYPES[prop]
     if re.fullmatch(rf'已(?:確認|確定)沒有{prop}的{name}|唯一的{name}(?:{no})', clause):
@@ -395,12 +401,43 @@ def parse_physical(question, sentences, version):
     return plan
 
 
-def parse_declared(question, sentences):
+def declared_observation(clause, name):
+    name = re.escape(name)
+    checked = re.fullmatch(rf'已確認「{name}」(成立|不成立)', clause)
+    if checked:
+        return 'true' if checked[1] == '成立' else 'false'
+    return 'unknown' if re.fullmatch(rf'「{name}」(?:尚未|還沒)(?:核對|確認)', clause) else None
+
+
+def bind_scoped_observations(conditions, sentences):
+    for clause in observation_clauses(sentences):
+        earlier = EARLIER_OBSERVATION.fullmatch(clause)
+        current = CURRENT_OBSERVATION.fullmatch(clause)
+        scoped = earlier or current
+        if scoped is None:
+            return False
+        matched = [(condition, state) for condition in conditions
+                   if (state := declared_observation(scoped[1], condition['name']))]
+        if len(matched) != 1:
+            return False
+        condition, state = matched[0]
+        field = 'earlier_observation' if earlier else 'observation'
+        if field in condition:
+            return False
+        if earlier:
+            condition[field] = dict(source=clause, state=state)
+        else:
+            condition.update(observation=clause, state=state)
+    return (all('observation' in condition for condition in conditions)
+            and any('earlier_observation' in condition for condition in conditions))
+
+
+def parse_declared(question, sentences, version):
     parts = split_code_request(sentences)
     if parts is None:
         return None
     facts, output, options = parts
-    if not 2 <= len(facts) <= 7:
+    if not 2 <= len(facts) <= (7 if version == V7 else 13):
         return None
     rule = DECLARED_RULE.fullmatch(facts[0])
     if rule is None or not DECLARED_TERMS.fullmatch(rule['terms']):
@@ -413,23 +450,30 @@ def parse_declared(question, sentences):
             or sum(len(group) > 1 for group in groups) > 2 or any(name != name.strip() for name in [action, *names])):
         return None
     conditions = [dict(name=name, property='', requirement=name, declared=True) for name in names]
-    if not bind_observations(conditions, facts[1:]):
+    if version == V8:
+        for condition in conditions:
+            condition['scoped'] = True
+    bind = bind_scoped_observations if version == V8 else bind_observations
+    if not bind(conditions, facts[1:]):
         return None
-    return dict(schema=V7, request=question, request_sha256=evidence_logic.digest(question),
+    return dict(schema=version, request=question, request_sha256=evidence_logic.digest(question),
                 action=action, rule=facts[0], sufficient=rule['complete'] == '就是全部要求',
                 conditions=conditions, groups=groups, labels=options, output=output)
 
 
-def bind_observations(conditions, sentences):
+def observation_clauses(sentences):
     for sentence in sentences:
         for part in re.split(r'[，,；;]', sentence):
-            clause = part.strip()
-            matches = [(condition, status) for condition in conditions
-                       if (status := observation(clause, condition))]
-            if len(matches) != 1 or 'observation' in matches[0][0]:
-                return False
-            condition, status = matches[0]
-            condition.update(observation=clause, state=status)
+            yield part.strip()
+
+
+def bind_observations(conditions, sentences):
+    for clause in observation_clauses(sentences):
+        matches = [(condition, status) for condition in conditions if (status := observation(clause, condition))]
+        if len(matches) != 1 or 'observation' in matches[0][0]:
+            return False
+        condition, status = matches[0]
+        condition.update(observation=clause, state=status)
     return all('observation' in condition for condition in conditions)
 
 
@@ -448,8 +492,8 @@ def parse_version(question, version):
         return parse_grouped_roster(question, sentences)
     if version in (V5, V6):
         return parse_physical(question, sentences, version)
-    if version == V7:
-        return parse_declared(question, sentences)
+    if version in DECLARED_PLANS:
+        return parse_declared(question, sentences, version)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -639,7 +683,7 @@ def inspection_minutes(request, state):
     minutes = {}
     for part in re.split(r'[，,]', match[1]):
         item = COST_ITEM.fullmatch(part.strip())
-        if item is None and state['schema'] == V7:
+        if item is None and state['schema'] in DECLARED_PLANS:
             item = DECLARED_COST_ITEM.fullmatch(part.strip())
         if not item or item[1] not in names or item[1] in minutes:
             raise ValueError('請用原本的完整條件名稱，各填一次 1 至 999 的整數分鐘。')
@@ -692,13 +736,13 @@ def dispute_text(conflicts):
 
 def evaluate(plan, cancel=None):
     state = effective(plan)
-    target = '待判 ' + state['action'] if state['schema'] == V7 else state['action']
+    target = '待判 ' + state['action'] if state['schema'] in DECLARED_PLANS else state['action']
     action = '「' + target + '」'
     items = [f'「條件{index} {c["name"]}{c["property"]}」'
              for index, c in enumerate(state['conditions'], 1)]
     group_rules = []
     required = items
-    if state['schema'] in (V2, V7):
+    if state['schema'] in (V2, *DECLARED_PLANS):
         required = []
         atoms = {c['name']: atom for c, atom in zip(state['conditions'], items, strict=True)}
         for index, names in enumerate(state['groups'], 1):
@@ -727,6 +771,7 @@ def evaluate(plan, cancel=None):
               V5: 'daily_necessary_physical_receipt_v5',
               V6: 'daily_necessary_physical_codes_receipt_v6',
               V7: 'daily_necessary_declared_receipt_v7',
+              V8: 'daily_necessary_scoped_declared_receipt_v8',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
@@ -854,13 +899,16 @@ def describe(receipt):
             if resolved['schema'] == V4:
                 source = f'{condition["participant"]}｜{source}'
             lines.append(f'{source} → {states[condition["state"]]}')
-    if resolved['schema'] in (V2, V7):
+    if resolved['schema'] in (V2, *DECLARED_PLANS):
         observed = {c['name']: c['state'] for c in resolved['conditions']}
         for group in resolved['groups']:
             if len(group) > 1:
                 values = {observed[name] for name in group}
                 state = 'true' if 'true' in values else 'false' if values == {'false'} else 'unknown'
                 lines.append('備援（' + '或'.join(group) + '） → ' + states[state])
+    earlier = [c['earlier_observation']['source'] for c in resolved['conditions'] if 'earlier_observation' in c]
+    if earlier:
+        lines += ['', '舊輪觀察', *earlier]
     if receipt.get('conflicts') and plan['schema'] == DISPUTE_PLAN and not DISPUTE.fullmatch(plan['request']):
         lines += ['', dispute_text(receipt['conflicts'])]
     lines.extend(['', f'相容情況數：{receipt["analysis"]["compatible_worlds"]}', '交付：' + receipt['output']])

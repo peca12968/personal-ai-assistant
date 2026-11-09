@@ -533,3 +533,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 兩組須核對模型與裝置、送出提示、原答、結束標記、SQLite 回答與程序退出。逐組呈現答對、未能套碼及個案進退。一般輸出控制使用相同提示與原答。所有原答和合成資料庫留本機，測試入口只用於研究。
+
+### 逐項擷取當輪的反證
+
+`assess_polarity_evidence.py` 固定六道新場景、一個歷史反證和一個相同提示的控制。使用已驗證的相同父權重和完整 `Assistant.ask`。第一組直接回固定結論詞。第二組先取得兩個已明列的肯定命題與編號原句，再回傳每個命題的當輪狀態及原句編號。程式依實際擷取的狀態計算結論。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_polarity_evidence.py check
+.venv/Scripts/python.exe scripts/learning/assess_polarity_evidence.py prepare <名稱> --reference <已完成的語意診斷>
+.venv/Scripts/python.exe scripts/learning/assess_polarity_evidence.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_polarity_evidence.py verify <名稱>
+```
+
+分開計算精確結論和同時核對狀態及原句的成績。編號合法只代表指到題中某句。題目提供兩個待核對命題，研究涵蓋明列命題的證據擷取。工作須符合本機閒置，原問、原答、會話副本與退出證據均留本機。

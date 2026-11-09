@@ -24,6 +24,80 @@ DECLARED_HEAD = ('判斷「送交維護報告」須同時符合「檔案已完�
                  '這些就是全部要求。')
 DECLARED_PENDING = (DECLARED_HEAD + '已確認「檔案已完成簽署」成立，已確認「原件已登錄」不成立，'
                     '「副本已核准」尚未核對。' + PHYSICAL_SEPARATE)
+SCOPED_HEAD = '判斷「交接工具箱」須同時符合「許可仍有效」及「封條已完整」，這些就是全部要求。'
+SCOPED_OLDER = '上一次已確認「許可仍有效」成立'
+SCOPED_CURRENT = '本輪「許可仍有效」尚未核對'
+SCOPED_REQUEST = SCOPED_HEAD + SCOPED_OLDER + '，' + SCOPED_CURRENT + '，本輪已確認「封條已完整」成立。' + PHYSICAL_SEPARATE
+
+
+class DailyScopedDeclaredTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '一般模型回答'
+        self.app = DailyAssistant(self.store, self.engine, default_chat=True)
+
+    def test_only_current_state_drives_conclusion_and_earlier_source_stays_separate(self):
+        for historical in (SCOPED_OLDER, SCOPED_OLDER.replace('」成立', '」不成立'),
+                           '上一次「許可仍有效」尚未核對'):
+            for current, expected in (
+                (SCOPED_CURRENT, 'X'),
+                ('本輪已確認「許可仍有效」成立', 'R'),
+                ('本輪已確認「許可仍有效」不成立', 'B'),
+            ):
+                request = SCOPED_REQUEST.replace(SCOPED_OLDER, historical).replace(SCOPED_CURRENT, current)
+                with self.subTest(request=request):
+                    reply = self.app.ask(self.store.new_session(), request)
+                    receipt = daily_necessary.read(self.store, reply['id'])
+                    first = receipt['plan']['conditions'][0]
+                    self.assertEqual(receipt['plan']['schema'], daily_necessary.V8)
+                    self.assertEqual(reply['content'], expected)
+                    self.assertEqual(first['observation'], current)
+                    self.assertEqual(first['earlier_observation']['source'], historical)
+                    self.assertIn('舊輪觀察\n' + historical, daily_necessary.describe(receipt))
+                    self.assertNotIn(historical, receipt['canonical'])
+        self.engine.answer.assert_not_called()
+
+    def test_ambiguous_or_missing_scopes_do_not_select_local_path(self):
+        for request in (
+            SCOPED_REQUEST.replace(SCOPED_CURRENT + '，', ''),
+            SCOPED_REQUEST.replace(SCOPED_CURRENT, SCOPED_CURRENT + '，本輪已確認「許可仍有效」不成立'),
+            SCOPED_REQUEST.replace(SCOPED_OLDER, SCOPED_OLDER + '，' + SCOPED_OLDER),
+            SCOPED_REQUEST.replace('本輪「許可', '「許可'),
+            SCOPED_REQUEST.replace('本輪「許可', '昨天「另張許可'),
+            SCOPED_REQUEST.replace('上一次已確認', '可能上一次確認'),
+            SCOPED_REQUEST + '同時執行交接。',
+        ):
+            with self.subTest(request=request):
+                self.assertIsNone(daily_necessary.parse(request))
+                self.assertEqual(self.app.ask(self.store.new_session(), request)['content'], '一般模型回答')
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.store.new_session(), SCOPED_REQUEST)['content'], '一般模型回答')
+
+    def test_revision_rejects_earlier_scope_and_revalidates_history_after_restore(self):
+        sid = self.store.new_session()
+        first = self.app.ask(sid, SCOPED_REQUEST)
+        with self.assertRaisesRegex(EngineError, '完整條件名稱'):
+            self.app.ask(sid, '沿用上一輪條件：昨天已確認「許可仍有效」成立。重算。')
+        fixed = self.app.ask(sid, '沿用上一輪條件：本輪已確認「許可仍有效」不成立。重算。')
+        self.assertEqual((first['content'], fixed['content']), ('X', 'B'))
+        backup = create_backup(self.store.path, self.path / 'scope.paibackup')
+        restore_backup(backup['path'], self.path / 'restored-scope')
+        restored = Store(self.path / 'restored-scope/assistant.sqlite3')
+        saved = daily_necessary.read(restored, fixed['id'])
+        self.assertEqual(saved, fixed[daily_necessary.FIELD])
+        self.assertIn(SCOPED_OLDER, daily_necessary.describe(saved))
+        context = restored.answer_context(first['id'])
+        context[daily_necessary.FIELD]['plan']['conditions'][0]['earlier_observation']['state'] = 'false'
+        with restored.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), first['id']))
+        with self.assertRaisesRegex(ValueError, '必要條件規約'):
+            daily_necessary.read(restored, fixed['id'])
+        self.engine.answer.assert_not_called()
 
 
 class DailyDeclaredPrerequisiteTests(unittest.TestCase):
