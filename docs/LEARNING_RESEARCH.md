@@ -572,3 +572,16 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 兩組都回兩項事先明列命題的狀態與整句原文。缺少當前觀察時可用待查及空來源。報告分開計算結論、狀態、整句與狀態配對、找不到完全相同原句的引文，以及無來源的肯定或否定。分段只提供線索，原始來源與證據歸屬仍要各自核對。所有作答及 SQLite 證據留在本機。
+
+### 固定索引與時間適用性
+
+`assess_indexed_scope.py` 在同一本機適配器重現原引句測驗八題，再加無日期／本輪照片與舊檢測／當前複驗兩組新配對。原組逐字引用，自動索引組從同一份自然原文選整數編號。原文保留順序及字元位置，由程式取回句子。原組八題須重現完整提示、實際 token 數、原答與結束標記。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/assess_indexed_scope.py check
+.venv/Scripts/python.exe scripts/learning/assess_indexed_scope.py prepare <名稱> --reference <語意診斷> --previous <原引句實測名稱>
+.venv/Scripts/python.exe scripts/learning/assess_indexed_scope.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/assess_indexed_scope.py verify <名稱>
+```
+
+原始索引及狀態保留供評分。另行檢查索引範圍與明示較早、規則及無日期媒體線索，只能把排除的狀態改成待查並記錄原因。其他來源仍須核對時間、物件及命題。原始模型結論、來源恢復和檢查後結論各自計算。原始 SQLite 和回答留在本機，這個入口供研究。
