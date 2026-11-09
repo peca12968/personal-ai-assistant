@@ -4,6 +4,8 @@ import re
 NAME = r'[㐀-鿿A-Za-z0-9][㐀-鿿A-Za-z0-9_ -]{0,23}'
 NAME_CHECK = re.compile(NAME)
 REPORT = re.compile(rf'確認\s*(?:「(?P<quoted>{NAME})」的?|(?P<bare>{NAME})的)(?P<items>.+)')
+REFERENCE_SUBJECTS = ('它', '該物件', '同一物件')
+REFERENCE = re.compile(rf'(?:確認\s*)?(?:{"|".join(REFERENCE_SUBJECTS)})的')
 PENDING = re.compile(r'(.+?)(?:尚未核對|還沒核對)')
 AMBIGUOUS = re.compile(r'的|可能|似乎|看起來|大概|疑似|或許|據說|若|但是|然而|未$|不$|已$|仍$|還$|沒$|沒有$|並非$')
 FAMILIES = (
@@ -44,7 +46,17 @@ def observation(body):
     subject = match['quoted'] or match['bare']
     if subject != subject.strip() or (match['bare'] and '的' in subject):
         return None
-    phrases = [part.strip() for part in re.split('[、，,]', match['items'])]
+    items = observation_items(match['items'])
+    return (subject, items) if items else None
+
+
+def reference_items(body):
+    match = REFERENCE.match(body)
+    return observation_items(body[match.end():]) if match else None
+
+
+def observation_items(text):
+    phrases = [part.strip() for part in re.split('[、，,]', text)]
     if not 1 <= len(phrases) <= 6:
         return None
     result = []
@@ -58,4 +70,4 @@ def observation(body):
             result.append((pending[1], None, None))
         else:
             return None
-    return subject, result
+    return result
