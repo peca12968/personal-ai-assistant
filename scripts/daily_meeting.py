@@ -17,6 +17,7 @@ SPAN = re.compile(rf'({CLOCK})\s*[-–—至到]\s*({CLOCK})')
 NAME = r'(?:「[\u4e00-\u9fffA-Za-z0-9]{1,16}」|小[\u4e00-\u9fff]|[甲乙丙丁戊己庚辛]|[A-Za-z]{1,20})'
 AVAILABILITY = re.compile(rf'({NAME})(原本)?(可開會的時段為|可開會[：:]|可用時段[為：:]|有空[：:]|為)\s*(.+)')
 NATURAL_NAME = rf'(?:{NAME}|[\u4e00-\u9fff]{{2,3}}?)'
+EDIT_NAME = rf'(?:{NATURAL_NAME}|[\u4e00-\u9fff])'
 NATURAL_AVAILABILITY = re.compile(
     rf'({NATURAL_NAME})(?:今天)?(?:原本)?(?:可碰面|可談)(?:的(?:時段|時間)原?(?:是|為))?\s*([0-9].*)')
 UNBOUND_NAME = re.compile(r'^(?:大家|我們|你們|他們|她們|對方|其他|某人|所有|其中|兩人|三人)$'
@@ -24,7 +25,8 @@ UNBOUND_NAME = re.compile(r'^(?:大家|我們|你們|他們|她們|對方|其他
                           r'|今天|昨天|明天|後天|本週|下週|週末|上午|下午|早上|晚上|可能|大概|[和與或跟及]'
                           r'|[不未也都只暫尚]$')
 MORNING = r'(?:整個上午|(?:上午|早上)的?(?:時段|安排))'
-CANCEL = re.compile(rf'({NATURAL_NAME})(?:(?:剛|已)?取消\s*(.+)|的({MORNING})(?:已經|已|剛)取消)')
+CANCEL_BODY = rf'(?:(?:剛|已)?取消\s*(.+)|的({MORNING})(?:已經|已|剛)取消)'
+CANCEL = re.compile(rf'({NATURAL_NAME}){CANCEL_BODY}')
 PEOPLE = r'(兩|二|三|四|五|六|七|八|[2-8])人'
 LENGTH = r'(半小時|一小時|一刻鐘|[1-9][0-9]{0,3}\s*分鐘)'
 DURATION = re.compile(rf'(?:{PEOPLE})?(?:需要(?:連續)?|想開)\s*{LENGTH}(?:的會議?)?')
@@ -70,8 +72,8 @@ OVERNIGHT_OUTPUT = re.compile(r'(?:請)?只(?:輸出|回答|回覆)最早可行�
                               r'格式\s*YYYY-MM-DD HH:MM UTC±HH:MM 至 YYYY-MM-DD HH:MM UTC±HH:MM')
 REPLACE_TIME = r'的?(?:空檔|可用時段)改(?:為|成)'
 UNAVAILABLE_END = r'(?:沒空|沒有空|不能開會)'
-ZONED_REVISION = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+(取消|{REPLACE_TIME})\s*(.+)')
-ZONED_UNAVAILABLE = re.compile(rf'({NATURAL_NAME})\s+({DATE})\s+([0-9].*?)\s*{UNAVAILABLE_END}')
+ZONED_REVISION = re.compile(rf'({EDIT_NAME})\s+({DATE})\s+(取消|{REPLACE_TIME})\s*(.+)')
+ZONED_UNAVAILABLE = re.compile(rf'({EDIT_NAME})\s+({DATE})\s+([0-9].*?)\s*{UNAVAILABLE_END}')
 OCCURRENCE = r'(?:（(第[一二]次)）|\((第[一二]次)\))'
 OCCURRENCE_SPAN = re.compile(rf'({CLOCK})\s*{OCCURRENCE}?\s*[-–—至到]\s*({CLOCK})\s*{OCCURRENCE}?')
 OVERNIGHT_SPAN = re.compile(rf'(?:({DATE})\s+)?({CLOCK})\s*{OCCURRENCE}?\s*[-–—至到]\s*'
@@ -446,23 +448,28 @@ FOLLOWUP = re.compile(r'(?:上一場會議|上次的?會議|剛才那場會議)[
                       r'[，,；;。]\s*(?:請)?(?:幫我)?(?:重算|重新計算|重新算|再算一次)(?:最早時段)?[。！!？?]?')
 REVISION_SEPARATOR = re.compile(r'[，,；;。]')
 REVISED_DURATION = re.compile(rf'(?:(?:會議)?(?:時長|長度)|會議)改(?:為|成)?\s*{LENGTH}')
-REVISED_AVAILABILITY = re.compile(rf'({NATURAL_NAME}){REPLACE_TIME}\s*(.+)')
+REVISED_AVAILABILITY = re.compile(rf'({EDIT_NAME}){REPLACE_TIME}\s*(.+)')
+REVISED_CANCEL = re.compile(rf'({EDIT_NAME}){CANCEL_BODY}')
 AFTERNOON = ('下午', '整個下午')
 REVISED_UNAVAILABLE = re.compile(
-    rf'({NATURAL_NAME})\s*((?:整個)?(?:上午|早上|下午)|[0-9].*?)\s*{UNAVAILABLE_END}')
+    rf'({EDIT_NAME})\s*((?:整個)?(?:上午|早上|下午)|[0-9].*?)\s*{UNAVAILABLE_END}')
+DATED_REVISION = re.compile(rf'({DATE})(?:\s+|[：:]\s*)(.+)')
 MAX_BATCH_EDITS = 4
 DATE_REPLY = re.compile(rf'(?:日期(?:是|選)\s*)?({DATE})[。！]?')
+NAME_REPLY = re.compile(r'(?P<explicit>姓名(?:是|選)\s*)?(?:「(?P<quoted>[\u4e00-\u9fffA-Za-z0-9]{1,20})」'
+                        r'|(?P<bare>[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,19}))[。！]?')
 DATE_EDIT = 'meeting_date_edit'
 BATCH_DATE_EDIT = 'daily_meeting_edit_dates_v2'
+SCOPE_EDIT = 'daily_meeting_edit_scope_v3'
 MAX_DATE_COMBINATIONS = 128
 
 
 def attendee_revision(clause):
-    return (REVISED_AVAILABILITY.fullmatch(clause), CANCEL.fullmatch(clause),
+    return (REVISED_AVAILABILITY.fullmatch(clause), REVISED_CANCEL.fullmatch(clause),
             REVISED_UNAVAILABLE.fullmatch(clause))
 
 
-def revise_zoned(plan, clause, local_date=None):
+def revise_zoned(plan, clause, local_date=None, attendee=None):
     if local_date is not None:
         replacement, removal, unavailable = attendee_revision(clause)
         if replacement:
@@ -483,7 +490,7 @@ def revise_zoned(plan, clause, local_date=None):
         action = '取消'
     else:
         raise ValueError('請先列出參與者與完整的當地日期，再取消或更改當日空檔。')
-    name = name.strip('「」')
+    name = attendee or name.strip('「」')
     person = plan['people'].get(name)
     day = person['days'].get(local_date) if person else None
     if day is None:
@@ -522,7 +529,7 @@ def revised_unavailable_interval(text, availability, name):
     return span(text)
 
 
-def revise_clause(plan, clause, local_date=None):
+def revise_clause(plan, clause, local_date=None, attendee=None):
     duration = REVISED_DURATION.fullmatch(clause)
     if duration:
         term = duration[1]
@@ -534,11 +541,11 @@ def revise_clause(plan, clause, local_date=None):
         plan['duration'] = length
         return None, True
     if plan.get('schema') in ZONED_PLANS:
-        return revise_zoned(plan, clause, local_date)
+        return revise_zoned(plan, clause, local_date, attendee)
     dated = plan.get('schema') in DATE_PLANS
     availability = plan
     if dated:
-        if local_date is None and (day := re.fullmatch(rf'({DATE})(?:\s+|[：:]\s*)(.+)', clause)):
+        if local_date is None and (day := DATED_REVISION.fullmatch(clause)):
             local_date, clause = day.groups()
         if local_date not in plan['days']:
             raise ValueError('請先指定原先列出的完整日期，再更正當天的空檔。')
@@ -547,7 +554,7 @@ def revise_clause(plan, clause, local_date=None):
     if not (replacement or removal or unavailable):
         raise ValueError('請指明要更正哪位參與者（' + '、'.join(availability['available'])
                          + '）及其同日空檔；若要換日期，請重新列出當天每人的空檔。')
-    name = (replacement or removal or unavailable)[1].strip('「」')
+    name = attendee or (replacement or removal or unavailable)[1].strip('「」')
     if name not in availability['available']:
         raise ValueError('上一場會議的參與者是' + '、'.join(availability['available']) + '。請指定其中一人，或重新提供完整明細。')
     if replacement:
@@ -566,9 +573,9 @@ def revise_clause(plan, clause, local_date=None):
     return (name, local_date), replacement is not None
 
 
-def revise(plan, clause, *, date_assignments=None):
+def revise(plan, clause, *, date_assignments=None, attendee_assignments=None):
     """Apply the whole follow-up to the detached snapshot or leave it unchanged."""
-    if date_assignments is None and not REVISION_SEPARATOR.search(clause):
+    if date_assignments is None and attendee_assignments is None and not REVISION_SEPARATOR.search(clause):
         revise_clause(plan, clause)
         return
     edits = [part.strip() for part in REVISION_SEPARATOR.split(clause)]
@@ -579,7 +586,8 @@ def revise(plan, clause, *, date_assignments=None):
     for index, edit in enumerate(edits, 1):
         try:
             local_date = date_assignments.get(index) if date_assignments else None
-            scope, replacing = revise_clause(candidate, edit, local_date)
+            attendee = attendee_assignments.get(index) if attendee_assignments else None
+            scope, replacing = revise_clause(candidate, edit, local_date, attendee)
             if replacing and scope in touched:
                 if scope is None:
                     raise ValueError('同一輪只能指定一次會議時長。')
@@ -607,6 +615,116 @@ def missing_edit_date(plan, clause):
     else:
         dates = [day for day, record in plan['days'].items() if name in record['available']]
     return (name, sorted(dates)) if dates else None
+
+
+def revision_attendee(plan, clause):
+    if plan['schema'] in ZONED_PLANS:
+        scoped = ZONED_REVISION.fullmatch(clause) or ZONED_UNAVAILABLE.fullmatch(clause)
+        if scoped:
+            return scoped[1].strip('「」'), scoped[2]
+    day = None
+    if plan['schema'] in DATE_PLANS and (scoped := DATED_REVISION.fullmatch(clause)):
+        day, clause = scoped.groups()
+    replacement, removal, unavailable = attendee_revision(clause)
+    match = replacement or removal or unavailable
+    return (match[1].strip('「」'), day) if match else None
+
+
+def revision_scope_options(plan, edits):
+    zoned = plan['schema'] in ZONED_PLANS
+    dated = plan['schema'] in DATE_PLANS
+    if zoned:
+        attendees = plan['people']
+    elif dated:
+        attendees = next(iter(plan['days'].values()))['available']
+    else:
+        attendees = plan['available']
+    scopes, has_short_name = [], False
+    for index, clause in enumerate(edits, 1):
+        identified = revision_attendee(plan, clause)
+        if identified is None:
+            continue
+        alias, explicit_date = identified
+        if alias in attendees:
+            names = [alias]
+        elif UNBOUND_NAME.search(alias) or alias in {'沒', '別', '無', '勿', '莫'}:
+            continue
+        else:
+            names = sorted(name for name in attendees if name.startswith(alias))
+            if not names:
+                continue
+            has_short_name = True
+        needs_date = explicit_date is None and (dated or zoned)
+        if alias in attendees and not needs_date:
+            continue
+        options = []
+        for name in names:
+            days = [None]
+            if needs_date:
+                days = sorted(plan['people'][name]['days'] if zoned else plan['days'])
+            options.extend((name, day) for day in days)
+        scopes.append(dict(index=index, clause=clause, alias=alias, options=options))
+    return scopes if has_short_name else None
+
+
+def name_reply_value(question):
+    match = NAME_REPLY.fullmatch(question)
+    return (match['quoted'] or match['bare']) if match else None
+
+
+def unresolved_scope(scopes, assignments):
+    for position, scope in enumerate(scopes):
+        names = sorted({assignment[position][0] for assignment in assignments})
+        if len(names) > 1:
+            return position, 0, dict(kind='name', index=scope['index'], clause=scope['clause'], choices=names)
+        dates = {assignment[position][1] for assignment in assignments}
+        if len(dates) > 1:
+            return position, 1, dict(kind='date', index=scope['index'], clause=scope['clause'],
+                                      choices=sorted(dates), participant=names[0])
+    return None
+
+
+def prepare_scope_revision(plan, question, body, scopes, replies):
+    if prod(len(scope['options']) for scope in scopes) > MAX_DATE_COMBINATIONS:
+        raise ValueError('姓名與日期的組合太多，請先寫明部分更正的完整姓名或日期。')
+    assignments = list(product(*(scope['options'] for scope in scopes)))
+    confirmations = []
+    for reply in replies:
+        pending = unresolved_scope(scopes, assignments)
+        if pending is None:
+            raise ValueError('已沒有待確認的姓名或日期。')
+        position, field, target = pending
+        if target['kind'] == 'date':
+            match = DATE_REPLY.fullmatch(reply)
+            value = match[1] if match else None
+        else:
+            value = name_reply_value(reply)
+        if value not in target['choices']:
+            label = '姓名' if target['kind'] == 'name' else '日期'
+            raise ValueError(f'請回覆上一則列出的完整{label}。')
+        assignments = [assignment for assignment in assignments if assignment[position][field] == value]
+        confirmations.append(dict(index=target['index'], kind=target['kind'], value=value, reply=reply))
+    pending = unresolved_scope(scopes, assignments)
+    for assignment in assignments:
+        candidate = deepcopy(plan)
+        names = {scope['index']: name for scope, (name, _) in zip(scopes, assignment, strict=True)}
+        dates = {scope['index']: day for scope, (_, day) in zip(scopes, assignment, strict=True) if day is not None}
+        try:
+            revise(candidate, body, date_assignments=dates, attendee_assignments=names)
+        except ValueError as exc:
+            raise ValueError(f'有些姓名或日期組合無法採用。請寫明完整姓名及日期。{exc}') from None
+    if pending is None:
+        plan.update(candidate)
+    items = []
+    for position, scope in enumerate(scopes):
+        names = {assignment[position][0] for assignment in assignments}
+        dates = {assignment[position][1] for assignment in assignments}
+        items.append(dict(index=scope['index'], clause=scope['clause'], alias=scope['alias'],
+                          name=next(iter(names)) if len(names) == 1 else None,
+                          date=next(iter(dates)) if len(names) == len(dates) == 1 else None))
+    mode = 'pending' if pending else 'selected' if replies else 'inferred'
+    return dict(schema=SCOPE_EDIT, mode=mode, request=question, items=items, confirmations=confirmations,
+                target=pending[2] if pending else None, local=plan['schema'] in ZONED_PLANS)
 
 
 def prepare_batch_dates(plan, question, body, edits, missing, replies):
@@ -646,12 +764,19 @@ def prepare_batch_dates(plan, question, body, edits, missing, replies):
                 local=plan['schema'] in ZONED_PLANS)
 
 
-def prepare_revision(plan, question, selected_date=None, *, replies=()):
+def prepare_revision(plan, question, selected_date=None, *, replies=(), scope_replies=()):
     revision = FOLLOWUP.fullmatch(question)
     if revision is None:
         raise ValueError('會議更正與原問不符。')
     body = revision[1]
     edits = [part.strip() for part in REVISION_SEPARATOR.split(body)]
+    scopes = revision_scope_options(plan, edits)
+    if scopes and selected_date is None and not replies:
+        if len(edits) > MAX_BATCH_EDITS or not all(edits):
+            raise ValueError('同一輪最多提供 4 項完整的會議更正。')
+        return prepare_scope_revision(plan, question, body, scopes, scope_replies)
+    if scope_replies:
+        raise ValueError('姓名或日期回覆與原更正不符。')
     missing = [(index, scope) for index, edit in enumerate(edits, 1) if (scope := missing_edit_date(plan, edit))]
     if len(missing) > 1 and selected_date is None:
         return prepare_batch_dates(plan, question, body, edits, missing, replies)
@@ -687,12 +812,40 @@ def pending_date(context):
     return isinstance(edit, dict) and edit.get('mode') == 'pending'
 
 
+def pending_choice_kind(context):
+    if not pending_date(context):
+        return None
+    edit = context[DATE_EDIT]
+    if edit.get('schema') != SCOPE_EDIT:
+        return 'date'
+    target = edit.get('target')
+    if not isinstance(target, dict) or target.get('kind') not in ('name', 'date'):
+        raise ValueError('會議澄清缺少可核對的問題。')
+    return target['kind']
+
+
+def reply_kind(question):
+    if DATE_REPLY.fullmatch(question):
+        return 'date'
+    if NAME_REPLY.fullmatch(question):
+        return 'name'
+    return None
+
+
+def accepts_name_reply(question, parent):
+    match = NAME_REPLY.fullmatch(question)
+    return bool(match and (match['explicit'] or name_reply_value(question) in parent[DATE_EDIT]['target']['choices']))
+
+
 def apply_followup(plan, question, parent):
     if pending_date(parent):
+        edit = parent[DATE_EDIT]
+        if edit['schema'] == SCOPE_EDIT:
+            replies = [selection['reply'] for selection in edit['confirmations']]
+            return prepare_revision(plan, edit['request'], scope_replies=[*replies, question])
         reply = DATE_REPLY.fullmatch(question)
         if reply is None:
             raise ValueError('請回覆上一則列出的其中一個完整日期。')
-        edit = parent[DATE_EDIT]
         if edit['schema'] == BATCH_DATE_EDIT:
             replies = [item['reply'] for item in edit['items'] if item['reply'] is not None]
             return prepare_revision(plan, edit['request'], replies=[*replies, question])
@@ -703,6 +856,16 @@ def apply_followup(plan, question, parent):
 def evaluate_followup(plan, edit):
     if edit is not None and edit['mode'] == 'pending':
         scope = '當地日期' if edit['local'] else '日期'
+        if edit['schema'] == SCOPE_EDIT:
+            item = edit['target']
+            target = f'第 {item["index"]} 項「{item["clause"]}」'
+            if item['kind'] == 'name':
+                names = '、'.join(f'「{name}」' for name in item['choices'])
+                answer = f'{target}指的是哪位參與者？請回覆完整姓名：{names}。'
+            else:
+                dates = '、'.join(item['choices'])
+                answer = f'{target}對「{item["participant"]}」適用於哪個{scope}？請回覆完整日期：{dates}。'
+            return answer, dict(schema='daily_meeting_scope_question_v1', status='clarification_required', model_called=False)
         if edit['schema'] == BATCH_DATE_EDIT:
             item = next(item for item in edit['items'] if item['selected'] is None)
             target = f'第 {item["index"]} 項「{item["clause"]}」'
@@ -979,7 +1142,14 @@ def describe(context):
         lines.append(f'沿用本對話會議回答 #{source["answer_id"]} 的{scope}')
         if date_edit is not None:
             scope = '當地日期' if date_edit['local'] else '日期'
-            if date_edit['schema'] == BATCH_DATE_EDIT:
+            if date_edit['schema'] == SCOPE_EDIT:
+                for item in date_edit['items']:
+                    if item['name'] is not None:
+                        lines.append(f'第 {item["index"]} 項「{item["alias"]}」對應「{item["name"]}」。')
+                    if item['date'] is not None:
+                        lines.append(f'第 {item["index"]} 項採用{scope} {item["date"]}。')
+                lines.extend(f'第 {item["index"]} 項原回覆：{item["reply"]}' for item in date_edit['confirmations'])
+            elif date_edit['schema'] == BATCH_DATE_EDIT:
                 for item in date_edit['items']:
                     if item['selected'] is None:
                         continue
@@ -993,7 +1163,8 @@ def describe(context):
             if date_edit['request'] != context['current_request']:
                 lines += ['原更正：' + date_edit['request']]
         if pending_date(context):
-            lines += ['整批更正尚待確認日期。', evaluate_followup(plan, date_edit)[0]]
+            label = '姓名' if pending_choice_kind(context) == 'name' else '日期'
+            lines += [f'整批更正尚待確認{label}。', evaluate_followup(plan, date_edit)[0]]
             return '\n'.join(lines)
         original_request = date_edit['request'] if date_edit else context['current_request']
         revision = FOLLOWUP.fullmatch(original_request)
@@ -1099,9 +1270,9 @@ def saved_meeting(db, mid):
     return row, saved, ref
 
 
-def verified_meeting(db, mid):
+def verified_meeting(db, mid, *, choice_kind=None):
     tip = saved_meeting(db, mid)
-    if tip is None:
+    if tip is None or (choice_kind and pending_choice_kind(tip[1]) != choice_kind):
         return None
     history = [tip]
     while 'meeting_source' in history[-1][1]:
@@ -1142,21 +1313,24 @@ def read(store, mid):
         return verified[1] if verified else None
 
 
-def previous(store, sid, before=None, *, required=True, pending=False):
+def previous(store, sid, before=None, *, required=True, choice_kind=None):
     message = '上一則回答沒有可接續的同日會議紀錄，請提供每人的空檔與會議長度。'
-    if pending:
+    if choice_kind == 'date':
         message = '上一則回答沒有待補充的會議日期。'
+    if choice_kind == 'name':
+        message = '上一則回答沒有待確認的參與者姓名。'
     try:
         with store.connect() as db:
             db.execute('BEGIN')
-            verified = verified_meeting(db, previous_id(db, sid, before))
+            verified = verified_meeting(db, previous_id(db, sid, before), choice_kind=choice_kind)
     except ValueError as exc:
         raise ValueError(message) from exc
     if verified:
         context, source = verified[1:]
-        if pending_date(context) == pending:
+        if pending_choice_kind(context) == choice_kind:
             return context, source
-        if not pending:
-            raise ValueError('上一則會議更正仍待確認日期，請先回覆列出的日期。')
+        if choice_kind is None:
+            label = '姓名' if pending_choice_kind(context) == 'name' else '日期'
+            raise ValueError(f'上一則會議更正仍待確認{label}，請先回覆列出的選項。')
     if required:
         raise ValueError(message)

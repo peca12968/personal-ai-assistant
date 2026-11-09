@@ -273,6 +273,49 @@ class DailyMeetingTests(unittest.TestCase):
             restored = Store(root/'restored'/'assistant.sqlite3')
             self.assertEqual(meeting.read(restored, changed['id']), record)
 
+    def test_short_names_ask_only_for_exact_offered_names_and_keep_the_original_edit(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            engine = Mock(spec=['answer'])
+            engine.answer.return_value = '一般回答'
+            app = DailyAssistant(store, engine, default_chat=True)
+            initial = '「王小晴」可開會：09:00-10:40，「王小安」為 09:15-11:30。兩人需要連續 30 分鐘。' + FORMAT
+            change = '上一場會議，王空檔改成 10:45-11:25，重算。'
+            for name, expected in (('王小晴', '10:45-11:15'), ('王小安', '沒有可行時段')):
+                with self.subTest(name=name):
+                    sid = store.new_session()
+                    first = app.ask(sid, initial)
+                    asked = app.ask(sid, change)
+                    pending = meeting.read(store, asked['id'])
+                    self.assertEqual(meeting.pending_choice_kind(pending), 'name')
+                    self.assertIn('王小晴', asked['content'])
+                    self.assertIn('王小安', asked['content'])
+                    self.assertEqual(pending['meeting_plan'], meeting.read(store, first['id'])['meeting_plan'])
+                    self.assertEqual(app.ask(store.new_session(), name)['content'], '一般回答')
+                    with self.assertRaisesRegex(ValueError, '上一則列出的完整姓名'):
+                        app.ask(sid, '姓名是「王小玲」。')
+                    answer = app.ask(sid, name)
+                    self.assertEqual(answer['content'], expected)
+                    proof = meeting.read(store, answer['id'])
+                    self.assertEqual(proof['meeting_source']['answer_id'], asked['id'])
+                    self.assertEqual(proof[meeting.DATE_EDIT]['request'], change)
+                    self.assertEqual(proof[meeting.DATE_EDIT]['items'][0]['name'], name)
+
+    def test_exact_name_precedes_prefix_and_name_suffix_does_not_select_an_attendee(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            app.ask(sid, '「王」可開會：09:00-11:00，「王小晴」為 09:10-11:00。兩人需要連續 20 分鐘。' + FORMAT)
+            with self.assertRaisesRegex(ValueError, '參與者'):
+                app.ask(sid, '上一場會議，小晴 09:10-10:00 沒空，重算。')
+            result = app.ask(sid, '上一場會議，王 09:10-10:00 沒空，重算。')
+            self.assertEqual(result['content'], '10:00-10:20')
+            proof = meeting.read(store, result['id'])
+            self.assertNotIn(meeting.DATE_EDIT, proof)
+            self.assertEqual(proof['meeting_plan']['cancelled'][0]['name'], '王')
+
     def test_afternoon_shorthand_requires_bounds_when_evening_might_be_affected(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'assistant.sqlite3')

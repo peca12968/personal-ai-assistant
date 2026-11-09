@@ -50,7 +50,8 @@ def explicit_zone_instants(day, start, end, zone_name):
 
 def event_instants(record, day=None, zone=None):
     if meeting.pending_date(record):
-        raise ValueError('這筆會議更正仍待確認日期。')
+        label = '姓名' if meeting.pending_choice_kind(record) == 'name' else '日期'
+        raise ValueError(f'這筆會議更正仍待確認{label}。')
     schema = record['meeting_plan']['schema']
     calculation = record['calculation']
     result = calculation['result']['exact']

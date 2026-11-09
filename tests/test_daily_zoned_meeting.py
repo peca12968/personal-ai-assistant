@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, patch
 
 from assistant.backup import create_backup, restore_backup
@@ -28,6 +29,50 @@ MIDNIGHT = (
 
 
 class DailyZonedMeetingTests(unittest.TestCase):
+    def test_name_selection_restricts_followup_to_that_persons_local_dates_after_restore(self):
+        from assistant import answer_runs
+        from scripts import daily_meeting_export as calendar
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            sid = store.new_session()
+            app = DailyAssistant(store, None, default_chat=True)
+            first = app.ask(sid, (
+                '跨時區會議：基準時區 UTC+08:00。候選日期：2026-11-09、2026-11-10。'
+                '「王小安」 UTC+08:00：2026-11-09 09:00-11:00，2026-11-10 09:00-11:00。'
+                '「王小晴」 UTC-08:00：2026-11-08 17:30-19:00，2026-11-09 17:30-19:00。'
+                '兩人需要連續 30 分鐘。' + FORMAT))
+            asked = app.ask(sid, '上一場會議，王 17:30-18:30 沒空，重算。')
+            self.assertIn('哪位參與者', asked['content'])
+            with self.assertRaisesRegex(ValueError, '仍待確認姓名'):
+                calendar.export(store, asked['id'], '會議', root/'pending.ics')
+            stop = Event()
+            begin = answer_runs.begin
+
+            def begin_then_stop(*args, **kwargs):
+                uid = begin(*args, **kwargs)
+                stop.set()
+                return uid
+
+            with patch.object(answer_runs, 'begin', side_effect=begin_then_stop), self.assertRaises(EngineError):
+                app.ask(sid, '姓名是「王小晴」。', stop)
+            selected = app.retry(sid)
+            pending = meeting.read(store, selected['id'])
+            self.assertEqual(meeting.pending_choice_kind(pending), 'date')
+            self.assertEqual(pending[meeting.DATE_EDIT]['target']['choices'], ['2026-11-08','2026-11-09'])
+            self.assertEqual(pending['meeting_plan'], meeting.read(store, first['id'])['meeting_plan'])
+            bundle = create_backup(store.path, root/'scopes.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            result = DailyAssistant(restored, None, default_chat=True).ask(sid, '2026-11-08')
+            self.assertEqual(result['content'], '2026-11-09 10:30-11:00 UTC+08:00')
+            proof = meeting.read(restored, result['id'])
+            self.assertEqual(proof['meeting_source']['answer_id'], selected['id'])
+            self.assertEqual([item['reply'] for item in proof[meeting.DATE_EDIT]['confirmations']],
+                             ['姓名是「王小晴」。', '2026-11-08'])
+            cuts = proof['meeting_plan']['people']['王小晴']['days']['2026-11-08']['cancelled']
+            self.assertEqual(cuts[0]['source'], '王 17:30-18:30 沒空')
+
     def test_reference_dates_use_each_persons_local_date_and_offset(self):
         plan = meeting.parse(MIXED)
         self.assertEqual(plan['schema'], meeting.ZONED_PLAN)
