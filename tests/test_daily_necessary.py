@@ -16,6 +16,97 @@ from scripts.daily_expenses import DailyAssistant
 HEAD = '使用轉運台要有已校驗的水位計和有效的操作證。'
 LABELS = '確定能用回「可用」，確定不能用回「停用」，尚不能判定回「待查」。請只輸出結論。'
 FALSE_AND_UNKNOWN = HEAD + '水位計尚未校驗，唯一的操作證已確定作廢。' + LABELS
+PHYSICAL_HEAD = '啟用沖洗站須同時確認進水接頭已接妥、出水閥已開，兩項就是全部要求。'
+PHYSICAL_CODES = '請只回 R 代表能、B 代表不能、X 代表未定。'
+PHYSICAL_PENDING = PHYSICAL_HEAD + '進水接頭鎖好，出水閥未檢查。' + PHYSICAL_CODES
+
+
+class DailyPhysicalPrerequisiteTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name)
+        self.store = Store(self.path / 'assistant.sqlite3')
+        self.engine = Mock(spec=['answer'])
+        self.engine.answer.return_value = '模型原答'
+        self.app = DailyAssistant(self.store, self.engine, default_chat=True)
+
+    def test_physical_observations_use_three_distinct_states_and_caller_codes(self):
+        connectors = ('進水接頭鎖好', '唯一進水接頭已卸下', '進水接頭未核對')
+        valves = ('出水閥也已全開', '出水閥確定仍關閉', '出水閥位置尚未查到')
+        expected = (('R', 'B', 'X'), ('B', 'B', 'B'), ('X', 'B', 'X'))
+        for (i, connector), (j, valve) in product(enumerate(connectors), enumerate(valves)):
+            question = PHYSICAL_HEAD + connector + '，' + valve + '。' + PHYSICAL_CODES
+            with self.subTest(question=question):
+                self.assertEqual(self.app.ask(self.store.new_session(), question)['content'], expected[i][j])
+        sufficient = PHYSICAL_HEAD + '已確認接頭鎖好，出水閥也已全開。' + PHYSICAL_CODES
+        self.assertEqual(self.app.ask(self.store.new_session(), sufficient)['content'], 'R')
+        self.assertEqual(self.app.ask(self.store.new_session(),
+                                      sufficient.replace('就是全部要求', '都是必要條件'))['content'], 'X')
+        relabeled = PHYSICAL_PENDING.replace(PHYSICAL_CODES, '只回 Q 代表未定、J 代表不能、Y 代表能。')
+        self.assertEqual(self.app.ask(self.store.new_session(), relabeled)['content'], 'Q')
+        self.engine.answer.assert_not_called()
+
+    def test_ambiguous_short_names_wrong_scope_and_attachments_preserve_normal_route(self):
+        for request in (
+            PHYSICAL_PENDING.replace('出水閥未檢查', '回水閥未檢查'),
+            PHYSICAL_PENDING.replace('出水閥未檢查', '昨日出水閥未檢查'),
+            PHYSICAL_PENDING.replace('出水閥未檢查', '出水閥已開，出水閥未檢查'),
+            PHYSICAL_PENDING.replace('出水閥未檢查', '出水閥可能關閉'),
+            PHYSICAL_PENDING.replace('、出水閥已開', '或出水閥已開'),
+            PHYSICAL_PENDING.replace('X 代表未定', 'R 代表未定'),
+            PHYSICAL_HEAD.replace('出水閥已開', '備用接頭已接妥')
+            + '已確認接頭鎖好，備用接頭已接妥。' + PHYSICAL_CODES,
+            PHYSICAL_PENDING + '並寄出通知。',
+        ):
+            with self.subTest(request=request):
+                self.assertIsNone(daily_necessary.parse(request))
+                self.assertEqual(self.app.ask(self.store.new_session(), request)['content'], '模型原答')
+        raw = DailyAssistant(self.store, self.engine, default_chat=True, allow_local_evidence=False)
+        self.assertEqual(raw.ask(self.store.new_session(), PHYSICAL_PENDING)['content'], '模型原答')
+        sid = self.store.new_session()
+        document = self.path / 'checklist.txt'
+        document.write_text('另附檢查紀錄。', encoding='utf-8')
+        self.store.attach_document(sid, document)
+        self.assertEqual(self.app.ask(sid, PHYSICAL_PENDING)['content'], '模型原答')
+        late_sid = self.store.new_session()
+        original_run = self.app._run_recorded
+
+        def attach_before_run(*args, **kwargs):
+            self.store.attach_document(late_sid, document)
+            return original_run(*args, **kwargs)
+
+        with patch.object(self.app, '_run_recorded', side_effect=attach_before_run):
+            with self.assertRaisesRegex(EngineError, '提交前已加入附件'):
+                self.app.ask(late_sid, PHYSICAL_PENDING)
+        self.assertEqual([row['role'] for row in self.store.messages(late_sid, 5)], ['user'])
+
+    def test_retry_revision_and_backup_recheck_complete_observations(self):
+        sid = self.store.new_session()
+        with patch.object(daily_necessary, 'evaluate', side_effect=EngineError('停止', 'cancelled')):
+            with self.assertRaises(EngineError):
+                self.app.ask(sid, PHYSICAL_PENDING)
+        first = self.app.retry(sid)
+        self.assertEqual(first['content'], 'X')
+        self.assertEqual(len(self.store.messages(sid, 10)), 2)
+        self.assertIn('出水閥未檢查 → 尚未核實', daily_necessary.describe(daily_necessary.read(self.store, first['id'])))
+        with self.assertRaisesRegex(EngineError, '完整條件名稱'):
+            self.app.ask(sid, '沿用上一輪條件：已確認接頭鎖好。重算。')
+        revised = self.app.ask(sid, '沿用上一輪條件：出水閥已開。重算。')
+        self.assertEqual(revised['content'], 'R')
+        receipt = daily_necessary.read(self.store, revised['id'])
+        saved = create_backup(self.store.path, self.path / 'proof.paibackup')
+        restore_backup(saved['path'], self.path / 'restored')
+        other = Store(self.path / 'restored/assistant.sqlite3')
+        self.assertEqual(daily_necessary.read(other, revised['id']), receipt)
+        context = other.answer_context(first['id'])
+        context[daily_necessary.FIELD]['plan']['conditions'][1]['state'] = 'false'
+        with other.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?',
+                       (json.dumps(context, ensure_ascii=False), first['id']))
+        with self.assertRaisesRegex(ValueError, '必要條件規約'):
+            daily_necessary.read(other, revised['id'])
+        self.engine.answer.assert_not_called()
 
 
 class DailyNecessaryTests(unittest.TestCase):

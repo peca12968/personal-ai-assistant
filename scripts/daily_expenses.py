@@ -318,8 +318,13 @@ class DailyAssistant(Assistant):
                 context.update(response_mode=daily_necessary.MODE,
                                documents={'catalog': [], 'excerpts': []},
                                **{daily_necessary.FIELD: necessary})
-                return self._run_recorded(sid, question, context,
-                                          lambda uid: daily_necessary.evaluate(necessary, cancel),
+
+                def evaluate_necessary(_):
+                    if self.store.documents(sid, include_content=False):
+                        raise EngineError('提交前已加入附件，請重新提供本輪條件。', 'evidence_invalid')
+                    return daily_necessary.evaluate(necessary, cancel)
+
+                return self._run_recorded(sid, question, context, evaluate_necessary,
                                           cancel, retry, draft, daily_necessary.FIELD)
             if daily_necessary.FIELD in prior:
                 raise EngineError('目前無法核對原先的必要條件，請重新提供純文字條件。', 'evidence_invalid')

@@ -471,3 +471,15 @@ data/learning/runtime/Scripts/python.exe -I scripts/learning/assess_base_assista
 ```
 
 每段都用獨立程序重載並驗證同一套 88 題，分開呈現 52 道歷史題、18 道未參與訓練的新題及 18 道訓練例。原父版本或前一段答對的任何非訓練題退步，後續訓練便停止。要通過完整研究，兩段都須完成、歷史受保護題均答對，且至少改善一道全新保留題。各程序採原生閒置及六分鐘時限，原答與權重留在本機。
+
+### 核對成組回放的前三次更新
+
+`replay_prefix_probe.py` 從同一父版本分別重跑 0、1、2、3 次更新。每個程序沿用已完成研究的種子、速率及對應取樣順序。重算各段原始損失，並在首末兩點比對原有 88 份回答、權重和固定輸入的 logits。每點另作答六道只更換代碼映射的對照。原始代碼按各題給定的意義解讀，另外列出答不出有效代碼或未結束的情形。
+
+```powershell
+.venv/Scripts/python.exe scripts/learning/replay_prefix_probe.py prepare <名稱> --reference <已驗收的三步回放紀錄>
+.venv/Scripts/python.exe scripts/learning/replay_prefix_probe.py run <名稱>
+.venv/Scripts/python.exe scripts/learning/replay_prefix_probe.py verify <名稱>
+```
+
+四個程序各自符合原生閒置和六分鐘上限，原答與中途權重留在本機。這項診斷定位在固定配方下首次觀察到的變化，可用來分開檢查結論與指定代碼。完整助理的實際對話表現及資格另行評估。

@@ -11,7 +11,8 @@ V1 = 'daily_necessary_plan_v1'
 V2 = 'daily_necessary_plan_v2'
 V3 = 'daily_necessary_roster_plan_v3'
 V4 = 'daily_necessary_grouped_roster_plan_v4'
-INITIAL_PLANS = (V1, V2, V3, V4)
+V5 = 'daily_necessary_physical_plan_v5'
+INITIAL_PLANS = (V1, V2, V3, V4, V5)
 REVISION_PLAN = 'daily_necessary_revision_v1'
 DISPUTE_PLAN = 'daily_necessary_dispute_v1'
 UPDATE_PLANS = (REVISION_PLAN, DISPUTE_PLAN)
@@ -86,6 +87,23 @@ GROUPED_RULE = re.compile(
 GROUPED_MEANINGS = dict(supported=r'(?:確定)?(?:能|可|可以)使用',
                         refuted=r'(?:確定)?(?:不能|不可)使用',
                         undetermined=MEANINGS['undetermined'] + r'|無法判定')
+PHYSICAL_RULE = re.compile(rf'(?P<action>(?:啟用|使用|開啟|啟動|試行|試轉){NAME})須同時確認'
+                           r'(?P<terms>[^，,]+)[，,]\s*兩項(?P<complete>就是全部要求|都是必要條件)')
+PHYSICAL_TERMS = {
+    '接妥': ('接頭|插頭|電源線', '接妥', r'已接妥|接妥', r'已(?:經)?卸下|確定(?:沒有|尚未|未)接妥'),
+    '開啟': ('閥|閘門', '開啟|開', r'已(?:開啟|全開|開)', r'已關閉|確定(?:仍)?關閉'),
+    '扣緊': ('護罩|卡扣|扣具', '扣緊', r'已(?:扣緊|鎖緊)', r'確定(?:沒有|沒)扣上|確定(?:仍)?未扣緊'),
+    '固定': ('光罩|外罩|護罩|支架', '固定', r'已固定(?:好|妥)?', r'確定(?:仍)?未固定'),
+    '取出': ('插銷|固定銷|旁通塞', '取出|拔出', r'已(?:完全|整支)?(?:取出|拔出)',
+             r'確定仍(?:留在座內|插在底座)'),
+}
+PHYSICAL_CODES = re.compile(r'(?:請)?只(?:回|輸出)\s*(.+)')
+PHYSICAL_LABEL = re.compile(r'([A-Za-z0-9]{1,12})\s*(?:代表|表示)\s*([\u4e00-\u9fff]{1,12})')
+PHYSICAL_MEANINGS = {
+    'supported': '能|確定能|可行|確定可行',
+    'refuted': '不能|確定不能|不可行|確定不可行',
+    'undetermined': '未定|待查|待確認|無法判定',
+}
 
 
 def alternative_groups(text):
@@ -144,6 +162,8 @@ def roster_observation(clause, condition, carried):
 def observation(clause, condition, *, carried=False):
     if 'participant' in condition:
         return roster_observation(clause, condition, carried)
+    if condition.get('physical'):
+        return physical_observation(clause, condition, carried)
     name = re.escape(condition['name'])
     prop = condition['property']
     yes, no = TYPES[prop]
@@ -158,7 +178,7 @@ def observation(clause, condition, *, carried=False):
 
 def parse(question):
     return (parse_version(question, V1) or parse_version(question, V2)
-            or parse_version(question, V3) or parse_version(question, V4))
+            or parse_version(question, V3) or parse_version(question, V4) or parse_version(question, V5))
 
 
 def roster_conditions(count, credential, scope):
@@ -268,6 +288,71 @@ def parse_grouped_roster(question, sentences):
                 action='使用', rule=sentences[0], sufficient=bool(rule['complete']), conditions=conditions, labels=options)
 
 
+def physical_observation(clause, condition, carried):
+    name = re.escape(condition['name'])
+    alias = condition.get('alias')
+    if alias and not carried:
+        name = rf'(?:{name}|(?<=已確認){alias})'
+    _, _, positive, negative = PHYSICAL_TERMS[condition['property']]
+    if condition['property'] == '接妥' and condition['name'].endswith('接頭'):
+        positive += r'|(?:已)?鎖好'
+    subject = rf'(?:已確認|已核對|唯一)?{name}(?:也)?'
+    for state, pattern in (
+        ('true', positive), ('false', negative),
+        ('unknown', r'(?:位置)?(?:尚未|未|還沒)(?:檢查|核對|確認|查到)'),
+    ):
+        if re.fullmatch(rf'{subject}(?:{pattern})', clause):
+            return state
+    return None
+
+
+def physical_condition(text):
+    for property_name, (parts, requirement, _, _) in PHYSICAL_TERMS.items():
+        found = re.fullmatch(rf'(?P<name>[\u4e00-\u9fff]{{0,19}}?(?:{parts}))已(?:{requirement})', text)
+        if found and '沒有' not in found['name'] and not UNBOUND.search(found['name']):
+            return dict(name=found['name'], property=property_name, requirement=text, physical=True)
+    return None
+
+
+def physical_labels(text):
+    output = PHYSICAL_CODES.fullmatch(text)
+    if output is None:
+        return None
+    options = {}
+    for clause in re.split(r'[、，,；;]', output[1]):
+        match = PHYSICAL_LABEL.fullmatch(clause.strip())
+        if match is None or match[1] in options.values():
+            return None
+        state = next((name for name, meaning in PHYSICAL_MEANINGS.items() if re.fullmatch(meaning, match[2])), None)
+        if state is None or state in options:
+            return None
+        options[state] = match[1]
+    return options if options.keys() == PHYSICAL_MEANINGS.keys() else None
+
+
+def parse_physical(question, sentences):
+    if not 3 <= len(sentences) <= 4:
+        return None
+    rule = PHYSICAL_RULE.fullmatch(sentences[0])
+    options = physical_labels(sentences[-1])
+    if rule is None or not options or UNBOUND.search(rule['action']):
+        return None
+    terms = re.split(r'、|與|和|並且', rule['terms'])
+    if len(terms) != 2:
+        return None
+    conditions = [physical_condition(term.strip()) for term in terms]
+    if any(c is None for c in conditions) or conditions[0]['name'] == conditions[1]['name']:
+        return None
+    connectors = [c for c in conditions if c['name'].endswith('接頭')]
+    if len(connectors) == 1 and connectors[0]['name'] != '接頭':
+        connectors[0]['alias'] = '接頭'
+    if not bind_observations(conditions, sentences[1:-1]):
+        return None
+    return dict(schema=V5, request=question, request_sha256=evidence_logic.digest(question),
+                action=rule['action'], rule=sentences[0], sufficient=rule['complete'] == '就是全部要求',
+                conditions=conditions, labels=options)
+
+
 def bind_observations(conditions, sentences):
     for sentence in sentences:
         for part in re.split(r'[，,；;]', sentence):
@@ -294,6 +379,8 @@ def parse_version(question, version):
         return parse_roster(question, sentences)
     if version == V4:
         return parse_grouped_roster(question, sentences)
+    if version == V5:
+        return parse_physical(question, sentences)
     if not 4 <= len(sentences) <= (8 if version == V1 else 11) or not OUTPUT.fullmatch(sentences[-1]):
         return None
     rule = RULE.fullmatch(sentences[0])
@@ -565,6 +652,7 @@ def evaluate(plan, cancel=None):
     schema = {V1: 'daily_necessary_receipt_v1', V2: 'daily_necessary_receipt_v2',
               V3: 'daily_necessary_roster_receipt_v3',
               V4: 'daily_necessary_grouped_roster_receipt_v4',
+              V5: 'daily_necessary_physical_receipt_v5',
               REVISION_PLAN: 'daily_necessary_revision_receipt_v1',
               DISPUTE_PLAN: 'daily_necessary_dispute_receipt_v1',
               INQUIRY_PLAN: 'daily_necessary_inquiry_receipt_v1',
