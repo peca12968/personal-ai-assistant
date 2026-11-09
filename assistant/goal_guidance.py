@@ -1,6 +1,7 @@
 """Explicit append-only user steering of an existing, stopped goal."""
 from datetime import datetime, timezone
 import hashlib
+import json
 import re
 
 from .answer_runs import lease
@@ -20,10 +21,13 @@ def _snapshot(db, sid, gid):
         goal['reply_sources'] = sources
         fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in sources)).encode('utf-8')).hexdigest()
     if goal['status'] == 'needs_input':
-        partial = goal_partials.read_waiting(db, gid, goal['question'])
-        if partial is not None:
-            goal['partial_result'] = partial
-            fingerprint = hashlib.sha256((fingerprint + '\0' + partial).encode('utf-8')).hexdigest()
+        details = goal_partials.read_waiting(db, gid, goal['question'])
+        goal.update(details)
+        if 'partial_result' in details:
+            fingerprint = hashlib.sha256((fingerprint + '\0' + details['partial_result']).encode('utf-8')).hexdigest()
+        if 'question_citations' in details:
+            citations = json.dumps(details['question_citations'], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            fingerprint = hashlib.sha256((fingerprint + '\0' + citations).encode('utf-8')).hexdigest()
     return {'goal':goal, 'fingerprint':fingerprint,
             'step_count':review['step_count'], 'sources_match':review['sources_match']}
 

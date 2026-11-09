@@ -203,6 +203,67 @@ class AutonomyTests(unittest.TestCase):
         self.assertNotIn('reply_sources', waiting)
         self.assertEqual(waiting['question'], '本次名稱？')
 
+    def test_followup_question_checks_document_and_reply_sources_separately(self):
+        did = self.attach('甲批收貨人待確認。\n乙批覆核人待確認。')
+        gid = self.goal('收貨人與覆核人分次確認。')
+        first = a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=did, start_line=1, end_line=2),
+            action('ask', question='兩位的姓名各是誰？')))
+        first_review = reply_snapshot(self.store, self.sid, gid)
+        a.reply(self.store, self.sid, gid, '只確認甲批收貨人是曾同仁。',
+                expected_fingerprint=first_review['fingerprint'])
+        question = f'乙批覆核人是誰？[D{did}:L2] 甲批收貨人已補充。[補充#2]'
+        partial = f'曾同仁為甲批收貨人。[補充#2] 乙批仍待補。'
+        resumed = ScriptedEngine(
+            action('ask', question=f'乙批覆核人是誰？[D{did}:L99]', partial_result=partial),
+            action('ask', question='乙批覆核人是誰？[補充#99]', partial_result=partial),
+            action('ask', question=question, partial_result=partial),
+        )
+        second = a.run_goal(self.store, self.sid, gid, resumed)
+        self.assertEqual(second['status'], 'needs_input')
+        self.assertEqual(second['question'], question)
+        self.assertNotIn('question_citations', first)
+        self.assertEqual(second['steps'][:2], first['steps'])
+        failures = [step['observation']['error'] for step in second['steps'][2:4]]
+        self.assertIn('問題有未讀取的來源行號', failures[0])
+        self.assertIn('問題引用了本目標尚未保存的回覆', failures[1])
+        observation = second['steps'][-1]['observation']
+        self.assertEqual(observation['citation_checks'], [])
+        self.assertEqual(second['question_citations'], {
+            'documents': [{'citation': f'[D{did}:L2]', 'range_valid': True}],
+            'replies': observation['reply_citations'],
+        })
+        review = reply_snapshot(self.store, self.sid, gid)
+        self.assertEqual(review['goal']['question_citations'], second['question_citations'])
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            a.reply(self.store, self.sid, gid, '舊問題的回覆',
+                    expected_fingerprint=first_review['fingerprint'])
+
+        archive = self.root / 'question-citations.paibackup'
+        target = self.root / 'restored'
+        create_backup(self.store.path, archive)
+        restore_backup(archive, target)
+        restored = Store(target / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), second)
+        observation['question_citations']['replies'][0]['sha256'] = '0' * 64
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), gid, len(second['steps'])))
+        with self.assertRaisesRegex(ValueError, '問題引用與保存的來源不一致'):
+            validate_database(restored.path)
+
+    def test_question_only_can_record_document_source_without_partial_result(self):
+        did = self.attach('窗口姓名待補。')
+        result = a.run_goal(self.store, self.sid, self.goal(), ScriptedEngine(
+            action('read', document_id=did, start_line=1, end_line=1),
+            action('ask', question=f'窗口姓名是什麼？[D{did}:L1]')))
+        self.assertEqual(result['status'], 'needs_input')
+        self.assertNotIn('partial_result', result)
+        self.assertEqual(result['question_citations'], {
+            'documents': [{'citation': f'[D{did}:L1]', 'range_valid': True}],
+            'replies': [],
+        })
+
     def test_read_cannot_access_other_session_and_reports_incomplete_range(self):
         other = self.store.new_session()
         secret = self.attach('PRIVATE_OTHER_SESSION', other)

@@ -41,6 +41,18 @@ def prepare(path, case):
     return store, sid, autonomy.create_goal(store, sid, case['prompt'])
 
 
+def replies_for(case):
+    if 'replies' in case:
+        replies = case['replies']
+        if 'reply' in case or not isinstance(replies, list) or not 1 <= len(replies) <= 4:
+            raise ValueError('每題只能指定一種補充格式，分次補充最多四則。')
+    else:
+        replies = [case['reply']] if 'reply' in case else []
+    for reply in replies:
+        autonomy.text(reply, 4000)
+    return replies
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -51,8 +63,7 @@ def main():
         cases = validate_cases(json.loads(args.suite.read_text(encoding='utf-8')))
         for case in cases:
             autonomy.text(case['prompt'], 4000)
-            if 'reply' in case:
-                autonomy.text(case['reply'], 4000)
+            replies_for(case)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -96,19 +107,26 @@ def main():
                     unchanged()
                     return raw
             try:
-                initial = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                if 'reply' in case:
-                    row['asked'] = initial
-                    if initial['status'] != 'needs_input':
+                state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                if 'replies' in case:
+                    row['rounds'] = []
+                for reply in replies_for(case):
+                    turn = {'asked': state}
+                    if 'rounds' in row:
+                        row['rounds'].append(turn)
+                    else:
+                        row.update(turn)
+                        turn = row
+                    if state['status'] != 'needs_input':
                         raise ValueError('初始執行未停下提問；未提交預設回答。')
                     observed = goal_replies.snapshot(store, sid, gid)
                     before_calls = len(row['calls'])
-                    row['reply'] = case['reply']
-                    row['saved'] = goal_replies.save(store, sid, gid, case['reply'], expected_fingerprint=observed['fingerprint'])
-                    assert row['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
-                    row['final'] = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                else:
-                    row['final'] = initial
+                    turn['reply'] = reply
+                    turn['saved'] = goal_replies.save(store, sid, gid, reply, expected_fingerprint=observed['fingerprint'])
+                    assert turn['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
+                    save_report(trace_path, row)
+                    state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                row['final'] = state
                 row['answer'] = row['final']['result'] or row['final']['question'] or row['final']['notice']
             except (ValueError, EngineError) as exc:
                 failed = True; row.update(answer='', error=str(exc), final=autonomy.get_goal(store, sid, gid))

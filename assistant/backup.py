@@ -179,7 +179,7 @@ def validate_database(path):
             from .work_plan import validate_saved
             validate_saved(db)
             from .goal_partials import validate_saved as validate_partials
-            validate_partials(db)
+            validate_partials(db, reply_sources_present='autonomous_reply_sources' in actual_tables)
             from .goal_reply_sources import validate_saved as validate_reply_sources
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
         if 'memory_sequence' in actual_tables:

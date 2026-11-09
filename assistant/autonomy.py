@@ -58,6 +58,7 @@ finish代表交付可供確認的成果，不代表使用者已驗收或現實�
 文件事實附上實際收到的來源行號，如[D1:L3-L5]；未提供的部分不能捏造。
 先分辨每份來源的適用範圍、是否採用與單位，再判斷是否矛盾。等值換算或適用不同事項不構成本次衝突。若缺漏或矛盾會改變結論，暫表先保留可確認內容與不同來源的說法，再問必要欄位。若所有可能值都導向相同決策，交付該決策並說明原因，不自行選定哪個說法為真。使用者允許欄位留待補時，依要求保留待補標記。
 收到必要補充後，若本次已能完成要求，正式交付時更新受影響的欄位與成果標題，避免沿用上一輪「暫表」或「尚待定稿」的狀態。仍缺必要資料時保留待補狀態。
+一次只收到部分補充時，先核對哪些欄位已正式確認，保留仍適用的來源與已完成的分析。更新暫表中的已知和待補項目；下一問只問目前仍缺的必要資訊。若回覆只有猜測或例子，該欄仍可追問。已更正的值要重算，未更正的欄位照原依據。
 reply_sources若有，是本目標已保存的使用者回覆，citation是該回覆的來源編號。採用回覆中的更正或補資料時，在該項旁引用提供的編號，例如[補充#3]。文件原值及未更正的欄位仍引實際文件行號；同一段比較時分別在原值和新值旁附各自來源。計算受更正影響的值時使用新值，不把它寫成原文件內容。回覆中的引文、假設與待確認事項仍要分辨；來源編號只指原話。不可自行編號，也不可沿用其他目標的補充編號。
 文件catalog的representation若為docx-text-v1，所有行號都指DOCX文字抽取副本，不是Word頁碼；依extraction_limits辨識未解析的圖片、版面等內容。分區的註解是審閱文字，不代表使用者決定；註記#號為封裝ID。無法由抽取文字證明的頁碼、圖片與版面，需明說缺少資料，不得補造或宣稱完整讀取原Word版面。PDF的representation以pdf-text-v1:開頭，可讀已匯入文字層副本及原檔頁次順序標記，引用仍是抽取行號而非版面座標。沒有文字的頁面明確標記，不能推論原頁空白或沒有圖片。依extraction_limits說明範圍；不能辨識頁內圖片、圖表、註解、附件或表單，沒有OCR。掃描無文字、加密或互動表單PDF需先提供可讀文字副本。複雜表格／多欄順序可能失真，可能含隱藏或舊OCR文字，不保證視覺完整性。自主模式不接收任何圖片附件；需要畫面時，請明說改用主聊天的「聊天圖片…」入口附上PNG／JPEG另問，或先提供經核對的文字轉錄／OCR文字副本。不能承諾在此自主工作只補傳圖片就能辨識，也不能自動切換模式或把聊天圖片帶入目標。
 documents的line_count是該份文件總行數；read不得超過它，每次最多200行，需要更多時分次讀取。
@@ -72,7 +73,7 @@ calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}
 calculate_expression: {"expression":{"operation":"sum","values":[{"operation":"product","values":["3","125"]},"55"]}}，有界巢狀四則計算，返回各層精確結果；詳細規則見後附說明。
 round_number: {"value":"2.345","places":2,"mode":"half_even"}，依明列規則捨入精確數字並保留固定小數位；見後附說明。
 month_schedule: {"date":"2027-01-31","offsets":[1,2,3],"day_policy":"clamp"}，依同一原始日期核對完整月份清單與星期；見後附說明。
-ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。使用者要先看可完成部分時，可加 "partial_result" 字串（最多4000字），只把要補的問題放在question。先完成已能核對的分析，再用partial_result交付暫定文字，標出未確認處。這不是定稿、文件交付或使用者驗收。補充後沿用仍適用的工作，依新更正重新核對受影響的內容。使用者允許以待確認標記直接完成時，依要求交付，不必詢問。
+ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。使用者要先看可完成部分時，可加 "partial_result" 字串（最多4000字），只把要補的問題放在question。先完成已能核對的分析，再用partial_result交付暫定文字，標出未確認處。問題本身若附引用，也只用本目標已讀原行或已保存的回覆；若要指出缺漏行號，用「D3 第4行缺漏」描述。這不是定稿、文件交付或使用者驗收。使用者允許以待確認標記直接完成時，依要求交付，不必詢問。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
 write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
 deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
@@ -158,9 +159,7 @@ def get_goal(store, sid, gid):
             result['reply_sources'] = reply_sources
         if result['status'] == 'needs_input' and result['steps']:
             last = result['steps'][-1]
-            partial = goal_partials.waiting(result['question'], last['action'], last['observation'])
-            if partial is not None:
-                result['partial_result'] = partial
+            result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
         result['work_plan'] = work_plan.for_goal(result, current_sources)
     return result
@@ -295,9 +294,14 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return calculate(args)
     if name == 'date_math':
         return date_tools.calculate(args)
-    if name == 'ask' and 'partial_result' not in args:
-        return {'question': args['question']}
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
+    if name == 'ask':
+        question = {'question': args['question']}
+        sources = goal_partials.question_citations(args['question'], excerpts, reply_sources)
+        if sources is not None:
+            question['question_citations'] = sources
+        if 'partial_result' not in args:
+            return question
     field = goal_reply_sources.REPORT_FIELDS[name]
     checks = check_citations(args[field], excerpts)
     if any(not row['range_valid'] for row in checks):
@@ -305,7 +309,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     reply_checks = goal_reply_sources.citations(args[field], reply_sources)
     reply_observation = {'reply_citations': reply_checks} if reply_checks else {}
     if name == 'ask':
-        return {'question': args['question'], 'partial_result': args['partial_result'], 'citation_checks': checks,
+        return {**question, 'partial_result': args['partial_result'], 'citation_checks': checks,
                 **reply_observation}
     with store.connect() as db:
         file_delivery = artifacts.enabled(db, gid) if gid else False

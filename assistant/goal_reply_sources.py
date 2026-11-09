@@ -17,7 +17,10 @@ def note(question, answer):
 def _question(action_json, observation_json):
     if not isinstance(action_json, str) or not isinstance(observation_json, str):
         raise ValueError('回覆來源缺少所對應的步驟。')
-    action, observation = strict_json(action_json), strict_json(observation_json)
+    return checked_question(strict_json(action_json), strict_json(observation_json))
+
+
+def checked_question(action, observation):
     if not isinstance(action, dict) or action.get('tool') != 'ask' or not isinstance(action.get('args'), dict):
         raise ValueError('回覆來源必須對應保存的提問。')
     question = action['args'].get('question')
@@ -62,14 +65,14 @@ def read(db, gid, notes):
     return sources
 
 
-def citations(report, sources):
+def citations(report, sources, *, label='成果'):
     by_token = {item['citation']: item for item in sources}
     checks = []
     for match in CITATIONS.finditer(report):
         token = match.group()
         source = by_token.get(token)
         if source is None:
-            raise ValueError('成果引用了本目標尚未保存的回覆，請修正補充編號。')
+            raise ValueError(f'{label}引用了本目標尚未保存的回覆，請修正補充編號。')
         checks.append({'citation': token, 'ask_sequence': source['ask_sequence'], 'sha256': source['sha256']})
     return checks
 

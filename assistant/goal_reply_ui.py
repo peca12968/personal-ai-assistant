@@ -46,6 +46,10 @@ class GoalReplyWindow:
                      '目前問題：' + (goal['question'] or '無'), '先前問題與補充：\n' + (goal['notes'] or '無')]
             if goal.get('partial_result'):
                 lines[2:2] = ['待補期間的成果（尚待定稿）', goal['partial_result']]
+            if goal.get('question_citations'):
+                refs = goal['question_citations']
+                tokens = dict.fromkeys(row['citation'] for row in refs['documents'] + refs['replies'])
+                lines.insert(-1, '目前問題的來源位置 ' + '、'.join(tokens))
             self.context.configure(state='normal')
             self.context.delete('1.0', 'end'); self.context.insert('1.0', '\n\n'.join(lines))
             self.context.configure(state='disabled')
