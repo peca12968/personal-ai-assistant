@@ -42,6 +42,7 @@ CHECKS.append(('scripts/evaluate_goal_drafts.py', '--suite', 'evals/goal_draft_p
 CHECKS.append(('scripts/evaluate_goal_drafts.py', '--suite', 'evals/goal_draft_decisions.json'))
 CHECKS.append(('scripts/evaluate_goal_drafts.py', '--suite', 'evals/goal_draft_named_topics.json'))
 CHECKS.append(('scripts/evaluate_goal_handoff.py',))
+CHECKS.append(('scripts/evaluate_goal_handoff.py', '--suite', 'evals/open_work_drafts.json', '--checks', 'evals/open_work_handoff.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py',))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))

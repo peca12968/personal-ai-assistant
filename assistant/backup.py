@@ -177,6 +177,8 @@ def validate_database(path):
         if 'autonomous_steps' in actual_tables:
             from .work_plan import validate_saved
             validate_saved(db)
+            from .goal_partials import validate_saved as validate_partials
+            validate_partials(db)
         if 'memory_sequence' in actual_tables:
             counters = db.execute('SELECT id,last_id FROM memory_sequence').fetchall()
             largest = db.execute('SELECT COALESCE(MAX(id),0) FROM memories').fetchone()[0]

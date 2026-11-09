@@ -1,10 +1,11 @@
 """Explicit append-only user steering of an existing, stopped goal."""
 from datetime import datetime, timezone
+import hashlib
 import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import goal_review
+from . import goal_partials, goal_review
 
 
 def _snapshot(db, sid, gid):
@@ -12,7 +13,14 @@ def _snapshot(db, sid, gid):
     if goal is None:
         raise ValueError('找不到此對話的自主目標。')
     review = next(goal_review._rows(db,gid))
-    return {'goal':dict(goal), 'fingerprint':review['fingerprint'],
+    goal = dict(goal)
+    fingerprint = review['fingerprint']
+    if goal['status'] == 'needs_input':
+        partial = goal_partials.read_waiting(db, gid, goal['question'])
+        if partial is not None:
+            goal['partial_result'] = partial
+            fingerprint = hashlib.sha256((fingerprint + '\0' + partial).encode('utf-8')).hexdigest()
+    return {'goal':goal, 'fingerprint':fingerprint,
             'step_count':review['step_count'], 'sources_match':review['sources_match']}
 
 

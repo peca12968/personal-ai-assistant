@@ -76,6 +76,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_drafts.py", "--suite", "evals/goal_draft_decisions.json")
     run(sys.executable, "scripts/evaluate_goal_drafts.py", "--suite", "evals/goal_draft_named_topics.json")
     run(sys.executable, "scripts/evaluate_goal_handoff.py")
+    run(sys.executable, "scripts/evaluate_goal_handoff.py", "--suite", "evals/open_work_drafts.json", "--checks", "evals/open_work_handoff.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")

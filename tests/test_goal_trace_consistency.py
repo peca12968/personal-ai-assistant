@@ -58,6 +58,18 @@ class GoalTraceConsistencyTests(unittest.TestCase):
             row.pop('prompt');row['fixture']['prompt']=None;row['fixture_sha256']=canonical_digest(row['fixture'])
         self.rejects(report,missing)
 
+    def test_partial_report_must_match_the_raw_ask_and_observation(self):
+        report = self.collect(ScriptedEngine(action('ask', question='收貨人是誰？', partial_result='甲批可出27件。')))
+        self.assertEqual(report['results'][0]['goal']['partial_result'], '甲批可出27件。')
+        self.rejects(report, lambda row: row['goal'].pop('partial_result'))
+        self.rejects(report, lambda row: row['goal']['steps'][-1]['observation'].update(partial_result='偽造'))
+        def change_saved_without_raw(row):
+            goal = row['goal']
+            goal['partial_result'] = '偽造'
+            goal['steps'][-1]['observation']['partial_result'] = '偽造'
+            goal['steps'][-1]['action']['args']['partial_result'] = '偽造'
+        self.rejects(report, change_saved_without_raw)
+
     def test_failed_call_cannot_have_an_executed_step_or_completed_goal(self):
         report=self.collect()
         def error(row):

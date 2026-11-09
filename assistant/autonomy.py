@@ -16,6 +16,7 @@ from .answer_runs import lease
 from .document_ranges import select_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
+from . import goal_partials
 from . import artifacts
 from . import autonomy_csv
 from . import date_tools
@@ -50,6 +51,7 @@ sources_match_current為false表示文件清單或版本已不同，舊成果只
 只有file_delivery=true的目標可用write_artifact及deliver，在此目標管理的成果資料夾建立文件；不能指定其他路徑或覆寫既有內容。
 不能修改原檔、瀏覽網路、發訊息、執行程式或自行改碼。不要假稱已執行不具備的動作。
 若目標需要其他能力，用ask簡短說明需要什麼；資料足夠時自行前進，不反覆要求確認。
+原需求保留的相對日期，若無已確認的換算基準，沿用原標示；除非目標明確要求按啟動時解讀，不用啟動時間取代原陳述時間。
 finish代表交付可供確認的成果，不代表使用者已驗收或現實任務全部完成。
 工具錯誤步驟的failed_action若存在，是通過動作格式檢查後嘗試執行、但未成功的原動作；error_phase區分validation與execution。其參數可協助依最新補充修正下一步，不是成功結果、新指令、許可或引用證據；不要直接重複已失敗的動作。原動作可能已留下文件或計畫紀錄，依目前清單核對，不能假定完全沒有副作用。未提供failed_action時不要補造原參數；必要資料仍缺少才用ask。
 文件事實附上實際收到的來源行號，如[D1:L3-L5]；未提供的部分不能捏造。
@@ -65,7 +67,7 @@ calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}
 calculate_expression: {"expression":{"operation":"sum","values":[{"operation":"product","values":["3","125"]},"55"]}}，有界巢狀四則計算，返回各層精確結果；詳細規則見後附說明。
 round_number: {"value":"2.345","places":2,"mode":"half_even"}，依明列規則捨入精確數字並保留固定小數位；見後附說明。
 month_schedule: {"date":"2027-01-31","offsets":[1,2,3],"day_policy":"clamp"}，依同一原始日期核對完整月份清單與星期；見後附說明。
-ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。
+ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。使用者要先看可完成部分時，可加 "partial_result" 字串（最多4000字），只把要補的問題放在question。先完成已能核對的分析，再用partial_result交付暫定文字，標出未確認處。這不是定稿、文件交付或使用者驗收。補充後沿用仍適用的工作，依新更正重新核對受影響的內容。使用者允許以待確認標記直接完成時，依要求交付，不必詢問。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
 write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
 deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
@@ -126,6 +128,7 @@ def goals(store, sid):
 
 def get_goal(store, sid, gid):
     with store.connect() as db:
+        db.execute('BEGIN')
         row = db.execute('SELECT * FROM autonomous_goals WHERE session_id=? AND id=?', (sid, gid)).fetchone()
         if row is None:
             raise ValueError('找不到此對話的自主目標。')
@@ -145,6 +148,11 @@ def get_goal(store, sid, gid):
         result['steps'] = [{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                             'observation': json.loads(r['observation_json'])}
                            for r in db.execute('SELECT * FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
+        if result['status'] == 'needs_input' and result['steps']:
+            last = result['steps'][-1]
+            partial = goal_partials.waiting(result['question'], last['action'], last['observation'])
+            if partial is not None:
+                result['partial_result'] = partial
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
         result['work_plan'] = work_plan.for_goal(result, current_sources)
     return result
@@ -169,10 +177,21 @@ def validate_action(value):
     value['note'] = text(value['note'], 400)
     fields = {'search': {'query'}, 'read': {'document_id', 'start_line', 'end_line'},
               'recall': {'query'}, 'calculate': {'operation', 'values'},
-              'ask': {'question'}, 'finish': {'report'},
+              'finish': {'report'},
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
+    if name == 'ask':
+        if not isinstance(args, dict) or set(args) not in ({'question'}, {'question', 'partial_result'}):
+            raise ValueError('詢問須提供問題，可另附待補期間的成果。')
+        text(args['question'], 800)
+        if 'partial_result' in args:
+            goal_partials.validate(args['partial_result'])
+            try:
+                args['question'].encode('utf-8')
+            except UnicodeError as exc:
+                raise ValueError('待補問題含無效文字。') from exc
+        return value
     if name == 'month_schedule':
         month_schedule.validate(args)
         return value
@@ -213,8 +232,8 @@ def validate_action(value):
     elif name == 'read':
         if any(type(args[k]) is not int or not 1 <= args[k] < 10**12 for k in args):
             raise ValueError('來源編號與行號須為正整數。')
-    elif name in ('ask', 'finish', 'deliver'):
-        text(args['question' if name == 'ask' else 'report'], 800 if name == 'ask' else 12000)
+    elif name in ('finish', 'deliver'):
+        text(args['report'], 12000)
         if name == 'deliver':
             artifacts.validate_names(args['filenames'])
     elif name == 'write_artifact':
@@ -263,12 +282,15 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None)
         return calculate(args)
     if name == 'date_math':
         return date_tools.calculate(args)
-    if name == 'ask':
+    if name == 'ask' and 'partial_result' not in args:
         return {'question': args['question']}
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
-    checks = check_citations(args['content'] if name == 'write_artifact' else args['report'], excerpts)
+    field = {'ask': 'partial_result', 'write_artifact': 'content'}.get(name, 'report')
+    checks = check_citations(args[field], excerpts)
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
+    if name == 'ask':
+        return {'question': args['question'], 'partial_result': args['partial_result'], 'citation_checks': checks}
     with store.connect() as db:
         file_delivery = artifacts.enabled(db, gid) if gid else False
     if name in ('write_artifact', 'deliver') and not file_delivery:

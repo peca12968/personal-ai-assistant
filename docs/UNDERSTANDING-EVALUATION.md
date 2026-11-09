@@ -474,6 +474,8 @@ manifest區分draft_failed、draft_needs_input、goal_failed及goal_collected；
 
 此新收集協定的首輪實測四草稿及四接續案例均通過開發評讀，共4次草稿及5次工作模型呼叫。這驗證收集器能重現已知工作流程，沒有產品提示調整、前後能力增幅或新增IQ評分。原始資料限本機data/evaluations/handoff-runner-v087。
 
+`evals/open_work_drafts.json` 與 `evals/open_work_handoff.json` 分開評讀目標草稿、等待期間可見的交付，以及直接完成的表格和文字。等待狀態的 `answer` 仍記保存問題。暫定正文另外核對 `goal.partial_result`、同一步的動作與觀察、原始模型回應和引用檢查。較長的逐字暫表核對每列原文和順序，避免只看等待狀態就判定交付成功。
+
 ## 理解評估的失敗邊界保存（2026-11-05）
 
 `evaluate_understanding.py --live --report data/evaluations/<新名稱>.json`在正常Codex及明確選用本機模型兩種模式，都先將實際請求寫入`<報告完整檔名>.attempts/<序號>.request.json`，flush及fsync成功後才呼叫引擎。側錄綁定報告路徑、建立時間、全部選取ID、完整案例及來源／提示／收集器／驗證器／側錄器指紋，本機模式另綁定模型選用指紋。序號檔名不採用使用者案例ID作為路徑。

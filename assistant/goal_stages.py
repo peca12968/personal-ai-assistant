@@ -68,6 +68,8 @@ def activity(row):
                        'evaluation_order','all_calculations_provided') if k in observation})
         outcome['expression_details_omitted'] = True
         outcome['calculation_details_omitted'] = True
+    if tool == 'ask' and 'partial_result' in observation:
+        outcome['partial_result_omitted'] = True
     if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True

@@ -337,6 +337,8 @@ class AutonomousWindow:
             for item in goal['artifacts']:
                 lines += [f"{item['name']} · {item['size_bytes']} bytes · {labels.get(item['recorded_status'], item['recorded_status'])} · 最近核對：{item['verified_at'] or '無'}" +
                           ('\n' + item['error'] if item['error'] else '')]
+        if goal.get('partial_result'):
+            lines += ['待補期間的成果（尚待定稿）', goal['partial_result']]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
         if goal['notes']:

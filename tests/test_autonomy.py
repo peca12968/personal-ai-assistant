@@ -88,6 +88,70 @@ class AutonomyTests(unittest.TestCase):
         self.assertEqual(result['steps'][0]['action']['tool'], 'invalid')
         self.assertEqual(result['status'], 'report_ready')
 
+    def test_partial_report_waits_separately_and_survives_restore_and_reply(self):
+        did = self.attach('甲批確認可出27件')
+        gid = self.goal('先提供已知數量，再等收貨人。')
+        partial = '甲批可出27件。' * 120 + f'[D{did}:L1]'
+        question = '乙批收貨人是誰？'
+        engine = ScriptedEngine(action('read', document_id=did, start_line=1, end_line=1),
+                                action('ask', question=question, partial_result=partial))
+        waiting = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertGreater(len(partial), 800)
+        self.assertEqual((waiting['status'], waiting['result'], waiting['question'], waiting['partial_result']),
+                         ('needs_input', '', question, partial))
+        self.assertEqual(waiting['artifacts'], [])
+        self.assertEqual(waiting['steps'][-1]['observation']['citation_checks'],
+                         [{'citation': f'[D{did}:L1]', 'range_valid': True}])
+        self.assertEqual(a.run_goal(self.store, self.sid, gid, None), waiting)
+
+        child = a.create_goal(self.store, self.sid, '另建下一階段。', parent_id=gid)
+        progress = a.get_goal(self.store, self.sid, child)['previous_stage']['checkpoint']
+        self.assertTrue(progress['activity'][-1]['observation_metadata']['value']['partial_result_omitted'])
+        self.assertNotIn(partial, json.dumps(progress, ensure_ascii=False))
+        archive = self.root / 'waiting.paibackup'
+        create_backup(self.store.path, archive)
+        restored_dir = self.root / 'restored'
+        restore_backup(archive, restored_dir)
+        restored = Store(restored_dir / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), waiting)
+        review = reply_snapshot(restored, self.sid, gid)
+        self.assertEqual(review['goal']['partial_result'], partial)
+        a.reply(restored, self.sid, gid, '王同仁；甲批更正為26件。', expected_fingerprint=review['fingerprint'])
+        paused = a.get_goal(restored, self.sid, gid)
+        self.assertNotIn('partial_result', paused)
+        self.assertEqual(paused['steps'][-1]['observation']['partial_result'], partial)
+        resumed = ScriptedEngine(action('finish', report='甲批26件，乙批收貨人王同仁。'))
+        final = a.run_goal(restored, self.sid, gid, resumed)
+        self.assertEqual(final['result'], '甲批26件，乙批收貨人王同仁。')
+        self.assertIn('甲批更正為26件', resumed.prompts[0])
+        self.assertIn(partial, resumed.prompts[0])
+
+    def test_partial_report_rejects_invalid_text_citations_and_saved_evidence(self):
+        question = '待補姓名？'
+        for partial in (' ', '甲' * 4001, None, '甲\0乙', '\ud800'):
+            with self.subTest(partial=repr(partial)[:40]), self.assertRaises(ValueError):
+                a.validate_action(json.loads(action('ask', question=question, partial_result=partial)))
+        with self.assertRaises(ValueError):
+            a.validate_action(json.loads(action('ask', partial_result='暫表')))
+        with self.assertRaises(ValueError):
+            a.validate_action(json.loads(action('ask', question='甲' * 801, partial_result='暫表')))
+        did = self.attach('已知內容')
+        partial = f'已知內容[D{did}:L1]'
+        gid = self.goal()
+        engine = ScriptedEngine(action('ask', question=question, partial_result=partial),
+                                action('read', document_id=did, start_line=1, end_line=1),
+                                action('ask', question=question, partial_result=partial))
+        waiting = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(waiting['steps'][0]['observation']['error_phase'], 'execution')
+        self.assertEqual(waiting['partial_result'], partial)
+        observation = waiting['steps'][-1]['observation']
+        observation['citation_checks'] = []
+        with self.store.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(observation, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '成果引用與保存來源不一致'):
+            validate_database(self.store.path)
+
     def test_read_cannot_access_other_session_and_reports_incomplete_range(self):
         other = self.store.new_session()
         secret = self.attach('PRIVATE_OTHER_SESSION', other)

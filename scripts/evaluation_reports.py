@@ -429,6 +429,8 @@ def validate_goal_trace(row):
         raise ValueError('評估答案與保存的成果／問題／通知不符。')
     if status in {'pending','paused','failed'} and (goal['result'] or goal['question']):
         raise ValueError('未交付的自主狀態不能附帶已完成成果或待答問題。')
+    if status != 'needs_input' and 'partial_result' in goal:
+        raise ValueError('只有目前等待補充的目標能顯示待補期間的成果。')
     if status in {'pending','failed'} and not text(row.get('error')):
         raise ValueError('未啟動或失敗的自主收集需明示錯誤。')
     for i, step in enumerate(goal['steps']):
@@ -495,3 +497,14 @@ def validate_goal_trace(row):
                 or step['action'].get('tool') not in tools or not isinstance(args,dict)
                 or args.get(field)!=value or step['observation'].get(field)!=value):
             raise ValueError('結束狀態、工具動作、實際觀察與成果／問題不一致。')
+        if status == 'needs_input' and any('partial_result' in item for item in (goal, args, step['observation'])):
+            partial = goal.get('partial_result')
+            raw = strict_json(calls[-1]['raw'])
+            checks = step['observation'].get('citation_checks')
+            if (not text(partial) or len(partial) > 4000 or '\0' in partial
+                    or args != {'question': value, 'partial_result': partial}
+                    or step['observation'].get('partial_result') != partial
+                    or not isinstance(raw, dict) or raw.get('tool') != 'ask' or raw.get('args') != args
+                    or not isinstance(checks, list)
+                    or any(not isinstance(check, dict) or check.get('range_valid') is not True for check in checks)):
+                raise ValueError('待補期間的成果、模型動作與保存問題不一致。')
