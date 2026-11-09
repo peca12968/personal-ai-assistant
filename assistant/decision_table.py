@@ -1,10 +1,14 @@
 """Evaluate a finite table of possible scenarios and choose the next useful question."""
 import json
 from functools import cache
+from itertools import product
+from math import prod
 
 
 GUIDANCE = '''check_decision: {"conditions":["入口","通行證"],"rows":[{"when":["北門","有"],"result":"入場"},{"when":["北門","無"],"result":"等待"}],"known":{"入口":"北門"}}。
-目標或已讀原文已完整列出有限情境及各自結果，且需要核對結論或挑選最少追問時，使用此工具逐列核算。conditions依原欄位順序，rows逐列保留原對應，when依欄位順序給值，known只填已確認且適用於本次的值。最多5個條件、32列，每個條件最多4種表列值。不補不存在的組合，不把待查、舊值、假設或模型推測填進known。原文沒有完整規則時沿用一般分析。
+目標或已讀原文已列明完整可行情境，或明定各欄選項及哪些組合不可行時，使用此工具核對結論、找缺列或挑選最少追問。conditions依原欄位順序，rows逐列保留原對應，when依欄位順序給值，known只填已確認且適用於本次的值。最多5個條件、32列，每個條件最多4種值。不把待查、舊值、假設或模型推測填進known。
+若已知各欄完整選項，且各種組合皆可發生或已明文排除例外，另傳domains（如{"入口":["北門","南門"],"通行證":["有","無"]}）與excluded（依欄位順序列明文排除的組合，沒有則[]）。此模式各欄選項組合最多32種。保留已公布的對應；不同同級資料若針對同一組合給不同結果，在rows為該組合分列，不自行選定。只有明文不可能或排除的組合放excluded，缺規則與另案安排都不是排除，也不能代填缺列。分清兩份表是否適用同一事項。無法確定適用範圍或完整選項時沿用一般分析。收到正式補充後只新增有效對應或修正已解決的列，保留舊來源及適用範圍。
+incomplete_table表示目前相容組合中有缺列或不同結果。coverage列出相容的缺列、衝突與明文排除，recorded_results僅為已記載結果。保留仍有來源的部分；需要唯一結果時，只問影響本次決策的處置規則或哪份說法生效，勿重問已確認欄位。收到可解決缺列或衝突的正式補充後，先更新該筆對應並再次執行check_decision，再交付。其餘適用的欄位、規則和排除照原資料，舊步驟保留。要求只交條件式成果時，標示缺漏或衝突，不追問。其他範圍的缺列不阻擋本次可確定的結果。
 matching_rows是所送表格的1起算列號，並非原文件行號。resolved表示符合已知條件的各列結果相同，直接交付並保留無須核對的欄位為待查。needs_check時，question給最少化最壞追問輪數的第一欄與各答案可能結果，同分依表列欄位順序。若使用者需要唯一結果且允許提問，先交仍有依據的暫表，只問該欄；收到確定答覆後，沿用相同表列，只更新known並重算。若使用者只要條件式交付或明確不提問，保留所有相容分支後直接交付。no_match表示已知值與所送表列不相容，核對適用範圍及來源，不補造結論。
 這個工具只計算送入的對照表，不能證明表格完整性或條件已核對。保留原需求和已知欄位，原文、使用者更正及回覆仍各用相應來源。'''
 
@@ -19,9 +23,43 @@ def _label(value):
         raise ValueError('決策表含無效文字。') from exc
 
 
+def _assignment(values, size):
+    if not isinstance(values, list) or len(values) != size:
+        raise ValueError('每個組合需按原欄位順序提供全部選項。')
+    for value in values:
+        _label(value)
+    return tuple(values)
+
+
+def _declared_scenarios(args, conditions):
+    if 'domains' not in args:
+        return None, set()
+    domains, excluded = args['domains'], args['excluded']
+    if not isinstance(domains, dict) or domains.keys() != set(conditions):
+        raise ValueError('宣告選項需涵蓋每個決策欄。')
+    options = []
+    for name in conditions:
+        values = domains[name]
+        if not isinstance(values, list) or not 1 <= len(values) <= 4:
+            raise ValueError('每個條件需有1至4種宣告值。')
+        options.append(_assignment(values, len(values)))
+        if len(set(options[-1])) != len(values):
+            raise ValueError('同一決策欄的宣告值不可重複。')
+    if prod(map(len, options)) > 32:
+        raise ValueError('宣告選項的全部組合最多32種。')
+    declared = tuple(product(*options))
+    if not isinstance(excluded, list) or len(excluded) > len(declared):
+        raise ValueError('排除需列出有限且不同的宣告組合。')
+    omitted = {_assignment(row, len(conditions)) for row in excluded}
+    if len(omitted) != len(excluded) or not omitted <= set(declared):
+        raise ValueError('排除的組合需在宣告選項內且不得重複。')
+    return declared, omitted
+
+
 def validate(args):
-    if not isinstance(args, dict) or set(args) != {'conditions', 'rows', 'known'}:
-        raise ValueError('決策表需提供conditions、rows與known。')
+    base = {'conditions', 'rows', 'known'}
+    if not isinstance(args, dict) or set(args) not in (base, base | {'domains', 'excluded'}):
+        raise ValueError('決策表需提供conditions、rows與known，可同時提供domains及excluded。')
     conditions, rows, known = args['conditions'], args['rows'], args['known']
     if not isinstance(conditions, list) or not 1 <= len(conditions) <= 5:
         raise ValueError('決策表需有1至5個條件。')
@@ -33,30 +71,39 @@ def validate(args):
         raise ValueError('已知條件需使用所列的完整欄名。')
     for value in known.values():
         _label(value)
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 32:
-        raise ValueError('決策表需有1至32個可行情境。')
+    declared, excluded = _declared_scenarios(args, conditions)
+    minimum = 1 if declared is None else 0
+    if not isinstance(rows, list) or not minimum <= len(rows) <= 32:
+        raise ValueError('決策表最多32列；未宣告欄位選項時至少需要一列。')
     assignments = set()
+    reports = set()
     for row in rows:
-        if (not isinstance(row, dict) or set(row) != {'when', 'result'} or not isinstance(row['when'], list)
-                or len(row['when']) != len(conditions)):
+        if not isinstance(row, dict) or set(row) != {'when', 'result'}:
             raise ValueError('每列需按原欄位順序提供全部選項及一個結果。')
-        for value in row['when']:
-            _label(value)
+        assignment = _assignment(row['when'], len(conditions))
         _label(row['result'])
-        assignment = tuple(row['when'])
-        if assignment in assignments:
+        if declared is None and assignment in assignments:
             raise ValueError('決策表不能重複列出同一情境。')
+        if declared is not None and (assignment not in declared or assignment in excluded):
+            raise ValueError('表列情境需在宣告選項內，且不能同時排除。')
+        report = assignment, row['result']
+        if report in reports:
+            raise ValueError('同一情境的相同結果不得重複列出。')
         assignments.add(assignment)
+        reports.add(report)
     if any(len(set(values)) > 4 for values in zip(*assignments)):
         raise ValueError('每個條件最多4種表列值。')
+    return declared, excluded
 
 
 def calculate(args):
-    validate(args)
+    declared, excluded = validate(args)
     conditions, rows, known = args['conditions'], args['rows'], args['known']
     fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
-    active = tuple(index for index, row in enumerate(rows)
-                   if all(row['when'][field] == value for field, value in fixed))
+    def matches(assignment):
+        return all(assignment[field] == value for field, value in fixed)
+
+    active = tuple(index for index, row in enumerate(rows) if matches(row['when']))
 
     def outcomes(indices):
         return list(dict.fromkeys(rows[index]['result'] for index in indices))
@@ -79,7 +126,28 @@ def calculate(args):
                 choices.append((depth, field))
         return min(choices)
 
-    observation = {'matching_rows': [index + 1 for index in active], 'possible_results': outcomes(active)}
+    observation = {'matching_rows': [index + 1 for index in active]}
+    if declared is not None:
+        compatible = [assignment for assignment in declared if matches(assignment)]
+        reported = {}
+        for index in active:
+            reported.setdefault(tuple(rows[index]['when']), []).append(index)
+        missing, conflicts = [], []
+        for assignment in compatible:
+            if assignment in excluded:
+                continue
+            indices = reported.get(assignment)
+            if indices is None:
+                missing.append(list(assignment))
+            elif len(indices) > 1:
+                conflicts.append({'when': list(assignment), 'rows': [index + 1 for index in indices],
+                                  'results': outcomes(indices)})
+        observation['coverage'] = {'missing_rows': missing, 'conflicting_rows': conflicts,
+                                   'excluded_rows': [list(assignment) for assignment in compatible
+                                                     if assignment in excluded]}
+        if missing or conflicts:
+            return {'status': 'incomplete_table', **observation, 'recorded_results': outcomes(active)}
+    observation['possible_results'] = outcomes(active)
     if not active:
         return {'status': 'no_match', **observation}
     depth, first = solve(active)

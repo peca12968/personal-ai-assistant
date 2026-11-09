@@ -161,9 +161,13 @@ def activity(row):
     if tool == 'ask' and 'partial_result' in observation:
         outcome['partial_result_omitted'] = True
     if tool == 'check_decision':
+        results = observation.get('possible_results', observation.get('recorded_results', []))
         outcome.update(matching_row_count=len(observation['matching_rows']),
-                       possible_result_count=len(observation['possible_results']),
                        decision_rows_omitted=True)
+        result_count = 'recorded_result_count' if 'recorded_results' in observation else 'possible_result_count'
+        outcome[result_count] = len(results)
+        if 'coverage' in observation:
+            outcome['coverage_counts'] = {key: len(value) for key, value in observation['coverage'].items()}
         if 'max_questions' in observation:
             outcome['max_questions'] = observation['max_questions']
     if tool in ('search_conversation', 'read_conversation'):

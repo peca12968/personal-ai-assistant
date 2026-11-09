@@ -55,6 +55,41 @@ class DecisionTableTests(unittest.TestCase):
             decision_table.calculate({'conditions': ['號碼'], 'known': {},
                                       'rows': [{'when': [str(i)], 'result': '存放'} for i in range(5)]})
 
+    def test_declared_domains_distinguish_conflicts_missing_rules_and_exclusions(self):
+        plan = {'conditions': ['區位', '吊具'], 'known': {},
+                'domains': {'區位': ['北區', '南區'], '吊具': ['輕型', '重型']},
+                'excluded': [['北區', '重型']],
+                'rows': [{'when': ['北區', '輕型'], 'result': '甲'},
+                         {'when': ['南區', '輕型'], 'result': '乙'},
+                         {'when': ['南區', '輕型'], 'result': '丙'}]}
+        report = decision_table.calculate(plan)
+        self.assertEqual(report, {
+            'status': 'incomplete_table', 'matching_rows': [1, 2, 3], 'recorded_results': ['甲', '乙', '丙'],
+            'coverage': {'missing_rows': [['南區', '重型']], 'excluded_rows': [['北區', '重型']],
+                         'conflicting_rows': [{'when': ['南區', '輕型'], 'rows': [2, 3], 'results': ['乙', '丙']}]},
+        })
+        north = decision_table.calculate({**plan, 'known': {'區位': '北區'}})
+        self.assertEqual((north['status'], north['possible_results'], north['max_questions']), ('resolved', ['甲'], 0))
+        self.assertEqual(north['coverage']['excluded_rows'], [['北區', '重型']])
+        excluded = decision_table.calculate({**plan, 'known': {'區位': '北區', '吊具': '重型'}})
+        self.assertEqual((excluded['status'], excluded['possible_results']), ('no_match', []))
+        unknown = decision_table.calculate({**plan, 'rows': [], 'known': {'區位': '南區'}})
+        self.assertEqual(unknown['coverage']['missing_rows'], [['南區', '輕型'], ['南區', '重型']])
+        self.assertEqual(unknown['recorded_results'], [])
+
+    def test_declared_rows_cannot_overlap_exclusions_or_expand_domains(self):
+        plan = {'conditions': ['現場'], 'domains': {'現場': ['室內', '室外']},
+                'excluded': [['室外']], 'rows': [], 'known': {}}
+        for value in ('室外', '另一處'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, '宣告選項內'):
+                decision_table.calculate({**plan, 'rows': [{'when': [value], 'result': '存放'}]})
+        with self.assertRaisesRegex(ValueError, '不得重複'):
+            decision_table.calculate({**plan, 'excluded': [['室外'], ['室外']]})
+        big = {'conditions': ['甲', '乙', '丙'], 'known': {}, 'rows': [], 'excluded': [],
+               'domains': {name: ['一', '二', '三', '四'] for name in ('甲', '乙', '丙')}}
+        with self.assertRaisesRegex(ValueError, '全部組合最多32'):
+            decision_table.calculate(big)
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

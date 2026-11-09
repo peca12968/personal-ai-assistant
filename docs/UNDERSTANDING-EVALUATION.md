@@ -191,6 +191,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_decision_questions.json` 離線建立四組原創文件、工作與回答。真實執行涵蓋兩輪自適應提問、結果相同的提早停止、完整條件式交付及收到一則回答後直接定稿。核對實際送入工具的欄序、表列、已知值及原文件引用，另核對實際提問與成果是否符合要求。程式保證送入表列的核算結果，文字轉錄、適用範圍及使用者意圖另外評讀。不同工具步數與使用者實際回答輪數分開計。
 
+`python scripts/evaluate_goal_replies.py --suite evals/goal_decision_coverage.json` 檢查有明列欄位選項但規則缺漏、同級來源互有衝突、其他範圍缺列及要求條件式交付。真實評估分別核對轉錄到工具的宣告組合、正式排除、已知條件與原始處置列，以及最後提問、暫表、補充、定稿是否遵照適用範圍。程式的覆蓋檢查只針對明列選項與輸入表，來源權威和是否適用由原文及正式補充另行核對。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
