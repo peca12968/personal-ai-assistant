@@ -29,6 +29,8 @@ SHORT_REVISION = re.compile(rf'(?:請)?(?:把|將)?({LABEL}(?:上限|下限|期�
                             rf'({NUMBER}\s*(?:{UNIT}|[%％])?|當天|一點|一些|[一二三四五六七八九]成)[。！]?$')
 LIST_REQUEST = re.compile(r'(?:請)?(?:列出|查看)(?:剛才的)?方案(?:清單)?[。！!？?]?')
 ORDINAL = daily_dialogue.ordinal_pattern(r'方案清單(?:中的?|的)')
+CHANGE_AND_REVIEW = re.compile(r'(?P<assume>如果|假設)?\s*(?P<change>[^，,；;。！？\r\n]{1,100})[，,；;]\s*'
+                               r'(?:(?:然後|接著|再|並)\s*)?(?P<review>[^\r\n]{1,60})')
 STATE_FIELDS = ('option_plan', 'option_question', 'option_review')
 FIELDS = (*STATE_FIELDS, 'option_source')
 
@@ -48,6 +50,19 @@ def revision(question):
     if not m or not m[1]:
         return None
     return dict(field=m[1], action=m[2], value=m[3].strip(), empty=m.groupdict().get('empty'))
+
+
+def followup_request(question, *, allow_review=True):
+    change = revision(question)
+    if change is not None or not allow_review:
+        return change, None, False
+    if review := review_request(question):
+        return None, review, False
+    if match := CHANGE_AND_REVIEW.fullmatch(question):
+        first = match['change'].strip()
+        if SHORT_REVISION.fullmatch(first) and (review := review_request(match['review'])):
+            return revision(first), review, bool(match['assume'])
+    return None, None, False
 
 
 def candidate(text):
@@ -199,31 +214,51 @@ def resolve(plan, clarification=None):
                         result=dict(exact=answer, calculations=[]))
 
 
-def followup(parent, change, review):
-    if change is None and review is None:
-        return None
+def followup(parent, change, review, hypothetical=False):
     if review and review['kind'] == 'choice':
         if not parent or parent.get('option_review', {}).get('kind') != 'list':
-            if review['scoped']:
+            if review['scoped'] or (parent and change):
                 raise ValueError('請緊接在方案清單後選擇，或重新列出目前的方案。')
             return None
         count = len(parent['option_plan']['options'])
         if not 1 <= review['position'] <= count:
             raise ValueError(f'上一則列出 {count} 個方案，請選清單中的順序。')
-    if parent is None:
+    if parent is None or (change is None and review is None):
         return None
     plan = deepcopy(parent['option_plan'])
     state = dict(option_plan=plan)
-    clarification = revise(plan, change) if change else parent.get('option_question')
+    clarification = parent.get('option_question')
+    if change:
+        problem = revise(deepcopy(plan) if hypothetical else plan, change)
+        if problem and review:
+            raise ValueError(problem)
+        if not hypothetical:
+            clarification = problem
     if clarification:
         state['option_question'] = clarification
     if review:
-        state['option_review'] = {key: value for key, value in review.items() if key != 'scoped'}
+        details = {key: value for key, value in review.items() if key != 'scoped'}
+        if hypothetical:
+            details['scenario'] = change
+        elif change:
+            details['applied'] = True
+        elif review['kind'] == 'choice' and (scenario := parent['option_review'].get('scenario')):
+            details['scenario'] = scenario
+        state['option_review'] = details
     return state
 
 
-def render(state):
+def displayed_plan(state):
     plan = state['option_plan']
+    if scenario := state.get('option_review', {}).get('scenario'):
+        plan = deepcopy(plan)
+        if revise(plan, scenario):
+            raise ValueError('方案試算與有效條件不符。')
+    return plan
+
+
+def render(state):
+    plan = displayed_plan(state)
     clarification = state.get('option_question')
     review = state.get('option_review')
     answer, receipt = resolve(plan, clarification if review is None else None)
@@ -247,10 +282,22 @@ def render(state):
                  '要查看其中一個，可依清單順序回「第二個」。']
     else:
         lines = [entries[review['position'] - 1]]
+    schema = 'daily_option_review_v1'
+    if review.get('scenario') or review.get('applied'):
+        schema = 'daily_option_review_v2'
+        change = plan['last_adjustment']
+        field, unit = change['field'], change['unit']
+        before, after = change['before'], change['after']
+        if review.get('scenario'):
+            lines.insert(0, f'假設試算。{field}採用 {after} {unit}，目前生效值為 {before} {unit}。')
+        else:
+            lines.insert(0, f'已將{field}從 {before} {unit} 改為 {after} {unit}。')
     if clarification:
-        lines.insert(0, '上次更正待確認，以下按目前有效的限制核對。')
+        notice = ('上次更正待確認，這次以生效值作為試算基準。' if review.get('scenario')
+                  else '上次更正待確認，以下按目前有效的限制核對。')
+        lines.insert(0, notice)
     answer = '\n'.join(lines)
-    receipt.update(schema='daily_option_review_v1', review=review, clarification=clarification,
+    receipt.update(schema=schema, review=review, clarification=clarification,
                    result=dict(exact=answer, calculations=[]))
     return answer, receipt
 
@@ -315,7 +362,7 @@ def verified(db, mid):
             original = parse(question)
             state = dict(option_plan=original) if original else None
         else:
-            state = followup(parent, revision(question), review_request(question))
+            state = followup(parent, *followup_request(question))
         if state is None or not fields_equal([state.get(key) for key in STATE_FIELDS],
                                              [saved.get(key) for key in STATE_FIELDS]):
             raise ValueError('方案的原始條件與保存紀錄不符。')
@@ -334,7 +381,7 @@ def read(store, mid):
 
 
 def describe(context):
-    plan = context['option_plan']
+    plan = displayed_plan(context)
     receipt = context['calculation']
     lines = [context['current_request']]
     if source := context.get('option_source'):
@@ -344,7 +391,7 @@ def describe(context):
     elif change := plan.get('last_adjustment'):
         mode = '相對增減' if change['mode'] == 'relative' else '指定新值'
         lines.append(f'{change["field"]}（{mode}）：{change["before"]} → {change["after"]} {change["unit"]}')
-    lines += ['', '有效限制']
+    lines += ['', '試算限制' if context.get('option_review', {}).get('scenario') else '有效限制']
     lines.extend(rule['source'] for rule in plan['limits'].values())
     lines += ['', '依序比較（數值較小者優先）：' + '、'.join(plan['ranking']), '逐項核對']
     for option, check in zip(plan['options'], receipt['checks'], strict=True):
@@ -356,8 +403,7 @@ def describe(context):
 
 def capture(store, sid, question, before=None, *, allow_review=True):
     original = parse(question)
-    change = revision(question) if original is None else None
-    review = review_request(question) if allow_review and original is None and change is None else None
+    change, review, hypothetical = followup_request(question, allow_review=allow_review) if original is None else (None, None, False)
     if original is None and change is None and review is None:
         return None
     if store.documents(sid, include_content=False):
@@ -370,7 +416,7 @@ def capture(store, sid, question, before=None, *, allow_review=True):
             found = verified(db, previous_id(db, sid, before))
     except ValueError as exc:
         raise ValueError('上一份方案紀錄已變動，請重新提供條件。') from exc
-    state = followup(found[0] if found else None, change, review)
+    state = followup(found[0] if found else None, change, review, hypothetical)
     if state is not None:
         state['option_source'] = found[1]
     return state

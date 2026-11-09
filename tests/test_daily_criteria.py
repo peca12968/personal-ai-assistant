@@ -225,3 +225,68 @@ class OptionTests(unittest.TestCase):
                            (QUERY.replace('130 元', '95 元'), original['user_message_id']))
             with self.assertRaisesRegex(ValueError, '原|來源'):
                 options.read(restored, selected['id'])
+
+    def test_combined_change_and_view_applies_once_and_uses_the_displayed_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            original = app.ask(sid, QUERY)
+            listed = app.ask(sid, '列出方案清單。')
+            request = '預算再加 35 元，然後看第二個。'
+            with patch.object(answer_runs, 'finish', side_effect=EngineError('停止', 'cancelled')), self.assertRaises(EngineError):
+                app.ask(sid, request)
+            chosen = app.retry(sid)
+            proof = options.read(store, chosen['id'])
+            self.assertIn('從 100 元 改為 135 元', chosen['content'])
+            self.assertIn('第 2 個｜棕袋', chosen['content'])
+            self.assertEqual(proof['option_source']['answer_id'], listed['id'])
+            self.assertEqual(proof['option_review'], dict(kind='choice', position=2, applied=True))
+            self.assertEqual(proof['calculation']['schema'], 'daily_option_review_v2')
+            self.assertEqual(options.read(store, original['id'])['option_plan']['limits']['元']['value'], 100)
+            revised = app.ask(sid, '預算再降 20 元。')
+            self.assertEqual(revised['content'], '白袋')
+            self.assertEqual(options.read(store, revised['id'])['option_plan']['last_adjustment']['before'], 135)
+
+    def test_hypothetical_list_and_selection_preserve_the_effective_limit_through_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            app.ask(sid, QUERY)
+            preview = app.ask(sid, '如果預算再加 35 元，再列出方案。')
+            self.assertIn('目前生效值為 100 元', preview['content'])
+            selected = app.ask(sid, '第二個。')
+            self.assertIn('假設試算', selected['content'])
+            self.assertIn('第 2 個｜棕袋：130 元、2 公斤｜符合限制，依規則首選', selected['content'])
+            saved = options.read(store, selected['id'])
+            self.assertEqual(saved['option_plan']['limits']['元']['value'], 100)
+            self.assertEqual(options.displayed_plan(saved)['limits']['元']['value'], 135)
+            self.assertIn('試算限制', options.describe(saved))
+            bundle = create_backup(store.path, root/'scenario.paibackup')
+            restore_backup(bundle['path'], root/'restored')
+            restored = Store(root/'restored'/'assistant.sqlite3')
+            self.assertEqual(options.read(restored, selected['id']), saved)
+            updated = DailyAssistant(restored, None, default_chat=True).ask(sid, '預算再降 5 元。')
+            result = options.read(restored, updated['id'])
+            self.assertEqual(result['option_plan']['last_adjustment']['after'], 95)
+            self.assertEqual(updated['content'], '白袋')
+
+    def test_combined_view_rejects_invalid_edits_or_stale_ordinals_without_applying_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'assistant.sqlite3')
+            app = DailyAssistant(store, None, default_chat=True)
+            sid = store.new_session()
+            initial = app.ask(sid, QUERY)
+            with self.assertRaisesRegex(ValueError, '緊接在方案清單'):
+                app.ask(sid, '預算再加 35 元，再看第二個。')
+            self.assertEqual(store.messages(sid, 1)[0]['id'], initial['id'])
+            listed = app.ask(sid, '列出方案清單。')
+            for request, reason in [('預算降到 160 元，再看第二個。', '方向相反'),
+                                    ('預算再加 35 元，再看第四個。', '列出 3 個方案')]:
+                with self.subTest(request=request), self.assertRaisesRegex(ValueError, reason):
+                    app.ask(sid, request)
+                self.assertEqual(store.messages(sid, 1)[0]['id'], listed['id'])
+            self.assertIn('未符合「預算最多 100 元」', app.ask(sid, '第二個。')['content'])
+            self.assertEqual(options.followup_request('預算再加 35 元，再看第二個，然後下單。'), (None, None, False))
