@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from assistant import autonomy as a, goal_guidance as g, goal_review
 from assistant.answer_runs import LeaseBusy, lease
-from assistant.backup import create_backup, restore_backup
+from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
@@ -42,7 +42,11 @@ class GoalGuidanceTests(unittest.TestCase):
         engine=ScriptedEngine(action('finish',report='測試回覆'))
         a.run_goal(self.store,self.sid,self.gid,engine,max_steps=1)
         payload=json.loads(engine.prompts[0].split('目標與已觀察資料：\n',1)[1])
-        self.assertLess(payload['user_notes'].index('12人'),payload['user_notes'].index('人數13'))
+        notes = payload['user_notes']
+        self.assertEqual([row['citation'] for row in notes], ['[更正#1]', '[更正#2]'])
+        self.assertIn('12人', notes[0]['content'])
+        self.assertIn('人數13', notes[1]['content'])
+        self.assertEqual(engine.prompts[0].count('PRIVATE_STEERING'), 1)
         self.assertIn('最新明確的使用者更正優先',engine.prompts[0])
         other=a.create_goal(self.store,self.sid,'另一個工作')
         self.assertEqual(a.get_goal(self.store,self.sid,other)['notes'],'')
@@ -119,6 +123,66 @@ class GoalGuidanceTests(unittest.TestCase):
             db.execute("CREATE TRIGGER reject_notes BEFORE UPDATE OF notes ON autonomous_goals BEGIN SELECT RAISE(ABORT,'test failure'); END")
         with self.assertRaises(sqlite3.IntegrityError):self.save()
         self.assertEqual(a.get_goal(self.store,self.sid,self.gid)['notes'],'')
+        self.assertNotIn('guidance_sources', a.get_goal(self.store,self.sid,self.gid))
+
+    def test_cite_document_amendment_and_reply_as_separate_saved_sources(self):
+        path = self.root / 'terms.txt'
+        path.write_text('原門檻18:00，到場未填。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        self.gid = a.create_goal(self.store, self.sid, '核對正式到場')
+        a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('read', document_id=did, start_line=1, end_line=1)), max_steps=1)
+        first = self.save('正式改為17:45。')['goal']['guidance_sources'][0]
+        waiting = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('ask', question='何時到場？[更正#2]'),
+            action('ask', question='依門檻仍需實際到場時間 [更正#1]，幾點到場？',
+                   partial_result=f'原門檻18:00 [D{did}:L1]，現為17:45 [更正#1]。')))
+        self.assertEqual(waiting['steps'][1]['action']['tool'], 'invalid')
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.assertEqual(waiting['question_citations']['guidance'][0]['sha256'], first['sha256'])
+        self.assertEqual(waiting['steps'][2]['observation']['guidance_citations'][0]['number'], 1)
+        reviewed = reply_snapshot(self.store, self.sid, self.gid)
+        self.save('正式再改為17:30。')
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            a.reply(self.store, self.sid, self.gid, '17:40', expected_fingerprint=reviewed['fingerprint'])
+        a.reply(self.store, self.sid, self.gid, '實際17:40到場。',
+                expected_fingerprint=reply_snapshot(self.store, self.sid, self.gid)['fingerprint'])
+        goal = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(action('finish',
+            report=f'原門檻18:00 [D{did}:L1]，有效門檻17:30 [更正#2]，實際17:40 [補充#3]，逾時。')))
+        final = goal['steps'][-1]['observation']
+        self.assertEqual(final['guidance_citations'][0]['sha256'], goal['guidance_sources'][1]['sha256'])
+        self.assertEqual(final['reply_citations'][0]['citation'], '[補充#3]')
+        self.assertTrue(final['citation_checks'][0]['range_valid'])
+        self.assertEqual([item['steps_seen'] for item in goal['guidance_sources']], [1, 3])
+        backup = create_backup(self.store.path, self.root / 'sources.paibackup')
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), goal)
+        child = a.create_goal(restored, self.sid, '新階段', parent_id=self.gid)
+        self.assertNotIn('guidance_sources', a.get_goal(restored, self.sid, child))
+        attempt = a.run_goal(restored, self.sid, child, ScriptedEngine(
+            action('finish', report='引用歷史編號 [更正#2]。')), max_steps=1)
+        self.assertEqual(attempt['steps'][0]['action']['tool'], 'invalid')
+
+    def test_backup_detects_missing_question_receipt_and_changed_amendment_text(self):
+        self.save('門檻改17:30。')
+        a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('ask', question='門檻17:30 [更正#1]，幾點到場？')))
+        self.assertEqual(validate_database(self.store.path)['autonomous_guidance_sources'], 1)
+        with self.store.connect() as db:
+            raw = db.execute('SELECT observation_json FROM autonomous_steps WHERE goal_id=?',
+                             (self.gid,)).fetchone()[0]
+            observation = json.loads(raw)
+            del observation['question_citations']
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=?',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '問題引用'):
+            validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=?', (raw, self.gid))
+            db.execute("UPDATE autonomous_guidance_sources SET content='門檻改16:30。' WHERE goal_id=?", (self.gid,))
+        with self.assertRaisesRegex(ValueError, '補充原文'):
+            validate_database(self.store.path)
 
     def test_backup_handoff_and_review_visibility_preserve_append_only_history(self):
         row=goal_review.snapshot(self.store)['items'][0]

@@ -1,0 +1,67 @@
+[
+  {
+    "id": "formal_price_replaces_one_option",
+    "category": "goal_scoped_amendments",
+    "documents": [
+      {"name":"offers.txt","content":"茂亭採買實際報價\n甲案含運480元，現貨。\n乙案含運520元，現貨。\n"},
+      {"name":"policy.txt","content":"茂亭採買規則\n含運以500元為上限，符合者選較便宜的一案。\n"}
+    ],
+    "prompt": "為茂亭採買比較甲乙案。核對兩份文件與我保存的補充，分開列原價、有效價和適用的上限，推薦目前較便宜的合格方案。有原文行號或程式提供的補充來源編號時請標在採用資料旁。不購買、不產檔。",
+    "prior_read_ranges": [
+      {"document_id":1,"start_line":2,"end_line":3},
+      {"document_id":2,"start_line":2,"end_line":2}
+    ],
+    "amendments": [
+      "正式更正本次乙案含運為470元。甲案及500元上限照舊。有人提過「如果上限改550元」，那段僅供試想，沒有採用。"
+    ],
+    "criteria": [
+      "區分甲480元、乙原520元與實際470元，引用原價及有效更正的各自來源",
+      "保留500元上限，標清550元是未採用的試想",
+      "依有效價格推薦乙案，直接交付且不聲稱購買"
+    ]
+  },
+  {
+    "id": "two_updates_and_one_needed_reply",
+    "category": "goal_scoped_amendments",
+    "documents": [
+      {"name":"arrivals.txt","content":"柏霧驗收現場資料\n早班到場09:20，查驗人梁同仁。\n晚班到場時間未填，查驗人向同仁。\n"},
+      {"name":"limits.txt","content":"柏霧驗收現行門檻\n早班到場須不晚於09:30。\n晚班到場須不晚於18:00。\n"}
+    ],
+    "prompt": "核對柏霧早晚班是否符合各自到場門檻，先交已確定的暫表。現行門檻可由我正式更正，兩班分開。若晚班到場缺漏，僅問晚班實際到場時間，答覆後定稿。原始文件、主動補充及答覆各標來源；若有來源編號請使用。不產檔、不發送。",
+    "prior_read_ranges": [
+      {"document_id":1,"start_line":2,"end_line":3},
+      {"document_id":2,"start_line":2,"end_line":3}
+    ],
+    "amendments": [
+      "正式更新本次晚班門檻為17:45以前或當時。早班門檻維持原值。",
+      "再次正式更正晚班門檻，採用17:30以前或當時，取代先前17:45。另有人建議早班改09:00，只是提案。"
+    ],
+    "reply": "晚班本次實際於17:40到場。",
+    "criteria": [
+      "暫表保留早班09:20符合09:30及兩位查驗人，最新晚班門檻17:30，區分被取代的17:45和早班假設",
+      "只問晚班實際到場時間，暫表能追溯晚班門檻與既有文件",
+      "正式交付晚班17:40晚於17:30而不符合，分開標明更正、實際到場回覆及早班原文件"
+    ]
+  },
+  {
+    "id": "exception_only_for_backup",
+    "category": "goal_scoped_amendments",
+    "documents": [
+      {"name":"stock.txt","content":"南沐工坊本日清點\n正式批可用18件，備援批可用12件。\n"},
+      {"name":"threshold.txt","content":"南沐工坊出庫條件\n正式批至少20件才可出庫。\n"}
+    ],
+    "prompt": "只判斷南沐本次正式批能否出庫。另列任何已確認但適用範圍不同的例外，說明是否影響此決策。原文件與我實際保存的補充各標來源，若有來源編號請使用。只交文字結論。",
+    "prior_read_ranges": [
+      {"document_id":1,"start_line":2,"end_line":2},
+      {"document_id":2,"start_line":2,"end_line":2}
+    ],
+    "amendments": [
+      "正式確認例外只適用備援批演練，演練最低15件。正式批仍依原文件20件，兩批不合計。"
+    ],
+    "criteria": [
+      "正式批18件小於20件，引用兩份原文件並判定不符合",
+      "15件例外只限備援演練，獨立標記補充來源，不合併兩批",
+      "直接交付，無多餘澄清或出庫承諾"
+    ]
+  }
+]

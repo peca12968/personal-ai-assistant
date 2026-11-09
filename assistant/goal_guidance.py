@@ -6,7 +6,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import goal_partials, goal_reply_sources, goal_review
+from . import goal_guidance_sources, goal_partials, goal_reply_sources, goal_review
 
 
 def _snapshot(db, sid, gid):
@@ -20,6 +20,10 @@ def _snapshot(db, sid, gid):
     if sources:
         goal['reply_sources'] = sources
         fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in sources)).encode('utf-8')).hexdigest()
+    guidance = goal_guidance_sources.read(db, gid, goal['notes'], review['step_count'])
+    if guidance:
+        goal['guidance_sources'] = guidance
+        fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in guidance)).encode('utf-8')).hexdigest()
     if goal['status'] == 'needs_input':
         details = goal_partials.read_waiting(db, gid, goal['question'])
         goal.update(details)
@@ -64,10 +68,14 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         if not allowed:
             raise ValueError(reason)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        addition = f"\n使用者主動更正／補充（已記錄{current['step_count']}步；{stamp}）：\n{content}\n"
-        notes = current['goal']['notes'] + addition
+        goal = current['goal']
+        step_count = current['step_count']
+        notes = goal['notes'] + goal_guidance_sources.note(content, step_count, stamp)
         if len(notes) > 12000:
             raise ValueError('累計補充超過12000字，請整理目前紀錄另建目標。')
+        number = len(goal.get('guidance_sources', ())) + 1
+        db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
+                   'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
         # Keep objective, question, status, source/tool scope and past results.
         db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))
         return _snapshot(db,sid,gid)

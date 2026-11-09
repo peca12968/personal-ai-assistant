@@ -48,6 +48,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_multis
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_source_conflicts.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_progressive_replies.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_dependencies.json'))
+CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_scoped_amendments.json'))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py', '--suite', 'evals/goal_source_handoffs.json'))

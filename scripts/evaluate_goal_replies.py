@@ -6,10 +6,11 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from assistant import autonomy, goal_replies
+from assistant import autonomy, goal_guidance, goal_replies
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
 from scripts.evaluate_understanding import validate_cases, fingerprint, load_report, save_report
@@ -53,6 +54,28 @@ def replies_for(case):
     return replies
 
 
+def apply_amendments(store, sid, gid, case):
+    if 'amendments' not in case and 'prior_read_ranges' not in case:
+        return None
+    amendments = case.get('amendments')
+    if not isinstance(amendments, list) or not 1 <= len(amendments) <= 4:
+        raise ValueError('更正案例需指定一至四則主動補充。')
+    for content in amendments:
+        autonomy.text(content, 4000)
+    action = {'tool': 'read_ranges', 'args': {'ranges': case.get('prior_read_ranges')}, 'note': '核對初始文件'}
+    engine = SimpleNamespace(answer=lambda prompt, cancel: json.dumps(action, ensure_ascii=False))
+    read = autonomy.run_goal(store, sid, gid, engine, max_steps=1)
+    if read['status'] != 'paused' or read['steps'][0]['action']['tool'] != 'read_ranges':
+        raise ValueError('更正案例未完成初始批次查讀。')
+    saved = []
+    for content in amendments:
+        review = goal_guidance.snapshot(store, sid, gid)
+        saved.append(goal_guidance.save(store, sid, gid, content, expected_fingerprint=review['fingerprint']))
+        if saved[-1]['step_count'] != len(read['steps']) or saved[-1]['goal']['status'] != 'paused':
+            raise ValueError('主動更正應保存原進度與暫停狀態。')
+    return {'before': read, 'saved': saved}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -70,6 +93,7 @@ def main():
                 for index, case in enumerate(cases):
                     store, sid, gid = prepare(Path(temp)/f'{index}.sqlite3', case)
                     assert goal_replies.snapshot(store, sid, gid)['goal']['status'] == 'pending'
+                    apply_amendments(store, sid, gid, case)
             print(f'Validated {len(cases)} reply scenarios; no model calls or quality grades.')
             return
         if not args.report: raise ValueError('真實評估需指定新的本機報告路徑。')
@@ -88,6 +112,9 @@ def main():
             row = {'id':case['id'], 'category':case['category'], 'criteria':case['criteria'],
                    'human_grade':None, 'state_path':str(path), 'session_id':sid, 'goal_id':gid, 'calls':[],
                    'fixture':case}
+            setup = apply_amendments(store, sid, gid, case)
+            if setup is not None:
+                row['amendment_setup'] = setup
             engine = CodexEngine(folder/f'engine-{index}')
             trace_path = folder/f'{index}.request.json'
             class Recorded:

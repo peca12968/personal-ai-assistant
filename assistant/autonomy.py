@@ -17,6 +17,7 @@ from . import document_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
 from . import goal_partials
+from . import goal_guidance_sources
 from . import goal_reply_sources
 from . import artifacts
 from . import autonomy_csv
@@ -46,7 +47,7 @@ previous_stage若存在，是使用者明確選取的上一階段歷史背景；
 本階段user_notes依追加順序保留歷史；其中最新明確的使用者更正優先於原目標數值、較早補充及聊天／上一階段背景，未被更正的要求仍保留。引文、假設或舉例不等於已改決定，不明確時才詢問。舊步驟是在舊條件下的結果；條件改變後需重新計算或讀取適用證據，不可直接把舊答案當作新成果。補充不增加任何工具、文件或CSV權限，不會撤銷已執行的動作；已保存文件不能覆寫，必要時在原限制內另存新檔。
 sources_match_current為false表示文件清單或版本已不同，舊成果只作背景。即使為true，也要重新讀取本階段需要的來源與計算。
 source_comparison若有，逐份比較上一階段與本階段保存的匯入副本。different表示同編號的名稱或指紋不同，可能是替換，應讀本階段原文核對適用範圍；removed表示舊編號本階段未收錄，added表示新編號，unchanged表示兩份保存的版本相同。prior_excerpt_steps和prior_incomplete_steps只標示上一階段保留下來的片段與未完整查讀步驟。先依本階段要求重讀需要的來源，再核對舊錯誤是否仍適用。不可把舊值或相似檔名當成本階段依據。
-上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號。不能把舊成果或舊工具權限當成當前事實或新授權。
+上一階段引用不代表本階段已讀取；只能引用本階段工具實際提供的行號，以及本階段保存的回覆或更正編號。不能把舊成果或舊工具權限當成當前事實或新授權。
 你只能查找／讀取此目標的已匯入文件、查找有效記憶、做計算，並產生本機文字成果。
 如果本目標有csv_source，另可使用後附CSV工具處理所選副本；沒有時不可使用CSV工具。
 如果本目標有conversation_history，另可用後附search_conversation查找與read_conversation讀取該目標保存的歷史片段及前後文；沒有時不可查找其他或即時對話。
@@ -163,6 +164,9 @@ def get_goal(store, sid, gid):
         reply_sources = goal_reply_sources.read(db, gid, result['notes'])
         if reply_sources:
             result['reply_sources'] = reply_sources
+        guidance_sources = goal_guidance_sources.read(db, gid, result['notes'], len(result['steps']))
+        if guidance_sources:
+            result['guidance_sources'] = guidance_sources
         if result['status'] == 'needs_input' and result['steps']:
             last = result['steps'][-1]
             result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
@@ -257,7 +261,7 @@ def validate_action(value):
     return value
 
 
-def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=()):
+def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=()):
     name, args = action['tool'], action['args']
     if name == 'month_schedule':
         return month_schedule.calculate(args, cancel)
@@ -303,7 +307,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
     if name == 'ask':
         question = {'question': args['question']}
-        sources = goal_partials.question_citations(args['question'], excerpts, reply_sources)
+        sources = goal_partials.question_citations(args['question'], excerpts, reply_sources, guidance_sources)
         if sources is not None:
             question['question_citations'] = sources
         if 'partial_result' not in args:
@@ -313,10 +317,15 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
     reply_checks = goal_reply_sources.citations(args[field], reply_sources)
-    reply_observation = {'reply_citations': reply_checks} if reply_checks else {}
+    guidance_checks = goal_guidance_sources.citations(args[field], guidance_sources)
+    user_observation = {}
+    if reply_checks:
+        user_observation['reply_citations'] = reply_checks
+    if guidance_checks:
+        user_observation['guidance_citations'] = guidance_checks
     if name == 'ask':
         return {**question, 'partial_result': args['partial_result'], 'citation_checks': checks,
-                **reply_observation}
+                **user_observation}
     with store.connect() as db:
         file_delivery = artifacts.enabled(db, gid) if gid else False
     if name in ('write_artifact', 'deliver') and not file_delivery:
@@ -325,11 +334,11 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         raise ValueError('此目標要求交付文件；請先write_artifact，再用deliver列出已保存檔名。')
     if name == 'write_artifact':
         return {'artifact': artifacts.write(store, gid, args['filename'], args['content']),
-                'citation_checks': checks, **reply_observation}
+                'citation_checks': checks, **user_observation}
     receipts = artifacts.deliver(store, gid, args['filenames']) if name == 'deliver' else []
     return {'report': args['report'], 'citation_checks': checks,
             'artifacts': receipts,
-            'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。', **reply_observation}
+            'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。', **user_observation}
 
 
 def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None):
@@ -373,7 +382,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 reason = 'sources_changed'
                 update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
                 break
-            payload = {'objective': goal['objective'], 'user_notes': goal['notes'],
+            guidance_sources = goal.get('guidance_sources', ())
+            payload = {'objective': goal['objective'],
+                       'user_notes': goal_guidance_sources.prompt_notes(goal['notes'], guidance_sources),
                        'work_plan': goal['work_plan'],
                        'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
                            if key not in {'companion_profile', 'engine_selection'}}} for step in goal['steps']],
@@ -392,6 +403,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             if engine_selection is not None:
                 payload['engine_selection'] = engine_selection
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
+                ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
@@ -412,7 +424,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
-                                      reply_sources=reply_sources)
+                                      reply_sources=reply_sources, guidance_sources=guidance_sources)
             except (ValueError, TypeError, KeyError) as exc:
                 action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                 observation = {'error': str(exc)[:500],

@@ -345,6 +345,9 @@ class AutonomousWindow:
             lines += ['使用者回覆來源（本目標）']
             lines += [f"{source['citation']} · {source['question']}\n{source['answer']}"
                       for source in goal['reply_sources']]
+        if goal.get('guidance_sources'):
+            lines += ['主動更正來源（本目標）']
+            lines += [f"{source['citation']} · {source['content']}" for source in goal['guidance_sources']]
         if goal['notes']:
             lines += ['本階段的問題與補充紀錄：', goal['notes']]
         if goal.get('conversation_history') is not None:

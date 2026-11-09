@@ -48,8 +48,10 @@ class GoalReplyWindow:
                 lines[2:2] = ['待補期間的成果（尚待定稿）', goal['partial_result']]
             if goal.get('question_citations'):
                 refs = goal['question_citations']
-                tokens = dict.fromkeys(row['citation'] for row in refs['documents'] + refs['replies'])
+                tokens = dict.fromkeys(row['citation'] for row in refs['documents'] + refs['replies'] + refs.get('guidance', []))
                 lines.insert(-1, '目前問題的來源位置 ' + '、'.join(tokens))
+                lines[-1:-1] = [f"{source['citation']} · {source['content']}"
+                               for source in goal.get('guidance_sources', []) if source['citation'] in tokens]
             self.context.configure(state='normal')
             self.context.delete('1.0', 'end'); self.context.insert('1.0', '\n\n'.join(lines))
             self.context.configure(state='disabled')

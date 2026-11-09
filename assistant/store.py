@@ -151,6 +151,12 @@ class Store:
                     notes_start INTEGER NOT NULL CHECK(notes_start>=0), answer TEXT NOT NULL,
                     PRIMARY KEY(goal_id,ask_sequence),
                     FOREIGN KEY(goal_id,ask_sequence) REFERENCES autonomous_steps(goal_id,sequence));
+                CREATE TABLE IF NOT EXISTS autonomous_guidance_sources (
+                    goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
+                    number INTEGER NOT NULL CHECK(number>=1),
+                    notes_start INTEGER NOT NULL CHECK(notes_start>=0),
+                    steps_seen INTEGER NOT NULL CHECK(steps_seen BETWEEN 0 AND 31),
+                    stamp TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(goal_id,number));
                 CREATE TABLE IF NOT EXISTS autonomous_handoffs (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     parent_goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),
