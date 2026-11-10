@@ -1,0 +1,64 @@
+[
+  {
+    "id": "handover_roles_appointment_and_completed_event",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "release.txt", "content": "槐橋 E8 放行單。本批交出 22 盒，現場點退 4 盒。\n備品封好，等交接人到齊。接下來由游同仁簽收，紀錄由何同仁填。\n轉貼 E9 完成單：何同仁已簽收 18 盒。\n"},
+      {"name": "chat.txt", "content": "E8 群聊：「如果游同仁未到，可以找簡同仁代簽嗎？」仍在討論，未指定代理人。\n"}
+    ],
+    "prompt": "讀 [D1:L1-L3] 和 [D2:L1]，做槐橋 E8 當前交接卡。給應交淨盒數、指定簽收人、紀錄人及是否已有實際簽收證據。每項引用來源，只交文字。未取得實際簽收證據就明列，無需追問。",
+    "criteria": ["E8 淨 18 盒，游同仁是待簽收安排，何同仁填紀錄。", "E9 何同仁實際簽收不能用於 E8，簡同仁是未採用提問。E8 實際簽收待證。", "正確引用且不追問。"]
+  },
+  {
+    "id": "handover_signed_quantity_and_remaining_open",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "planned.txt", "content": "竹汀盒件 N7 交接單：應交 31 盒，簽收暫排石同仁。\nN7-A 分單已結案，石同仁簽收 7 盒，不計入 N7。\n"},
+      {"name": "actual.txt", "content": "N7 分次簽收簿：先到的 19 盒，已由施同仁在收件台簽收；紀錄僅涵蓋這 19 盒。\n餘箱先保留。最後一批由誰簽，交接簿還沒有安排。\n"}
+    ],
+    "prompt": "依 [D1:L1-L2]、[D2:L1-L2] 整理 N7 交接狀態。分開寫暫排與實際簽收，給尚未簽收盒數和最後一批的人員狀態。最後一批未知就列待查，無需追問。",
+    "criteria": ["暫排石同仁，實簽施同仁 19 盒，尚未簽收 12 盒。", "N7-A 排除，最後一批人員待查。沒有將已簽人或原暫排直接套到未簽部分。", "原安排及實簽來源分開，無提問。"]
+  },
+  {
+    "id": "handover_backup_condition_has_no_current_observation",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "procedure.txt", "content": "芒汀西線 R6 袋件 14 袋。今班值班窗口呂同仁。\n本班交接：只有門口讀卡失敗，才改由呂同仁簽收；其他情況由張同仁簽收。\n"},
+      {"name": "handover.txt", "content": "R6 昨日讀卡未過，由呂同仁簽收。\n今天只查了封條，讀卡狀態尚未記錄。北線 R6 讀卡已過，為另線。\n"}
+    ],
+    "prompt": "讀 [D1:L1-L2] 和 [D2:L1-L2]。做芒汀西線 R6 交接表，保留今天的袋數、窗口、兩種簽收安排及目前能否確定人員。先交暫表且只問能決定簽收人、而又尚未取得的那項觀察；答覆後交文字定稿。",
+    "replies": ["今天西線 R6 在門口讀卡成功。沒有簽收完成回報。"],
+    "criteria": ["暫表 14 袋、窗口呂同仁、簽收人未定，讀卡失敗呂同仁、其餘張同仁。", "只問今日西線 R6 讀卡結果。昨日及北線不可當今日西線。", "定稿指定張同仁、保留窗口呂同仁與 14 袋，引用補充及規則，沒有聲稱已簽收。"]
+  },
+  {
+    "id": "handover_quoted_person_ascribed_to_wrong_role",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "meeting.txt", "content": "霧港第六庫 K4 批，會議紀錄。\n江同仁報告：「吳同仁說暫時由我簽收。」引號中的「我」是吳同仁，尚待指派。\n散會決議：文件複核交江同仁，簽收人待排；原提案未採納。\n"},
+      {"name": "current.txt", "content": "K4 移交卡：移交件 11 冊，由柳同仁送到西台，簽收指派沒有更新。\nK40 的西台實際簽收為柳同仁。\n"}
+    ],
+    "prompt": "讀 [D1:L1-L3]、[D2:L1-L2]。交 K4 的文字移交卡，列送件人、複核人、簽收人、件數和去向，再記錄引述人選屬誰及目前狀態。缺姓名可標待查，無需提問。",
+    "criteria": ["柳同仁送件，江同仁複核，K4 簽收人待排。11 冊送西台。", "引述人選是吳同仁且未採納。沒有把江或柳當作 K4 簽收人，也沒有宣稱 K4 已簽收。", "各項引用相符，無提問。"]
+  },
+  {
+    "id": "handover_explicit_supersession_despite_older_timestamp",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "draft.txt", "content": "07:30 建立 井南 V5-A 午班交接草案：戴同仁簽收、南二桌、預計交 27 件。\n15:10 補登早班結案：井南 V5，戴同仁已簽收 23 件。\n"},
+      {"name": "approval.txt", "content": "10:05 午班井南 V5-A 正式安排，取代 07:30 草案。施同仁簽收，交北三桌，原備 27 件中 3 件未裝袋。\n本行僅核准安排，沒有到件記錄。\n"},
+      {"name": "later.txt", "content": "16:20 檔案索引加註：井南 V5-A 07:30 草案已轉存備查，轉存不變更核准安排。\n"}
+    ],
+    "prompt": "依三份資料作井南 V5-A 午班現行交接卡。列正式簽收人、地點、可交件數、目前完成狀態及依哪一則生效。請交來源，無需追問。",
+    "criteria": ["施同仁，北三桌，24 件，午班實際簽收尚無證據。", "正確採用 10:05 正式取代。排除早班簽收及更晚的草案轉存時間，不誤採戴同仁、南二桌或 23 件。", "各項引用實際查讀，無提問。"]
+  },
+  {
+    "id": "handover_ambiguous_cancelled_role_with_other_scope_control",
+    "category": "goal_natural_handover",
+    "documents": [
+      {"name": "routing.txt", "content": "潮岸 Q6 送交單，共 8 捆，送窗三。主送范同仁，指定簽收周同仁。\n當日更新：范同仁取消這趟送件，其他欄照舊。代送人未排。\n補充群組草稿：有人寫「要不要找辛同仁送交？」未確認。\n"},
+      {"name": "other.txt", "content": "潮岸 Q6A 窗三由辛同仁送交，周同仁簽收。\n"}
+    ],
+    "prompt": "讀 [D1:L1-L3] 和 [D2:L1]。交潮岸 Q6 現行送交卡，保留不受取消影響的欄位。列代送、簽收、數量、去向，依資料只給安排。代送未知可以交待查，不必問。",
+    "criteria": ["代送待排，周同仁仍指定簽收，8 捆交窗三。", "范同仁取消只影響主送。辛同仁的另一單與草稿都未採。未聲稱 Q6 已實際交接。", "引用原單和更新，無提問。"]
+  }
+]

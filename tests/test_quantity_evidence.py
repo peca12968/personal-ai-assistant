@@ -11,6 +11,43 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_checked_report_natural_assignment_distinguishes_role_scope_and_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            lines = [
+                '青岬本批由康同仁簽收。', '青岬本批已由田同仁簽收。', '青岬下批由田同仁簽收。',
+                '引述「青岬本批由田同仁簽收」。', '青岬本批暫由田同仁簽收。', '青岬本批若下雨由田同仁簽收。',
+                '青岬本批由康或田同仁簽收。', '青岬本批由尚未確認的田同仁簽收。',
+                '青岬本批紀錄人為「林文心」。', '青岬本批送件人尚未指派。',
+            ]
+            path = root / 'handover.txt'
+            path.write_text('\n'.join(lines), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            directive = quantity_report_fields.DIRECTIVE
+            ranges = f'[D{did}:L1-L{len(lines)}]'
+            fields = ('青岬本批簽收人', '青岬本批紀錄人', '青岬本批送件人')
+
+            def observe(marker):
+                objective = '\n'.join([directive, *(f'附加欄位：欄位「{name}」｜{marker}{ranges}' for name in fields)])
+                gid = autonomy.create_goal(store, sid, objective)
+                goal = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                    action('read', document_id=did, start_line=1, end_line=len(lines))), max_steps=1)
+                return quantity_report_fields.observe(goal, goal['steps'], (), ())
+
+            legacy = observe('')
+            self.assertEqual([row['records'] for row in legacy], [[], [], []])
+            observed = observe('原文安排｜')
+            self.assertEqual([row['value'] for row in observed], ['康同仁', '林文心', None])
+            self.assertEqual([row['status'] for row in observed], ['confirmed', 'confirmed', 'unconfirmed'])
+            for row, number, kind in zip(observed, (1, 9, 10), ('natural_assignment', 'natural_assignment', 'natural_pending')):
+                evidence, = row['records']
+                self.assertEqual((evidence['citation'], evidence['quote'], evidence['kind']),
+                                 (f'[D{did}:L{number}]', lines[number - 1], kind))
+            with self.assertRaisesRegex(ValueError, '原文安排須指定'):
+                autonomy.create_goal(store, sid, f'{directive}\n附加欄位：欄位「交接窗口」｜原文安排｜{ranges}')
+
     def test_checked_report_fields_reuse_quantities_and_bind_exact_sources(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

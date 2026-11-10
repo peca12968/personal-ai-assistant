@@ -545,6 +545,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + quantity_evidence.BATCH_NOTE_REVIEW_GUIDANCE if note_review else '') +
                 ('\n' + quantity_report.GUIDANCE if checked_report else '') +
                 ('\n' + quantity_report_fields.GUIDANCE if report_fields else '') +
+                ('\n' + quantity_report_fields.NATURAL_GUIDANCE
+                 if any(field.get('natural_assignment') for field in report_fields) else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
