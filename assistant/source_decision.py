@@ -7,7 +7,8 @@ from . import decision_table, document_ranges, goal_guidance_sources, goal_reply
 
 GUIDANCE = '''check_source_decision可逐行核對固定格式的規則。若原文使用「範圍｜狀態｜條件一、條件二：結果」，用此工具代替自行轉錄。傳入scope完整範圍名稱、conditions欄序、domains完整選項、known本次已確認值，以及ranges已完整查讀的原規則區段（最多8段共32行，包含另案及未採用的行，不含標題）。範圍必須完整相同。文件狀態只能是正式、未採用或排除。排除行省略冒號和結果。範例「甲批｜正式｜高、室內：甲架」。
 若本次有明確保存的單筆更正，且原話整則符合「甲批｜更正｜高、室內：新架」，可加amendment，值為實際的補充或更正引用編號。只替換同範圍、同條件的一列或補缺列，不改其他批次。只用本次適用且已保存的正式更正，不使用引文或假設。格式或範圍不同時回到原文核對，不改寫原行冒充精確來源。
-工具回傳由原行整理的表與decision核算，以及原行來源與是否採用。區分另案、未採用、正式排除與被更正取代。保留已確認的數量、窗口等資料，按實際來源引用。決策有缺列時只問缺的正式規則，收到符合格式的答覆後帶amendment重算。此工具核對你指定的已讀區段與字面範圍，是否涵蓋全部適用規則仍依原始資料。'''
+工具回傳由原行整理的表與decision核算，以及原行來源與是否採用。區分另案、未採用、正式排除與被更正取代。保留已確認的數量、窗口等資料，按實際來源引用。決策有缺列時只問缺的正式規則，收到符合格式的答覆後帶amendment重算。此工具核對你指定的已讀區段與字面範圍，是否涵蓋全部適用規則仍依原始資料。
+原文也可有「甲批｜v2｜正式｜高：新架」和「甲批｜採用版本｜v2」。把版號規則和採用行都納入check_source_decision的已讀ranges。不以較新編號推定生效。只依同批明文採用行篩選版本，無版號的共同規則仍保留。沒有採用行時保留各版正式記載，有影響才請補必要資訊。若工具給出adopted_version，交付時把規則行與採用行各自引用。同批兩個採用記載互相矛盾或找不到採用版規則時，請使用者補正原文依據。'''
 
 _AMENDMENT = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _STATES = {'正式', '未採用', '排除'}
@@ -84,6 +85,16 @@ def _parse(text, size, *, user=False):
     if not isinstance(text, str) or len(text.splitlines()) != 1:
         raise ValueError('原文規則或保存更正須為單一完整行。')
     parts = text.removesuffix('。').split('｜')
+    version = None
+    if not user and len(parts) == 3 and parts[1] == '採用版本':
+        scope, status, version = parts
+        decision_table._label(scope)
+        decision_table._label(version)
+        return scope, status, [], '', version
+    if not user and len(parts) == 4:
+        scope, version, status, body = parts
+        decision_table._label(version)
+        parts = [scope, status, body]
     if len(parts) != 3 or parts[1] not in ({'更正'} if user else _STATES):
         raise ValueError('原文規則的範圍、狀態或分隔格式不符。')
     scope, status, body = parts
@@ -96,7 +107,7 @@ def _parse(text, size, *, user=False):
         decision_table._label(value)
     if separator:
         decision_table._label(result)
-    return scope, status, values, result
+    return scope, status, values, result, version
 
 
 def _gather_lines(ranges, steps, sources):
@@ -161,18 +172,35 @@ def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
         source = next((row for row in (*replies, *guidance) if row['citation'] == token), None)
         if source is None:
             raise ValueError('找不到本目標已保存的更正或補充。')
-        scope, _, values, result = _parse(source.get('answer', source.get('content')), size, user=True)
+        scope, _, values, result, _ = _parse(source.get('answer', source.get('content')), size, user=True)
         if scope != args['scope']:
             raise ValueError('所選更正只適用其原話中的完整範圍。')
         amendment = {'citation': token, 'sha256': source['sha256'], 'when': values, 'result': result}
 
+    parsed = [(did, number, sequence, _parse(text, size)) for did, number, sequence, _, text in lines]
+    adopted = {}
+    for did, number, _, (scope, status, _, _, version) in parsed:
+        if scope == args['scope'] and status == '採用版本':
+            adopted.setdefault(version, []).append(f'[D{did}:L{number}]')
+    if len(adopted) > 1:
+        raise ValueError('同一範圍有互相衝突的採用版本，請核對正式採用記錄。')
+    selected = next(iter(adopted), None)
+    if selected and not any(scope == args['scope'] and version == selected and status in {'正式', '排除'}
+                            for _, _, _, (scope, status, _, _, version) in parsed):
+        raise ValueError('已讀區段缺少本批所採用版本的正式規則。')
+
     records, rows, excluded = [], [], []
     indexed = {}
-    for did, number, sequence, _, text in lines:
-        scope, status, values, result = _parse(text, size)
+    for did, number, sequence, (scope, status, values, result, version) in parsed:
         record = {'citation': f'[D{did}:L{number}]', 'read_step': sequence}
+        if version is not None:
+            record['version'] = version
         if scope != args['scope']:
             disposition = 'other_scope'
+        elif status == '採用版本':
+            disposition = 'version_adopted'
+        elif selected and version is not None and version != selected:
+            disposition = 'other_version'
         elif status == '未採用':
             disposition = 'not_adopted'
         elif status == '排除':
@@ -198,6 +226,8 @@ def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
                    'evidence_sha256': goal_stages.digest([lines, amendment])}
     if amendment:
         observation['amendment'] = amendment
+    if selected:
+        observation['adopted_version'] = {'name': selected, 'citations': adopted[selected]}
     if declared:
         observation['declared_ranges'] = declared
     return observation

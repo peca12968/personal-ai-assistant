@@ -197,6 +197,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_declared_rule_ranges.json` 檢查已讀部分、跨兩份文件的固定範圍及副本缺行。真實評估核對每輪實際讀取區段、原文規則核算及定稿前的核對步驟。另用相同受控動作比較舊版與新版，故意少送一列再嘗試定稿，與模型自由作答的結果分開記錄。
 
+`python scripts/evaluate_goal_replies.py --suite evals/goal_source_rule_versions.json` 檢查明文採用較早的版本、同級無採用記錄時的相容衝突，以及其他條件的衝突不改本批結果。分開核對採用行、各版規則與同一範圍的正式回覆，並評讀是否只問仍影響交付的欄位。舊版與新版的文字結果和工具路徑分開記錄。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

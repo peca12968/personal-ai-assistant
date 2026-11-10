@@ -138,3 +138,57 @@ class SourceDecisionTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 autonomy.create_goal(self.store, self.sid, raw + '\n核對位置')
         self.assertEqual(autonomy.goals(self.store, self.sid), before)
+
+    def version_rules(self, lines):
+        path = self.root / 'versions.txt'
+        path.write_text('\n'.join(lines), encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        self.gid = autonomy.create_goal(self.store, self.sid, f'決策規則範圍：[D{did}:L1-L{len(lines)}]\n核對青甲批')
+        spec = {**self.spec, 'domains': {'級別': ['高', '低']},
+                'ranges': [{'document_id': did, 'start_line': 1, 'end_line': len(lines)}]}
+        self.run_actions(action('read_ranges', ranges=spec['ranges']))
+        return did, spec
+
+    def test_explicit_adoption_uses_exact_batch_and_retains_shared_rules(self):
+        did, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+            '青甲批｜正式｜低：前台。', '青甲批｜採用版本｜v1。',
+            '青甲批一｜採用版本｜v2。',
+        ])
+        result = self.run_actions(action('check_source_decision', **spec), action('finish', report='本批採甲架。'))
+        observation = result['steps'][1]['observation']
+        self.assertEqual(observation['decision']['possible_results'], ['甲架'])
+        self.assertEqual(observation['adopted_version'], {'name': 'v1', 'citations': [f'[D{did}:L4]']})
+        self.assertEqual(observation['table']['rows'], [{'when': ['高'], 'result': '甲架'},
+                                                        {'when': ['低'], 'result': '前台'}])
+        self.assertEqual([row['status'] for row in observation['source_rows']],
+                         ['included', 'other_version', 'included', 'version_adopted', 'other_scope'])
+        self.assertEqual(result['steps'][-1]['observation']['source_check_step'], 2)
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), result)
+
+    def test_no_adoption_keeps_both_versions_and_checks_relevant_assignments(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v1｜正式｜低：前台。',
+            '青甲批｜v2｜正式｜高：乙架。', '青甲批｜v2｜正式｜低：前台。',
+        ])
+        result = self.run_actions(action('check_source_decision', **spec),
+                                  action('check_source_decision', **{**spec, 'known': {'級別': '低'}}))
+        high, low = [step['observation'] for step in result['steps'][-2:]]
+        self.assertNotIn('adopted_version', high)
+        self.assertEqual(high['decision']['coverage']['conflicting_rows'][0]['results'], ['甲架', '乙架'])
+        self.assertEqual(low['decision']['possible_results'], ['前台'])
+        self.assertEqual(low['source_rows'][1]['table_row'], low['source_rows'][3]['table_row'])
+
+    def test_conflicting_and_missing_adoption_cannot_select_a_default(self):
+        for adopted, message in [(['v1', 'v2'], '互相衝突'), (['v3'], '缺少本批所採用版本')]:
+            with self.subTest(adopted=adopted):
+                _, spec = self.version_rules([
+                    '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+                    *(f'青甲批｜採用版本｜{version}。' for version in adopted),
+                ])
+                result = self.run_actions(action('check_source_decision', **spec))
+                self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
+                self.assertIn(message, result['steps'][-1]['observation']['error'])
