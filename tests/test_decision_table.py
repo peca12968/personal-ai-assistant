@@ -709,6 +709,69 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_current_alternatives_constrain_questions_and_replay_without_changing_rules(self):
+        plan = {'conditions': ['日期', '件數'], 'known': {'日期': '週三', '件數': '6'},
+                'domains': {'日期': ['週三', '週五'], '件數': ['6', '10']}, 'excluded': [['週五', '10']],
+                'rows': [{'when': ['週三', '6'], 'result': '原台'}, {'when': ['週三', '10'], 'result': '甲台'},
+                         {'when': ['週五', '6'], 'result': '乙台'}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '只核對本輪互斥配對')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='本輪更新？')))
+
+            def reply(text):
+                state = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=state['fingerprint'])
+
+            quote = '本輪只有週三10件或週五6件'
+            reply('原日期與件數撤回。' + quote + '。')
+            cases = [{'日期': '週三', '件數': '10'}, {'日期': '週五', '件數': '6'}]
+            update = {'known_update': {'日期': None, '件數': None}, 'source': '[補充#2]'}
+            first = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', **update, alternatives={'cases': [cases[0], {'日期': '週五', '件數': '10'}], 'quote': quote}),
+                action('check_decision', **update, alternatives={'cases': cases, 'quote': quote}),
+                action('ask', question='確認日期？')))
+            self.assertIn('不相容', first['steps'][2]['observation']['error'])
+            checked = first['steps'][3]['observation']
+            self.assertEqual(checked['matching_rows'], [2, 3])
+            self.assertEqual(checked['possible_results'], ['甲台', '乙台'])
+            self.assertEqual(checked['coverage']['excluded_rows'], [])
+            self.assertEqual(checked['question']['condition'], '日期')
+            self.assertEqual(checked['max_questions'], 1)
+            self.assertEqual(checked['current_alternatives']['remaining_cases'], cases)
+            reply('正式確認日期為週五。')
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', known_update={'日期': '週五'}, source='[補充#5]'),
+                action('finish', report='週五，6件，乙台。')))
+            decision = final['steps'][5]['observation']
+            self.assertEqual(decision['possible_results'], ['乙台'])
+            self.assertEqual(decision['current_alternatives']['remaining_cases'], [cases[1]])
+            self.assertEqual(decision['current_alternatives']['implied_known'], {'件數': '6'})
+            previous, _, _ = decision_table._recheck_saved(final['steps'], final['reply_sources'], ())
+            self.assertEqual(previous[1]['excluded'], plan['excluded'])
+            self.assertEqual(previous[1]['rows'], plan['rows'])
+            self.assertEqual(previous[1]['known'], {'日期': '週五'})
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            decision['current_alternatives']['implied_known']['件數'] = '10'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                           (json.dumps(decision, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+        priority = {key: value for key, value in plan.items() if key not in {'rows', 'known'}}
+        priority.update(known={}, rules=[{'priority': 0, 'when': {}, 'result': '共用台'}])
+        common = decision_table.calculate(priority, alternatives={'cases': cases}, require_all=True)
+        self.assertEqual(common['possible_results'], ['共用台'])
+        self.assertEqual(common['max_questions'], 0)
+        self.assertEqual(common['current_alternatives']['remaining_cases'], cases)
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}

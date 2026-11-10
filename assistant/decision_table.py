@@ -34,6 +34,9 @@ NATURAL_UPDATE_GUIDANCE = '''同一目標已有決策核對及最新自然語句
 NATURAL_UPDATE_GUIDANCE += '''
 同一則最新補充同時明確更新正式條件，並要求以更新後的正式條件為起點做一次假設時，用同一個check_decision。known_update、source及evidence放正式改動，另附"scenario":{"updates":{"原欄名":"試算值"},"evidence":{"原欄名":[{"citation":"[補充#3]","quote":"假設…"}]}}，不用what_if:true。正式與試算各附逐字短句，最新來源的正式短句與試算短句不能重疊；試算短句從原文的假設、如果、若或試算標記開始。只改明列欄位，撤回用null。工具先算正式結果，再從更新後的條件只套用試算欄位，回傳what_if_result與what_if_update。只保存正式條件供之後接續；交付分開標示兩種結果及各自原話。未要求試算的提案不填scenario。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+最新原話明列本輪只可能是二至八個配對，且每組都明列相同的兩個以上完整欄位時，在known_update旁加"alternatives":{"cases":[{"日期":"週三","件數":"18"},{"日期":"週五","件數":"12"}],"quote":"本輪只剩兩種可能：週三18件或週五12件"}。用實際source、原表的完整選項及逐字的限制短句。已撤回的原已知值用null，沒有欄位要改可給空物件。這些配對只限制本輪，不改原表excluded和規則。未採用提案、獨立待查，或只說某個欄變動但未列完整配對時，不填alternatives。current_alternatives.remaining_cases是仍可能的配對，implied_known是依仍可能配對可推得的欄位，引用配對原話及正式確認。若各配對結果一致或使用者只要條件成果，直接交付；須確認時只問會區分結果的欄位。收到確認只更新該欄，工具會沿用本輪配對。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -270,10 +273,8 @@ def _scoped_precedence_cases(assignments, conditions, rules, edges):
     return cases, [edge for index, edge in enumerate(edges, 1) if index in disputes]
 
 
-def _calculate_priority(args, declared, excluded):
-    conditions, known, rules = args['conditions'], args['known'], args['rules']
-    fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
-    compatible = [row for row in declared if all(row[index] == value for index, value in fixed)]
+def _calculate_priority(args, compatible, excluded):
+    conditions, rules = args['conditions'], args['rules']
     active = [row for row in compatible if row not in excluded]
     if 'precedence' in args:
         edges = args['precedence']
@@ -312,15 +313,39 @@ def _calculate_priority(args, declared, excluded):
     return {'status': 'resolved' if first is None else 'needs_check', **observation, 'possible_results': results}
 
 
-def calculate(args):
+def calculate(args, *, alternatives=None, require_all=False):
     declared, excluded = validate(args)
-    if 'rules' in args:
-        return _calculate_priority(args, declared, excluded)
-    conditions, rows, known = args['conditions'], args['rows'], args['known']
-    fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
-    def matches(assignment):
-        return all(assignment[field] == value for field, value in fixed)
+    conditions, known = args['conditions'], args['known']
+    indices = {name: index for index, name in enumerate(conditions)}
+    fixed = [(indices[name], value) for name, value in known.items()]
+    cases = alternatives['cases'] if alternatives is not None else ()
+    pairs = [tuple((indices[name], value) for name, value in case.items()) for case in cases]
 
+    def fits(assignment, requirements):
+        return all(assignment[index] == value for index, value in requirements)
+
+    def matches(assignment):
+        return fits(assignment, fixed) and (not pairs or any(fits(assignment, pair) for pair in pairs))
+
+    if 'rules' in args:
+        result = _calculate_priority(args, [row for row in declared if matches(row)], excluded)
+    else:
+        result = _calculate_rows(args, declared, excluded, matches)
+    if alternatives is None:
+        return result
+
+    universe = declared if declared is not None else [tuple(row['when']) for row in args['rows']]
+    active = [row for row in universe if row not in excluded and fits(row, fixed)]
+    remaining = [case for case, pair in zip(cases, pairs) if any(fits(row, pair) for row in active)]
+    if require_all and len(remaining) != len(cases):
+        raise ValueError('本輪配對有與原表可行情境或正式條件不相容的選項，未套用配對。')
+    implied = {name: value for name, value in (remaining[0] if remaining else {}).items()
+               if name not in known and all(case[name] == value for case in remaining)}
+    return {**result, 'current_alternatives': {**alternatives, 'remaining_cases': remaining, 'implied_known': implied}}
+
+
+def _calculate_rows(args, declared, excluded, matches):
+    conditions, rows = args['conditions'], args['rows']
     active = tuple(index for index, row in enumerate(rows) if matches(row['when']))
 
     def outcomes(indices):
@@ -361,6 +386,7 @@ def calculate(args):
 
 _REVISION_SOURCE = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _SCENARIO_START = re.compile(r'^(?:假設|假如|如果|若|(?:(?:另|只|僅)(?:做|想|供)?)?試算)')
+_PAIR_LIMIT = re.compile(r'(?:只|僅)(?:有|剩|可能|限|能)|限於|二選一')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 
 
@@ -378,11 +404,11 @@ def validate_tool(args):
                 or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
     elif isinstance(args, dict) and 'known_update' in args:
-        if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario'}
+        if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario', 'alternatives'}
                 or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
                 or ('what_if' in args and type(args['what_if']) is not bool)):
             raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
-        _validate_update_fields(args['known_update'])
+        _validate_update_fields(args['known_update'], allow_empty='alternatives' in args)
         if 'evidence' in args:
             _validate_update_evidence(args['evidence'], args['known_update'], args['source'])
         if 'scenario' in args:
@@ -392,17 +418,40 @@ def validate_tool(args):
                 raise ValueError('同則正式更新與試算須分別提供欄位及原話證據。')
             _validate_update_fields(scenario['updates'])
             _validate_update_evidence(scenario['evidence'], scenario['updates'], args['source'])
+        if 'alternatives' in args:
+            if args.get('what_if'):
+                raise ValueError('本輪正式配對不能當成單獨試算。')
+            _validate_alternatives(args['alternatives'])
     else:
         validate(args)
 
 
-def _validate_update_fields(updates):
-    if not isinstance(updates, dict) or not 1 <= len(updates) <= 5:
+def _validate_update_fields(updates, *, allow_empty=False):
+    if not isinstance(updates, dict) or not (0 if allow_empty else 1) <= len(updates) <= 5:
         raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
     for field, value in updates.items():
         _label(field)
         if value is not None:
             _label(value)
+
+
+def _validate_alternatives(alternatives):
+    if not isinstance(alternatives, dict) or alternatives.keys() != {'cases', 'quote'}:
+        raise ValueError('本輪配對須提供各組條件及同則補充的逐字原話。')
+    _label(alternatives['quote'])
+    cases = alternatives['cases']
+    if not isinstance(cases, list) or not 2 <= len(cases) <= 8:
+        raise ValueError('本輪配對需列出二至八組。')
+    unique = set()
+    for case in cases:
+        if not isinstance(case, dict) or not 2 <= len(case) <= 5 or case.keys() != cases[0].keys():
+            raise ValueError('本輪各配對須使用相同的二至五個完整欄位。')
+        for name, value in case.items():
+            _label(name)
+            _label(value)
+        unique.add(frozenset(case.items()))
+    if len(unique) != len(cases):
+        raise ValueError('本輪配對不得重複。')
 
 
 def _validate_update_evidence(evidence, updates, latest_citation):
@@ -496,9 +545,16 @@ def _result_summary(result):
     return {key: result[key] for key in ('status', 'possible_results', 'recorded_results') if key in result}
 
 
+def _current_result(plan, *, require_all=False):
+    if 'current_alternatives' not in plan:
+        return calculate(plan)
+    core = {key: value for key, value in plan.items() if key != 'current_alternatives'}
+    return calculate(core, alternatives=plan['current_alternatives'], require_all=require_all)
+
+
 def _revision_comparison(base, plan, changes, result):
     changed_fields = {change['field'] for change in changes if change['kind'] == 'condition'}
-    comparison = {'before': _result_summary(calculate(base)), 'after': _result_summary(result),
+    comparison = {'before': _result_summary(_current_result(base)), 'after': _result_summary(result),
                   'retained_known': {name: value for name, value in base['known'].items()
                                      if name not in changed_fields}}
     scopes = [dict(_edge_key(change['before'])[1]) for change in changes if change['kind'] == 'precedence']
@@ -509,8 +565,8 @@ def _revision_comparison(base, plan, changes, result):
     for values in product(*(base['domains'][name] for name in fields)):
         when = dict(zip(fields, values))
         branches.append({'when': when, 'within_revision_scope': any(scope.items() <= when.items() for scope in scopes),
-                         'before': _result_summary(calculate({**base, 'known': {**base['known'], **when}})),
-                         'after': _result_summary(calculate({**plan, 'known': {**plan['known'], **when}}))})
+                         'before': _result_summary(_current_result({**base, 'known': {**base['known'], **when}})),
+                         'after': _result_summary(_current_result({**plan, 'known': {**plan['known'], **when}}))})
     comparison['scope_comparison'] = branches
     return comparison
 
@@ -557,7 +613,7 @@ def _revision_plan(base_step, base, text):
         plan['known'] = {**base['known'], **fields}
     if edges:
         plan['precedence'] = _revised_precedence(base['precedence'], edges)
-    return plan, changes, calculate(plan)
+    return plan, changes, _current_result(plan)
 
 
 def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources):
@@ -570,6 +626,8 @@ def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_
         plan, changes, result = _revision_plan(base_step, base, text)
         if (replaces is not None or len(changes) > 1) and result['status'] == 'no_match':
             raise ValueError('新條件與宣告的可行情境不相容，整批未套用。')
+        if 'current_alternatives' in base and result['status'] == 'no_match':
+            raise ValueError('新條件與目前配對不相容，原核對保留。')
     except ValueError as exc:
         if replaces is not None or (text.startswith(f'核對#{base_step}｜') and len(text.splitlines()) > 1):
             raise _RejectedRevision(str(exc), source, set(citations)) from exc
@@ -604,6 +662,15 @@ def _updated_plan(base, updates):
     return {**base, 'known': known}, changes
 
 
+def _bind_alternatives(alternatives, plan, source):
+    cases, quote = alternatives['cases'], alternatives['quote']
+    if not cases[0].keys() <= set(plan['conditions']):
+        raise ValueError('本輪配對須使用原表欄位。')
+    if not _PAIR_LIMIT.search(quote) or _SCENARIO_START.match(quote) or quote.startswith(('「', '『', '引用', '引述')):
+        raise ValueError('本輪配對須引用明確限制目前可能組合的原話。')
+    return {'cases': cases, **_source_excerpt(source, quote)}
+
+
 def _apply_known_update(args, previous, sequence, replies, guidance):
     if previous is None:
         raise ValueError('已知欄位重算需有同一目標已保存的決策核對。')
@@ -617,13 +684,15 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
     if _source_text(source).startswith(('核對#', '取代｜')):
         raise ValueError('正式更正須以原話的正式格式重算。')
     plan, changes = _updated_plan(base, args['known_update'])
-    result = calculate(plan)
+    if 'alternatives' in args:
+        plan['current_alternatives'] = _bind_alternatives(args['alternatives'], plan, source)
+    result = _current_result(plan, require_all='alternatives' in args)
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': args['source'],
                'source_sha256': source['sha256'], 'changes': changes}
     if 'evidence' in args:
         receipt['evidence'] = _bind_update_evidence(args['evidence'], sources, positions)
     if args.get('what_if'):
-        return base, {**calculate(base), 'known_update': receipt, 'what_if_result': result}
+        return base, {**_current_result(base), 'known_update': receipt, 'what_if_result': result}
     if result['status'] == 'no_match':
         raise ValueError('更新值與原表的可行情境不相容，原核對保留。')
     if 'scenario' in args:
@@ -631,7 +700,7 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
         trial_evidence = _bind_update_evidence(scenario['evidence'], sources, positions)
         _separate_scenario_evidence(receipt['evidence'], trial_evidence)
         trial_plan, trial_changes = _updated_plan(plan, scenario['updates'])
-        result = {**result, 'what_if_result': calculate(trial_plan),
+        result = {**result, 'what_if_result': _current_result(trial_plan),
                   'what_if_update': {'changes': trial_changes, 'evidence': trial_evidence}}
     return plan, {**result, 'known_update': receipt}
 
@@ -657,14 +726,18 @@ def _bind_update_evidence(evidence, sources, positions):
             position = positions.get(citation, -1)
             if position <= previous:
                 raise ValueError('欄位證據須依序引用原核對後的同一目標補充。')
-            source = sources[citation]
-            text = _source_text(source)
-            start = text.find(quote)
-            if (start < 0 or text.find(quote, start + 1) >= 0 or text.startswith(('核對#', '取代｜'))):
-                raise ValueError('欄位證據須逐字引用自然補充中可唯一定位的短句。')
-            bound[field].append({**excerpt, 'source_sha256': source['sha256'], 'start': start, 'end': start + len(quote)})
+            bound[field].append(_source_excerpt(sources[citation], quote))
             previous = position
     return bound
+
+
+def _source_excerpt(source, quote):
+    text = _source_text(source)
+    start = text.find(quote)
+    if start < 0 or text.find(quote, start + 1) >= 0 or text.startswith(('核對#', '取代｜')):
+        raise ValueError('欄位證據須逐字引用自然補充中可唯一定位的短句。')
+    return {'citation': source['citation'], 'quote': quote, 'source_sha256': source['sha256'],
+            'start': start, 'end': start + len(quote)}
 
 
 def failed_revision(step):

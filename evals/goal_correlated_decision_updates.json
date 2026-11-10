@@ -1,0 +1,46 @@
+[
+  {
+    "id": "calendar_keep_two_possible_date_quantity_pairs",
+    "category": "goal_correlated_decision_updates",
+    "documents": [
+      {"name":"schedule.txt","content":"排展 M4 原確認日期週三，板數 12。日期只可能週三、週五；板數只可能 12、18，平時四種組合都可。\n"},
+      {"name":"rules.txt","content":"週三 12 面用小廳，週三 18 面用大廳。週五 12 面用後廳，週五 18 面用前廳。\n"}
+    ],
+    "prompt":"讀兩份首行，先用決策工具保存排展 M4 原安排，再問一次當輪更新。收到後仍用同一套規則核對本輪實際可能的組合，交日期、板數及展廳的條件報告，不再追問。其他輪次的通用規則不要改寫。",
+    "reply":"原確認的日期與板數一起撤回。M4 本輪只剩兩種可能：週三就用 18 面，週五就用 12 面。哪一組生效還沒確認。",
+    "criteria":["本輪只有週三18面大廳、週五12面後廳，日期板數均待查。","原週三12面是歷史，當輪不能列週五18面。規則照舊，不再追問。"]
+  },
+  {
+    "id":"transfer_invariant_result_no_question_for_unknown_pair",
+    "category":"goal_correlated_decision_updates",
+    "documents":[
+      {"name":"status.txt","content":"清池 R8 原定北口、開箱。入口只可能北口或南口；箱態只可能開箱或密封，平時四種皆可。\n"},
+      {"name":"policy.txt","content":"北口開箱交甲台，北口密封交乙台；南口開箱交乙台，南口密封交丙台。\n"}
+    ],
+    "prompt":"先讀兩份首行，用決策工具核對清池 R8 原安排，再問一次本批更新。若本批可能組合都導向同一交接台，就直接交該台，入口及箱態如尚未確定仍保留待查。不要修改通用對照表。",
+    "reply":"原確認的入口、箱態都撤回。本批只有北口密封或南口開箱兩種，不會是其他組合，目前不知道用哪一組。",
+    "criteria":["北口密封及南口開箱都導向乙台，入口及箱態仍待查。","無第二次提問；不把甲、丙台或舊組合作為本輪選項。"]
+  },
+  {
+    "id":"two_turn_choice_also_resolves_paired_quantity",
+    "category":"goal_correlated_decision_updates",
+    "documents":[
+      {"name":"receiving.txt","content":"岬北 H2 原核對上午、6 件。時段只有上午與下午；件數只有 6、10，通用規則可有四種。\n"},
+      {"name":"policy.txt","content":"上午 6 件走前台；上午 10 件走大台；下午 6 件走側台；下午 10 件走後台。\n"}
+    ],
+    "prompt":"讀兩份首行，先用決策工具保存岬北 H2 的原安排，再問一次現場更新。若有兩組互斥可能且處置不同，先交條件暫表，只問時段，收到確認後沿用這兩組核對當輪正式件數及台位，無需重問件數。保留原表與來源。",
+    "replies":["撤回原確認的時段及件數。H2 這輪只可能上午 10 件或下午 6 件，哪一組還在確認。","正式確認 H2 為下午，上一則補充的配對關係仍適用。"],
+    "criteria":["第二問前只列上午10件大台與下午6件側台，只問時段。","最後下午、6件、側台；已確認時段加原配對即確定件數，不重問。"]
+  },
+  {
+    "id":"declared_independent_missing_fields_stay_independent",
+    "category":"goal_correlated_decision_updates",
+    "documents":[
+      {"name":"data.txt","content":"光台 C2 原定晴、室內。天候可晴或雨；場地可室內或室外。四種都可能。\n"},
+      {"name":"policy.txt","content":"只要場地是室內就可上架。室外晴可上架，室外雨需等待。\n"}
+    ],
+    "prompt":"先讀兩份首行，用決策工具保存光台 C2 原安排，問一次本輪更新。收到後給條件報告，不再追問。",
+    "reply":"原天候和場地都撤回，目前各自待查，任一場地都可能遇到晴或雨。『雨就改室內』只是在會議上提過，未採用。",
+    "criteria":["保留全部四組，室內晴或雨、室外晴可上架，室外雨等待。","兩欄皆待查，未採用提議沒有排除室外雨，不再追問。"]
+  }
+]
