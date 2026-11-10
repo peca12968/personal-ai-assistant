@@ -197,6 +197,9 @@ def validate_database(path):
             from .quantity_evidence import validate_saved as validate_quantities
             validate_quantities(db, replies_present='autonomous_reply_sources' in actual_tables, guidance_present=guidance_present,
                                 scope_present=quantity_scope_tables <= actual_tables)
+            from .quantity_report import validate_saved as validate_quantity_reports
+            validate_quantity_reports(db, replies_present='autonomous_reply_sources' in actual_tables,
+                                      guidance_present=guidance_present, scope_present=quantity_scope_tables <= actual_tables)
             validate_partials(db, reply_sources_present='autonomous_reply_sources' in actual_tables,
                               guidance_sources_present=guidance_present)
             from .goal_reply_sources import validate_saved as validate_reply_sources

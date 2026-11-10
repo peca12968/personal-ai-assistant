@@ -10,6 +10,16 @@ REPORT_FIELDS = {'ask': 'partial_result', 'finish': 'report', 'deliver': 'report
 CITATIONS = re.compile(r'\[補充#[^\]\r\n]{0,32}\]')
 
 
+def saved_report(action, observation):
+    args = action.get('args')
+    field = REPORT_FIELDS.get(action.get('tool'))
+    if field is None or not isinstance(args, dict):
+        return None
+    if action['tool'] == 'finish' and args.keys() == {'quantity_report_step'}:
+        return observation.get('report')
+    return args.get(field)
+
+
 def note(question, answer):
     return '\n問題：' + question + '\n使用者補充：' + answer
 
@@ -94,9 +104,7 @@ def validate_saved(db, *, table_present):
                 raise ValueError('回覆引用步驟格式不符。')
             if 'reply_citations' not in observation:
                 continue
-            field = REPORT_FIELDS.get(action.get('tool'))
-            args = action.get('args')
-            report = args.get(field) if isinstance(args, dict) else None
+            report = saved_report(action, observation)
             if not isinstance(report, str):
                 raise ValueError('回覆引用缺少所對應的成果。')
             prior = [source for source in sources if source['ask_sequence'] < sequence]

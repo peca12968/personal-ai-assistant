@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 
-from .goal_reply_sources import REPORT_FIELDS
+from .goal_reply_sources import saved_report
 
 
 CITATIONS = re.compile(r'\[更正#[^\]\r\n]{0,32}\]')
@@ -86,9 +86,7 @@ def validate_saved(db, *, table_present):
         sources = read(db, gid, notes, len(steps)) if table_present else []
         for sequence, action_json, observation_json in steps:
             action, observation = json.loads(action_json), json.loads(observation_json)
-            field = REPORT_FIELDS.get(action.get('tool'))
-            args = action.get('args')
-            report = args.get(field) if field and isinstance(args, dict) else None
+            report = saved_report(action, observation)
             prior = prior_sources(sources, sequence)
             if 'guidance_citations' not in observation and not prior:
                 continue

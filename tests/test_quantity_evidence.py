@@ -4,13 +4,74 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant import autonomy, goal_guidance, goal_replies, quantity_evidence
+from assistant import autonomy, goal_guidance, goal_replies, quantity_evidence, quantity_report
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_checked_report_rejects_freeform_and_keeps_hypotheses_out_of_results(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            values = [f'版本「{name}」欄位「{field}」為 {number} 件。' for name, field, number in
+                      (('甲', stock, 44), ('乙', stock, 51), ('甲', returned, 4), ('乙', returned, 7))]
+            rules = [f'欄位「{returned}」｜採用版本｜{name}' for name in ('甲', '乙')]
+            path = root / 'counts.txt'
+            path.write_text('\n'.join(values + rules), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            objective = f'數量採用範圍：欄位「{returned}」｜[D{did}:L5-L6]\n{quantity_report.DIRECTIVE}\n分版核對。'
+            with self.assertRaisesRegex(ValueError, '須使用文字交付'):
+                autonomy.create_goal(store, sid, objective, file_delivery=True)
+            gid = autonomy.create_goal(store, sid, objective)
+            fields = [{'field': field, 'unit': '件', 'candidates': [
+                {'label': name, 'citation': f'[D{did}:L{line}]', 'quote': values[line - 1]}
+                for name, line in (('甲', start), ('乙', start + 1))]}
+                for field, start in ((stock, 1), (returned, 3))]
+            branch = {'step': 2, 'anchor_field': returned, 'operands': [],
+                      'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                      'bindings': [{'path': '/values/0', 'field': stock}, {'path': '/values/1', 'field': returned}]}
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=6),
+                action('check_quantity_fields', fields=fields), action('calculate_quantity_branches', **branch),
+                action('ask', question='正式更正？')))
+            def reply(text):
+                snap = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=snap['fingerprint'])
+            reply('正式更正版本「甲」欄位「本批退回」為 6 件。')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **branch, correction='[補充#4]'),
+                action('ask', question='試想？')))
+            reply('試想把甲退回改成 11 件，這只是試想，維持目前正式數字。')
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('finish', quantity_report_step=5), action('finish', report='另算試想得33件。'),
+                action('calculate_quantity_branches', **branch, reviewed_notes=['[補充#4]', '[補充#6]']),
+                action('finish', quantity_report_step=9)), max_steps=4)
+            self.assertEqual(final['status'], 'report_ready')
+            self.assertIn('目前條件', final['steps'][6]['observation']['error'])
+            self.assertIn('quantity_report_step', final['steps'][7]['observation']['error'])
+            report = final['result']
+            table, notes = report.split('### 來源與補充')
+            self.assertIn('(44 − 6) = 38 件', table)
+            self.assertIn('(51 − 7) = 44 件', table)
+            self.assertNotIn('11 件', table)
+            self.assertNotIn('33 件', report)
+            self.assertIn('原值 4 件', table)
+            self.assertIn('11 件', notes)
+            self.assertIn('[補充#6]', notes)
+            self.assertEqual(final['steps'][-1]['observation']['quantity_report_step'], 9)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_goals SET result=? WHERE id=?', ('試想得33件。', gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版報告與已執行算式'):
+                validate_database(restored.path)
+
     def test_batch_note_review_retains_hypothesis_and_names_blocking_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

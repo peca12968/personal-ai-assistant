@@ -26,7 +26,7 @@ from . import date_tools
 from . import document_diff
 from . import decision_table
 from . import source_decision
-from . import quantity_evidence
+from . import quantity_evidence, quantity_report
 from . import document_lines
 from . import json_documents
 from . import json_statistics
@@ -108,6 +108,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
     quantity_scope = quantity_evidence.declared_scope(objective)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
+    if file_delivery and quantity_report.required(objective):
+        raise ValueError('已核對分版報告須使用文字交付，請取消本機文件交付。')
     if type(from_chat) is not bool:
         raise ValueError('帶入對話選項需為布林值。')
     if type(history_search) is not bool or (history_search and not from_chat):
@@ -290,6 +292,9 @@ def validate_action(value):
     if name == 'date_math':
         date_tools.validate(args)
         return value
+    if name == 'finish' and isinstance(args, dict) and args.keys() == {'quantity_report_step'}:
+        quantity_report.validate(args)
+        return value
     if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
         raise ValueError('工具或參數不在允許範圍。')
     if name in ('search', 'recall'):
@@ -381,17 +386,30 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
             question['question_citations'] = sources
         if 'partial_result' not in args:
             return question
-    field = goal_reply_sources.REPORT_FIELDS[name]
-    checks = check_citations(args[field], excerpts)
+    report_step = args.get('quantity_report_step') if name == 'finish' else None
+    if name == 'finish' and gid is not None:
+        goal = get_goal(store, sid, gid)
+        if quantity_report.required(goal['objective']) and report_step is None:
+            raise ValueError('此目標要求只列已核對的分版結果，請用quantity_report_step交付。')
+    if report_step is not None:
+        if gid is None:
+            raise ValueError('分版報告須引用同一目標的算式。')
+        content = quantity_report.render(args, steps, work_plan.conditions(goal), goal, reply_sources,
+                                         guidance_sources, cancel)
+    else:
+        content = args[goal_reply_sources.REPORT_FIELDS[name]]
+    checks = check_citations(content, excerpts)
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
-    reply_checks = goal_reply_sources.citations(args[field], reply_sources)
-    guidance_checks = goal_guidance_sources.citations(args[field], guidance_sources)
+    reply_checks = goal_reply_sources.citations(content, reply_sources)
+    guidance_checks = goal_guidance_sources.citations(content, guidance_sources)
     user_observation = {}
     if reply_checks:
         user_observation['reply_citations'] = reply_checks
     if guidance_checks:
         user_observation['guidance_citations'] = guidance_checks
+    if report_step is not None:
+        user_observation['quantity_report_step'] = report_step
     if name == 'ask':
         return {**question, 'partial_result': args['partial_result'], 'citation_checks': checks,
                 **user_observation}
@@ -405,7 +423,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return {'artifact': artifacts.write(store, gid, args['filename'], args['content']),
                 'citation_checks': checks, **user_observation}
     receipts = artifacts.deliver(store, gid, args['filenames']) if name == 'deliver' else []
-    return {'report': args['report'], 'citation_checks': checks,
+    return {'report': content, 'citation_checks': checks,
             'artifacts': receipts,
             'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。', **user_observation}
 
@@ -473,6 +491,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             quantity_scope = goal.get('quantity_adoption_scope')
             if quantity_scope:
                 payload['quantity_adoption_scope'] = quantity_scope
+            checked_report = quantity_report.required(goal['objective'])
+            if checked_report:
+                payload['quantity_report_required'] = True
             conditions_hash = work_plan.conditions(goal)
             note_review = quantity_evidence.review_batch_notes(goal, conditions_hash, reply_sources, guidance_sources)
             if note_review:
@@ -515,6 +536,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + quantity_evidence.BATCH_CORRECTION_GUIDANCE if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_quantity_fields' for step in payload['steps']) else '') +
                 ('\n' + quantity_evidence.BATCH_NOTE_REVIEW_GUIDANCE if note_review else '') +
+                ('\n' + quantity_report.GUIDANCE if checked_report else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
