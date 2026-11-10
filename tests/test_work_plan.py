@@ -361,7 +361,7 @@ class WorkPlanTests(unittest.TestCase):
             action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[west]),
             action('write_artifact', filename='final.md', content='東27盒，西17盒。'),
             action('deliver', report='正式結果已核對。', filenames=['final.md']), gid=gid)
-        self.assertIn('來自舊條件', result['steps'][9]['observation']['error'])
+        self.assertIn('與更正項的指定文件行範圍重疊', result['steps'][9]['observation']['error'])
         self.assertEqual(result['status'], 'report_ready')
         self.assertEqual(result['work_plan']['reused_calculations'], [proof])
         self.assertEqual(result['work_plan']['evidence_matches'][0], pending['work_plan']['evidence_matches'][0])
@@ -382,11 +382,57 @@ class WorkPlanTests(unittest.TestCase):
         east = {'ranges': [{'document_id': 1, 'start_line': 1, 'end_line': 2}],
                 'operands': [{'citation': '[補充#1]'}]}
         west = {'ranges': [west_range], 'operands': [{'citation': '[補充#2]'}]}
-        self.assertFalse(p._disjoint_requirements(east, west))
+        self.assertEqual(p._group_reuse_blocker(east, west), 'shared_document_ranges')
         west_range['start_line'] = 3
-        self.assertTrue(p._disjoint_requirements(east, west))
+        self.assertIsNone(p._group_reuse_blocker(east, west))
         west['operands'][0]['citation'] = '[補充#1]'
-        self.assertFalse(p._disjoint_requirements(east, west))
+        self.assertEqual(p._group_reuse_blocker(east, west), 'shared_operand_citations')
+        self.assertEqual(p._group_reuse_blocker(east, {}), 'missing_source_requirements')
+
+    def test_group_recheck_previews_shared_reply_and_preserves_original_read_coverage(self):
+        gid, tasks, requirements = self._two_document_calculations()
+        self.run_actions(action('ask', question='早班破損數更正？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '東架破損為 9 盒。西架破損為 7 盒。',
+                          expected_fingerprint=snap['fingerprint'])
+        east, west = copy.deepcopy(requirements)
+        for spec, name, count in ((east, '東架', '9'), (west, '西架', '7')):
+            spec['expression']['values'][1] = count
+            spec['operands'][1].update(citation='[補充#5]', quote=f'{name}破損為 {count} 盒')
+        early = [{**tasks[0], 'evidence_steps': [1, 6]}, {**tasks[1], 'evidence_steps': [1, 7]}]
+        self.run_actions(action('calculate_expression', expression=east['expression']),
+                         action('calculate_expression', expression=west['expression']),
+                         action('update_plan', items=early, reuse_document_steps=[1], evidence_requirements=[east, west]),
+                         action('ask', question='晚班有更正嗎？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '東架正式破損 10 盒。\n本次只更正「東架可交量」，其餘項目的數量與算式均照舊。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+        waiting = a.get_goal(self.store, self.sid, gid)
+        plan = waiting['work_plan']
+        review = plan['delivery_review']
+        self.assertEqual(review['calculation_rechecks'], [
+            {'id': 2, 'changed_item': 1, 'reason': 'shared_operand_citations'}])
+        self.assertNotIn('reusable_calculations', review)
+        self.assertEqual(review['reusable_documents'], [
+            {'id': 1, 'evidence_steps': [1]}, {'id': 2, 'evidence_steps': [1]}])
+        self.assertIn('項目 2 無法依整組確認沿用算式，與更正項的運算元引用同一來源（更正項 1）', p.describe(plan))
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), waiting)
+        east['expression']['values'][1] = '10'
+        east['operands'][1].update(citation='[補充#9]', quote='東架正式破損 10 盒')
+        fresh_east = {**tasks[0], 'evidence_steps': [1, 10]}
+        final = self.run_actions(
+            action('calculate_expression', expression=east['expression']),
+            action('update_plan', items=[fresh_east, early[1]], reuse_document_steps=[1], evidence_requirements=[east, west]),
+            action('calculate_expression', expression=west['expression']),
+            action('update_plan', items=[fresh_east, {**tasks[1], 'evidence_steps': [1, 12]}],
+                   reuse_document_steps=[1], evidence_requirements=[east, west]), gid=gid)
+        self.assertIn('與更正項的運算元引用同一來源', final['steps'][10]['observation']['error'])
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        self.assertNotIn('calculation_rechecks', final['work_plan']['delivery_review'])
+        validate_database(self.store.path)
 
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
