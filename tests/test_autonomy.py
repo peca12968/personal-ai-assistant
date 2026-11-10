@@ -10,6 +10,7 @@ from pathlib import Path
 from assistant import autonomy as a
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.backup import create_backup, restore_backup, validate_database
+from assistant.engine import EngineError
 from assistant.store import Store
 from assistant.autonomy_status import goal_context
 
@@ -314,6 +315,53 @@ class AutonomyTests(unittest.TestCase):
         checkpoint = a.get_goal(self.store, self.sid, child)['previous_stage']['checkpoint']
         self.assertEqual(checkpoint['activity'][0]['request']['value']['ranges'], ranges)
         self.assertNotIn('已確認數量', json.dumps(checkpoint, ensure_ascii=False))
+
+    def test_literal_document_lookup_pages_and_scopes_full_line_citations(self):
+        did = self.attach('\n'.join(['甲🧭Code 1'] + [f'Code {i}' for i in range(2, 7)]
+                                   + ['Code ' + '長' * 8100, 'Code 8', 'code 9']))
+        other = self.attach('Code other', name='other.txt')
+        gid = self.goal()
+        lookup = {'document_id': did, 'query': 'Code', 'start_line': 1}
+        engine = ScriptedEngine(action('find_document_text', **lookup),
+            action('find_document_text', **{**lookup, 'start_line': 7}),
+            action('find_document_text', **{**lookup, 'query': 'Ｃｏｄｅ'}),
+            action('finish', report=f'錯誤聲稱已讀超長行 [D{did}:L7]'),
+            action('finish', report=f'第 8 行已提供 [D{did}:L8]'))
+        result = a.run_goal(self.store, self.sid, gid, engine)
+        first, second, no_match, invalid, final = result['steps']
+        page = first['observation']
+        self.assertEqual(page['total_matching_lines'], 8)
+        self.assertEqual(page['next_start_line'], 7)
+        self.assertEqual(page['matches'][0], {'line_number': 1, 'match_start_char': 3,
+            'match_end_char': 6, 'line_chars': 8, 'full_line_provided': True})
+        self.assertTrue(all(row['document_id'] == did != other for row in page['excerpts']))
+        page = second['observation']
+        self.assertEqual(page['total_matching_lines'], 8)
+        self.assertIsNone(page['next_start_line'])
+        self.assertEqual([row['full_line_provided'] for row in page['matches']], [False, True])
+        self.assertEqual([row['start_line'] for row in page['excerpts']], [8])
+        self.assertEqual(no_match['observation']['total_matching_lines'], 0)
+        self.assertEqual(no_match['observation']['excerpts'], [])
+        self.assertEqual(invalid['action']['tool'], 'invalid')
+        self.assertTrue(final['observation']['citation_checks'][0]['range_valid'])
+
+    def test_literal_document_lookup_validation_and_cancellation(self):
+        did = self.attach('批號=01')
+        args = {'document_id': did, 'query': '批號', 'start_line': 1}
+        for patch in ({'document_id': True}, {'start_line': 0}, {'query': '\x00'}, {'query': '甲\n乙'},
+                      {'query': ' '}, {'query': '查' * 121}, {'query': '\ud800'}):
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                a.document_ranges.validate_lookup({**args, **patch})
+        docs = self.store.documents(self.sid, include_content=True)
+        with self.assertRaises(ValueError):
+            a.document_ranges.lookup(docs, {**args, 'document_id': did + 1})
+        with self.assertRaises(ValueError):
+            a.document_ranges.lookup(docs, {**args, 'start_line': 2})
+        stop = threading.Event()
+        stop.set()
+        with self.assertRaises(EngineError) as failed:
+            a.document_ranges.lookup(docs, args, stop)
+        self.assertEqual(failed.exception.code, 'cancelled')
 
     def test_batch_range_validation_rejects_duplicate_excess_and_non_integer_args(self):
         ranges = [{'document_id': did, 'start_line': 1, 'end_line': 1} for did in range(1, 9)]

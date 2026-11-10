@@ -258,6 +258,9 @@ def validate_action(value):
     if name == 'read_ranges':
         document_ranges.validate_batch(args)
         return value
+    if name == 'find_document_text':
+        document_ranges.validate_lookup(args)
+        return value
     if name == 'read_json':
         json_documents.validate(args)
         return value
@@ -326,6 +329,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return {'excerpts': rows, 'requested_ranges': requests}
     if name == 'read_ranges':
         return document_ranges.read_batch(documents, args)
+    if name == 'find_document_text':
+        return document_ranges.lookup(documents, args, cancel)
     if name == 'recall':
         return {'memories': store.retrieve(args['query'], limit=4)}
     if name == 'calculate':
@@ -444,6 +449,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
+                ('\n' + document_ranges.LOOKUP_GUIDANCE if catalog else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
