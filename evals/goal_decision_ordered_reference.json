@@ -1,0 +1,38 @@
+[
+  {
+    "id":"later_named_value_overrides_the_selected_earlier_branch",
+    "category":"goal_decision_ordered_reference",
+    "documents":[
+      {"name":"facts.txt","content":"石汀 T6 的抽驗班別與入庫班別原為早班。兩欄均可早班、晚班或夜班，九組皆可。\n"},
+      {"name":"policy.txt","content":"兩欄均早班走前台。兩欄均晚班走後台。一早一晚走共同席。抽驗夜班且入庫早班走甲審，抽驗夜班且入庫晚班走乙審。入庫夜班不論抽驗班別都走夜台。\n"}
+    ],
+    "prompt":"讀兩份首行，使用抽驗班別及入庫班別的完整欄名與九組規則核對 T6，問一次當次更正。若省略欄名的改值兩種解讀去向相同，先正式交付，欄名待查。之後若我明確更正其中一欄，依原話先後套入各解讀。去向分開時交分支，只問最初是哪欄。最後引用三則原話。",
+    "reply":"正式改成晚班。",
+    "report_change":{"correction":"抽驗班別正式改為夜班。","reply":"抽驗班別"},
+    "criteria":["初次共同結果為共同席；後續兩種解讀為抽驗夜班、入庫早班去甲審，或抽驗夜班、入庫晚班去乙審。","只追問第一筆更正的欄名；回抽驗班別後，最後仍是夜班、早班、甲審。","引用原改值、明確覆蓋及欄名確認，保留先前成果。"]
+  },
+  {
+    "id":"later_named_value_keeps_agreement_without_identifying_the_past",
+    "category":"goal_decision_ordered_reference",
+    "documents":[
+      {"name":"facts.txt","content":"南禾 H9 的調度模式、記錄模式原為關閉。調度可關閉、自動或手動，記錄可關閉或自動，六組皆可。\n"},
+      {"name":"policy.txt","content":"兩欄關閉走前台，只有一欄自動走協作台，兩欄自動走後台。調度手動時，不論記錄模式都走手動席。\n"}
+    ],
+    "prompt":"讀兩份首行，以完整欄名和六組規則核對 H9 原安排，問一次本輪更正。省略欄名的兩種解讀若有共同去向，正式交付並保留欄名待查。日後收到明確欄位更正時，照原話先後重算每種解讀。若仍有共同結果，交更新結論，欄名維持待查。",
+    "reply":"正式改為自動。",
+    "report_change":{"correction":"調度模式正式改為手動。"},
+    "criteria":["原共同結果為協作台；後續兩種解讀的調度皆為手動，記錄分別關閉及自動，共同結果為手動席。","無追加提問；第一筆更正欄名保留待查。","歷史成果及兩則正式原話仍可核對。"]
+  },
+  {
+    "id":"unadopted_named_value_keeps_the_original_report",
+    "category":"goal_decision_ordered_reference",
+    "documents":[
+      {"name":"facts.txt","content":"昱林 N2 原送樣時段、簽收時段均為早段。各欄可為早段或晚段，四組皆可。\n"},
+      {"name":"policy.txt","content":"兩欄早段去甲室。只一欄晚段去乙室。兩欄晚段去丙室。\n"}
+    ],
+    "prompt":"讀兩份首行，以完整欄名和四組規則核對 N2，問一次本輪更正。若省略欄名的兩種解讀有共同結果，直接正式交付，欄名待查。",
+    "reply":"正式改成晚段。",
+    "report_change":{"correction":"有人提議「送樣時段正式改為早段」，未採用。"},
+    "criteria":["原共同結果乙室，欄位待查。","只收到未採用提議，不重開目標；成果、步驟與正式補充不變。"]
+  }
+]

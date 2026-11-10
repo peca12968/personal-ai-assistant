@@ -84,7 +84,7 @@ def eligibility(value):
     if reference_report:
         if value['step_count'] + 2 > MAX_STEPS:
             return False, '剩餘步數不足以重核及更新成果，請帶入原成果建立下一階段。'
-        return True, '可用完整欄名更正一個獨立欄位。保存時會重核原分支，保留先前成果，等待你接續。'
+        return True, '可用完整欄名更正一欄。保存時會按原話先後重核各分支，保留先前成果，等待你接續。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 

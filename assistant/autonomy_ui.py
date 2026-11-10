@@ -320,7 +320,7 @@ class AutonomousWindow:
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result'],
-                      '如有獨立欄位更正，可按「補充／更正此目標」重核原候選分支。' if reference_report
+                      '如有新的明確欄位更正，可按「補充／更正此目標」依序重核各分支。' if reference_report
                       else '此目標已交付成果；後續工作請保存新目標。']
         if goal['work_plan']:
             lines += [work_plan.describe(goal['work_plan'])]

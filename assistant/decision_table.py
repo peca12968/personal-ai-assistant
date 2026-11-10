@@ -49,7 +49,7 @@ NATURAL_UPDATE_GUIDANCE += '''
 NATURAL_UPDATE_GUIDANCE += '''
 有宣告選項的原表時，若整則補充明確只更改一欄、卻省略欄名，例如「正式改成晚班。」，用check_decision的{"field_reference":"[補充#3]"}核對，並用實際來源。可另列整句明確未採用的提案。工具比對完整選項，逐個可能欄位分開核對。只有唯一候選時直接套用；各候選的確定結果一致時直接交共同結果並保留欄位待查。其餘若使用者需確定結果，先列各分支，只問是哪個欄位，無須重問已知值。收到一個完整欄名，送{"field_reference":"[補充#5]","resolve":true}，引用欄名答覆。最後引用原值的補充及欄名確認。未採用的轉述不進入這個流程；候選未確認時，不先用完整新表或known_update猜欄位。'''
 
-RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是已保存的正式獨立欄位更正；其evidence是該欄更正的原話。較早的finish是更正前的歷史成果。使用重核後的branches及結果；各候選仍一致時直接交更新的結果，原欄位待查；結果不同且要確定結果時，交分支並只問原本是哪一個候選欄位。欄名答覆用resolve，不重建決策表。定稿引用原改值、獨立更正及實際欄名確認。'''
+RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
 
 def _label(value):
@@ -875,7 +875,7 @@ def _choose_reference(base, source):
     if field not in choices:
         raise ValueError('請只確認先前候選中的一個完整欄名。')
     core = {key: value for key, value in base.items() if key != 'pending_field_reference'}
-    plan, _ = _updated_plan(core, {field: pending['value']})
+    plan = _reference_plan(core, field, pending['value'], pending.get('overwritten_fields', ()))
     result = _current_result(plan)
     if result['status'] == 'no_match':
         raise ValueError('所選欄位改值與目前可行情境不相容，請確認原條件。')
@@ -883,10 +883,17 @@ def _choose_reference(base, source):
     return plan, {**result, 'field_reference': proof}
 
 
-def _reference_results(base, candidates, value):
-    plans = [_updated_plan(base, {field: value})[0] for field in candidates]
+def _reference_plan(base, field, value, overwritten):
+    return base if field in overwritten else _updated_plan(base, {field: value})[0]
+
+
+def _reference_results(base, candidates, value, overwritten=()):
+    plans = [_reference_plan(base, field, value, overwritten) for field in candidates]
     results = [_current_result(plan) for plan in plans]
     branches = [{'field': field, **_result_summary(result)} for field, result in zip(candidates, results)]
+    if overwritten:
+        for branch, plan in zip(branches, plans):
+            branch['known'] = plan['known']
     return plans, results, branches
 
 
@@ -912,18 +919,24 @@ def _recheck_reference(base_step, base, source):
         raise ValueError('請用一個完整欄名及原表新值明確更正，例如「入口正式改為南口」。')
     field, value = update
     candidates = [branch['field'] for branch in pending['branches']]
-    if field in candidates:
-        raise ValueError('這個欄位屬於原先待確認的候選，請帶入成果建立下一階段並交代兩筆改值。')
-    if base['known'].get(field) == value:
+    prior_overwritten = pending.get('overwritten_fields', ())
+    replaces_reference = field in candidates and field not in prior_overwritten
+    if base['known'].get(field) == value and not replaces_reference:
         raise ValueError('新值與已核對的欄位值相同，無須更正。')
+    overwritten = [name for name in candidates if name in prior_overwritten or name == field]
     core = {key: item for key, item in base.items() if key != 'pending_field_reference'}
     plan, changes = _updated_plan(core, {field: value})
-    _, results, branches = _reference_results(plan, candidates, pending['value'])
+    _, results, branches = _reference_results(plan, candidates, pending['value'], overwritten)
     if all(result['status'] == 'no_match' for result in results):
         raise ValueError('這個更正與所有原候選分支不相容，請核對原條件。')
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'change': changes[0],
                'evidence': _source_excerpt(source, clauses[0])}
-    return _pending_reference(plan, {**pending, 'branches': branches, 'recheck': receipt}, results)
+    proof = {**pending, 'branches': branches, 'recheck': receipt}
+    if overwritten:
+        proof['overwritten_fields'] = overwritten
+    if len(overwritten) == len(candidates):
+        return plan, {**results[0], 'field_reference': {**proof, 'status': 'superseded'}}
+    return _pending_reference(plan, proof, results)
 
 
 def reference_report(steps, result):

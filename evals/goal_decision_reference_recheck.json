@@ -24,7 +24,7 @@
     "criteria":["原共同結果為甲室服務台；正式改到乙室後共同結果為乙室服務台。","只更新存放室，兩個狀態何者啟用仍待查，沒有追加問題。","原表、兩則原話與前一份成果可核對。"]
   },
   {
-    "id":"overlapping_correction_does_not_reopen_the_report",
+    "id":"undeclared_value_does_not_reopen_the_report",
     "category":"goal_decision_reference_recheck",
     "documents":[
       {"name":"facts.txt","content":"月禾 K2 的覆驗班別與登錄班別原為早班，兩欄均可早班、晚班或夜班，九組都可。\n"},
@@ -32,7 +32,7 @@
     ],
     "prompt":"讀兩份首行，以原文完整欄名、選項與九組規則核對月禾 K2，問一次當次更正。若省略欄名的改值兩種解讀共用去向，正式交付並保留欄位待查。",
     "reply":"正式改為晚班。",
-    "report_change":{"correction":"覆驗班別正式改為夜班。"},
-    "criteria":["先交共同結果乙台，欄名仍待查。","覆驗班別是舊改值候選之一，這次更正未用於獨立欄位重核，原成果、步驟與補充不變。"]
+    "report_change":{"correction":"覆驗班別正式改為中班。"},
+    "criteria":["先交共同結果乙台，欄名仍待查。","中班不在覆驗班別的原表選項內，原成果、步驟與補充不變。"]
   }
 ]

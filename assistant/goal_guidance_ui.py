@@ -19,7 +19,7 @@ class GoalGuidanceWindow:
         self.context=tk.Text(body,height=12,wrap='word',state='disabled');self.context.pack(fill='x',padx=12)
         self.layout.wrapped_label(body,text='新的補充（最多4000字，全部補充累計最多12000字）：',padding=12).pack(fill='x')
         self.content=tk.Text(body,height=5,wrap='word');self.content.pack(fill='x',padx=12)
-        self.layout.wrapped_label(body,text='若正在工作，先停止並等候結束。需要回答問題時，使用原視窗的「回答目前問題」。若已交付共同決策結果且欄名仍待查，可更正一個獨立欄位；其他已交付的成果請建立下一階段。',padding=12).pack(fill='x')
+        self.layout.wrapped_label(body,text='若正在工作，先停止並等候結束。需要回答問題時，使用原視窗的「回答目前問題」。若已交付共同決策結果且欄名仍待查，可用完整名稱更正一欄；其他已交付的成果請建立下一階段。',padding=12).pack(fill='x')
         controls=ttk.Frame(body,padding=12);controls.pack(fill='x')
         self.save_button=ttk.Button(controls,text='追加補充到此目標',command=self.save,state='disabled');self.save_button.pack(side='left')
         self.reload_button=ttk.Button(controls,text='重新載入目標',command=self.reload);self.reload_button.pack(side='left',padx=8)

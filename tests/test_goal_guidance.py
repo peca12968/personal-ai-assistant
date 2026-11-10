@@ -62,8 +62,8 @@ class GoalGuidanceTests(unittest.TestCase):
             return g.save(self.store, self.sid, gid, content, expected_fingerprint=observed['fingerprint'])
 
         self.assertEqual(observed['reference_report']['status'], 'agreement')
-        with self.assertRaisesRegex(ValueError, '待確認的候選'):
-            amend('配送班別正式改為晚班。')
+        with self.assertRaisesRegex(ValueError, '完整欄名'):
+            amend('配送班別正式改為夜班。')
         with self.assertRaisesRegex(ValueError, '完整欄名'):
             amend('有人提議「入口正式改為南口」，未採用。')
         self.assertEqual(a.get_goal(self.store, self.sid, gid), first)
@@ -89,6 +89,60 @@ class GoalGuidanceTests(unittest.TestCase):
         with restored.connect() as db:
             db.execute('DELETE FROM autonomous_steps WHERE goal_id=? AND sequence=4', (gid,))
         with self.assertRaisesRegex(ValueError, '成果更正須緊接'):
+            validate_database(restored.path)
+
+    def test_later_candidate_values_override_the_reference_in_order(self):
+        fields = ['巡檢狀態', '記錄狀態']
+        values = ['關閉', '啟用']
+        rows = [{'when': list(pair), 'result': '入口' if pair == ('啟用', '啟用') else '共用席'}
+                for pair in product(values, repeat=2)]
+        gid = a.create_goal(self.store, self.sid, '核對兩個狀態')
+
+        def run(*actions):
+            return a.run_goal(self.store, self.sid, gid, ScriptedEngine(*actions))
+
+        def amend(content):
+            snapshot = g.snapshot(self.store, self.sid, gid)
+            g.save(self.store, self.sid, gid, content, expected_fingerprint=snapshot['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)
+
+        run(action('check_decision', conditions=fields, domains=dict.fromkeys(fields, values),
+                   known=dict.fromkeys(fields, '關閉'), rows=rows, excluded=[]), action('ask', question='哪項更正？'))
+        waiting = reply_snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '正式改成啟用。', expected_fingerprint=waiting['fingerprint'])
+        before = run(action('check_decision', field_reference='[補充#2]'), action('finish', report='共用席，欄名待查。'))
+
+        changed = amend('巡檢狀態正式改為關閉。')
+        step = changed['steps'][-1]
+        proof = step['observation']['field_reference']
+        self.assertEqual(changed['steps'][:-1], before['steps'])
+        self.assertEqual((proof['status'], proof['overwritten_fields']), ('agreement', ['巡檢狀態']))
+        self.assertEqual([branch['known'] for branch in proof['branches']],
+                         [dict.fromkeys(fields, '關閉'), {'巡檢狀態': '關閉', '記錄狀態': '啟用'}])
+        self.assertEqual(proof['recheck']['change'], {'field': '巡檢狀態', 'before': '關閉', 'after': '關閉'})
+
+        finished = run(action('finish', report='共用席，第一筆欄名待查。[更正#1]'))
+        changed = amend('記錄狀態正式改為啟用。')
+        self.assertEqual(changed['steps'][:-1], finished['steps'])
+        step = changed['steps'][-1]['observation']
+        proof = step['field_reference']
+        self.assertEqual((proof['status'], proof['overwritten_fields']), ('superseded', fields))
+        self.assertEqual([branch['known'] for branch in proof['branches']],
+                         [{'巡檢狀態': '關閉', '記錄狀態': '啟用'}] * 2)
+        self.assertEqual((step['status'], step['max_questions'], step['possible_results']), ('resolved', 0, ['共用席']))
+        plan, _, _ = a.decision_table._recheck_saved(changed['steps'], changed['reply_sources'], changed['guidance_sources'])
+        self.assertNotIn('pending_field_reference', plan[1])
+        final = run(action('finish', report='巡檢關閉、記錄啟用，共用席。[更正#1] [更正#2]'))
+        self.assertNotIn('reference_report', g.snapshot(self.store, self.sid, gid))
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'ordered')
+        restored = Store(self.root / 'ordered' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+        with restored.connect() as db:
+            proof['overwritten_fields'].reverse()
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=7',
+                       (json.dumps(step, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
             validate_database(restored.path)
 
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
