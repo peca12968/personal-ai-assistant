@@ -393,12 +393,12 @@ class WorkPlanTests(unittest.TestCase):
         gid, tasks, requirements = self._two_document_calculations()
         self.run_actions(action('ask', question='早班破損數更正？'), gid=gid)
         snap = goal_replies.snapshot(self.store, self.sid, gid)
-        goal_replies.save(self.store, self.sid, gid, '東架破損為 9 盒。西架破損為 7 盒。',
+        goal_replies.save(self.store, self.sid, gid, '兩架共用扣除 7 盒。',
                           expected_fingerprint=snap['fingerprint'])
         east, west = copy.deepcopy(requirements)
-        for spec, name, count in ((east, '東架', '9'), (west, '西架', '7')):
-            spec['expression']['values'][1] = count
-            spec['operands'][1].update(citation='[補充#5]', quote=f'{name}破損為 {count} 盒')
+        for spec in (east, west):
+            spec['expression']['values'][1] = '7'
+            spec['operands'][1].update(citation='[補充#5]', quote='兩架共用扣除 7 盒')
         early = [{**tasks[0], 'evidence_steps': [1, 6]}, {**tasks[1], 'evidence_steps': [1, 7]}]
         self.run_actions(action('calculate_expression', expression=east['expression']),
                          action('calculate_expression', expression=west['expression']),
@@ -433,6 +433,60 @@ class WorkPlanTests(unittest.TestCase):
         self.assertTrue(final['work_plan']['delivery_review']['ready'])
         self.assertNotIn('calculation_rechecks', final['work_plan']['delivery_review'])
         validate_database(self.store.path)
+
+    def test_group_reuse_separates_exact_excerpts_from_same_line_and_reply(self):
+        line = '青洲原有 26 包，原列破損 4 包。竹洲原有 19 包，原列破損 3 包。'
+        path = self.root / 'stock.txt'
+        path.write_text(line, encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '交付兩批正式可交量')
+        source = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        self.run_actions(action('read', **source), action('ask', question='早班數字？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '青洲破損 5 包。竹洲破損 6 包。',
+                          expected_fingerprint=snap['fingerprint'])
+        specs = [{'id': number, 'ranges': [source], 'expression': {'operation': 'difference', 'values': [base, damage]},
+                  'operands': [{'path': '/values/0', 'citation': f'[D{did}:L1]', 'quote': f'{name}原有 {base} 包'},
+                               {'path': '/values/1', 'citation': '[補充#2]', 'quote': f'{name}破損 {damage} 包'}]}
+                 for number, name, base, damage in ((1, '青洲', '26', '5'), (2, '竹洲', '19', '6'))]
+        early = [item(1, '青洲可交量', 'done', [1, 3]), item(2, '竹洲可交量', 'done', [1, 4])]
+        self.run_actions(*(action('calculate_expression', expression=spec['expression']) for spec in specs),
+                         action('update_plan', items=early, verify_delivery=True, reuse_document_steps=[1],
+                                evidence_requirements=specs), action('ask', question='晚班數字？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '青洲正式破損 7 包。\n本次只更正「青洲可交量」，其餘項目的數量與算式均照舊。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+        plan = a.get_goal(self.store, self.sid, gid)['work_plan']
+        preview, = plan['delivery_review']['reusable_calculations']
+        self.assertTrue(preview['separate_operand_excerpts'])
+        self.assertEqual((preview['id'], preview['changed_item'], preview['evidence_steps']), (2, 1, [1, 4]))
+        current = copy.deepcopy(specs[0])
+        current['expression']['values'][1] = '7'
+        current['operands'][1].update(citation='[補充#6]', quote='青洲正式破損 7 包')
+        broad = copy.deepcopy(current)
+        broad['operands'][0]['quote'] = line
+        complete = [{**early[0], 'evidence_steps': [1, 7]}, early[1]]
+        result = self.run_actions(
+            action('calculate_expression', expression=current['expression']),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[broad]),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[current]),
+            action('finish', report='青洲19包、竹洲13包。'), gid=gid)
+        self.assertIn('指定文件行範圍重疊', result['steps'][7]['observation']['error'])
+        self.assertEqual(result['status'], 'report_ready')
+        receipt, = result['work_plan']['reused_calculations']
+        self.assertTrue(receipt['separate_operand_excerpts'])
+        self.assertEqual(result['work_plan']['evidence_matches'][1], plan['evidence_matches'][1])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = copy.deepcopy(result['steps'][8]['observation'])
+        del altered['reused_calculations'][0]['separate_operand_excerpts']
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=9',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
 
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
