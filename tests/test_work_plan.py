@@ -327,6 +327,67 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_group_confirmation_reuses_an_independent_prior_round_and_rechecks_new_sources(self):
+        gid, tasks, requirements = self._two_document_calculations()
+        self.run_actions(action('ask', question='最後有更正嗎？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '東架破損更正為 9 盒，西架待確認。',
+                          expected_fingerprint=snap['fingerprint'])
+        east, west = copy.deepcopy(requirements)
+        east['expression']['values'][1] = '9'
+        east['operands'][1].update(citation='[補充#5]', quote='東架破損更正為 9 盒')
+        waiting_items = [{**tasks[0], 'evidence_steps': [1, 6]},
+                         item(2, tasks[1]['task'], 'blocked', [1], '等待西架正式破損數')]
+        self.run_actions(action('calculate_expression', expression=east['expression']),
+                         action('update_plan', items=waiting_items, reuse_document_steps=[1], evidence_requirements=[east]),
+                         action('ask', question='西架正式破損幾盒？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '西架正式破損 8 盒。\n本次只更正「西架可交量」，其餘項目的數量與算式均照舊。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+        pending = a.get_goal(self.store, self.sid, gid)
+        review = pending['work_plan']['delivery_review']
+        proof = {'id': 1, 'expression_step': 6, 'prior_plan_step': 7, 'changed_item': 2,
+                 'citation': '[補充#8]', 'source_sha256': pending['reply_sources'][-1]['sha256']}
+        self.assertEqual(review['open_items'], [2])
+        self.assertEqual(review['recheck_items'], [])
+        self.assertEqual(review['reusable_calculations'], [{**proof, 'evidence_steps': [1, 6]}])
+        west['expression']['values'][1] = '8'
+        west['operands'][1].update(citation='[補充#8]', quote='西架正式破損 8 盒')
+        complete = [waiting_items[0], {**tasks[1], 'evidence_steps': [1, 9]}]
+        overlap = {**west, 'ranges': west['ranges'] + east['ranges']}
+        result = self.run_actions(
+            action('calculate_expression', expression=west['expression']),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[overlap]),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[west]),
+            action('write_artifact', filename='final.md', content='東27盒，西17盒。'),
+            action('deliver', report='正式結果已核對。', filenames=['final.md']), gid=gid)
+        self.assertIn('來自舊條件', result['steps'][9]['observation']['error'])
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['work_plan']['reused_calculations'], [proof])
+        self.assertEqual(result['work_plan']['evidence_matches'][0], pending['work_plan']['evidence_matches'][0])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = copy.deepcopy(result['steps'][10]['observation'])
+        altered['reused_calculations'][0]['changed_item'] = 1
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=11',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_group_confirmation_does_not_cover_overlapping_old_ranges_or_operand_citations(self):
+        west_range = {'document_id': 1, 'start_line': 2, 'end_line': 4}
+        east = {'ranges': [{'document_id': 1, 'start_line': 1, 'end_line': 2}],
+                'operands': [{'citation': '[補充#1]'}]}
+        west = {'ranges': [west_range], 'operands': [{'citation': '[補充#2]'}]}
+        self.assertFalse(p._disjoint_requirements(east, west))
+        west_range['start_line'] = 3
+        self.assertTrue(p._disjoint_requirements(east, west))
+        west['operands'][0]['citation'] = '[補充#1]'
+        self.assertFalse(p._disjoint_requirements(east, west))
+
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
         affirmation = '「西架可交量」的數量與算式均照舊。'

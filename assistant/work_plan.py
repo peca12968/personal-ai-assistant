@@ -23,6 +23,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
 尚缺新數字而將項目標為pending、working或blocked時，可只更新items，原evidence_requirements會保留。若重列部分未變的要求，仍沿用原完整規約和舊條件。取得資料後，完成前再依目前條件確認完整的算式及來源；不要把暫表、待補註記或沿用的舊規約當成完成證據。
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
+最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。此時reusable_calculations可列出其他已完成、文件範圍及數字來源分離的項目。保持各項原evidence_steps，只重算更正項及真正受影響的項目。若新規約引用共用來源，仍須重驗相關項目。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -192,6 +193,26 @@ def _latest_note_after(plan_step, sequence, replies, guidance):
     return None
 
 
+def _confirmed_line(line, lines):
+    if line not in lines:
+        return False
+    # An unfinished lead-in can make the exact line conditional or quoted.
+    leading = '\n'.join(lines[:lines.index(line)]).rstrip()
+    return not leading or leading.endswith('。')
+
+
+def _disjoint_requirements(first, second):
+    if not all(row.get('ranges') and row.get('operands') for row in (first, second)):
+        return False
+    citations = {row['citation'] for row in first['operands']}
+    if any(row['citation'] in citations for row in second['operands']):
+        return False
+    left = list(map(_range_key, first['ranges']))
+    right = list(map(_range_key, second['ranges']))
+    return not any(left_id == right_id and left_start <= right_end and right_start <= left_end
+                   for left_id, left_start, left_end in left for right_id, right_start, right_end in right)
+
+
 def _reusable_calculations(plan, scope, sequence, replies, guidance):
     if plan is None:
         return {}
@@ -204,23 +225,30 @@ def _reusable_calculations(plan, scope, sequence, replies, guidance):
     if '```' in text or '~~~' in text:
         return {}
     lines = text.splitlines()
+    items = plan['items']
+    names = [row['task'] for row in items]
+    unique_names = {row['id']: row['task'] for row in items
+                    if names.count(row['task']) == 1 and not any(char in row['task'] for char in '「」\r\n')}
+    changed = None
+    closing_line = next((line for line in reversed(lines) if line.strip()), '')
+    if text.count('本次只更正「') == 1 and _confirmed_line(closing_line, lines):
+        changed = next((row['id'] for row in items if row['state'] != 'superseded' and row['id'] in unique_names
+                        and closing_line == f'本次只更正「{row["task"]}」，其餘項目的數量與算式均照舊。'), None)
+    requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
     matches = {row['id']: row for row in plan.get('evidence_matches', ()) if row.get('operands')}
     candidates = {}
-    for item in plan['items']:
+    for item in items:
         number, task = item['id'], item['task']
         if (item['state'] != 'done' or number not in matches or 'expression_step' not in matches[number]
-                or any(row['id'] != number and row['task'] == task for row in plan['items'])
-                or text.count(task) != 1 or any(char in task for char in '「」\r\n')):
+                or number not in unique_names):
             continue
-        confirmation = f'「{task}」的數量與算式均照舊。'
-        if confirmation not in lines:
-            continue
-        # An unfinished lead-in can make the exact line conditional or quoted.
-        leading = '\n'.join(lines[:lines.index(confirmation)]).rstrip()
-        if leading and not leading.endswith('。'):
-            continue
-        candidates[number] = {'id': number, 'expression_step': matches[number]['expression_step'],
-                              'prior_plan_step': plan['sequence'], 'citation': citation, 'source_sha256': sha}
+        proof = {'id': number, 'expression_step': matches[number]['expression_step'],
+                 'prior_plan_step': plan['sequence'], 'citation': citation, 'source_sha256': sha}
+        if text.count(task) == 1 and _confirmed_line(f'「{task}」的數量與算式均照舊。', lines):
+            candidates[number] = proof
+        elif (changed is not None and changed != number and task not in text
+              and _disjoint_requirements(requirements.get(number, {}), requirements.get(changed, {}))):
+            candidates[number] = {**proof, 'changed_item': changed}
     return candidates
 
 
@@ -292,7 +320,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 and item['evidence_steps'] == previous_items[item_id]['evidence_steps']):
             prior = previous_requirements[item_id]
             current = {**requirements[item_id], 'defined_scope': scope}
-            if current == {**prior, 'defined_scope': scope}:
+            changed = candidate.get('changed_item')
+            if (current == {**prior, 'defined_scope': scope}
+                    and (changed is None or _disjoint_requirements(current, requirements[changed]))):
                 calculation_step = candidate['expression_step']
                 requirements[item_id] = current
                 calculation_proofs.append(candidate)
