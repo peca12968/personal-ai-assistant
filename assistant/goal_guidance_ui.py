@@ -47,7 +47,9 @@ class GoalGuidanceWindow:
                 self.current['goal']['status'] == 'needs_input'
                 and self.current['goal']['question'] != saved['goal']['question'])
             self.content.delete('1.0','end');self.reload();self.changed()
-            if saved['goal'].get('reference_review'):
+            if saved['goal'].get('answered_reference_review'):
+                self.notice.set(decision_table.describe_answered_review(saved['goal']['answered_reference_review']))
+            elif saved['goal'].get('reference_review'):
                 self.notice.set(decision_table.describe_waiting_review(saved['goal']['reference_review']))
             else:
                 self.notice.set(saved['goal']['notice'] if rechecked else '已追加保存。可回原視窗處理待回答問題或開始／接續。')

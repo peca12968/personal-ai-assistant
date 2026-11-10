@@ -4,8 +4,8 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
 from . import decision_table, goal_question_withdrawals, goal_reply_sources
-from .goal_guidance import (_append_step, _snapshot, _steps, append_followup_question, append_waiting_recheck,
-                            apply_waiting_review, snapshot)
+from .goal_guidance import (_append_step, _snapshot, _steps, append_answered_revision, append_followup_question,
+                            append_waiting_recheck, apply_waiting_review, snapshot)
 
 
 def _save_partial_followup(db, current, notes, kind, review):
@@ -49,7 +49,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if current.get('reference_partial_reply') and (kind := decision_table.partial_reply_kind(_steps(db, gid), answer)):
             _save_partial_followup(db, current, notes, kind, review)
             return _snapshot(db, sid, gid)
-        if review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
+        if 'answered_reference_review' in goal:
+            append_answered_revision(db, current, notes)
+        elif review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
             append_waiting_recheck(db, current, notes)
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
                    (notes, gid, sid))

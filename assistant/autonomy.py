@@ -199,9 +199,13 @@ def get_goal(store, sid, gid):
             result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
         if waiting_step and guidance_sources and current_sources == result['sources']:
-            reference = decision_table.waiting_reference_review(result['steps'], reply_sources, guidance_sources)
-            if reference is not None:
-                result['reference_review'] = reference
+            answered = decision_table.answered_reference_review(result['steps'], reply_sources, guidance_sources)
+            if answered is not None:
+                result['answered_reference_review'] = answered
+            else:
+                reference = decision_table.waiting_reference_review(result['steps'], reply_sources, guidance_sources)
+                if reference is not None:
+                    result['reference_review'] = reference
         result['work_plan'] = work_plan.for_goal(result, current_sources)
     return result
 
@@ -324,7 +328,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        if args.get('waiting_recheck') or args.get('partial_reply'):
+        if args.get('waiting_recheck') or args.get('partial_reply') or args.get('answered_revision'):
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
@@ -553,6 +557,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                      and step['action']['args'].get('waiting_recheck') for step in payload['steps']) else '') +
                 ('\n' + decision_table.PARTIAL_REFERENCE_GUIDANCE
                  if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('partial_reply')
+                        for step in payload['steps']) else '') +
+                ('\n' + decision_table.ANSWERED_REVISION_GUIDANCE
+                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('answered_revision')
                         for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +

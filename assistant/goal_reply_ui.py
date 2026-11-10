@@ -54,6 +54,8 @@ class GoalReplyWindow:
                 lines[2:2] = [label, goal['partial_result']]
             if goal.get('reference_review'):
                 lines.insert(-1, decision_table.describe_waiting_review(goal['reference_review']))
+            if goal.get('answered_reference_review'):
+                lines.insert(-1, decision_table.describe_answered_review(goal['answered_reference_review']))
             if self.current.get('reference_partial_reply'):
                 lines.insert(-1, '只答一項可寫「欄名：完整欄名」或「補問：你的答案」。'
                                  '也可明說已確定的一項及哪一項待查，例如「通知羅值班員，欄名還沒確認」。')

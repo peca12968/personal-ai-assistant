@@ -419,6 +419,109 @@ class GoalGuidanceTests(unittest.TestCase):
             with self.subTest(answer=answer), self.assertRaisesRegex(ValueError, '原題及草稿'):
                 parse(answer, '本次要通知誰？', fields)
 
+    def test_waiting_answered_item_revisions_keep_the_original_question(self):
+        fields = ['收件班別', '覆核班別']
+        values = ['早班', '晚班']
+        rows = [{'when': list(pair), 'result': result} for pair, result in zip(
+            product(values, repeat=2), ('前台', '西台', '東台', '後台'))]
+        field_question = '第一筆改值指哪個欄位？請回完整欄名「收件班別」、「覆核班別」。'
+        independent = '本輪要交付幾份？'
+        compound = f'{field_question}\n{independent}\n請分兩行回答，先回完整欄名，再答補問。'
+        for kind in ('field', 'remaining', 'proposal'):
+            with self.subTest(kind=kind):
+                gid = a.create_goal(self.store, self.sid, '核對去向及交付份數')
+
+                def run(*actions):
+                    return a.run_goal(self.store, self.sid, gid, ScriptedEngine(*actions))
+
+                def reply(content, fingerprint=None):
+                    observed = reply_snapshot(self.store, self.sid, gid)
+                    return goal_replies.save(self.store, self.sid, gid, content,
+                                             expected_fingerprint=fingerprint or observed['fingerprint'])
+
+                def amend(content):
+                    observed = g.snapshot(self.store, self.sid, gid)
+                    return g.save(self.store, self.sid, gid, content, expected_fingerprint=observed['fingerprint'])
+
+                run(action('check_decision', conditions=fields, domains=dict.fromkeys(fields, values), rows=rows,
+                           excluded=[], known=dict.fromkeys(fields, '早班')), action('ask', question='當次更正？'))
+                reply('正式改成晚班。')
+                run(action('check_decision', field_reference='[補充#2]'),
+                    action('ask', question=compound, reference_remaining=independent))
+                original_text = '欄名：收件班別' if kind == 'field' else '補問：6 份'
+                reply(original_text)
+                before = a.get_goal(self.store, self.sid, gid)
+                ask_sequence = before['steps'][-1]['sequence']
+                old = reply_snapshot(self.store, self.sid, gid)['fingerprint']
+                if kind == 'proposal':
+                    amend('有人提議「交付份數正式改為9份」，未採用。')
+                    pending = a.get_goal(self.store, self.sid, gid)
+                    self.assertNotIn('answered_reference_review', pending)
+                    self.assertEqual((pending['steps'], pending['question'], pending['reply_sources']),
+                                     (before['steps'], before['question'], before['reply_sources']))
+                    reply('收件班別')
+                    final = run(action('check_decision', field_reference=f'[補充#{ask_sequence}]', resolve=True),
+                                action('finish', report=f'東台，6 份。[補充#{ask_sequence}]'))
+                    self.assertEqual([step['action']['tool'] for step in final['steps'][-2:]],
+                                     ['check_decision', 'finish'])
+                    self.assertEqual(final['steps'][-2]['observation']['possible_results'], ['東台'])
+                    archive = create_backup(self.store.path, self.root / 'answered-proposal.paibackup')
+                    restore_backup(archive['path'], self.root / 'answered-proposal')
+                    continue
+                bad = '第一筆欄名正式改為不存在。' if kind == 'field' else '交付份數正式改為甲或乙。'
+                with self.assertRaisesRegex(ValueError, '明確的新值'):
+                    amend(bad)
+                self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
+                if kind == 'field':
+                    amend('第一筆欄名正式改為覆核班別。')
+                    expected = [('收件班別', '覆核班別')]
+                else:
+                    amend('交付份數正式改為 7 份。')
+                    amend('有人提議「交付份數正式改為9份」，未採用。')
+                    amend('已答補問正式改為 8 份。')
+                    expected = [('6 份', '7 份'), ('7 份', '8 份')]
+                pending = a.get_goal(self.store, self.sid, gid)
+                self.assertEqual((pending['status'], pending['question'], pending['steps'], pending['reply_sources']),
+                                 ('needs_input', before['question'], before['steps'], before['reply_sources']))
+                preview = pending['answered_reference_review']
+                proof = preview['field_reference']['answered_revision']
+                self.assertEqual([(item['before'], item['after']) for item in proof['changes']], expected)
+                self.assertEqual(proof['value'], expected[-1][1])
+                self.assertEqual(proof['ask_sequence'], ask_sequence)
+                with self.assertRaisesRegex(ValueError, '尚未保存'):
+                    reply('過期回覆', old)
+                with patch.object(g, 'MAX_STEPS', ask_sequence + 1):
+                    with self.assertRaisesRegex(ValueError, '剩餘步數不足'):
+                        reply('3 份' if kind == 'field' else '收件班別')
+                self.assertEqual(a.get_goal(self.store, self.sid, gid), pending)
+                reply('3 份' if kind == 'field' else '收件班別')
+                checked = a.get_goal(self.store, self.sid, gid)
+                self.assertEqual(checked['steps'][:-1], before['steps'])
+                self.assertEqual(checked['steps'][-1]['observation']['field_reference']['answered_revision'], proof)
+                self.assertEqual(checked['reply_sources'][-1]['ask_sequence'], ask_sequence)
+                self.assertEqual(checked['reply_sources'][-2]['answer'], original_text)
+                if kind == 'field':
+                    self.assertEqual(preview['possible_results'], ['西台'])
+                    final = run(action('finish', report='西台，3 份。[更正#1] [補充#6]'))
+                else:
+                    final = run(action('check_decision', field_reference=f'[補充#{ask_sequence}]', resolve=True),
+                                action('finish', report='東台，8 份。[更正#3] [補充#6]'))
+                plan, _, _ = a.decision_table._recheck_saved(final['steps'], final['reply_sources'], final['guidance_sources'])
+                expected_known = {'收件班別': '早班', '覆核班別': '晚班'} if kind == 'field' else {'收件班別': '晚班', '覆核班別': '早班'}
+                self.assertEqual(plan[1]['known'], expected_known)
+                archive = create_backup(self.store.path, self.root / f'answered-{kind}.paibackup')
+                destination = self.root / f'answered-{kind}'
+                restore_backup(archive['path'], destination)
+                restored = Store(destination / 'assistant.sqlite3')
+                self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+                changed = checked['steps'][-1]['observation']
+                changed['field_reference']['answered_revision']['changes'][-1]['evidence']['start'] = 0
+                with restored.connect() as db:
+                    db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                               (json.dumps(changed, ensure_ascii=False), gid, ask_sequence + 1))
+                with self.assertRaisesRegex(ValueError, '決策表結果'):
+                    validate_database(restored.path)
+
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
         self.save('PRIVATE_STEERING：更正為12人，每人90元。')
         self.save('再次更正：人數13，費率仍90元。')

@@ -356,6 +356,8 @@ class AutonomousWindow:
             lines += [label, goal['partial_result']]
         if goal.get('reference_review'):
             lines += [autonomy.decision_table.describe_waiting_review(goal['reference_review'])]
+        if goal.get('answered_reference_review'):
+            lines += [autonomy.decision_table.describe_answered_review(goal['answered_reference_review'])]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
         if goal.get('withdrawn_questions'):

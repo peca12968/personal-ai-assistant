@@ -128,11 +128,11 @@ def followup_change(case, key):
 
 def partial_followups(case):
     entries = case.get('partial_followup', [])
-    if not isinstance(entries, list) or len(entries) > 2:
-        raise ValueError('分項答覆案例最多兩則。')
+    if not isinstance(entries, list) or len(entries) > 4:
+        raise ValueError('分項答覆及更正案例最多四則。')
     for entry in entries:
-        if not isinstance(entry, dict) or entry.keys() not in ({'reply'}, {'reply', 'question'}):
-            raise ValueError('分項案例須有答覆，可指定當時的完整問句。')
+        if not isinstance(entry, dict) or entry.keys() not in ({'reply'}, {'reply', 'question'}, {'correction', 'question'}):
+            raise ValueError('分項案例須有答覆或更正。更正須指定當時的完整問句。')
         for value in entry.values():
             autonomy.text(value, 4000)
     return entries
@@ -270,8 +270,12 @@ def main():
                         observed = goal_replies.snapshot(store, sid, gid)
                         before_calls = len(row['calls'])
                         try:
-                            turn['saved'] = goal_replies.save(store, sid, gid, entry['reply'],
-                                                              expected_fingerprint=observed['fingerprint'])
+                            if 'correction' in entry:
+                                turn['saved'] = goal_guidance.save(store, sid, gid, entry['correction'],
+                                                                    expected_fingerprint=observed['fingerprint'])
+                            else:
+                                turn['saved'] = goal_replies.save(store, sid, gid, entry['reply'],
+                                                                  expected_fingerprint=observed['fingerprint'])
                         except ValueError as exc:
                             turn['rejected'] = str(exc)
                             assert autonomy.get_goal(store, sid, gid) == state and len(row['calls']) == before_calls

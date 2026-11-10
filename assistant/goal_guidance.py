@@ -50,9 +50,14 @@ def _snapshot(db, sid, gid):
             options = goal_question_withdrawals.options(db, gid, goal['question'], waiting_step, guidance)
             if options:
                 fingerprint = hashlib.sha256((fingerprint + options['question_sha256']).encode('utf-8')).hexdigest()
-                pending = decision_table.waiting_reference_review(_steps(db, gid), sources, guidance)
+                steps = _steps(db, gid)
+                pending = decision_table.answered_reference_review(steps, sources, guidance)
+                key = 'answered_reference_review'
+                if pending is None:
+                    pending = decision_table.waiting_reference_review(steps, sources, guidance)
+                    key = 'reference_review'
                 if pending is not None:
-                    goal['reference_review'] = pending
+                    goal[key] = pending
                     receipt = json.dumps(pending, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
                     fingerprint = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
     result = {'goal':goal, 'fingerprint':fingerprint,
@@ -132,6 +137,18 @@ def append_waiting_recheck(db, current, notes):
     _append_reference_recheck(db, goal, notes, current['step_count'] + 1, args, goal['reference_review'])
 
 
+def append_answered_revision(db, current, notes):
+    goal = current['goal']
+    observation = goal['answered_reference_review']
+    required = 3 if observation['field_reference']['answered_revision']['item'] == 'remaining' else 2
+    if current['step_count'] + required > MAX_STEPS:
+        raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
+    source = observation['field_reference']['answered_revision']['changes'][-1]['evidence']['citation']
+    action = {'tool': 'check_decision', 'args': {'field_reference': source, 'answered_revision': True},
+              'note': '保存等待期間已答項的正式更正'}
+    _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
+
+
 def append_followup_question(db, goal, notes, sequence, question, note):
     excerpts = [row for step in _steps(db, goal['id']) for row in step['observation'].get('excerpts', [])]
     citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
@@ -181,6 +198,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         goal = current['goal']
         step_count = current['step_count']
+        revise_answer = (goal['status'] == 'needs_input'
+                         and decision_table.answered_revision_requested(_steps(db, gid), content))
         notes = goal['notes'] + goal_guidance_sources.note(content, step_count, stamp)
         if len(notes) > 12000:
             raise ValueError('累計補充超過12000字，請整理目前紀錄另建目標。')
@@ -191,4 +210,12 @@ def save(store, sid, gid, content, *, expected_fingerprint):
             _save_reference_recheck(db, goal, notes, step_count)
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))
-        return apply_waiting_review(db, _snapshot(db,sid,gid))
+        saved = _snapshot(db, sid, gid)
+        if revise_answer:
+            review = saved['goal'].get('answered_reference_review')
+            if review is None:
+                raise ValueError('請用一個明確的新值更正已答項，並先確認其他待核對的補充。')
+            required = 3 if review['field_reference']['answered_revision']['item'] == 'remaining' else 2
+            if step_count + required > MAX_STEPS:
+                raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
+        return apply_waiting_review(db, saved)
