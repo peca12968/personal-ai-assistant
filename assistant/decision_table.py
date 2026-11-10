@@ -56,6 +56,26 @@ WAITING_REFERENCE_GUIDANCE = '''原欄名只用來區分決策結果時，ask的
 
 _REFERENCE_REPLY_HINT = '請分兩行回答，先回完整欄名，再答補問。'
 _PARTIAL_REFERENCE_REPLY = re.compile(r'(?P<label>欄名|補問)[：:] *(?P<value>[^\r\n]*)')
+_PARTIAL_REPLY_CLAUSES = re.compile(r'[^,，。；;\r\n]+[,，。；;][^,，。；;\r\n]+。?')
+_DEFERRED_REPLY = re.compile(
+    r'(?P<item>(?:第一筆(?:改值)?的?)?欄名|補問|通知對象|交付份數|份數|領件人)(?:我)?'
+    r'(?:還沒確認|還未確認|尚未確認|還沒確定|尚未確定|還不確定|仍不確定|暫不確定|仍待確認|待確認|待查|未定)')
+_NAMED_FIELD_REPLY = re.compile(r'(?:(?:第一筆(?:改值)?(?:指的是|指向|指|是)|欄名(?:我)?(?:確認是|已確認為|是|為)) *)?(?P<value>.+)')
+_PERSON_REPLY = (r'(?P<value>「[\u3400-\u9fff]{2,16}」|[\u3400-\u9fff]{2,5}|'
+                 r'[\u3400-\u9fff]{1,8}(?:值班員|同仁|先生|小姐|主任|經理|組長|專員|老師|主管|承辦人|管理員))')
+_UNCERTAIN_REMAINING = re.compile(
+    r'可能|也許|或|還沒|不知道|不確定|未定|未決|未確認|未確定|先不|不用|不要|不必|不是|尚未|待查|待確認|再確認|暫定|暫時'
+    r'|大概|應該|請勿|取消|還有|以及|如果|但|建議|再說|稍後|誰|嗎'
+    r'|[\u3400-\u9fff]{2,}[及和跟與][\u3400-\u9fff]{2,}')
+_NATURAL_REMAINING = (
+    (re.compile(r'(?:這次|本次|本輪|這輪)?(?:要|需)?通知(?:誰|哪一位)[？?]'), ('通知對象',),
+     (re.compile(r'(?:請通知|先通知|通知對象(?:已確認為|是|為)|通知) *' + _PERSON_REPLY),)),
+    (re.compile(r'(?:這次|本次|本輪|這輪)?(?:要|需)?交付幾份[？?]'), ('交付份數', '份數'),
+     (re.compile(r'(?:(?:這次|本次|本輪|這輪)?(?:要交付|交付份數(?:是|為)|交付) *)?'
+                 r'(?P<value>(?:[0-9０-９]{1,6}|[零〇一二兩三四五六七八九十百千]{1,8}) *份)'),)),
+    (re.compile(r'(?:這次|本次|本輪|這輪)?(?:由誰領件|領件人是誰)[？?]'), ('領件人',),
+     (re.compile(r'由 *' + _PERSON_REPLY + r' *領件'), re.compile(r'領件人(?:是|為) *' + _PERSON_REPLY))),
+)
 PARTIAL_REFERENCE_GUIDANCE = '''field_reference.partial_reply表示使用者明確只答原分項提問的一項。依receipt的question、quote與citation採用已答項；next_question是唯一待答項。若後續已有該問的答覆，合用兩項證據交付，不重問。補問答覆即使與候選欄名同字也不能用來resolve。'''
 
 
@@ -1059,10 +1079,53 @@ def compound_reference_ask(steps):
     return ask if ask and 'reference_remaining' in ask['action']['args'] else None
 
 
+def _natural_partial_span(answer, remaining, fields):
+    if '\r' in answer or '\n' in answer:
+        return None  # Preserve the original two-line route.
+    clauses = list(re.finditer(r'[^,，。；;]+', answer))
+    deferred = [(index, match['item']) for index, clause in enumerate(clauses)
+                if (match := _DEFERRED_REPLY.fullmatch(clause[0].strip()))]
+    if not deferred:
+        return None
+    if len(deferred) != 1 or not _PARTIAL_REPLY_CLAUSES.fullmatch(answer):
+        raise ValueError('請先明確回答一項並標明另一項待查，原題及草稿仍保留。')
+    index, pending_item = deferred[0]
+    answer_clause = clauses[1 - index]
+    statement = answer_clause[0].strip()
+    offset = answer_clause.start() + len(answer_clause[0]) - len(answer_clause[0].lstrip())
+    aliases, formats = next(((aliases, formats) for question, aliases, formats in _NATURAL_REMAINING
+                             if question.fullmatch(remaining)), ((), ()))
+    if pending_item.endswith('欄名'):
+        for pattern in formats:
+            if (match := pattern.fullmatch(statement)) and not _UNCERTAIN_REMAINING.search(match['value']):
+                start, end = match.span('value')
+                return 'remaining', offset + start, offset + end
+        raise ValueError('請先確認獨立補問的一個明確答案，原題及草稿仍保留。')
+    if pending_item == '補問' or pending_item in aliases:
+        if _unquote_value(statement) in fields:
+            return 'field', offset, offset + len(statement)
+        match = _NAMED_FIELD_REPLY.fullmatch(statement)
+        if match and _unquote_value(match['value']) in fields:
+            start, end = match.span('value')
+            return 'field', offset + start, offset + end
+    raise ValueError('請先確認第一筆改值所指的完整欄名及哪一項待查，原題及草稿仍保留。')
+
+
+def _partial_reply_span(answer, remaining, fields):
+    if match := _PARTIAL_REFERENCE_REPLY.fullmatch(answer):
+        kind = 'field' if match['label'] == '欄名' else 'remaining'
+        return kind, *match.span('value')
+    return _natural_partial_span(answer, remaining, fields)
+
+
 def partial_reply_kind(steps, answer):
-    if (match := _PARTIAL_REFERENCE_REPLY.fullmatch(answer)) and compound_reference_ask(steps):
-        return 'field' if match['label'] == '欄名' else 'remaining'
-    return None
+    ask = compound_reference_ask(steps)
+    if not ask:
+        return None
+    proof = steps[-2]['observation']['field_reference']
+    span = _partial_reply_span(answer, ask['action']['args']['reference_remaining'],
+                               {branch['field'] for branch in proof['branches']})
+    return span[0] if span else None
 
 
 def _apply_partial_reply(args, previous, sequence, steps, replies, guidance):
@@ -1082,14 +1145,21 @@ def _apply_partial_reply(args, previous, sequence, steps, replies, guidance):
     source = next((item for item in replies if item['ask_sequence'] == ask['sequence']), None)
     if not source or args['field_reference'] != source['citation']:
         raise ValueError('分項回答須使用原提問保存的答覆。')
-    match = _PARTIAL_REFERENCE_REPLY.fullmatch(source['answer'])
-    if not match or not (value := match['value'].strip()):
-        raise ValueError('請用「欄名：完整欄名」或「補問：你的答案」明確回答一項。')
     remaining = ask['action']['args']['reference_remaining']
+    fields = {branch['field'] for branch in pending['branches']}
+    answer = source['answer']
+    span = _partial_reply_span(answer, remaining, fields)
+    if not span or not (value := answer[span[1]:span[2]].strip()):
+        raise ValueError('請用「欄名：完整欄名」或「補問：你的答案」明確回答一項。')
+    kind, start, end = span
     field_question = _reference_question(pending)
-    receipt = _reply_line(source, match, 'value')
-    if match['label'] == '欄名':
-        if value not in {branch['field'] for branch in pending['branches']}:
+    receipt = {'citation': source['citation'], 'source_sha256': source['sha256'],
+               'start': start, 'end': end, 'quote': answer[start:end]}
+    if kind == 'field':
+        # Existing prefixed receipts keep their exact unquoted-label behavior.
+        if not _PARTIAL_REFERENCE_REPLY.fullmatch(answer):
+            value = _unquote_value(value)
+        if value not in fields:
             raise ValueError('請回覆原題候選中的完整欄名。')
         plan, result = _apply_reference_choice(base, value)
         partial = {**receipt, 'item': 'field', 'question': field_question, 'next_question': remaining}

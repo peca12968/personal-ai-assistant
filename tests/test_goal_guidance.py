@@ -328,8 +328,9 @@ class GoalGuidanceTests(unittest.TestCase):
         remaining = '本次要通知誰？'
         question = f'{field_question}\n{remaining}\n請分兩行回答，先回完整欄名，再答補問。'
 
-        for kind in ('field', 'remaining'):
-            with self.subTest(kind=kind):
+        for mode in ('field', 'remaining', 'natural_field', 'natural_remaining'):
+            with self.subTest(mode=mode):
+                kind = mode.removeprefix('natural_')
                 gid = a.create_goal(self.store, self.sid, '核對去向與獨立補問')
 
                 def run(*actions):
@@ -352,8 +353,13 @@ class GoalGuidanceTests(unittest.TestCase):
                 fingerprint = reply_snapshot(self.store, self.sid, gid)['fingerprint']
                 with self.assertRaisesRegex(ValueError, '完整欄名'):
                     reply('欄名：不存在的欄名')
+                if mode.startswith('natural_'):
+                    with self.assertRaisesRegex(ValueError, '明確答案'):
+                        reply('通知許值班員或鄭主任，欄名還沒確認。')
                 self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
-                first_text = '欄名：收件班別' if kind == 'field' else '補問：收件班別'
+                first_text = {'field':'欄名：收件班別', 'remaining':'補問：收件班別',
+                              'natural_field':'第一筆指的是收件班別，通知對象還沒確認。',
+                              'natural_remaining':'通知收件班別，欄名我還沒確認。'}[mode]
                 saved = reply(first_text)
                 current = a.get_goal(self.store, self.sid, gid)
                 self.assertEqual((current['status'], current['question']),
@@ -381,8 +387,8 @@ class GoalGuidanceTests(unittest.TestCase):
                 plan, _, _ = a.decision_table._recheck_saved(final['steps'], final['reply_sources'],
                                                              final.get('guidance_sources', ()))
                 self.assertEqual(plan[1]['known']['收件班別'], '晚班' if kind == 'field' else '夜班')
-                archive = create_backup(self.store.path, self.root / f'partial-{kind}.paibackup')
-                destination = self.root / f'partial-{kind}'
+                archive = create_backup(self.store.path, self.root / f'partial-{mode}.paibackup')
+                destination = self.root / f'partial-{mode}'
                 restore_backup(archive['path'], destination)
                 restored = Store(destination / 'assistant.sqlite3')
                 self.assertEqual(a.get_goal(restored, self.sid, gid), final)
@@ -391,6 +397,27 @@ class GoalGuidanceTests(unittest.TestCase):
                                (action('ask', question=current['question'], extra='改動'), gid, followup))
                 with self.assertRaisesRegex(ValueError, '保留補問'):
                     validate_database(restored.path)
+
+    def test_natural_partial_reply_binds_exact_values_to_the_question(self):
+        fields = {'收件班別', '檢查班別'}
+        parse = a.decision_table._partial_reply_span
+        for answer, question, kind, quote in (
+                ('領件人還不確定；第一筆指的是「收件班別」。', '本輪由誰領件？', 'field', '「收件班別」'),
+                ('由王小明領件，欄名仍待確認。', '本輪由誰領件？', 'remaining', '王小明'),
+                ('通知王和平，欄名待查。', '本次要通知誰？', 'remaining', '王和平'),
+                ('欄名我還沒確認，這輪交付 6 份。', '本輪要交付幾份？', 'remaining', '6 份'),
+                ('六份，欄名待查。', '要交付幾份？', 'remaining', '六份'),
+                ('第一筆指收件班別，補問待確認。', '何時到站？', 'field', '收件班別')):
+            with self.subTest(answer=answer):
+                actual, start, end = parse(answer, question, fields)
+                self.assertEqual((actual, answer[start:end]), (kind, quote))
+        self.assertIsNone(parse('收件班別\n欄名待查', '本次要通知誰？', fields))
+        for answer in ('通知許值班員或鄭主任，欄名待查。', '通知許值班員和鄭主任，欄名待查。',
+                       '通知王小明但未決定，欄名待查。', '通知不知道，欄名待查。',
+                       '交付三份，欄名待查。', '欄名待查，通知對象待查。',
+                       '第一筆指的是收件班別，通知對象待查，入口改南口。', '欄名待查。'):
+            with self.subTest(answer=answer), self.assertRaisesRegex(ValueError, '原題及草稿'):
+                parse(answer, '本次要通知誰？', fields)
 
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
         self.save('PRIVATE_STEERING：更正為12人，每人90元。')

@@ -1,0 +1,51 @@
+[
+  {
+    "id":"natural_field_answer_leaves_the_contact_question",
+    "category":"goal_natural_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"樟台 G3 的接收班別與複核班別原為早班。兩欄各可早班或晚班，四組皆可。通知對象待查，與欄名及去向無關。\n"},
+      {"name":"policy.txt","content":"兩欄早班去前台，兩欄晚班去後台。接收晚班且複核早班去甲台，接收早班且複核晚班去乙台。\n"}
+    ],
+    "prompt":"讀兩份首行，按接收班別、複核班別的順序保存四組，先問當次更正。省略欄名時，若去向分開，在同一步分列原欄名及獨立的『這次要通知誰？』，使用分項提問。若我先只確認欄名，保存欄名與去向，只保留原樣通知補問。最後列去向、通知對象及來源，無須實際通知。",
+    "reply":"正式改為晚班。",
+    "partial_followup":[{"reply":"第一筆指的是接收班別，通知對象還沒確認。"},{"question":"這次要通知誰？","reply":"郭值班員"}],
+    "criteria":["原話明確確認接收班別，核對甲台，只留原樣通知問題。","後續郭值班員只綁定通知補問，成果引用兩則來源。"]
+  },
+  {
+    "id":"natural_quantity_answer_keeps_the_corrected_field_branches",
+    "category":"goal_natural_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"杉角 F6 原登錄班別、檢點班別皆早班。各欄可早班、晚班或夜班，九組均可。交付份數另待查。\n"},
+      {"name":"policy.txt","content":"雙早班去前室，雙晚班去後室。登錄晚班且檢點早班去甲室，登錄早班且檢點晚班去乙室。登錄夜班且檢點早班去丙室，登錄夜班且檢點晚班去丁室。檢點夜班一律去夜室。\n"}
+    ],
+    "prompt":"讀兩份首行，按登錄班別、檢點班別的順序保存九組，問本輪更正。省略欄名時，在同一步分列第一筆欄名與獨立的『本輪要交付幾份？』，使用分項提問。若先只回答份數，留下原樣欄名問題。等待時的新更正繼續適用，最後分開引用份數、原欄名及正式更正。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"登錄班別正式改為夜班。"},
+    "partial_followup":[{"reply":"欄名我還沒確認，這輪交付 6 份。"},{"question":"第一筆改值指哪個欄位？請回完整欄名「登錄班別」、「檢點班別」。","reply":"登錄班別"}],
+    "criteria":["保存 6 份，留下原樣欄名問題，保留丙室與丁室分支。","回原欄名後仍採夜班，交丙室及 6 份，來源分開。"]
+  },
+  {
+    "id":"natural_contact_answer_does_not_choose_the_field",
+    "category":"goal_natural_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"鹿洲 A4 原巡檢班別、寄存班別皆早班。各欄可早班或晚班，四組皆可。通知對象與去向無關。\n"},
+      {"name":"policy.txt","content":"雙早班走前台，雙晚班走後台。巡檢晚班且寄存早班走甲席，巡檢早班且寄存晚班走乙席。\n"}
+    ],
+    "prompt":"讀兩份首行，按巡檢班別、寄存班別的順序核對四組，先問本輪更正。省略欄名且結果分開時，同一步分列原欄名和獨立的『本次要通知誰？』，使用分項提問。若收到明確通知對象和待查欄名，先保存通知對象，只問原欄名。最後列兩項及來源，無須實際通知。",
+    "reply":"正式改為晚班。",
+    "partial_followup":[{"reply":"通知姚值班員，欄名我還沒確認。"},{"question":"第一筆改值指哪個欄位？請回完整欄名「巡檢班別」、「寄存班別」。","reply":"寄存班別"}],
+    "criteria":["先保存姚值班員，原欄名仍待查。","之後只回寄存班別，交乙席及通知對象，各有來源。"]
+  },
+  {
+    "id":"tentative_contact_keeps_both_items_open",
+    "category":"goal_natural_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"柳岑 K8 原抽查班別、出件班別皆早班。各欄可早班或晚班，四組皆可。通知對象另待查。\n"},
+      {"name":"policy.txt","content":"雙早班去前室，雙晚班去後室。抽查晚班且出件早班去甲室，抽查早班且出件晚班去乙室。\n"}
+    ],
+    "prompt":"讀兩份首行，按抽查班別、出件班別的順序核對四組，先問本輪更正。省略欄名且去向分開時，同一步分列原欄名與獨立的『本輪要通知誰？』，使用分項提問。暫定或有兩個可能對象仍要先釐清，不猜人名或欄名。",
+    "reply":"正式改成晚班。",
+    "partial_followup":[{"reply":"可能通知許值班員或鄭主任，欄名還沒確認。"}],
+    "criteria":["未保存其中一個通知對象，也沒有確認欄名。","保留原題及輸入，提示先確認獨立補問的答案。"]
+  }
+]

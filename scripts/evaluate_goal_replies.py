@@ -269,8 +269,14 @@ def main():
                             break
                         observed = goal_replies.snapshot(store, sid, gid)
                         before_calls = len(row['calls'])
-                        turn['saved'] = goal_replies.save(store, sid, gid, entry['reply'],
-                                                          expected_fingerprint=observed['fingerprint'])
+                        try:
+                            turn['saved'] = goal_replies.save(store, sid, gid, entry['reply'],
+                                                              expected_fingerprint=observed['fingerprint'])
+                        except ValueError as exc:
+                            turn['rejected'] = str(exc)
+                            assert autonomy.get_goal(store, sid, gid) == state and len(row['calls']) == before_calls
+                            save_report(trace_path, row)
+                            break
                         assert len(row['calls']) == before_calls
                         state = autonomy.get_goal(store, sid, gid)
                         turn['after_save'] = state
