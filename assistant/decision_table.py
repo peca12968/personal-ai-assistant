@@ -12,6 +12,7 @@ from .goal_stages import digest
 
 GUIDANCE = '''check_decision: {"conditions":["入口","通行證"],"rows":[{"when":["北門","有"],"result":"入場"},{"when":["北門","無"],"result":"等待"}],"known":{"入口":"北門"}}。
 目標或已讀原文已列明完整可行情境，或明定各欄選項及哪些組合不可行時，使用此工具核對結論、找缺列或挑選最少追問。conditions依原欄位順序，rows逐列保留原對應，when依欄位順序給值，known只填已確認且適用於本次的值。最多5個條件、32列，每個條件最多4種值。不把待查、舊值、假設或模型推測填進known。
+若使用者交代先核對原安排再問更新，原規則和原條件齊備時先用此工具保存原核對，再詢問更新，以便後續保留原值與正式改動的區別。
 若已知各欄完整選項，且各種組合皆可發生或已明文排除例外，另傳domains（如{"入口":["北門","南門"],"通行證":["有","無"]}）與excluded（依欄位順序列明文排除的組合，沒有則[]）。此模式各欄選項組合最多32種。保留已公布的對應；不同同級資料若針對同一組合給不同結果，在rows為該組合分列，不自行選定。只有明文不可能或排除的組合放excluded，缺規則與另案安排都不是排除，也不能代填缺列。分清兩份表是否適用同一事項。無法確定適用範圍或完整選項時沿用一般分析。收到正式補充後只新增有效對應或修正已解決的列，保留舊來源及適用範圍。
 incomplete_table表示目前相容組合中有缺列或不同結果。coverage列出相容的缺列、衝突與明文排除，recorded_results僅為已記載結果。保留仍有來源的部分；需要唯一結果時，只問影響本次決策的處置規則或哪份說法生效，勿重問已確認欄位。收到可解決缺列或衝突的正式補充後，先更新該筆對應並再次執行check_decision，再交付。其餘適用的欄位、規則和排除照原資料，舊步驟保留。要求只交條件式成果時，標示缺漏或衝突，不追問。其他範圍的缺列不阻擋本次可確定的結果。
 matching_rows是所送表格的1起算列號，並非原文件行號。resolved表示符合已知條件的各列結果相同，直接交付並保留無須核對的欄位為待查。needs_check時，question給最少化最壞追問輪數的第一欄與各答案可能結果，同分依表列欄位順序。若使用者需要唯一結果且允許提問，先交仍有依據的暫表，只問該欄；收到確定答覆後，沿用相同表列，只更新known並重算。若使用者只要條件式交付或明確不提問，保留所有相容分支後直接交付。no_match表示已知值與所送表列不相容，核對適用範圍及來源，不補造結論。
@@ -27,7 +28,8 @@ disputed_relations列出參與矛盾循環的原連線，工具不以它們推�
 
 REPLACEMENT_GUIDANCE = '''正式整批補充被check_decision退回後，需要補正時，只問一次完整的新補充。請使用者在首行寫「取代｜[補充#3]」（用實際退回的補充或更正編號），接著寫一至四行原核對編號與要採用的更正。收到後仍用{"revision":"[補充#5]"}，只傳新補充的實際編號。新補充取代整批退回內容，未重述欄位沿用原核對。revision.replaces保存上次退回步驟、來源與原因。若新批再因內容無效被退回，下次須指向該次退回的來源。取代編號不符時保留原核對，依要求交代原因或請使用者確認，勿把未核實的值改送完整表。'''
 
-NATURAL_UPDATE_GUIDANCE = '''同一目標已有決策核對及最新自然語句補充，且只需調整已知欄位時，用check_decision的{"known_update":{"區位":"南","門證":null},"source":"[補充#3]"}，填實際來源及完整欄名。只轉錄本次明確更正的值；原值撤回、改為待查，或原先確認值已不能再沿用時，填null移除已知值，不能寫成相反值。未改的欄位及原表規則由工具沿用。程式核對來源位置、欄位及相容性，文字是否支持轉錄須由你先核對。舊值、未採用提案、另案及引述不成為本次事實。若回覆只說「其中一欄變了」，這是目前待澄清的欄位，不會增加原表的 excluded。若哪一欄變動會影響本次決定，直接問一次是哪欄，等確定後以原核對做 known_update；無須先重算一張加入臨時排除的表。若缺漏不會改變使用者要的結果，保留未知後直接交付。若只求假設試算，加"what_if":true，試算結果在what_if_result，頂層仍為本次實際核對，原表及本次條件不改。正式格式維持revision；要修改規則或選項時沿用完整核對。'''
+NATURAL_UPDATE_GUIDANCE = '''同一目標已有決策核對及最新自然語句補充，且只需調整已知欄位時，用check_decision的{"known_update":{"區位":"南","門證":null},"source":"[補充#3]"}，填實際來源及完整欄名。只轉錄本次明確更正的值；原值撤回、改為待查，或原先確認值已不能再沿用時，填null移除已知值，不能寫成相反值。未改的欄位及原表規則由工具沿用。程式核對來源位置、欄位及相容性，文字是否支持轉錄須由你先核對。舊值、未採用提案、另案及引述不成為本次事實。若回覆只說「其中一欄變了」，這是目前待澄清的欄位，不會增加原表的 excluded。若哪一欄變動會影響本次決定，直接問一次是哪欄，等確定後以原核對做 known_update；無須先重算一張加入臨時排除的表。若缺漏不會改變使用者要的結果，保留未知後直接交付。若只求假設試算，加"what_if":true，試算結果在what_if_result，頂層仍為本次實際核對，原表及本次條件不改。正式格式維持revision；要修改規則或選項時沿用完整核對。
+若補充同時談本批、相近名稱、另案或舊狀態，先辨認各句的對象、時間及是否採用。沒有本次改動就沿用原核對。對象不明而影響結論時只確認是哪個，待答覆後把原狀態短句和最新指代確認一起引用。遇到這類混合或跨輪補充，或使用者要求引用原話，請為每個更動欄位附evidence，例如{"時段":[{"citation":"[補充#3]","quote":"本批改成晚班"}]}。每欄一至兩則，由早到晚，最後一則必須是source。quote逐字擷取唯一可定位的原文，連同必要的對象或撤回措辭。不要重寫引文。核對短句確實支持該欄的改值、撤回或試算，再採用。成果需要交代採用的原話或範圍時，引用本次採用的短句，並簡短標記可能混淆的相近名稱或舊狀態各屬哪一案。'''
 
 
 def _label(value):
@@ -372,8 +374,8 @@ def validate_tool(args):
                 or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
     elif isinstance(args, dict) and 'known_update' in args:
-        if (set(args) not in ({'known_update', 'source'}, {'known_update', 'source', 'what_if'})
-                or not isinstance(args['source'], str) or not _REVISION_SOURCE.fullmatch(args['source'])
+        if (args.keys() - {'known_update', 'source', 'what_if', 'evidence'}
+                or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
                 or ('what_if' in args and type(args['what_if']) is not bool)
                 or not isinstance(args['known_update'], dict) or not 1 <= len(args['known_update']) <= 5):
             raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
@@ -381,8 +383,25 @@ def validate_tool(args):
             _label(field)
             if value is not None:
                 _label(value)
+        if 'evidence' in args:
+            _validate_update_evidence(args['evidence'], args['known_update'], args['source'])
     else:
         validate(args)
+
+
+def _validate_update_evidence(evidence, updates, latest_citation):
+    if not isinstance(evidence, dict) or evidence.keys() != updates.keys():
+        raise ValueError('欄位證據須涵蓋每一個更新欄位。')
+    for excerpts in evidence.values():
+        if not isinstance(excerpts, list) or not 1 <= len(excerpts) <= 2:
+            raise ValueError('每個更新欄位須附一至兩則證據。')
+        for excerpt in excerpts:
+            if (not isinstance(excerpt, dict) or excerpt.keys() != {'citation', 'quote'}
+                    or not isinstance(excerpt['citation'], str) or not _REVISION_SOURCE.fullmatch(excerpt['citation'])):
+                raise ValueError('欄位證據須提供已保存的來源編號與逐字短句。')
+            _label(excerpt['quote'])
+        if excerpts[-1]['citation'] != latest_citation:
+            raise ValueError('每個更新欄位的證據須以最新補充作結。')
 
 
 def _edge_key(edge):
@@ -581,11 +600,33 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
     result = calculate(plan)
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': args['source'],
                'source_sha256': source['sha256'], 'changes': changes}
+    if 'evidence' in args:
+        receipt['evidence'] = _bind_update_evidence(args['evidence'], sources, positions)
     if args.get('what_if'):
         return base, {**calculate(base), 'known_update': receipt, 'what_if_result': result}
     if result['status'] == 'no_match':
         raise ValueError('更新值與原表的可行情境不相容，原核對保留。')
     return plan, {**result, 'known_update': receipt}
+
+
+def _bind_update_evidence(evidence, sources, positions):
+    bound = {}
+    for field, excerpts in evidence.items():
+        previous = -1
+        bound[field] = []
+        for excerpt in excerpts:
+            citation, quote = excerpt['citation'], excerpt['quote']
+            position = positions.get(citation, -1)
+            if position <= previous:
+                raise ValueError('欄位證據須依序引用原核對後的同一目標補充。')
+            source = sources[citation]
+            text = _source_text(source)
+            start = text.find(quote)
+            if (start < 0 or text.find(quote, start + 1) >= 0 or text.startswith(('核對#', '取代｜'))):
+                raise ValueError('欄位證據須逐字引用自然補充中可唯一定位的短句。')
+            bound[field].append({**excerpt, 'source_sha256': source['sha256'], 'start': start, 'end': start + len(quote)})
+            previous = position
+    return bound
 
 
 def failed_revision(step):

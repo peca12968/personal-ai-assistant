@@ -653,6 +653,71 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
+        plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
+                'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '只核對檜園')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='有最新狀態嗎？')))
+            state = goal_replies.snapshot(store, sid, gid)
+            first = '📍有一個園入口開了，還不知道是哪個。'
+            goal_replies.save(store, sid, gid, first, expected_fingerprint=state['fingerprint'])
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('ask', question='是哪個園？')))
+            state = goal_replies.snapshot(store, sid, gid)
+            last = '變動的是本次的檜園。'
+            goal_replies.save(store, sid, gid, last, expected_fingerprint=state['fingerprint'])
+            excerpts = [{'citation': '[補充#2]', 'quote': '有一個園入口開了'},
+                        {'citation': '[補充#3]', 'quote': '變動的是本次的檜園'}]
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', known_update={'入口': '開'}, source='[補充#3]', evidence={'入口': excerpts}),
+                action('finish', report='檜園走內廊。')))
+            observation = result['steps'][3]['observation']
+            self.assertEqual(observation['possible_results'], ['內廊'])
+            bound = observation['known_update']['evidence']['入口']
+            for receipt, excerpt, saved, original in zip(bound, excerpts, result['reply_sources'], (first, last)):
+                self.assertEqual(receipt['source_sha256'], saved['sha256'])
+                self.assertEqual(original[receipt['start']:receipt['end']], excerpt['quote'])
+            self.assertEqual(bound[0]['start'], 1)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), result)
+            bound[0]['start'] = 0
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+    def test_natural_evidence_requires_unique_literal_current_ordered_quotes(self):
+        plan = {'conditions': ['入口'], 'known': {'入口': '關'},
+                'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}
+        steps = [{'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                  'observation': decision_table.calculate(plan)},
+                 {'sequence': 2, 'action': {'tool': 'ask'}, 'observation': {}}]
+        older = {'citation': '[補充#1]', 'ask_sequence': 1, 'sha256': 'a' * 64, 'answer': '入口開了'}
+        latest = {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': 'b' * 64,
+                  'answer': '入口開了，入口開了。'}
+        args = {'known_update': {'入口': '開'}, 'source': latest['citation']}
+        legacy = decision_table.observe(args, steps, [older, latest])
+        self.assertNotIn('evidence', legacy['known_update'])
+        for excerpts, reason in (
+                ([{'citation': '[補充#2]', 'quote': '入口開了'}], '唯一定位'),
+                ([{'citation': '[補充#2]', 'quote': '入口已開'}], '唯一定位'),
+                ([{'citation': '[補充#1]', 'quote': '入口開了'}], '最新補充作結'),
+                ([{'citation': '[補充#1]', 'quote': '入口開了'},
+                  {'citation': '[補充#2]', 'quote': latest['answer']}], '原核對後'),
+                ([{'citation': '[補充#2]', 'quote': latest['answer']}] * 2, '依序引用')):
+            with self.subTest(excerpts=excerpts), self.assertRaisesRegex(ValueError, reason):
+                decision_table.observe({**args, 'evidence': {'入口': excerpts}}, steps, [older, latest])
+        result = decision_table.observe({**args, 'evidence': {
+            '入口': [{'citation': '[補充#2]', 'quote': latest['answer']}]}}, steps, [older, latest])
+        self.assertEqual(result['possible_results'], legacy['possible_results'])
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

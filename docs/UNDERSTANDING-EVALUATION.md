@@ -231,6 +231,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_natural_decision_updates.json 評讀日常補充中的當前更正、撤回、欄位歧義、與結果無關的缺漏及假設。分開核對模型對原話的理解與工具保留原表的結果。工具驗證最新來源、欄位、選項及相容性，還原時分開核對實際值和試算值。記錄額外追問和工具呼叫，模型轉錄仍須依原話評讀。
 
+以 evals/goal_mixed_scope_updates.json 核對相近名稱、跨輪指代、另案已知而本案待查，以及沒有本案改動。逐欄驗證採用短句與保存來源的指紋及字元範圍，對跨輪案例分開核對狀態和最新指代確認。短句命中只證明原話位置，另行評讀是否能支持本次條件。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
