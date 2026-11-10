@@ -86,6 +86,9 @@ class AutonomyTests(unittest.TestCase):
             action('finish', report=f'事項[D{did}:L1]'))
         result = a.run_goal(self.store, self.sid, gid, engine)
         self.assertEqual(result['steps'][0]['action']['tool'], 'invalid')
+        self.assertNotIn(a.DOCUMENT_CLAIMS_GUIDANCE, engine.prompts[0])
+        self.assertNotIn(a.DOCUMENT_CLAIMS_GUIDANCE, engine.prompts[1])
+        self.assertIn(a.DOCUMENT_CLAIMS_GUIDANCE, engine.prompts[2])
         self.assertEqual(result['status'], 'report_ready')
 
     def test_partial_report_waits_separately_and_survives_restore_and_reply(self):

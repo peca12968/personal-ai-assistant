@@ -88,6 +88,8 @@ difference與quotient恰好兩個數；sum與product一至50個數。數字字�
 calculate的exact是精確約分結果（整數或分數），後續計算直接沿用exact字串，不用decimal近似值代替。decimal只是40位有效數字、ROUND_HALF_EVEN（恰半取偶）的小數顯示，可能含科學記號；rounded=true表示它不等於精確值，並非計算本身不精確。顯示可能捨入長整數或有限小數，不只循環小數。報告依使用者需要區分精確與近似；這不是固定小數位、金額捨入或任意算式執行。
 不要不停查詢同一資料；有依據完成成果後，文字模式使用finish，文件交付模式使用deliver。'''
 
+DOCUMENT_CLAIMS_GUIDANCE = '''撰寫暫表、定稿或文件時，逐項核對所引原文是否同時支持主體、角色及本次適用範圍。名稱接「交件」或「交接」也可能是事項，角色沒有明確說法時，保留需要的原稱。原文明確指定人員時，保留其角色。另案、引述及尚未採用的資料不能證明本次人員安排。只有仍缺交付所需角色時才追問。'''
+
 
 def text(value, limit):
     if not isinstance(value, str) or not value.strip() or len(value) > limit or '\x00' in value:
@@ -441,7 +443,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
-                ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
+                ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
+                ('\n' + DOCUMENT_CLAIMS_GUIDANCE
+                 if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
                 reason = 'cancelled'
                 update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')

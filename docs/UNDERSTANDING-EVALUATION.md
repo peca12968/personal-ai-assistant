@@ -203,6 +203,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_version_clarification_order.json` 核對同分先問欄位、確認版本才能減少最壞輪數，以及缺版時照要求交付條件式成果。固定各次回答，分開評讀工具的計畫、實際提問與最後成果。缺版及不可用情境仍需來源，計算只估計確認欄位與版本的輪數。
 
+以 evals/goal_grounded_roles.json 比較兩階段的暫表與定稿。成對案例只改同一行對角色的描述，另核對另案同名角色和無文件計算。逐項分開評讀角色、內容及工作決策。原始引用行可核對，但行號有效仍需另評原文是否支持所寫的語意。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
