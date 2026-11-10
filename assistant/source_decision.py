@@ -39,19 +39,24 @@ def _validate_ranges(ranges):
         raise ValueError('原文規則最多32個不重複的行。')
 
 
-def declared_ranges(objective):
-    first = objective.partition('\n')[0].removesuffix('\r')
-    if not first.startswith(_SCOPE_PREFIX):
-        return []
+def parse_range_list(text, *, invalid):
     ranges = []
-    for token in first.removeprefix(_SCOPE_PREFIX).split('、'):
+    for token in text.split('、'):
         match = _RANGE.fullmatch(token.strip())
         if not match:
-            raise ValueError('決策規則範圍請在目標首行列出文件及行號，例如[D2:L2-L5]。')
+            raise ValueError(invalid)
         did, start, end = match.groups()
         ranges.append({'document_id': int(did), 'start_line': int(start), 'end_line': int(end or start)})
     _validate_ranges(ranges)
     return ranges
+
+
+def declared_ranges(objective):
+    first = objective.partition('\n')[0].removesuffix('\r')
+    if not first.startswith(_SCOPE_PREFIX):
+        return []
+    return parse_range_list(first.removeprefix(_SCOPE_PREFIX),
+                            invalid='決策規則範圍請在目標首行列出文件及行號，例如[D2:L2-L5]。')
 
 
 def save_scope(db, gid, ranges, sources):

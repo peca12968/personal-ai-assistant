@@ -105,6 +105,7 @@ def signature(documents):
 def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None, history_search=False):
     objective = text(objective, 4000)
     declared = source_decision.declared_ranges(objective)
+    quantity_scope = quantity_evidence.declared_scope(objective)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
     if type(from_chat) is not bool:
@@ -125,6 +126,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
             if declared:
                 source_decision.save_scope(db, gid, declared, sources)
+            if quantity_scope:
+                quantity_evidence.save_scope(db, gid, quantity_scope, sources)
             if file_delivery:
                 db.execute('INSERT INTO autonomous_delivery(goal_id,enabled) VALUES(?,1)', (gid,))
             if csv_document_id is not None:
@@ -174,6 +177,10 @@ def get_goal(store, sid, gid):
         if declared:
             result['decision_rule_scope'] = {'ranges': declared, 'missing_ranges': source_decision.missing_ranges(
                 declared, result['steps'], result['sources'])}
+        quantity_scope = quantity_evidence.read_scope(db, gid, result['objective'], result['sources'])
+        if quantity_scope:
+            result['quantity_adoption_scope'] = {**quantity_scope, 'missing_ranges': source_decision.missing_ranges(
+                quantity_scope['ranges'], result['steps'], result['sources'])}
         reply_sources = goal_reply_sources.read(db, gid, result['notes'])
         if reply_sources:
             result['reply_sources'] = reply_sources
@@ -307,12 +314,14 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
                                          declared=declared_rule_ranges)
     if name == 'check_quantities':
         goal = get_goal(store, sid, gid)
-        return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources)
+        return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources,
+                                         declared=goal.get('quantity_adoption_scope'))
     if name == 'calculate_expression':
         if 'quantity_inputs' in args:
             goal = get_goal(store, sid, gid)
             return quantity_evidence.calculate_expression(args, steps, goal['sources'], work_plan.conditions(goal),
-                                                          goal['objective'], reply_sources, guidance_sources, cancel)
+                                                          goal['objective'], reply_sources, guidance_sources, cancel,
+                                                          declared=goal.get('quantity_adoption_scope'))
         return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
         return conversation_history.window(store, sid, gid, args, cancel)
@@ -449,6 +458,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             rule_scope = goal.get('decision_rule_scope')
             if rule_scope:
                 payload['decision_rule_scope'] = rule_scope
+            quantity_scope = goal.get('quantity_adoption_scope')
+            if quantity_scope:
+                payload['quantity_adoption_scope'] = quantity_scope
             withdrawals = goal.get('withdrawn_questions', ())
             if withdrawals:
                 payload['withdrawn_questions'] = [
@@ -461,6 +473,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
+                ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +

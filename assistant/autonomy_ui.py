@@ -323,6 +323,11 @@ class AutonomousWindow:
             for key, label in (('ranges', '宣告的決策規則範圍'), ('missing_ranges', '尚未完整查讀的規則行')):
                 tokens = [f"D{row['document_id']} L{row['start_line']}–L{row['end_line']}" for row in scope[key]]
                 lines += [label + ' · ' + ('、'.join(tokens) or '無')]
+        if scope := goal.get('quantity_adoption_scope'):
+            lines += ['宣告的數量採用欄位 · ' + scope['field']]
+            for key, label in (('ranges', '宣告的數量採用範圍'), ('missing_ranges', '尚未完整查讀的採用行')):
+                tokens = [f"D{row['document_id']} L{row['start_line']}–L{row['end_line']}" for row in scope[key]]
+                lines += [label + ' · ' + ('、'.join(tokens) or '無')]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
         if goal['continuous_runs']:
             lines += ['最近10次持續執行紀錄（本機保存；執行中標記不代表程序仍存活）：']

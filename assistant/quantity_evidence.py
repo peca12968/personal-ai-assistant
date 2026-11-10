@@ -17,6 +17,13 @@ GUIDANCE += '''
 GUIDANCE += '''
 文件使用『版本「複核版」欄位「完整欄位名」為 8 件』及獨立一行『欄位「完整欄位名」｜採用版本｜複核版』時，可在有field的check_quantities另填adoption_ranges，例如[{"document_id":3,"start_line":1,"end_line":1}]。納入本次所有相關採用行，包括互相矛盾的記載。候選label逐字用原版名，quote最好包含版名、欄位和數值。adoption.status為adopted時，算式quantity_inputs直接帶path、step、該adoption.candidate，不另詢問或補selection。版本與採用行各自引用。若adoption為unrecorded、conflicting、incomplete或candidate_unavailable，依回傳保留版本、採用記載或缺行，日期和檔名不決定生效。資料確實不足且需要定稿才問。後續明確使用者採用或正式更正可用既有selection或replacement。'''
 
+SCOPE_GUIDANCE = ('quantity_adoption_scope是使用者在目標首行固定的欄位及完整採用區段。'
+                  '把數值原行和missing_ranges中可取得的行用一次read_ranges查讀，不重讀已取得的行。'
+                  '對照documents的line_count，若有不存在的行，只讀實際存在的部分，交付時列缺行。'
+                  'check_quantities填原欄位及逐字版名，由工具帶入整個宣告，省略adoption_ranges。'
+                  '保留另欄採用紀錄及其引用，但不視為本欄採用。未讀齊或互相矛盾時不把已讀的首筆當定稿。'
+                  '可依要求交各版的條件結果及缺漏。')
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -26,6 +33,8 @@ _BARE = re.compile(operand_evidence._LITERAL.pattern + _BOUNDARY)
 _DOCUMENT = operand_evidence._DOCUMENT
 _USER = operand_evidence._USER
 _DOCUMENT_ADOPTION = re.compile(r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})」｜採用版本｜(?P<version>[^「」｜\x00\r\n]{1,80})')
+_SCOPE_PREFIX = '數量採用範圍：'
+_SCOPE = re.compile(r'欄位「([^「」｜\x00\r\n]{1,80})」｜(.+)')
 _METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 _SENTENCE_BREAKS = '。.!?！？\r\n'
 
@@ -33,6 +42,54 @@ _SENTENCE_BREAKS = '。.!?！？\r\n'
 def _short_text(value, limit):
     return (isinstance(value, str) and 1 <= len(value) <= limit and value == value.strip()
             and not any(char in value for char in '\0\r\n'))
+
+
+def declared_scope(objective):
+    first = objective.partition('\n')[0].removesuffix('\r')
+    if not first.startswith(_SCOPE_PREFIX):
+        return None
+    invalid = '數量採用範圍請在目標首行列出完整欄位與行號，例如欄位「本批退回」｜[D3:L1]。'
+    match = _SCOPE.fullmatch(first.removeprefix(_SCOPE_PREFIX))
+    if match is None or not _short_text(match[1], 80):
+        raise ValueError(invalid)
+    return {'field': match[1], 'ranges': source_decision.parse_range_list(match[2], invalid=invalid)}
+
+
+def _check_scope_sources(scope, sources):
+    if not {row['document_id'] for row in scope['ranges']} <= {row['document_id'] for row in sources}:
+        raise ValueError('請先在目前對話匯入宣告的數量採用文件。')
+
+
+def save_scope(db, gid, scope, sources):
+    _check_scope_sources(scope, sources)
+    db.execute('INSERT INTO autonomous_quantity_scopes(goal_id,scope_json) VALUES(?,?)',
+               (gid, json.dumps(scope, ensure_ascii=False)))
+
+
+def _verified_scope(payload, objective, sources):
+    scope = declared_scope(objective)
+    saved = json.loads(payload)
+    if scope is None or scope != saved:
+        raise ValueError('保存的數量採用範圍與目標原文不一致。')
+    source_decision._validate_ranges(saved['ranges'])
+    _check_scope_sources(scope, sources)
+    return scope
+
+
+def read_scope(db, gid, objective, sources):
+    row = db.execute('SELECT scope_json FROM autonomous_quantity_scopes WHERE goal_id=?', (gid,)).fetchone()
+    return _verified_scope(row[0], objective, sources) if row else None
+
+
+def _apply_scope(args, declared):
+    if declared is None or args.get('field', declared['field']) != declared['field']:
+        return args
+    ranges = declared['ranges']
+    if 'adoption_ranges' in args:
+        supplied = set(source_decision._positions(args['adoption_ranges']))
+        if supplied != set(source_decision._positions(ranges)):
+            raise ValueError('數量採用須涵蓋目標首行宣告的全部區段。請省略adoption_ranges以套用宣告。')
+    return {**args, 'field': declared['field'], 'adoption_ranges': ranges}
 
 
 def _user_excerpt(evidence, fields):
@@ -211,8 +268,13 @@ def _document_adoption(field, ranges, lines, quantities, source_texts):
     return {**result, 'status': 'adopted', 'version': version, 'candidate': candidate}
 
 
-def observe(args, steps, sources, objective='', replies=(), guidance=()):
+def observe(args, steps, sources, objective='', replies=(), guidance=(), *, declared=None):
     validate(args)
+    effective = _apply_scope(args, declared)
+    uses_declared = effective is not args
+    args = effective
+    if uses_declared:
+        validate(args)
     refs = [match for row in args['candidates'] if (match := _DOCUMENT.fullmatch(row['citation']))]
     ranges = [{'document_id': int(match[1]), 'start_line': int(match[2]), 'end_line': int(match[2])}
               for match in refs]
@@ -239,6 +301,8 @@ def observe(args, steps, sources, objective='', replies=(), guidance=()):
         result['field'] = field
     if adoption_ranges:
         result['adoption'] = _document_adoption(field, adoption_ranges, lines, quantities, source_texts)
+        if uses_declared:
+            result['adoption']['declared_ranges'] = adoption_ranges
     return result
 
 
@@ -298,7 +362,8 @@ def _replacement_quantity(replacement, field, target, source):
     return _candidate({**replacement, 'label': field}, {replacement['citation']: source}, target, field)
 
 
-def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None):
+def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
+                         declared=None):
     validate_expression(args)
     expression_math.check_cancel(cancel)
     sequence = len(steps) + 1
@@ -312,7 +377,7 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
             raise ValueError('算式須引用同一目標先前實際完成的數量核對。')
         original = saved['action']['args']
         prior = [step for step in steps if step['sequence'] < number]
-        verified = observe(original, prior, sources, objective, replies, guidance)
+        verified = observe(original, prior, sources, objective, replies, guidance, declared=declared)
         if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
             raise ValueError('原數量核對與保存的來源不一致。')
         if 'replacement' in binding:
@@ -339,9 +404,10 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
                 if 'field' in original:
                     request['field'] = original['field']
                 if adoption is not None:
-                    request['adoption_ranges'] = original['adoption_ranges']
+                    if 'adoption_ranges' in original:
+                        request['adoption_ranges'] = original['adoption_ranges']
                     receipt['adoption'] = adoption
-                quantity, = observe(request, steps, sources, objective, replies, guidance)['quantities']
+                quantity, = observe(request, steps, sources, objective, replies, guidance, declared=declared)['quantities']
             elif 'selection' in binding:
                 selection = binding['selection']
                 source = _latest_confirmation(selection['citation'], number, sequence, replies, guidance)
@@ -365,7 +431,13 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
     return {**result, 'quantity_inputs': bindings}
 
 
-def validate_saved(db, *, replies_present, guidance_present):
+def validate_saved(db, *, replies_present, guidance_present, scope_present=False):
+    scopes = {}
+    if scope_present:
+        for gid, payload, objective, source_json in db.execute(
+                'SELECT s.goal_id,s.scope_json,g.objective,g.sources_json FROM autonomous_quantity_scopes s '
+                'JOIN autonomous_goals g ON g.id=s.goal_id'):
+            scopes[gid] = _verified_scope(payload, objective, json.loads(source_json))
     query = '''SELECT DISTINCT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g
                JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_quantities"%'
                OR s.action_json LIKE '%"quantity_inputs"%' '''
@@ -379,7 +451,7 @@ def validate_saved(db, *, replies_present, guidance_present):
         for sequence, action_json, observation_json in rows:
             action, observation = json.loads(action_json), json.loads(observation_json)
             if action['tool'] == 'check_quantities':
-                expected = observe(action['args'], prior, sources, objective, replies, guidance)
+                expected = observe(action['args'], prior, sources, objective, replies, guidance, declared=scopes.get(gid))
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的數量核對與原話或換算結果不一致。')
@@ -387,7 +459,8 @@ def validate_saved(db, *, replies_present, guidance_present):
                 scope = observation.get('goal_conditions_sha256')
                 if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
                     raise ValueError('保存的算式缺少有效數量條件。')
-                expected = calculate_expression(action['args'], prior, sources, scope, objective, replies, guidance)
+                expected = calculate_expression(action['args'], prior, sources, scope, objective, replies, guidance,
+                                                declared=scopes.get(gid))
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的算式與數量核對關聯不一致。')

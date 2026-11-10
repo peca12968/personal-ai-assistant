@@ -1,0 +1,46 @@
+[
+  {
+    "id": "declared_quantity_scope_conflicts_across_documents",
+    "category": "goal_quantity_adoption_scope",
+    "documents": [
+      {"name": "original.txt", "content": "冷杉本批原備 38 包。\n版本「登錄版」欄位「冷杉本批退回」為 6 包。\n"},
+      {"name": "inspection.txt", "content": "版本「巡核版」欄位「冷杉本批退回」為 9 包。\n"},
+      {"name": "shift-a.txt", "content": "欄位「冷杉本批退回」｜採用版本｜登錄版\n"},
+      {"name": "shift-b.txt", "content": "簽收備註。\n欄位「冷杉本批退回」｜採用版本｜巡核版\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「冷杉本批退回」｜[D3:L1]、[D4:L2]\n先讀 [D1:L1-L2]、[D2:L1] 及首行宣告的採用範圍，用 check_quantities 核對兩個候選及採用原文。若採用衝突，只交兩個條件式可交量和各自引用，無需追問。",
+    "criteria": ["登錄版退回6可交32包，巡核版退回9可交29包。保留D3及D4的矛盾採用，不宣告唯一正式版，不提問。另核對保存的採用範圍及狀態。"]
+  },
+  {
+    "id": "declared_quantity_scope_retains_other_field_without_adopting_it",
+    "category": "goal_quantity_adoption_scope",
+    "documents": [
+      {"name": "entry.txt", "content": "霧松本批原備 45 件。\n版本「登記」欄位「霧松本批作廢」為 5 件。\n"},
+      {"name": "review.txt", "content": "版本「複驗」欄位「霧松本批作廢」為 8 件。\n"},
+      {"name": "approval.txt", "content": "欄位「霧松本批作廢」｜採用版本｜複驗\n"},
+      {"name": "next-batch.txt", "content": "欄位「霧松下批作廢」｜採用版本｜登記\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「霧松本批作廢」｜[D3:L1]、[D4:L1]\n用 check_quantities 核對 [D1:L2] 與 [D2:L1] 的本批作廢候選，核對範圍中的本批與另批採用。若本批已有一致採用，直接用 calculate_expression 連結核對，算 [D1:L1] 原備減本批作廢，交正式結果及引用，不提問。",
+    "criteria": ["採本批複驗8，可交37件。排除下批採用，保留本批兩個數值及兩筆採用記載，無提問。另核對保存的範圍、另批紀錄與算式關聯。"]
+  },
+  {
+    "id": "declared_quantity_scope_keeps_nonexistent_line_visible",
+    "category": "goal_quantity_adoption_scope",
+    "documents": [
+      {"name": "counts.txt", "content": "竹浦本批原備 30 盒。\n版本「早班」欄位「竹浦本批剔除」為 4 盒。\n版本「晚班」欄位「竹浦本批剔除」為 7 盒。\n"},
+      {"name": "partial-register.txt", "content": "欄位「竹浦本批剔除」｜採用版本｜早班\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「竹浦本批剔除」｜[D2:L1-L2]\n讀 [D1:L1-L3] 和可取得的 [D2:L1]，用 check_quantities 核對現有兩版及宣告範圍，核對時保留尚未讀到的行。若宣告範圍缺行，交缺口與條件結果，不給正式量也不追問。",
+    "criteria": ["明示D2:L2缺少。保留早班採用原文，早班4得26盒，晚班7得23盒。正式量待確認且無提問。另核對工具狀態incomplete，無正式綁定。"]
+  },
+  {
+    "id": "legacy_quantity_adoption_without_declared_scope",
+    "category": "goal_quantity_adoption_scope",
+    "documents": [
+      {"name": "counts.txt", "content": "望堤本批原備 24 瓶。\n版本「甲版」欄位「望堤本批留驗」為 2 瓶。\n版本「乙版」欄位「望堤本批留驗」為 5 瓶。\n"},
+      {"name": "record.txt", "content": "欄位「望堤本批留驗」｜採用版本｜甲版\n"}
+    ],
+    "prompt": "讀 [D1:L1-L3]、[D2:L1]，用 check_quantities 核對望堤本批兩版和 D2 採用行。用 calculate_expression 連結採用版，給原備減留驗的正式數字與來源，無需追問。",
+    "criteria": ["甲版2得22瓶，引用D1的數字及D2採用行。無提問。舊的未宣告範圍流程仍能儲存採用及算式關聯。"]
+  }
+]

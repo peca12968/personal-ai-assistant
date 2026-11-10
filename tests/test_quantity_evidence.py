@@ -11,6 +11,103 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_declared_scope_rejects_subsets_and_keeps_conflict_across_documents(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '冷杉本批退回'
+            lines = [f'版本「甲版」欄位「{field}」為 6 件。', f'版本「乙版」欄位「{field}」為 9 件。',
+                     f'欄位「{field}」｜採用版本｜甲版', f'欄位「{field}」｜採用版本｜乙版']
+            ranges = []
+            for i, line in enumerate(lines, 1):
+                path = root / f'scope-{i}.txt'
+                path.write_text(line, encoding='utf-8')
+                ranges.append({'document_id': store.attach_document(sid, path), 'start_line': 1, 'end_line': 1})
+            refs = [f'[D{row["document_id"]}:L1]' for row in ranges]
+            prefix = f'數量採用範圍：欄位「{field}」｜'
+            with self.assertRaisesRegex(ValueError, '目標首行'):
+                autonomy.create_goal(store, sid, prefix + 'D3:L1')
+            with self.assertRaisesRegex(ValueError, '重複'):
+                autonomy.create_goal(store, sid, prefix + '、'.join([refs[2]] * 2))
+            with self.assertRaisesRegex(ValueError, '目前對話'):
+                autonomy.create_goal(store, store.new_session(), prefix + refs[2])
+            self.assertEqual(autonomy.goals(store, sid), [])
+            gid = autonomy.create_goal(store, sid, prefix + '、'.join(refs[2:]) + '\r\n核對本批。')
+            declared = autonomy.get_goal(store, sid, gid)['quantity_adoption_scope']
+            self.assertEqual(declared, {'field': field, 'ranges': ranges[2:], 'missing_ranges': ranges[2:]})
+            args = {'unit': '件', 'candidates': [
+                {'label': label, 'citation': refs[i], 'quote': lines[i]} for i, label in enumerate(('甲版', '乙版'))]}
+            def bind(step):
+                return action('calculate_expression', expression='6',
+                              quantity_inputs=[{'path': '', 'step': step, 'candidate': 1}])
+            engine = ScriptedEngine(
+                action('read_ranges', ranges=ranges[:3]),
+                action('check_quantities', **args, field=field, adoption_ranges=ranges[2:3]),
+                action('check_quantities', **args),
+                bind(3), action('read_ranges', ranges=ranges[3:]),
+                action('check_quantities', **args, field=field, adoption_ranges=ranges[2:][::-1]),
+                bind(6), action('finish', report='兩份採用原文衝突，兩個候選各自保留。'))
+            result = autonomy.run_goal(store, sid, gid, engine, max_steps=8)
+            steps = [step['observation'] for step in result['steps']]
+            self.assertIn('宣告的全部區段', steps[1]['error'])
+            self.assertEqual(steps[2]['field'], field)
+            partial = steps[2]['adoption']
+            self.assertEqual(partial['declared_ranges'], ranges[2:])
+            self.assertEqual((partial['status'], partial['missing']), ('incomplete', refs[3:]))
+            self.assertEqual([row['quote'] for row in partial['records']], lines[2:3])
+            self.assertIn('採用缺漏或有衝突', steps[3]['error'])
+            self.assertEqual(steps[5]['adoption']['status'], 'conflicting')
+            self.assertEqual([row['quote'] for row in steps[5]['adoption']['records']], lines[2:])
+            self.assertIn('採用缺漏或有衝突', steps[6]['error'])
+            context = json.loads(engine.prompts[2].split('目標與已觀察資料：\n')[-1])
+            self.assertEqual(context['quantity_adoption_scope']['missing_ranges'], ranges[3:])
+            self.assertEqual(result['quantity_adoption_scope']['missing_ranges'], [])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), result)
+            with restored.connect() as db:
+                db.execute('DELETE FROM autonomous_quantity_scopes WHERE goal_id=?', (gid,))
+            with self.assertRaisesRegex(ValueError, '保存的數量核對'):
+                validate_database(restored.path)
+
+    def test_declared_scope_adoption_binds_value_with_later_unit_confirmation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '霧松本批退回'
+            first = f'版本「早班」欄位「{field}」為 5 件。'
+            second = f'版本「複驗」欄位「{field}」為 8。'
+            approval = f'欄位「{field}」｜採用版本｜複驗'
+            other = '欄位「霧松下批退回」｜採用版本｜早班'
+            path = root / 'counts.txt'
+            path.write_text('\n'.join((first, second, approval, other)), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{field}」｜[D{did}:L3-L4]\n核對可交量。')
+            waiting = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=4),
+                action('check_quantities', unit='件', candidates=[
+                    {'label': name, 'citation': f'[D{did}:L{i}]', 'quote': quote}
+                    for i, (name, quote) in enumerate((('早班', first), ('複驗', second)), 1)]),
+                action('ask', question='複驗版退回的單位是什麼？')))
+            checked = waiting['steps'][1]['observation']['adoption']
+            self.assertEqual((checked['status'], checked['candidate']), ('adopted', 2))
+            self.assertEqual([row['quote'] for row in checked['records']], [approval, other])
+            reply = f'{field}的單位是件。'
+            snap = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_expression', expression='8', quantity_inputs=[{
+                    'path': '', 'step': 2, 'candidate': 2,
+                    'unit_evidence': {'citation': '[補充#3]', 'quote': reply, 'unit': '件'}}]),
+                action('finish', report='確認複驗版退回8件。')))
+            result = final['steps'][3]['observation']
+            self.assertEqual(result['exact'], '8')
+            self.assertEqual(result['quantity_inputs'][0]['adoption'], checked)
+            validate_database(store.path)
+
     def test_document_adoption_binds_exact_version_and_rejects_stale_scope(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
