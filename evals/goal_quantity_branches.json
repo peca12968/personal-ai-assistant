@@ -1,0 +1,43 @@
+[
+  {
+    "id": "separate_quantity_results_with_missing_adoption_line",
+    "category": "goal_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "梅浦本批原備 42 盒。\n版本「早核」欄位「梅浦本批剔除」為 6 盒。\n版本「晚核」欄位「梅浦本批剔除」為 9 盒。\n"},
+      {"name": "register.txt", "content": "欄位「梅浦本批剔除」｜採用版本｜早核\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「梅浦本批剔除」｜[D2:L1-L2]\n核對 [D1:L1-L3] 和採用範圍。缺行時，用同一個原備減剔除的算式分別核算兩版的條件式可交量。逐版列出實際算式及原文來源，保留缺行，不合計、不選正式版，也不用提問。",
+    "criteria": ["早核42減6得36盒，晚核42減9得33盒。保留D2第2行缺漏及D2第1行採用記載。無合計、唯一正式量或追問。另核對兩個分支的算式、各版數值和共用原備的來源。"]
+  },
+  {
+    "id": "competing_adoption_with_an_unavailable_quantity",
+    "category": "goal_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "樺園本批原備 30 件。\n版本「初核」欄位「樺園本批退回」為 4 件。\n版本「備查」欄位「樺園本批退回」為 7 件。\n"},
+      {"name": "a.txt", "content": "欄位「樺園本批退回」｜採用版本｜初核\n"},
+      {"name": "b.txt", "content": "欄位「樺園本批退回」｜採用版本｜簽發\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「樺園本批退回」｜[D2:L1]、[D3:L1]\n核對 [D1:L1-L3] 和採用範圍。採用互相矛盾時，只列有採用記載的各個版本，逐版以原備減退回核算可交量。採用版缺數就列為待查，不借用其他版本的數字。保留各自原文依據，直接交條件報告，不問我。",
+    "criteria": ["初核30減4得26件，簽發版缺退回量因此可交量待查。備查7沒有採用記載，不屬本次採用分支。兩筆採用各自有來源，沒有正式總數或追問。另核對保存的分支及缺數狀態。"]
+  },
+  {
+    "id": "unconfirmed_unit_remains_unknown_in_its_own_branch",
+    "category": "goal_quantity_branches",
+    "documents": [
+      {"name": "material.txt", "content": "溪岸本批原備 3 公斤。\n版本「現場」欄位「溪岸本批扣除」為 500 公克。\n版本「重驗」欄位「溪岸本批扣除」為 750。\n"},
+      {"name": "register.txt", "content": "欄位「溪岸另批扣除」｜採用版本｜重驗\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「溪岸本批扣除」｜[D2:L1]\n核對 [D1:L1-L3] 與採用範圍。以公斤列出各版本原備扣除後的條件式剩餘重量，逐版保存算式和來源。缺單位的分支只列已知原值和缺口，不假定單位。不要追問或給正式剩餘重量。",
+    "criteria": ["現場版500公克換成0.5公斤，3減0.5得2.5公斤。重驗750缺單位，該分支無計算結果。D2是另批採用。無追問或正式量。另核對有結果及待查分支各自的數值證據。"]
+  },
+  {
+    "id": "unique_adoption_remains_a_formal_single_result",
+    "category": "goal_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "杉台本批原備 36 包。\n版本「甲」欄位「杉台本批留驗」為 4 包。\n版本「乙」欄位「杉台本批留驗」為 7 包。\n"},
+      {"name": "register.txt", "content": "欄位「杉台本批留驗」｜採用版本｜乙\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「杉台本批留驗」｜[D2:L1]\n讀 [D1:L1-L3] 和採用範圍。以原備減留驗核算可交量並列來源。若核對到唯一正式採用版本，只算正式結果，算式要連結該採用版。不用提問。",
+    "criteria": ["採乙7得29包。引用原備、乙版數字和採用行。無提問、無條件結果冒充正式量。另核對原有單版正式綁定。"]
+  }
+]

@@ -68,8 +68,10 @@ def _field_position(quote, number_start, field):
     return match.span('name')
 
 
-def validate(rows, expression, ranges):
+def validate(rows, expression, ranges, *, omitted_path=None):
     leaves = dict(_leaves(expression))
+    if omitted_path is not None:
+        leaves.pop(omitted_path)
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
     seen = set()
@@ -85,7 +87,8 @@ def validate(rows, expression, ranges):
         doc_line = _DOCUMENT.fullmatch(citation)
         if doc_line:
             did, line = map(int, doc_line.groups())
-            if not any(span['document_id'] == did and span['start_line'] <= line <= span['end_line'] for span in ranges):
+            if ranges is not None and not any(
+                    span['document_id'] == did and span['start_line'] <= line <= span['end_line'] for span in ranges):
                 raise ValueError(f'運算元 {path or "根"} 的原行不在該項指定範圍。')
         elif citation != _OBJECTIVE and not _USER.fullmatch(citation):
             raise ValueError('運算元須引用原行、補充、更正或目標。')

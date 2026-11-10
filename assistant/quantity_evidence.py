@@ -24,6 +24,18 @@ SCOPE_GUIDANCE = ('quantity_adoption_scope是使用者在目標首行固定的�
                   '保留另欄採用紀錄及其引用，但不視為本欄採用。未讀齊或互相矛盾時不把已讀的首筆當定稿。'
                   '可依要求交各版的條件結果及缺漏。')
 
+BRANCH_GUIDANCE = (
+    '同一具名欄位的採用未定，且使用者要各版的條件式計算時，用calculate_quantity_branches一次獨立代入。'
+    'args例如{"step":2,"expression":{"operation":"difference","values":["30","$candidate"]},'
+    '"operands":[{"path":"/values/0","citation":"[D1:L1]","quote":"本批原備 30 盒"}]}。'
+    'step引用本次條件下已完成且含adoption的check_quantities。'
+    '算式只在候選位置放一次字串"$candidate"，其餘每個數字提供逐字運算元來源。'
+    '工具依每版已核對數值分開計算，branches各列出version、數值證據、採用引用及獨立算式和結果。'
+    '採用衝突只列該欄有採用記載的版本，缺候選或缺單位的分支仍列待查。'
+    '依使用者指定的成果欄位交付各版算式及可得結果，保留adoption的缺行或矛盾。'
+    '各版互斥，不用sum把各版的結果合成一數，不以分支數字當正式採用。'
+    '唯一正式採用仍用calculate_expression與quantity_inputs。')
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -37,6 +49,7 @@ _SCOPE_PREFIX = '數量採用範圍：'
 _SCOPE = re.compile(r'欄位「([^「」｜\x00\r\n]{1,80})」｜(.+)')
 _METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 _SENTENCE_BREAKS = '。.!?！？\r\n'
+_BRANCH_LEAF = '$candidate'
 
 
 def _short_text(value, limit):
@@ -362,24 +375,114 @@ def _replacement_quantity(replacement, field, target, source):
     return _candidate({**replacement, 'label': field}, {replacement['citation']: source}, target, field)
 
 
+def _verified_comparison(number, steps, sources, objective, replies, guidance, declared):
+    saved = next((step for step in steps if step['sequence'] == number), None)
+    if saved is None or saved['action']['tool'] != 'check_quantities':
+        raise ValueError('算式須引用同一目標先前實際完成的數量核對。')
+    original = saved['action']['args']
+    prior = [step for step in steps if step['sequence'] < number]
+    verified = observe(original, prior, sources, objective, replies, guidance, declared=declared)
+    if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
+        raise ValueError('原數量核對與保存的來源不一致。')
+    return saved, verified
+
+
+def validate_branches(args):
+    if (not isinstance(args, dict) or args.keys() != {'step', 'expression', 'operands'}
+            or type(args['step']) is not int or not 1 <= args['step'] <= 32):
+        raise ValueError('分版計算須提供本目標的核對步驟、算式與其餘運算元原文。')
+    expression = args['expression']
+    expression_math.validate({'expression': expression}, placeholder=_BRANCH_LEAF)
+    placeholders = [path for path, value in operand_evidence._leaves(expression) if value == _BRANCH_LEAF]
+    if len(placeholders) != 1:
+        raise ValueError('分版算式須用一次 "$candidate" 表示互斥版本的數量。')
+    path, = placeholders
+    operand_evidence.validate(args['operands'], expression, None, omitted_path=path)
+    return path
+
+
+def _substitute_candidate(node, exact):
+    if isinstance(node, str):
+        return exact if node == _BRANCH_LEAF else node
+    return {**node, 'values': [_substitute_candidate(child, exact) for child in node['values']]}
+
+
+def _branch_operands(args, steps, sources, objective, replies, guidance):
+    ranges = []
+    for row in args['operands']:
+        match = _DOCUMENT.fullmatch(row['citation'])
+        if match:
+            did, line = map(int, match.groups())
+            ranges.append({'document_id': did, 'start_line': line, 'end_line': line})
+    _, found = source_decision.gather_lines(ranges, steps, sources)
+    excerpts = [{'document_id': did, 'start_line': line, 'end_line': line, 'sha256': sha, 'text': f'L{line}: {text}'}
+                for (did, line), (_, sha, text) in found.items()]
+    user_sources = operand_evidence.user_texts(objective, replies, guidance, len(steps) + 1)
+    return operand_evidence.bind(args['operands'], args['expression'], excerpts, user_sources)
+
+
+def calculate_branches(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
+                       declared=None):
+    path = validate_branches(args)
+    expression_math.check_cancel(cancel)
+    saved, verified = _verified_comparison(args['step'], steps, sources, objective, replies, guidance, declared)
+    adoption = verified.get('adoption')
+    if adoption is None or adoption['status'] == 'adopted':
+        raise ValueError('分版計算須有尚未能綁定單一數值的文件版本核對。')
+    if saved['observation'].get('goal_conditions_sha256') != scope:
+        raise ValueError('分版計算須先依目前補充或更正重新核對版本。')
+    if adoption['status'] == 'incomplete':
+        latest = observe(saved['action']['args'], steps, sources, objective, replies, guidance, declared=declared)
+        if latest != verified:
+            raise ValueError('採用範圍已補讀，請以目前讀到的原文重新核對版本。')
+    operands = _branch_operands(args, steps, sources, objective, replies, guidance)
+    field = verified['field']
+    candidates = {row['label']: (index, row) for index, row in enumerate(verified['quantities'], 1)}
+    citations = {}
+    for record in adoption['records']:
+        if record['field'] == field:
+            citations.setdefault(record['version'], []).append(record['citation'])
+    if adoption['status'] in {'conflicting', 'candidate_unavailable'}:
+        versions = citations
+    else:
+        versions = candidates | citations
+    branches = []
+    for version in versions:
+        expression_math.check_cancel(cancel)
+        branch = {'version': version, 'adoption_citations': citations.get(version, [])}
+        if version not in candidates:
+            branches.append({**branch, 'status': 'candidate_unavailable'})
+            continue
+        index, quantity = candidates[version]
+        branch.update(candidate=index, quantity=quantity)
+        if quantity['status'] != 'confirmed':
+            branches.append({**branch, 'status': quantity['status']})
+            continue
+        expression = _substitute_candidate(args['expression'], quantity['converted_exact'])
+        try:
+            calculation = expression_math.calculate({'expression': expression}, cancel)
+        except expression_math.CalculationFailure as exc:
+            branches.append({**branch, 'status': 'calculation_failed', 'expression': expression,
+                             'calculation_failure': exc.details()})
+        else:
+            branches.append({**branch, 'status': 'calculated', 'expression': expression, 'calculation': calculation})
+    expression_math.check_cancel(cancel)
+    return {'status': 'conditional_calculations', 'step': args['step'], 'candidate_path': path,
+            'field': field, 'comparison_unit': verified['unit'], 'adoption': adoption,
+            'operands': operands, 'branches': branches}
+
+
 def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
                          declared=None):
     validate_expression(args)
     expression_math.check_cancel(cancel)
     sequence = len(steps) + 1
     leaves = dict(operand_evidence._leaves(args['expression']))
-    by_step = {step['sequence']: step for step in steps}
     bindings = []
     for binding in args['quantity_inputs']:
         number = binding['step']
-        saved = by_step.get(number)
-        if saved is None or saved['action']['tool'] != 'check_quantities':
-            raise ValueError('算式須引用同一目標先前實際完成的數量核對。')
+        saved, verified = _verified_comparison(number, steps, sources, objective, replies, guidance, declared)
         original = saved['action']['args']
-        prior = [step for step in steps if step['sequence'] < number]
-        verified = observe(original, prior, sources, objective, replies, guidance, declared=declared)
-        if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
-            raise ValueError('原數量核對與保存的來源不一致。')
         if 'replacement' in binding:
             replacement = binding['replacement']
             source = _latest_confirmation(replacement['citation'], number, sequence, replies, guidance)
@@ -440,7 +543,7 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
             scopes[gid] = _verified_scope(payload, objective, json.loads(source_json))
     query = '''SELECT DISTINCT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g
                JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_quantities"%'
-               OR s.action_json LIKE '%"quantity_inputs"%' '''
+               OR s.action_json LIKE '%"quantity_inputs"%' OR s.action_json LIKE '%"calculate_quantity_branches"%' '''
     for gid, notes, source_json, objective in db.execute(query):
         sources = json.loads(source_json)
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
@@ -464,4 +567,13 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的算式與數量核對關聯不一致。')
+            if action['tool'] == 'calculate_quantity_branches':
+                scope = observation.get('goal_conditions_sha256')
+                if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
+                    raise ValueError('保存的分版算式缺少有效數量條件。')
+                expected = calculate_branches(action['args'], prior, sources, scope, objective, replies, guidance,
+                                              declared=scopes.get(gid))
+                actual = {key: value for key, value in observation.items() if key not in _METADATA}
+                if actual != expected:
+                    raise ValueError('保存的分版算式與版本及原文數量不一致。')
             prior.append({'sequence': sequence, 'action': action, 'observation': observation})

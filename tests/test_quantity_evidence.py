@@ -11,6 +11,111 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_quantity_branches_keep_independent_results_and_current_source_proofs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '本批退回'
+            base = '本批原備 30 件。'
+            first = f'版本「甲」欄位「{field}」為 4 件。'
+            second = f'版本「乙」欄位「{field}」為 0 件。'
+            approval = f'欄位「{field}」｜採用版本｜甲'
+            other = f'欄位「{field}」｜採用版本｜丙'
+            path = root / 'counts.txt'
+            path.write_text('\n'.join((base, first, second, approval, other)), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{field}」｜[D{did}:L4-L5]\n核對各版本。')
+            args = {'unit': '件', 'candidates': [
+                {'label': name, 'citation': f'[D{did}:L{i}]', 'quote': quote}
+                for i, (name, quote) in enumerate((('甲', first), ('乙', second)), 2)]}
+            shared = {'path': '/values/0', 'citation': f'[D{did}:L1]', 'quote': base}
+            expression = {'operation': 'quotient', 'values': ['30', '$candidate']}
+            request = {'step': 2, 'expression': expression, 'operands': [shared]}
+            self.assertRaisesRegex(ValueError, '一次', quantity_evidence.validate_branches,
+                                   {**request, 'expression': {'operation': 'sum', 'values': ['$candidate', '$candidate']}})
+            engine = ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=4),
+                action('check_quantities', **args),
+                action('calculate_quantity_branches', **{**request, 'operands': []}),
+                action('calculate_quantity_branches', **request),
+                action('read', document_id=did, start_line=5, end_line=5),
+                action('calculate_quantity_branches', **request),
+                action('check_quantities', **args),
+                action('calculate_quantity_branches', **{**request, 'step': 7}),
+                action('finish', report='甲可核算，丙缺資料。'))
+            final = autonomy.run_goal(store, sid, gid, engine, max_steps=9)
+            saved = [step['observation'] for step in final['steps']]
+            self.assertIn('每個數字葉節點', saved[2]['error'])
+            partial = saved[3]
+            self.assertNotIn('exact', partial)
+            self.assertEqual(partial['adoption']['missing'], [f'[D{did}:L5]'])
+            self.assertEqual(partial['operands'][0]['number'], '30')
+            self.assertEqual(partial['branches'][0]['calculation']['exact'], '15/2')
+            failure = partial['branches'][1]
+            self.assertEqual((failure['status'], failure['calculation_failure']['path']), ('calculation_failed', ''))
+            self.assertNotIn('calculation', failure)
+            self.assertIn('重新核對', saved[5]['error'])
+            selected = saved[7]['branches']
+            self.assertEqual([(row['version'], row['status']) for row in selected],
+                             [('甲', 'calculated'), ('丙', 'candidate_unavailable')])
+            self.assertEqual(selected[1]['adoption_citations'], [f'[D{did}:L5]'])
+            self.assertNotIn('quantity', selected[1])
+            self.assertIn('calculate_quantity_branches一次', engine.prompts[2])
+            handoff = autonomy.create_goal(store, sid, '下一階段', parent_id=gid)
+            carry = autonomy.get_goal(store, sid, handoff)['previous_stage']
+            self.assertNotIn('"branches"', json.dumps(carry))
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            tampered = copy.deepcopy(saved[7])
+            tampered['branches'][0]['calculation']['exact'] = '30'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=8',
+                           (json.dumps(tampered, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版算式'):
+                validate_database(restored.path)
+
+    def test_quantity_branches_preserve_missing_unit_and_reject_unread_shared_operand(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '溪岸本批扣除'
+            first = f'版本「現場」欄位「{field}」為 500 公克。'
+            second = f'版本「重驗」欄位「{field}」為 750。'
+            shared = '溪岸本批原備 3 公斤。'
+            path = root / 'weights.txt'
+            path.write_text('\n'.join((first, second, shared, '欄位「另批扣除」｜採用版本｜現場')), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{field}」｜[D{did}:L4]\n核對各版本。')
+            args = {'step': 2, 'expression': {'operation': 'difference', 'values': ['3', '$candidate']},
+                    'operands': [{'path': '/values/0', 'citation': f'[D{did}:L3]', 'quote': shared}]}
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read_ranges', ranges=[{'document_id': did, 'start_line': start, 'end_line': end}
+                                              for start, end in ((1, 2), (4, 4))]),
+                action('check_quantities', unit='公斤', candidates=[
+                    {'label': name, 'citation': f'[D{did}:L{i}]', 'quote': quote}
+                    for i, (name, quote) in enumerate((('現場', first), ('重驗', second)), 1)]),
+                action('calculate_quantity_branches', **args),
+                action('read', document_id=did, start_line=3, end_line=3),
+                action('calculate_quantity_branches', **args)), max_steps=5)
+            self.assertIn('完整的查讀文字', result['steps'][2]['observation']['error'])
+            evidence = result['steps'][4]['observation']
+            self.assertEqual(evidence['adoption']['status'], 'unrecorded')
+            self.assertEqual(evidence['adoption']['records'][0]['field'], '另批扣除')
+            verified, unknown = evidence['branches']
+            self.assertEqual((verified['quantity']['converted_exact'], verified['calculation']['exact']), ('1/2', '5/2'))
+            self.assertEqual((unknown['status'], unknown['quantity']['number']), ('unit_unconfirmed', '750'))
+            self.assertNotIn('calculation', unknown)
+            snap = goal_guidance.snapshot(store, sid, gid)
+            goal_guidance.save(store, sid, gid, '改用公斤再確認。', expected_fingerprint=snap['fingerprint'])
+            changed = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **args)), max_steps=1)
+            self.assertIn('重新核對', changed['steps'][-1]['observation']['error'])
+            validate_database(store.path)
+
     def test_declared_scope_rejects_subsets_and_keeps_conflict_across_documents(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

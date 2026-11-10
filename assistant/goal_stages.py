@@ -162,6 +162,10 @@ def activity(row):
                        'evaluation_order','all_calculations_provided') if k in observation})
         outcome['expression_details_omitted'] = True
         outcome['calculation_details_omitted'] = True
+    if tool == 'calculate_quantity_branches':
+        outcome['branch_count'] = len(observation['branches'])
+        outcome['calculated_branch_count'] = sum(row['status'] == 'calculated' for row in observation['branches'])
+        outcome['quantity_branch_details_omitted'] = True
     if tool == 'ask' and 'partial_result' in observation:
         outcome['partial_result_omitted'] = True
     if tool in ('check_decision', 'check_source_decision'):
@@ -230,6 +234,8 @@ def activity(row):
         if failed['tool']=='calculate_expression':
             result['failed_attempt']['expression_details_omitted'] = True
             result['failed_attempt']['calculation_details_omitted'] = True
+        if failed['tool'] == 'calculate_quantity_branches':
+            result['failed_attempt']['quantity_branch_details_omitted'] = True
     return result
 
 

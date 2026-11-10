@@ -31,7 +31,7 @@ def check_cancel(cancel):
         raise EngineError('巢狀計算已停止，未產生部分成功結果。','cancelled')
 
 
-def validate(args):
+def validate(args, *, placeholder=None):
     if not isinstance(args,dict) or set(args)!={'expression'}:
         raise ValueError('巢狀計算只接受expression算式樹。')
     stats={'node_count':0,'number_count':0,'operation_count':0,'max_depth':0}
@@ -40,7 +40,9 @@ def validate(args):
         if stats['node_count']>MAX_NODES or depth>MAX_DEPTH:
             raise ValueError('算式樹含運算與數字最多32節點、根起最多8層。')
         if isinstance(node,str):
-            exact_math.parse(node);stats['number_count']+=1;return
+            if node != placeholder:
+                exact_math.parse(node)
+            stats['number_count']+=1;return
         if (not isinstance(node,dict) or set(node)!={'operation','values'}
                 or node['operation'] not in ('sum','difference','product','quotient')
                 or not isinstance(node['values'],list) or not 1<=len(node['values'])<=50):

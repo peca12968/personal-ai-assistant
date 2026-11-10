@@ -248,6 +248,9 @@ def validate_action(value):
     if name == 'check_quantities':
         quantity_evidence.validate(args)
         return value
+    if name == 'calculate_quantity_branches':
+        quantity_evidence.validate_branches(args)
+        return value
     if name == 'calculate_expression':
         if isinstance(args, dict) and 'quantity_inputs' in args:
             quantity_evidence.validate_expression(args)
@@ -316,6 +319,11 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         goal = get_goal(store, sid, gid)
         return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources,
                                          declared=goal.get('quantity_adoption_scope'))
+    if name == 'calculate_quantity_branches':
+        goal = get_goal(store, sid, gid)
+        return quantity_evidence.calculate_branches(args, steps, goal['sources'], work_plan.conditions(goal),
+                                                    goal['objective'], reply_sources, guidance_sources, cancel,
+                                                    declared=goal.get('quantity_adoption_scope'))
     if name == 'calculate_expression':
         if 'quantity_inputs' in args:
             goal = get_goal(store, sid, gid)
@@ -489,6 +497,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
                 ('\n' + quantity_evidence.GUIDANCE
                  if reply_sources or guidance_sources or any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                ('\n' + quantity_evidence.BRANCH_GUIDANCE
+                 if any(step['action']['tool'] == 'check_quantities' and
+                        step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
+                        for step in payload['steps']) else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
