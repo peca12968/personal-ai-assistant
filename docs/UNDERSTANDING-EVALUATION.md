@@ -550,6 +550,8 @@ manifest區分draft_failed、draft_needs_input、goal_failed及goal_collected；
 
 `evals/goal_quantity_resolution.json` 核對原數已知而單位缺漏、兩筆等值、比例基數未定及兩筆正式數值不同。分開評讀暫表、實際追問、選用結果及數量工具紀錄。確認只補單位時原數仍綁原行，並在備份還原後重驗補充及候選值。
 
+`evals/goal_quantity_reuse.json` 比較只補單位後直接計算、用途明確的普通加總、選用已核對基數及同一筆記載的等值。分開核對追問、原候選、最新補充、算式實際代入和模型步數。受控測試保留錯誤代入、無選用確認及引用另一候選的拒絕。
+
 ## 理解評估的失敗邊界保存（2026-11-05）
 
 `evaluate_understanding.py --live --report data/evaluations/<新名稱>.json`在正常Codex及明確選用本機模型兩種模式，都先將實際請求寫入`<報告完整檔名>.attempts/<序號>.request.json`，flush及fsync成功後才呼叫引擎。側錄綁定報告路徑、建立時間、全部選取ID、完整案例及來源／提示／收集器／驗證器／側錄器指紋，本機模式另綁定模型選用指紋。序號檔名不採用使用者案例ID作為路徑。

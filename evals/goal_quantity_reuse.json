@@ -1,0 +1,70 @@
+[
+  {
+    "id": "missing_unit_can_resume_in_the_final_calculation",
+    "category": "goal_quantity_reuse",
+    "documents": [
+      {
+        "name": "shipping.txt",
+        "content": "汀雨展箱的固定裝備重 2.4 公斤。\n汀雨展箱本次加裝襯材 750（單位待填）。\n備用展箱襯材 750 毫克。\n"
+      }
+    ],
+    "prompt": "只算汀雨本次展箱。讀 [D1:L1-L3]，先列固定裝備及襯材原數，只有尚缺且影響公斤總重的資訊才問。收到後直接接續本次計算，用 calculate_expression 算公斤總重，保留原數和補充各自來源。",
+    "reply": "本次襯材的單位是公克。",
+    "criteria": [
+      "原裝備2.4公斤、襯材750待補單位，暫表只問本次襯材單位。",
+      "用文件750和補充公克得0.75公斤，加總3.15公斤，備用展箱不混用，不重問。"
+    ]
+  },
+  {
+    "id": "direct_sum_needs_no_candidate_comparison",
+    "category": "goal_quantity_reuse",
+    "documents": [
+      {
+        "name": "bundles.txt",
+        "content": "冬浦本批甲袋 9 張，乙袋 12 張。兩袋各自計數，需合計。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1]，只問本批張數是否更新。收到後直接用工具加總甲乙兩袋，交總張數、各袋數及原文。兩袋各自計數。",
+    "reply": "沒有更新，照本批原文。",
+    "criteria": [
+      "甲9、乙12，兩袋合計21張，引用原文。",
+      "只問一次，不把兩袋當同一欄位的競爭紀錄，不加入多餘查讀。"
+    ]
+  },
+  {
+    "id": "confirmed_scope_reuses_checked_ratio_base",
+    "category": "goal_quantity_reuse",
+    "documents": [
+      {
+        "name": "quality.txt",
+        "content": "竹丘本批進件 240 件，完成查驗 180 件。複核率為 5%。\n複核欄尚未指定採進件或完成查驗數。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1-L2]，只算竹丘本批複核件數。保留已知比例及兩個候選基數，只問採哪個。收到後用 calculate_expression 算正式值，沿用已核對數字並保留採用來源。",
+    "reply": "本次採完成查驗件數為基數。",
+    "criteria": [
+      "暫表列5%、240及180，唯一追問採哪個基數。",
+      "以本批完成查驗180乘0.05得9件，保留原文及使用者確認，不重問。"
+    ]
+  },
+  {
+    "id": "confirmed_same_record_uses_one_verified_value",
+    "category": "goal_quantity_reuse",
+    "documents": [
+      {
+        "name": "intake.txt",
+        "content": "梨洲本批液料容積 1.2 公升。\n"
+      },
+      {
+        "name": "copy.txt",
+        "content": "梨洲本批液料容積 1200 mL。\n"
+      }
+    ],
+    "prompt": "先讀 [D1:L1]、[D2:L1]，只問是否為同一筆本批液料紀錄。收到後核對換算，等值就交一筆公升數及原紀錄。只有確實不同才需再問採哪筆。",
+    "reply": "兩份是同一筆梨洲本批液料的紀錄。",
+    "criteria": [
+      "確認1.2公升與1200 mL等值，交1.2公升，只計一次。",
+      "保留兩筆原行及適用確認，只有一次提問。"
+    ]
+  }
+]

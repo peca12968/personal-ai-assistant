@@ -193,7 +193,7 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
             excerpts.extend(relevant)
             match.setdefault('read_steps', []).append(ref)
         elif expression is not None and action['tool'] == 'calculate_expression':
-            if action['args'] != expression or 'expression_step' in match:
+            if action['args'].get('expression') != expression['expression'] or 'expression_step' in match:
                 raise ValueError(f'項目 {number} 的步驟 {ref} 與指定算式不符。')
             expected = expression_math.calculate(expression)
             if any(step['observation'].get(key) != value for key, value in expected.items()):

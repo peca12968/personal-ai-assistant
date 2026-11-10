@@ -3,12 +3,13 @@ import json
 import re
 from fractions import Fraction
 
-from . import document_units, exact_math, goal_guidance_sources, goal_reply_sources, operand_evidence, source_decision
+from . import document_units, exact_math, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence, source_decision
 from .document_table import _SAME_UNIT_ONLY
 
 
 GUIDANCE = '''原量缺單位、相同欄位有兩筆數值，或比例基數有不同候選時，已有相關原話就先用check_quantities核對，再決定是否詢問。args例如{"unit":"公斤","candidates":[{"label":"本批配料","citation":"[D1:L1]","quote":"配料 450"}]}。每次一至四筆，每筆逐字引用一個數值和已有的原單位，僅引用本次適用的對象。unit是比較單位，可用支援的重量、長度、容量、時間、件數單位或ratio。引用限已完整查讀的單行、同一目標已保存的補充或更正，及[目標]。
-needs_evidence時保留原數及其他已核對值。若短句含多個數字而無法定位，先縮到該欄完整數值。單位待補只問該欄單位。收到使用者只確認單位時，仍引用原數值，該候選另加unit_evidence，例如{"citation":"[補充#3]","quote":"本批配料的單位是公克","unit":"公克"}，核對後用確定的換算值繼續。另案單位不能補本批。equivalent代表同單位的數值相同，對同一欄位採一次；different代表換算後仍不同，保留各候選，若影響交付只問採哪筆或哪個基數。只要條件式成果時列分支，不另追問。工具核對文字及精確數值，來源是否同一欄位、哪份生效及哪個基數適用仍依已保存的使用者原話。沒有缺漏或比較需求時可直接用既有算式。'''
+needs_evidence時保留原數及其他已核對值。若短句含多個數字而無法定位，先縮到該欄完整數值。單位待補只問該欄單位。只需確認換算值時，可再次核對，該候選另加unit_evidence，例如{"citation":"[補充#3]","quote":"本批配料的單位是公克","unit":"公克"}。另案單位不能補本批。equivalent代表同單位的數值相同，對同一欄位採一次；different代表換算後仍不同，保留各候選，若影響交付只問採哪筆或哪個基數。只要條件式成果時列分支，不另追問。工具核對文字及精確數值，來源適用範圍仍依已保存的使用者原話。
+若確認後還要算式，可在calculate_expression的expression旁直接加quantity_inputs，不必重送check_quantities。每筆寫path、step及從1起算的candidate，例如{"path":"/values/1","step":2,"candidate":1,"unit_evidence":{"citation":"[補充#3]","quote":"本批配料的單位是公克","unit":"公克"}}。只補單位就沿用原數並附這項證據；只確認採用哪個已核對的值就附selection，例如{"citation":"[補充#3]","quote":"本次採完成查驗件數為基數。"}。確認句須明確採用原候選的完整label。算式葉節點填核對後的精確值。若原數已更改，按新資料核對。同一條件已有可用的數量核對也可直接連結，不重讀。各袋分別有明確數值而只需加總時，直接用既有算式，無需比較為同一欄位。'''
 
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
@@ -25,6 +26,17 @@ _SENTENCE_BREAKS = '。.!?！？\r\n'
 def _short_text(value, limit):
     return (isinstance(value, str) and 1 <= len(value) <= limit and value == value.strip()
             and not any(char in value for char in '\0\r\n'))
+
+
+def _user_excerpt(evidence, fields):
+    return (isinstance(evidence, dict) and evidence.keys() == fields
+            and _short_text(evidence['quote'], 180)
+            and isinstance(evidence['citation'], str) and _USER.fullmatch(evidence['citation']))
+
+
+def _unit_evidence(value):
+    return (_user_excerpt(value, {'citation', 'quote', 'unit'})
+            and isinstance(value['unit'], str) and value['unit'] in _TARGETS - {'ratio'})
 
 
 def validate(args):
@@ -47,11 +59,7 @@ def validate(args):
         seen.add(key)
         if 'unit_evidence' in row:
             evidence = row['unit_evidence']
-            if (not isinstance(evidence, dict) or evidence.keys() != {'citation', 'quote', 'unit'}
-                    or not _short_text(evidence['quote'], 180)
-                    or not isinstance(evidence['citation'], str) or not _USER.fullmatch(evidence['citation'])
-                    or evidence['citation'] == row['citation']
-                    or not isinstance(evidence['unit'], str) or evidence['unit'] not in _TARGETS - {'ratio'}):
+            if not _unit_evidence(evidence) or evidence['citation'] == row['citation']:
                 raise ValueError('單位補正須引用另一則保存的使用者答覆或更正，並指定支援的單位。')
 
 
@@ -82,19 +90,25 @@ def _factor(source, target):
     return None
 
 
-def _unit_confirmation(supplied, source):
-    quote, unit = supplied['quote'], supplied['unit']
+def _confirmed_sentence(quote, source):
     text, sha, _ = source
     proof = _literal_quote(quote, text, sha)
     start, end = proof['quote_start'], proof['quote_end']
     sentence = quote.rstrip(_SENTENCE_BREAKS)
-    if ((start and text[:start].rstrip() and text[:start].rstrip()[-1] not in _SENTENCE_BREAKS)
-            or (end < len(text) and quote[-1] not in _SENTENCE_BREAKS
-                and text[end:].lstrip() and text[end:].lstrip()[0] not in _SENTENCE_BREAKS)
+    prefix, suffix = text[:start].rstrip(), text[end:].lstrip()
+    if ((prefix and prefix[-1] not in _SENTENCE_BREAKS)
+            or (suffix and quote[-1] not in _SENTENCE_BREAKS and suffix[0] not in _SENTENCE_BREAKS)
             or any(char in sentence for char in _SENTENCE_BREAKS + '，,；;')
             or sentence.startswith('若')
-            or any(word in sentence for word in ('如果', '假設', '可能', '待確認', '尚未', '不是', '不確定'))
-            or not re.fullmatch(rf'(?:.*單位(?:確定|確認)?(?:為|是|用|採) *)?{re.escape(unit)}', sentence)):
+            or any(word in sentence for word in ('如果', '假設', '可能', '待確認', '尚未', '不是', '不確定'))):
+        raise ValueError('補充須引用完整且明確確認的原句。')
+    return sentence, proof
+
+
+def _unit_confirmation(supplied, source):
+    sentence, proof = _confirmed_sentence(supplied['quote'], source)
+    unit = re.escape(supplied['unit'])
+    if not re.fullmatch(rf'(?:.*單位(?:確定|確認)?(?:為|是|用|採) *)?{unit}', sentence):
         raise ValueError('單位補正須引用完整且明確確認單位的原句。')
     return {**supplied, **proof}
 
@@ -158,9 +172,96 @@ def observe(args, steps, sources, objective='', replies=(), guidance=()):
     return {'status': status, 'unit': args['unit'], 'quantities': quantities, 'possible_exact': values}
 
 
+def validate_expression(args):
+    if not isinstance(args, dict) or args.keys() != {'expression', 'quantity_inputs'}:
+        raise ValueError('使用核對值的算式須提供 expression 及 quantity_inputs。')
+    expression_math.validate({'expression': args['expression']})
+    leaves = dict(operand_evidence._leaves(args['expression']))
+    bindings = args['quantity_inputs']
+    if not isinstance(bindings, list) or not 1 <= len(bindings) <= len(leaves):
+        raise ValueError('算式需連結一至多個不同的數字葉節點。')
+    seen = set()
+    required = {'path', 'step', 'candidate'}
+    for binding in bindings:
+        if (not isinstance(binding, dict)
+                or binding.keys() not in (required, required | {'unit_evidence'}, required | {'selection'})
+                or not isinstance(binding['path'], str) or binding['path'] not in leaves or binding['path'] in seen
+                or type(binding['step']) is not int or not 1 <= binding['step'] <= 32
+                or type(binding['candidate']) is not int or not 1 <= binding['candidate'] <= 4):
+            raise ValueError('核對值須提供唯一算式路徑、先前核對步驟與候選序號。')
+        if ('unit_evidence' in binding and not _unit_evidence(binding['unit_evidence'])
+                or 'selection' in binding and not _user_excerpt(binding['selection'], {'citation', 'quote'})):
+            raise ValueError('核對值的單位或選用確認須引用已保存的完整補充。')
+        seen.add(binding['path'])
+
+
+def _latest_confirmation(citation, step, sequence, replies, guidance):
+    positions = {row['citation']: row['ask_sequence'] for row in replies if step < row['ask_sequence'] < sequence}
+    positions.update((row['citation'], row['steps_seen']) for row in guidance if step <= row['steps_seen'] < sequence)
+    latest = max(positions.values(), default=-1)
+    if [key for key, value in positions.items() if value == latest] != [citation]:
+        raise ValueError('沿用先前核對須引用核對後最新且可辨認的正式補充。')
+    text, sha = operand_evidence.user_texts('', replies, guidance, sequence)[citation]
+    return text, sha, latest
+
+
+def _selection_proof(selection, candidate, original, source):
+    sentence, proof = _confirmed_sentence(selection['quote'], source)
+    matching = [i for i, row in enumerate(original['candidates']) if re.fullmatch(
+        rf'(?:本次|正式)?(?:採用|採|選用|以) *{re.escape(row["label"])}(?:為準|為基數|作為基數)?', sentence)]
+    if matching != [candidate]:
+        raise ValueError('選用補充須明確且唯一確認原候選的完整名稱。')
+    return {**selection, **proof}
+
+
+def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None):
+    validate_expression(args)
+    expression_math.check_cancel(cancel)
+    sequence = len(steps) + 1
+    leaves = dict(operand_evidence._leaves(args['expression']))
+    by_step = {step['sequence']: step for step in steps}
+    bindings = []
+    for binding in args['quantity_inputs']:
+        number = binding['step']
+        saved = by_step.get(number)
+        if saved is None or saved['action']['tool'] != 'check_quantities':
+            raise ValueError('算式須引用同一目標先前實際完成的數量核對。')
+        original = saved['action']['args']
+        prior = [step for step in steps if step['sequence'] < number]
+        verified = observe(original, prior, sources, objective, replies, guidance)
+        if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
+            raise ValueError('原數量核對與保存的來源不一致。')
+        index = binding['candidate'] - 1
+        if index >= len(verified['quantities']):
+            raise ValueError('候選序號不在原數量核對。')
+        quantity = verified['quantities'][index]
+        receipt = {key: binding[key] for key in ('path', 'step', 'candidate')}
+        if 'unit_evidence' in binding:
+            confirmation = binding['unit_evidence']
+            _latest_confirmation(confirmation['citation'], number, sequence, replies, guidance)
+            if quantity['status'] != 'unit_unconfirmed':
+                raise ValueError('只可替原核對缺少單位的候選補單位。')
+            request = {'unit': original['unit'], 'candidates': [
+                {**original['candidates'][index], 'unit_evidence': confirmation}]}
+            quantity, = observe(request, steps, sources, objective, replies, guidance)['quantities']
+        elif 'selection' in binding:
+            selection = binding['selection']
+            source = _latest_confirmation(selection['citation'], number, sequence, replies, guidance)
+            receipt['selection'] = _selection_proof(selection, index, original, source)
+        elif (verified['status'] == 'different' or saved['observation'].get('goal_conditions_sha256') != scope):
+            raise ValueError('候選數量尚有差異或屬先前條件，須有目前正式補充才能沿用。')
+        if (quantity['status'] != 'confirmed'
+                or exact_math.parse(quantity['converted_exact']) != exact_math.parse(leaves[binding['path']])):
+            raise ValueError(f'算式位置 {binding["path"] or "根"} 與已確認的精確數量不符。')
+        bindings.append({**receipt, 'unit': original['unit'], 'quantity': quantity})
+    result = expression_math.calculate({'expression': args['expression']}, cancel)
+    return {**result, 'quantity_inputs': bindings}
+
+
 def validate_saved(db, *, replies_present, guidance_present):
     query = '''SELECT DISTINCT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g
-               JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_quantities"%' '''
+               JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_quantities"%'
+               OR s.action_json LIKE '%"quantity_inputs"%' '''
     for gid, notes, source_json, objective in db.execute(query):
         sources = json.loads(source_json)
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
@@ -175,4 +276,12 @@ def validate_saved(db, *, replies_present, guidance_present):
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的數量核對與原話或換算結果不一致。')
+            if action['tool'] == 'calculate_expression' and 'quantity_inputs' in action['args']:
+                scope = observation.get('goal_conditions_sha256')
+                if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
+                    raise ValueError('保存的算式缺少有效數量條件。')
+                expected = calculate_expression(action['args'], prior, sources, scope, objective, replies, guidance)
+                actual = {key: value for key, value in observation.items() if key not in _METADATA}
+                if actual != expected:
+                    raise ValueError('保存的算式與數量核對關聯不一致。')
             prior.append({'sequence': sequence, 'action': action, 'observation': observation})

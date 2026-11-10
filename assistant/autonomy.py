@@ -242,7 +242,10 @@ def validate_action(value):
         quantity_evidence.validate(args)
         return value
     if name == 'calculate_expression':
-        expression_math.validate(args)
+        if isinstance(args, dict) and 'quantity_inputs' in args:
+            quantity_evidence.validate_expression(args)
+        else:
+            expression_math.validate(args)
         return value
     if name == 'read_conversation':
         conversation_history.validate_window_args(args)
@@ -306,6 +309,10 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         goal = get_goal(store, sid, gid)
         return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources)
     if name == 'calculate_expression':
+        if 'quantity_inputs' in args:
+            goal = get_goal(store, sid, gid)
+            return quantity_evidence.calculate_expression(args, steps, goal['sources'], work_plan.conditions(goal),
+                                                          goal['objective'], reply_sources, guidance_sources, cancel)
         return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
         return conversation_history.window(store, sid, gid, args, cancel)
