@@ -39,7 +39,8 @@ def prepare(path, case):
         with source.open('x', encoding='utf-8', newline='\n') as stream:
             stream.write(document['content'])
         store.attach_document(sid, source)
-    return store, sid, autonomy.create_goal(store, sid, case['prompt'])
+    return store, sid, autonomy.create_goal(store, sid, case['prompt'],
+                                           file_delivery=case.get('file_delivery', False))
 
 
 def replies_for(case):

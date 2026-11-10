@@ -205,6 +205,98 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '只能明確開啟'):
             p.validate({'items': [item()], 'verify_delivery': False})
 
+    def _two_document_calculations(self):
+        requirements = []
+        tasks = []
+        for number, name, total, damage in ((1, '東架', '36', '8'), (2, '西架', '25', '6')):
+            path = self.root / f'shelf-{number}.txt'
+            path.write_text(f'{name}原有 {total} 盒，破損 {damage} 盒。', encoding='utf-8')
+            did = self.store.attach_document(self.sid, path)
+            source = {'document_id': did, 'start_line': 1, 'end_line': 1}
+            citation = f'[D{did}:L1]'
+            requirements.append({'id': number, 'ranges': [source],
+                                 'expression': {'operation': 'difference', 'values': [total, damage]},
+                                 'operands': [{'path': '/values/0', 'citation': citation, 'quote': f'{name}原有 {total} 盒'},
+                                              {'path': '/values/1', 'citation': citation, 'quote': f'破損 {damage} 盒'}]})
+            tasks.append(item(number, name + '可交量', 'done', [1, number + 1]))
+        gid = a.create_goal(self.store, self.sid, '核對東西架的可交盒數後交檔。', file_delivery=True)
+        self.run_actions(action('read_ranges', ranges=[row['ranges'][0] for row in requirements]),
+                         *(action('calculate_expression', expression=row['expression']) for row in requirements),
+                         action('update_plan', items=tasks, verify_delivery=True, evidence_requirements=requirements), gid=gid)
+        return gid, tasks, requirements
+
+    def test_confirmed_calculation_reuse_keeps_operand_proof_and_requires_fresh_artifact(self):
+        gid, tasks, requirements = self._two_document_calculations()
+        initial = self.run_actions(action('write_artifact', filename='draft.md', content='東28盒，西19盒。'),
+                                   action('ask', question='最後有更正嗎？', partial_result='暫表東28盒，西19盒。'), gid=gid)
+        self.assertEqual(initial['status'], 'needs_input')
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '東架破損更正為 9 盒。\n「西架可交量」的數量與算式均照舊。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+        pending = a.get_goal(self.store, self.sid, gid)
+        proof = {'id': 2, 'expression_step': 3, 'prior_plan_step': 4, 'citation': '[補充#6]',
+                 'source_sha256': pending['reply_sources'][0]['sha256']}
+        review = pending['work_plan']['delivery_review']
+        self.assertEqual(review['recheck_items'], [1])
+        self.assertEqual(review['reusable_calculations'], [{**proof, 'evidence_steps': [1, 3]}])
+        east = copy.deepcopy(requirements[0])
+        east['expression']['values'][1] = '9'
+        east['operands'][1].update(citation='[補充#6]', quote='東架破損更正為 9 盒')
+        current = [{**tasks[0], 'evidence_steps': [1, 8]}, tasks[1]]
+        final = self.run_actions(action('deliver', report='舊檔', filenames=['draft.md']),
+                                 action('calculate_expression', expression=east['expression']),
+                                 action('update_plan', items=current, reuse_document_steps=[1], evidence_requirements=[east]),
+                                 action('update_plan', items=current, reuse_document_steps=[1]),
+                                 action('deliver', report='舊檔', filenames=['draft.md']),
+                                 action('write_artifact', filename='final.md', content='東27盒 [補充#6]，西19盒。'),
+                                 action('deliver', report='交付目前結果。', filenames=['final.md']), gid=gid)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertIn('仍依舊條件', final['steps'][6]['observation']['error'])
+        self.assertIn('重新產檔', final['steps'][10]['observation']['error'])
+        self.assertEqual(final['steps'][-1]['observation']['plan_check_step'], 10)
+        self.assertEqual(final['work_plan']['reused_calculations'], [proof])
+        self.assertEqual(final['work_plan']['evidence_matches'][1], initial['work_plan']['evidence_matches'][1])
+        self.assertIn('依使用者確認沿用算式 · 項目 2 [補充#6]', p.describe(final['work_plan']))
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+        altered = copy.deepcopy(final['steps'][8]['observation'])
+        altered['reused_calculations'][0]['source_sha256'] = 'a' * 64
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=9',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
+        gid, tasks, requirements = self._two_document_calculations()
+        affirmation = '「西架可交量」的數量與算式均照舊。'
+
+        def amend(text):
+            snap = goal_guidance.snapshot(self.store, self.sid, gid)
+            goal_guidance.save(self.store, self.sid, gid, text, expected_fingerprint=snap['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)['work_plan']['delivery_review']
+
+        self.assertEqual(amend(affirmation)['reusable_calculations'][0]['citation'], '[更正#1]')
+        for uncertainty in ('其他照舊。', '如果覆核通過：\n' + affirmation,
+                            '```\n' + affirmation + '\n```', affirmation + '\n西架可交量改用新數。'):
+            with self.subTest(uncertainty=uncertainty):
+                self.assertNotIn('reusable_calculations', amend(uncertainty))
+        self.assertEqual(amend(affirmation)['recheck_items'], [1])
+        changed = copy.deepcopy(requirements[1])
+        changed['expression']['values'][0] = '25.0'
+        east_pending = item(1, tasks[0]['task'])
+        result = self.run_actions(action('update_plan', items=[east_pending, tasks[1]],
+                                         reuse_document_steps=[1], evidence_requirements=[changed]),
+                                  action('update_plan', items=[east_pending, {**tasks[1], 'evidence_steps': [1, 2]}],
+                                         reuse_document_steps=[1]),
+                                  action('update_plan', items=[east_pending, tasks[1]], reuse_document_steps=[1]), gid=gid)
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-3:]], ['invalid', 'invalid', 'update_plan'])
+        self.assertEqual(result['work_plan']['reused_calculations'][0]['citation'], '[更正#6]')
+        self.assertEqual(result['work_plan']['delivery_review']['open_items'], [1])
+        validate_database(self.store.path)
+
     def test_equal_results_cannot_supply_the_other_items_expression(self):
         first = {'operation': 'difference', 'values': ['20', '4']}
         second = {'operation': 'difference', 'values': ['19', '3']}

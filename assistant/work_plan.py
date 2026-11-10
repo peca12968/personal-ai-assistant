@@ -16,11 +16,12 @@ GUIDANCE = '''可用update_plan保存並更新公開工作清單：args精確為
 清單列資料核對、計算、內容準備等實質工作，不要把最後的finish／deliver交付動作另列成待辦。交付與否由實際目標狀態呈現；尚未執行的事情不能先標完成，也不要為了清單全完成而宣稱已交付。既有清單若已包含交付事項，保留它並在note說明實際進度，不能在交付前標done。
 清單最多8項，id為1到8的整數；最多一項working。更新必須保留已存在的id及原task，不能偷偷移除要求；新要求可新增項目，已取代的舊要求用superseded並解釋原因。blocked也需寫明缺少什麼，仍需必要補充時使用ask，不把清單當作已發問。
 done需連到至少一個已執行、沒有錯誤且屬於目前目標條件的實際工具步驟sequence；最多每項6個。不接受計畫、問題、交付宣告或其他目標的紀錄當作完成證據。舊版未記錄條件的步驟也需重新觀察。證據參照只是可追溯，不證明語意完整或使用者驗收；不要把讀到部分資料說成全部完成。
-work_plan是最近一次清單；conditions_current=false代表目標補充或來源已變，舊完成標記待重新核對。先判斷哪些項目受新補充影響。更正後的計算要用目前條件重新執行，尚未核對的項目恢復pending或working。既有步驟的goal_conditions_sha256由程式產生，不要自行輸出它。
+work_plan是最近一次清單；conditions_current=false代表目標補充或來源已變，舊完成標記待重新核對。先判斷哪些項目受新補充影響。受更正影響的算式要重算，尚未核對的項目恢復pending或working。既有步驟的goal_conditions_sha256由程式產生，不要自行輸出它。
 如果同一清單的已完成項目原先只以read或read_ranges完整查讀為依據，而且查讀範圍仍適用，可在本次update_plan的args另加reuse_document_steps，例如{"items":[...],"reuse_document_steps":[2]}。原項目須保留整組原有evidence_steps，程式會核對保存的讀取範圍與同版本文件。只列本次實際沿用的舊查讀步驟，不必重讀同樣範圍。原先依賴計算、搜尋或其他工具的項目不能用這個例外。沿用原文件原行不代表保留被更正的值；依最新確認重算受影響的結果。已完整查讀的文件項目可標完成；另一個缺漏欄位可用ask補充，不需要把查讀項目改成受阻。
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
 使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
 使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
+delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -105,7 +106,7 @@ def latest(steps):
                 value['reused_document_steps'] = observation['reused_document_steps']
             if observation.get('verify_delivery') is True:
                 value['verify_delivery'] = True
-            for key in ('evidence_requirements', 'evidence_matches'):
+            for key in ('evidence_requirements', 'evidence_matches', 'reused_calculations'):
                 if key in observation:
                     value[key] = observation[key]
             return value
@@ -172,6 +173,53 @@ def _merge_requirements(rows, previous, scope, sources):
     return requirements
 
 
+def _latest_note_after(plan_step, sequence, replies, guidance):
+    reply = next((row for row in reversed(replies) if plan_step < row['ask_sequence'] < sequence), None)
+    note = next((row for row in reversed(guidance) if plan_step <= row['steps_seen'] < sequence), None)
+    if reply and note:
+        if reply['ask_sequence'] == note['steps_seen']:
+            return None  # The two channels can record notes on either side of the same ask.
+        if reply['ask_sequence'] > note['steps_seen']:
+            note = None
+    if note:
+        return note['content'], note['citation'], note['sha256']
+    if reply:
+        return reply['answer'], reply['citation'], reply['sha256']
+    return None
+
+
+def _reusable_calculations(plan, scope, sequence, replies, guidance):
+    if plan is None:
+        return {}
+    if plan['goal_conditions_sha256'] == scope:
+        return {row['id']: row for row in plan.get('reused_calculations', ())}
+    source = _latest_note_after(plan['sequence'], sequence, replies, guidance)
+    if source is None:
+        return {}
+    text, citation, sha = source
+    if '```' in text or '~~~' in text:
+        return {}
+    lines = text.splitlines()
+    matches = {row['id']: row for row in plan.get('evidence_matches', ()) if row.get('operands')}
+    candidates = {}
+    for item in plan['items']:
+        number, task = item['id'], item['task']
+        if (item['state'] != 'done' or number not in matches or 'expression_step' not in matches[number]
+                or any(row['id'] != number and row['task'] == task for row in plan['items'])
+                or text.count(task) != 1 or any(char in task for char in '「」\r\n')):
+            continue
+        confirmation = f'「{task}」的數量與算式均照舊。'
+        if confirmation not in lines:
+            continue
+        # An unfinished lead-in can make the exact line conditional or quoted.
+        leading = '\n'.join(lines[:lines.index(confirmation)]).rstrip()
+        if leading and not leading.endswith('。'):
+            continue
+        candidates[number] = {'id': number, 'expression_step': matches[number]['expression_step'],
+                              'prior_plan_step': plan['sequence'], 'citation': citation, 'source_sha256': sha}
+    return candidates
+
+
 def _match_item_evidence(item, requirement, steps, scope, sources, user_sources):
     number = item['id']
     ranges = list(map(_range_key, requirement.get('ranges', ())))
@@ -224,11 +272,26 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     by_sequence = {row['sequence']: row for row in steps}
     reused = args.get('reuse_document_steps', [])
     previous_items = {row['id']: row for row in previous['items']} if previous else {}
+    previous_requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
     requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources)
-    user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, len(steps) + 1)
+    sequence = len(steps) + 1
+    user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, sequence)
+    reusable = _reusable_calculations(previous, scope, sequence, reply_sources, guidance_sources)
     proofs = {}
+    calculation_proofs = []
     matches = []
     for item in args['items']:
+        item_id = item['id']
+        calculation_step = None
+        candidate = reusable.get(item_id)
+        if (candidate and item['state'] == 'done'
+                and item['evidence_steps'] == previous_items[item_id]['evidence_steps']):
+            prior = previous_requirements[item_id]
+            current = {**requirements[item_id], 'defined_scope': scope}
+            if current == {**prior, 'defined_scope': scope}:
+                calculation_step = candidate['expression_step']
+                requirements[item_id] = current
+                calculation_proofs.append(candidate)
         for number in item['evidence_steps']:
             step = by_sequence.get(number)
             if step is None or step['action']['tool'] in {'update_plan', 'ask', 'finish', 'deliver'}:
@@ -237,7 +300,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
                     observed.get('status') in ('failed', 'cancelled') or
                     any(row['status'] != 'provided' for row in observed.get('requested_ranges', [])) or
-                    (observed.get('goal_conditions_sha256') != scope and number not in reused)):
+                    (observed.get('goal_conditions_sha256') != scope and number not in reused
+                     and number != calculation_step)):
                 raise ValueError('完成證據失敗、不完整或來自舊條件；請重新取得適用證據。')
             if item['state'] == 'done' and number in reused:
                 old = previous_items.get(item['id'])
@@ -257,6 +321,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             'review_note': '助理自行回報進度；工具關聯不等於語意正確或使用者驗收，清單不授予任何新權限。'}
     if proofs:
         result['reused_document_steps'] = [proofs[number] for number in reused]
+    if calculation_proofs:
+        result['reused_calculations'] = calculation_proofs
     if args.get('verify_delivery') or (previous and previous.get('verify_delivery')):
         result['verify_delivery'] = True
     if requirements:
@@ -296,6 +362,12 @@ def _delivery_review(plan, goal, scope, sources_current):
               'recheck_items': [], 'reusable_documents': []}
     if plan['conditions_current']:
         return review
+    calculations = _reusable_calculations(plan, scope, len(goal['steps']) + 1, goal.get('reply_sources', ()),
+                                          goal.get('guidance_sources', ())) if sources_current else {}
+    if calculations:
+        review['reusable_calculations'] = [
+            {**calculations[row['id']], 'evidence_steps': row['evidence_steps']}
+            for row in plan['items'] if row['id'] in calculations]
     typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
     old_excerpts = {}
     if typed_reads and sources_current:
@@ -313,7 +385,7 @@ def _delivery_review(plan, goal, scope, sources_current):
             refs = _covering_read_steps(typed, old_excerpts)
             if refs:
                 review['reusable_documents'].append({'id': item['id'], 'evidence_steps': refs})
-            if item['state'] == 'done' and (not refs or 'expression' in typed):
+            if item['state'] == 'done' and (not refs or 'expression' in typed and item['id'] not in calculations):
                 review['recheck_items'].append(item['id'])
             continue
         if item['state'] != 'done':
@@ -327,7 +399,7 @@ def _delivery_review(plan, goal, scope, sources_current):
                 except (ValueError, KeyError):
                     continue
                 reusable.append(number)
-        if reusable != refs:
+        if reusable != refs and item['id'] not in calculations:
             review['recheck_items'].append(item['id'])
         if reusable and reusable == refs:
             review['reusable_documents'].append({'id': item['id'], 'evidence_steps': reusable})
@@ -371,6 +443,9 @@ def describe(value):
     if value.get('reused_document_steps'):
         numbers = '、'.join(str(row['sequence']) for row in value['reused_document_steps'])
         lines.append('沿用同版本文件查讀 · 步驟 ' + numbers)
+    if value.get('reused_calculations'):
+        numbers = '、'.join(f'{row["id"]} {row["citation"]}' for row in value['reused_calculations'])
+        lines.append('依使用者確認沿用算式 · 項目 ' + numbers)
     if 'delivery_review' in value:
         review = value['delivery_review']
         lines.append('工作清單已通過交付核對。' if review['ready'] else '交付前仍需核對目前的工作清單。')
@@ -407,7 +482,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                    reply_sources=replies, guidance_sources=guidance)
                 if any(observation.get(key) != expected.get(key)
                        for key in ('status', 'items', 'reused_document_steps', 'verify_delivery',
-                                   'evidence_requirements', 'evidence_matches')):
+                                   'evidence_requirements', 'evidence_matches', 'reused_calculations')):
                     raise ValueError('工作清單與保存動作不一致。')
             if action['tool'] in DELIVERY_TOOLS or 'plan_check_step' in observation:
                 scope = observation.get('goal_conditions_sha256')
