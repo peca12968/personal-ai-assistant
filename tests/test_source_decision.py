@@ -182,13 +182,60 @@ class SourceDecisionTests(unittest.TestCase):
         self.assertEqual(low['decision']['possible_results'], ['前台'])
         self.assertEqual(low['source_rows'][1]['table_row'], low['source_rows'][3]['table_row'])
 
-    def test_conflicting_and_missing_adoption_cannot_select_a_default(self):
-        for adopted, message in [(['v1', 'v2'], '互相衝突'), (['v3'], '缺少本批所採用版本')]:
-            with self.subTest(adopted=adopted):
-                _, spec = self.version_rules([
-                    '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
-                    *(f'青甲批｜採用版本｜{version}。' for version in adopted),
-                ])
-                result = self.run_actions(action('check_source_decision', **spec))
-                self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
-                self.assertIn(message, result['steps'][-1]['observation']['error'])
+    def test_missing_single_adoption_cannot_select_a_default(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+            '青甲批｜採用版本｜v3。',
+        ])
+        result = self.run_actions(action('check_source_decision', **spec))
+        self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
+        self.assertIn('缺少本批所採用版本', result['steps'][-1]['observation']['error'])
+
+    def test_competing_adoptions_share_only_independently_resolved_results(self):
+        did, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+            '青甲批｜正式｜低：前台。', '青甲批｜採用版本｜v1。', '青甲批｜採用版本｜v2。',
+        ])
+        goal = self.run_actions(action('check_source_decision', **{**spec, 'known': {'級別': '低'}}),
+                                action('finish', report='本批低級交前台。'))
+        outcome = goal['steps'][1]['observation']
+        self.assertNotIn('adopted_version', outcome)
+        self.assertEqual(outcome['competing_adoptions'],
+                         [{'name': 'v1', 'citations': [f'[D{did}:L4]']},
+                          {'name': 'v2', 'citations': [f'[D{did}:L5]']}])
+        self.assertEqual(outcome['decision'], {'status': 'shared_result', 'possible_results': ['前台']})
+        self.assertEqual(goal['steps'][-1]['observation']['source_check_step'], 2)
+
+    def test_candidate_versions_do_not_supply_each_others_missing_rules(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜低：甲架。',
+            '青甲批｜採用版本｜v1。', '青甲批｜採用版本｜v2。', '青甲批｜採用版本｜v3。',
+        ])
+        goal = self.run_actions(action('check_source_decision', **spec))
+        outcome = goal['steps'][1]['observation']
+        self.assertEqual(outcome['decision'], {'status': 'version_uncertain', 'recorded_results': ['甲架']})
+        states = [row['decision']['status'] for row in outcome['candidate_versions']]
+        self.assertEqual(states, ['resolved', 'incomplete_table', 'missing_version'])
+
+    def test_saved_selection_resolves_existing_version_and_survives_restore(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+            '青甲批｜採用版本｜v1。', '青甲批｜採用版本｜v2。',
+        ])
+        initial = self.run_actions(action('check_source_decision', **spec),
+                                   action('ask', question='本批正式採用哪版？'))
+        self.assertEqual(initial['steps'][1]['observation']['decision']['status'], 'version_uncertain')
+        review = goal_replies.snapshot(self.store, self.sid, self.gid)
+        goal_replies.save(self.store, self.sid, self.gid, '青甲批｜採用版本｜v2',
+                          expected_fingerprint=review['fingerprint'])
+        result = self.run_actions(action('check_source_decision', **spec, amendment='[補充#3]'),
+                                  action('finish', report='採v2，交乙架。[補充#3]'))
+        checked = result['steps'][-2]['observation']
+        self.assertEqual(checked['decision']['possible_results'], ['乙架'])
+        self.assertEqual(checked['version_selection']['name'], 'v2')
+        self.assertEqual(checked['version_selection']['citation'], '[補充#3]')
+        self.assertEqual(len(checked['competing_adoptions']), 2)
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), result)

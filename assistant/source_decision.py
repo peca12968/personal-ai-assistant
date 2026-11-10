@@ -8,7 +8,8 @@ from . import decision_table, document_ranges, goal_guidance_sources, goal_reply
 GUIDANCE = '''check_source_decision可逐行核對固定格式的規則。若原文使用「範圍｜狀態｜條件一、條件二：結果」，用此工具代替自行轉錄。傳入scope完整範圍名稱、conditions欄序、domains完整選項、known本次已確認值，以及ranges已完整查讀的原規則區段（最多8段共32行，包含另案及未採用的行，不含標題）。範圍必須完整相同。文件狀態只能是正式、未採用或排除。排除行省略冒號和結果。範例「甲批｜正式｜高、室內：甲架」。
 若本次有明確保存的單筆更正，且原話整則符合「甲批｜更正｜高、室內：新架」，可加amendment，值為實際的補充或更正引用編號。只替換同範圍、同條件的一列或補缺列，不改其他批次。只用本次適用且已保存的正式更正，不使用引文或假設。格式或範圍不同時回到原文核對，不改寫原行冒充精確來源。
 工具回傳由原行整理的表與decision核算，以及原行來源與是否採用。區分另案、未採用、正式排除與被更正取代。保留已確認的數量、窗口等資料，按實際來源引用。決策有缺列時只問缺的正式規則，收到符合格式的答覆後帶amendment重算。此工具核對你指定的已讀區段與字面範圍，是否涵蓋全部適用規則仍依原始資料。
-原文也可有「甲批｜v2｜正式｜高：新架」和「甲批｜採用版本｜v2」。把版號規則和採用行都納入check_source_decision的已讀ranges。不以較新編號推定生效。只依同批明文採用行篩選版本，無版號的共同規則仍保留。沒有採用行時保留各版正式記載，有影響才請補必要資訊。若工具給出adopted_version，交付時把規則行與採用行各自引用。同批兩個採用記載互相矛盾或找不到採用版規則時，請使用者補正原文依據。'''
+原文也可有「甲批｜v2｜正式｜高：新架」和「甲批｜採用版本｜v2」。把版號規則和採用行都納入check_source_decision的已讀ranges。不以較新編號推定生效。只依同批明文採用行篩選版本，無版號的共同規則仍保留。沒有採用行時保留各版正式記載，有影響才請補必要資訊。若工具給出adopted_version，交付時把規則行與採用行各自引用。
+若同批採用記載互相矛盾，工具分別核算最多四個候選版，保留採用來源。shared_result表示各版皆已能獨立得出相同結論，可直接交付共同結果並保留矛盾採用記載，不宣稱已選定版本。version_uncertain表示各版結果不同或其中一版資料不足，先列可確認的資料與各版差異，再只問影響結果的依據。缺版不能當成另一版相同。收到同一批已保存的正式單行採用答覆，例如「甲批｜採用版本｜v2」，用amendment帶入實際補充或更正編號，重算該候選版並引用該答覆。'''
 
 _AMENDMENT = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _STATES = {'正式', '未採用', '排除'}
@@ -86,7 +87,7 @@ def _parse(text, size, *, user=False):
         raise ValueError('原文規則或保存更正須為單一完整行。')
     parts = text.removesuffix('。').split('｜')
     version = None
-    if not user and len(parts) == 3 and parts[1] == '採用版本':
+    if len(parts) == 3 and parts[1] == '採用版本':
         scope, status, version = parts
         decision_table._label(scope)
         decision_table._label(version)
@@ -161,34 +162,7 @@ def _read_lines(ranges, steps, sources):
     return [(did, number, *found[(did, number)]) for did, number in positions]
 
 
-def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
-    validate(args)
-    if declared and set(_positions(declared)) != set(_positions(args['ranges'])):
-        raise ValueError('核算範圍必須與目標首行的全部宣告相同，請先補讀缺口。')
-    lines = _read_lines(declared or args['ranges'], steps, sources)
-    size = len(args['conditions'])
-    amendment = None
-    if token := args.get('amendment'):
-        source = next((row for row in (*replies, *guidance) if row['citation'] == token), None)
-        if source is None:
-            raise ValueError('找不到本目標已保存的更正或補充。')
-        scope, _, values, result, _ = _parse(source.get('answer', source.get('content')), size, user=True)
-        if scope != args['scope']:
-            raise ValueError('所選更正只適用其原話中的完整範圍。')
-        amendment = {'citation': token, 'sha256': source['sha256'], 'when': values, 'result': result}
-
-    parsed = [(did, number, sequence, _parse(text, size)) for did, number, sequence, _, text in lines]
-    adopted = {}
-    for did, number, _, (scope, status, _, _, version) in parsed:
-        if scope == args['scope'] and status == '採用版本':
-            adopted.setdefault(version, []).append(f'[D{did}:L{number}]')
-    if len(adopted) > 1:
-        raise ValueError('同一範圍有互相衝突的採用版本，請核對正式採用記錄。')
-    selected = next(iter(adopted), None)
-    if selected and not any(scope == args['scope'] and version == selected and status in {'正式', '排除'}
-                            for _, _, _, (scope, status, _, _, version) in parsed):
-        raise ValueError('已讀區段缺少本批所採用版本的正式規則。')
-
+def _evaluate(args, parsed, selected, amendment):
     records, rows, excluded = [], [], []
     indexed = {}
     for did, number, sequence, (scope, status, values, result, version) in parsed:
@@ -219,15 +193,88 @@ def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
         records.append({**record, 'status': disposition})
     if amendment:
         rows.append({key: amendment[key] for key in ('when', 'result')})
-        amendment['table_row'] = len(rows)
+        amendment = {**amendment, 'table_row': len(rows)}
     table = {key: args[key] for key in ('conditions', 'domains', 'known')} | {'rows': rows, 'excluded': excluded}
-    observation = {'scope': args['scope'], 'source_rows': records, 'table': table,
-                   'decision': decision_table.calculate(table),
-                   'evidence_sha256': goal_stages.digest([lines, amendment])}
+    observation = {'source_rows': records, 'table': table, 'decision': decision_table.calculate(table)}
     if amendment:
         observation['amendment'] = amendment
-    if selected:
-        observation['adopted_version'] = {'name': selected, 'citations': adopted[selected]}
+    return observation
+
+
+def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
+    validate(args)
+    if declared and set(_positions(declared)) != set(_positions(args['ranges'])):
+        raise ValueError('核算範圍必須與目標首行的全部宣告相同，請先補讀缺口。')
+    lines = _read_lines(declared or args['ranges'], steps, sources)
+    size = len(args['conditions'])
+    amendment = selection = None
+    if token := args.get('amendment'):
+        source = next((row for row in (*replies, *guidance) if row['citation'] == token), None)
+        if source is None:
+            raise ValueError('找不到本目標已保存的更正或補充。')
+        scope, status, values, result, version = _parse(source.get('answer', source.get('content')), size, user=True)
+        if scope != args['scope']:
+            raise ValueError('所選更正只適用其原話中的完整範圍。')
+        receipt = {'citation': token, 'sha256': source['sha256']}
+        if status == '採用版本':
+            selection = {**receipt, 'name': version}
+        else:
+            amendment = {**receipt, 'when': values, 'result': result}
+
+    parsed = [(did, number, sequence, _parse(text, size)) for did, number, sequence, _, text in lines]
+    adopted, available = {}, set()
+    for did, number, _, (scope, status, _, _, version) in parsed:
+        if scope != args['scope']:
+            continue
+        if status == '採用版本':
+            adopted.setdefault(version, []).append(f'[D{did}:L{number}]')
+        elif status in {'正式', '排除'}:
+            available.add(version)
+    if len(adopted) > 4:
+        raise ValueError('最多可分開核對四個互相矛盾的採用版本，請確認本批適用依據。')
+    if selection and (len(adopted) < 2 or selection['name'] not in adopted):
+        raise ValueError('正式採用答覆須選擇同批原有的候選採用版本。')
+
+    observation = {'scope': args['scope']}
+    if len(adopted) > 1:
+        observation['competing_adoptions'] = [{'name': name, 'citations': refs} for name, refs in adopted.items()]
+    if len(adopted) > 1 and not selection:
+        versions = []
+        for name in adopted:
+            if name not in available:
+                result = {'decision': {'status': 'missing_version', 'recorded_results': []}}
+            else:
+                try:
+                    result = _evaluate(args, parsed, name, amendment)
+                except ValueError as exc:
+                    result = {'decision': {'status': 'invalid_version', 'recorded_results': []},
+                              'error': str(exc)}
+            versions.append({'name': name, **result})
+        observation['candidate_versions'] = versions
+        outcomes = list(dict.fromkeys(value for row in versions for value in
+                        row['decision'].get('possible_results', row['decision'].get('recorded_results', []))))
+        if len(outcomes) == 1 and all(row['decision']['status'] == 'resolved' for row in versions):
+            observation['decision'] = {'status': 'shared_result', 'possible_results': outcomes}
+        else:
+            observation['decision'] = {'status': 'version_uncertain', 'recorded_results': outcomes}
+        observation['evidence_sha256'] = goal_stages.digest([lines, amendment])
+    else:
+        selected = selection['name'] if selection else next(iter(adopted), None)
+        if selected and selected not in available:
+            raise ValueError('已讀區段缺少本批所採用版本的正式規則。')
+        result = _evaluate(args, parsed, selected, amendment)
+        saved_amendment = result.pop('amendment', None)
+        observation.update(result)
+        evidence = [lines, saved_amendment]
+        if selection:
+            evidence.append(selection)
+        observation['evidence_sha256'] = goal_stages.digest(evidence)
+        if saved_amendment:
+            observation['amendment'] = saved_amendment
+        if selected:
+            observation['adopted_version'] = {'name': selected, 'citations': adopted[selected]}
+        if selection:
+            observation['version_selection'] = selection
     if declared:
         observation['declared_ranges'] = declared
     return observation

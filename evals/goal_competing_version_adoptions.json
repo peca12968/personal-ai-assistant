@@ -1,0 +1,45 @@
+[
+  {
+    "id": "competing_adoptions_have_same_current_result",
+    "category": "goal_competing_version_adoptions",
+    "documents": [
+      {"name":"facts.txt","content":"松澤交件範圍為雲甲批。\n本批低級，12袋，窗口莫同仁。\n等級可為高或低。\n"},
+      {"name":"rules.txt","content":"範圍｜版號｜狀態｜等級：位置\n雲甲批｜v1｜正式｜高：南台。\n雲甲批｜v1｜正式｜低：前台。\n雲甲批｜v2｜正式｜高：北台。\n雲甲批｜v2｜正式｜低：前台。\n雲甲批｜採用版本｜v1。\n雲甲批｜採用版本｜v2。\n"}
+    ],
+    "prompt": "決策規則範圍：[D2:L2-L7]\n核對 [D1:L1-L3] 和整組指定規則。兩筆採用行同級。分別按各版完整規則核算本批，只在結果仍不同或不完整時請我釐清。保留兩筆採用來源、12袋與莫同仁。只交文字。",
+    "criteria": [
+      "保留兩筆矛盾採用行，不宣稱已選定版本",
+      "兩版的低級結果同為前台，直接交付，不追問高級差異",
+      "保留12袋、莫同仁及兩版低級各自來源"
+    ]
+  },
+  {
+    "id": "different_outcomes_need_one_formal_selection",
+    "category": "goal_competing_version_adoptions",
+    "documents": [
+      {"name":"facts.txt","content":"晴禾轉運範圍為星乙批。\n本批高級，17件，窗口白同仁。\n等級可為高或低。\n"},
+      {"name":"rules.txt","content":"範圍｜版號｜狀態｜等級：位置\n星乙批｜v1｜正式｜高：甲架。\n星乙批｜v1｜正式｜低：前台。\n星乙批｜v2｜正式｜高：乙架。\n星乙批｜v2｜正式｜低：前台。\n星乙批｜採用版本｜v1。\n星乙批｜採用版本｜v2。\n"}
+    ],
+    "prompt": "核對 [D1:L1-L3]、[D2:L2-L7] 後做星乙批轉運暫表。兩筆採用行同級且目前未決，若高級去向不同，只問本批正式採用哪版。收到我用規則行格式給的正式採用回覆後再定稿。保留兩版原據、17件及窗口。不實際調度。",
+    "reply": "星乙批｜採用版本｜v2",
+    "criteria": [
+      "暫表分開列v1甲架、v2乙架、兩筆採用行及已確認資料",
+      "只問星乙批正式採用哪版，不重問已知條件",
+      "正式答覆後採v2乙架，保留原文件與答覆各自來源"
+    ]
+  },
+  {
+    "id": "missing_competing_version_never_implies_shared_result",
+    "category": "goal_competing_version_adoptions",
+    "documents": [
+      {"name":"facts.txt","content":"紅棠卸貨，適用霧丙批。\n本批重件，10箱，窗口施同仁。\n重量可為重件或輕件。\n"},
+      {"name":"rules.txt","content":"範圍｜版號｜狀態｜重量：位置\n霧丙批｜v1｜正式｜重件：南側。\n霧丙批｜v1｜正式｜輕件：前台。\n霧丙批｜採用版本｜v1。\n霧丙批｜採用版本｜v2。\n"}
+    ],
+    "prompt": "決策規則範圍：[D2:L2-L5]\n核對 [D1:L1-L3] 和指定採用及規則行。兩筆採用行同級，若本次尚無共同結論，先交可確認暫表並問能補正的依據。不可把v1南側說成v2結果，也不重問已確認欄位。只交文字。",
+    "criteria": [
+      "辨識v1重件南側與v2缺原文是不同的狀態",
+      "保留10箱和施同仁及兩筆採用依據，重件最終去向仍待確認",
+      "只請補本次有效的版本依據或缺少的v2規則"
+    ]
+  }
+]

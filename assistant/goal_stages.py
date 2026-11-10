@@ -163,7 +163,7 @@ def activity(row):
     if tool in ('check_decision', 'check_source_decision'):
         decision = observation['decision'] if tool == 'check_source_decision' else observation
         results = decision.get('possible_results', decision.get('recorded_results', []))
-        outcome.update(status=decision['status'], matching_row_count=len(decision['matching_rows']),
+        outcome.update(status=decision['status'], matching_row_count=len(decision.get('matching_rows', [])),
                        decision_rows_omitted=True)
         result_count = 'recorded_result_count' if 'recorded_results' in decision else 'possible_result_count'
         outcome[result_count] = len(results)
@@ -173,6 +173,8 @@ def activity(row):
             outcome['max_questions'] = decision['max_questions']
         if tool == 'check_source_decision':
             outcome['source_rows_omitted'] = True
+            if 'competing_adoptions' in observation:
+                outcome['competing_version_count'] = len(observation['competing_adoptions'])
     if tool in ('search_conversation', 'read_conversation'):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
