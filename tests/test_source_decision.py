@@ -87,3 +87,54 @@ class SourceDecisionTests(unittest.TestCase):
         observation = result['steps'][-1]['observation']
         self.assertEqual(observation['decision']['possible_results'], ['補強架'])
         self.assertEqual(observation['amendment']['citation'], '[補充#4]')
+
+    def test_declared_scope_requires_all_original_lines_but_accepts_split_ranges(self):
+        self.gid = autonomy.create_goal(self.store, self.sid, f'決策規則範圍：[D{self.did}:L1-L5]\n交付青甲批')
+        first = {'document_id': self.did, 'start_line': 1, 'end_line': 2}
+        remainder = {'document_id': self.did, 'start_line': 3, 'end_line': 5}
+        partial = self.run_actions(action('read_ranges', ranges=[first]))
+        self.assertEqual(partial['decision_rule_scope']['missing_ranges'], [remainder])
+        failed = self.run_actions(action('check_source_decision', **{**self.spec, 'ranges': [first]}),
+                                  action('finish', report='過早定稿'))
+        self.assertEqual([step['action']['tool'] for step in failed['steps'][-2:]], ['invalid', 'invalid'])
+        self.assertIn('全部宣告', failed['steps'][-2]['observation']['error'])
+        self.assertIn('全部宣告', failed['steps'][-1]['observation']['error'])
+        final = self.run_actions(action('read_ranges', ranges=[remainder]),
+                                 action('check_source_decision', **{**self.spec, 'ranges': [remainder, first]}),
+                                 action('finish', report='青甲批位置為甲架。'))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['decision_rule_scope']['missing_ranges'], [])
+        self.assertEqual(final['steps'][-2]['observation']['declared_ranges'], self.ranges)
+        self.assertEqual(final['steps'][-1]['observation']['source_check_step'], 5)
+        self.assertEqual(final['steps'][-2]['observation']['source_rows'][0]['citation'], f'[D{self.did}:L1]')
+
+    def test_new_correction_needs_a_fresh_scope_check_and_receipt_survives_restore(self):
+        self.gid = autonomy.create_goal(self.store, self.sid, f'決策規則範圍：[D{self.did}:L1-L5]\n交付青甲批')
+        self.read_rules()
+        self.run_actions(action('check_source_decision', **self.spec))
+        review = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '青甲批｜更正｜高：新架',
+                           expected_fingerprint=review['fingerprint'])
+        final = self.run_actions(action('finish', report='仍為舊值'),
+                                 action('check_source_decision', **self.spec, amendment='[更正#1]'),
+                                 action('finish', report='現為新架 [更正#1]。'))
+        self.assertEqual(final['steps'][2]['action']['tool'], 'invalid')
+        self.assertEqual(final['steps'][-1]['observation']['source_check_step'], 4)
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), final)
+        with restored.connect() as db:
+            observation = final['steps'][-1]['observation'].copy()
+            observation['source_check_step'] = 2
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '缺少相符'):
+            validate_database(restored.path)
+
+    def test_malformed_or_unattached_declaration_does_not_create_goal(self):
+        before = autonomy.goals(self.store, self.sid)
+        for raw in ('決策規則範圍：待補', f'決策規則範圍：[D{self.did}:L1-L2]、[D{self.did}:L2]', '決策規則範圍：[D99:L1]'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                autonomy.create_goal(self.store, self.sid, raw + '\n核對位置')
+        self.assertEqual(autonomy.goals(self.store, self.sid), before)

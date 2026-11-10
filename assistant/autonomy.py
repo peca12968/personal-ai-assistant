@@ -101,6 +101,7 @@ def signature(documents):
 
 def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None, history_search=False):
     objective = text(objective, 4000)
+    declared = source_decision.declared_ranges(objective)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
     if type(from_chat) is not bool:
@@ -119,6 +120,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
             previous = goal_stages.capture(db, sid, parent_id) if parent_id is not None else None
             db.execute('INSERT INTO autonomous_goals(id,session_id,objective,status,sources_json) VALUES(?,?,?,?,?)',
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
+            if declared:
+                source_decision.save_scope(db, gid, declared, sources)
             if file_delivery:
                 db.execute('INSERT INTO autonomous_delivery(goal_id,enabled) VALUES(?,1)', (gid,))
             if csv_document_id is not None:
@@ -164,6 +167,10 @@ def get_goal(store, sid, gid):
         result['steps'] = [{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                             'observation': json.loads(r['observation_json'])}
                            for r in db.execute('SELECT * FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
+        declared = source_decision.read_scope(db, gid, result['objective'])
+        if declared:
+            result['decision_rule_scope'] = {'ranges': declared, 'missing_ranges': source_decision.missing_ranges(
+                declared, result['steps'], result['sources'])}
         reply_sources = goal_reply_sources.read(db, gid, result['notes'])
         if reply_sources:
             result['reply_sources'] = reply_sources
@@ -274,7 +281,8 @@ def validate_action(value):
     return value
 
 
-def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=()):
+def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
+            declared_rule_ranges=()):
     name, args = action['tool'], action['args']
     if name == 'month_schedule':
         return month_schedule.calculate(args, cancel)
@@ -283,7 +291,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'check_decision':
         return decision_table.calculate(args)
     if name == 'check_source_decision':
-        return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources)
+        return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
+                                         declared=declared_rule_ranges)
     if name == 'calculate_expression':
         return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
@@ -415,6 +424,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
                 payload['reply_sources'] = reply_sources
+            rule_scope = goal.get('decision_rule_scope')
+            if rule_scope:
+                payload['decision_rule_scope'] = rule_scope
             withdrawals = goal.get('withdrawn_questions', ())
             if withdrawals:
                 payload['withdrawn_questions'] = [
@@ -426,6 +438,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + decision_table.GUIDANCE + '\n' + source_decision.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
+                ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') + '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
@@ -438,6 +451,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 update(store, gid, 'paused', notice='參考文件已改變，未執行此次動作；請另建目標。')
                 break
             attempted = None
+            conditions_hash = work_plan.conditions(goal)
             try:
                 if len(raw) > 20000:
                     raise ValueError('動作輸出過長。')
@@ -445,8 +459,17 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 # Detach before execution: a tool may normalize/mutate its input.
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
+                declared = rule_scope['ranges'] if rule_scope else []
+                check = None
+                if declared and action['tool'] in source_decision.DELIVERY_TOOLS:
+                    check = source_decision.checked_step(goal['steps'], declared, conditions_hash)
+                    if check is None:
+                        raise ValueError('交付前請按目前條件核對全部宣告的原文規則區段。')
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
-                                      reply_sources=reply_sources, guidance_sources=guidance_sources)
+                                      reply_sources=reply_sources, guidance_sources=guidance_sources,
+                                      declared_rule_ranges=declared)
+                if check is not None:
+                    observation['source_check_step'] = check
             except (ValueError, TypeError, KeyError) as exc:
                 action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                 observation = {'error': str(exc)[:500],
@@ -459,7 +482,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             observation['companion_profile'] = profile
             if engine_selection is not None:
                 observation['engine_selection'] = engine_selection
-            observation['goal_conditions_sha256'] = work_plan.conditions(goal)
+            observation['goal_conditions_sha256'] = conditions_hash
             status = 'needs_input' if action['tool'] == 'ask' else 'report_ready' if action['tool'] in ('finish', 'deliver') else 'running'
             if cancel.is_set():
                 reason = 'cancelled'

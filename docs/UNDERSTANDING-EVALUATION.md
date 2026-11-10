@@ -195,6 +195,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_source_decision_transcription.json` 核對同一段規則中的相近批名、未採用行、只影響一批的主動更正，以及以正式回答補上原缺列。先核對實際送入的批名與完整已讀範圍，再逐行比對工具記錄的採用狀態、表列與來源編號。最後分開評讀暫表、追問與定稿。指定批名、欄位選項及範圍的正確性仍需要對照原始工作。
 
+`python scripts/evaluate_goal_replies.py --suite evals/goal_declared_rule_ranges.json` 檢查已讀部分、跨兩份文件的固定範圍及副本缺行。真實評估核對每輪實際讀取區段、原文規則核算及定稿前的核對步驟。另用相同受控動作比較舊版與新版，故意少送一列再嘗試定稿，與模型自由作答的結果分開記錄。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

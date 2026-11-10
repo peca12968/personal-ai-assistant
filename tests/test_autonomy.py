@@ -414,6 +414,7 @@ class AutonomyTests(unittest.TestCase):
             db.execute('DROP TABLE autonomous_reply_sources')
             db.execute('DROP TABLE autonomous_question_withdrawals')
             db.execute('DROP TABLE autonomous_guidance_sources')
+            db.execute('DROP TABLE autonomous_decision_scopes')
             db.execute('DROP TABLE autonomous_steps')
             db.execute('DROP TABLE autonomous_goals')
         self.assertNotIn('autonomous_goals', validate_database(restored.path))

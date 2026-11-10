@@ -53,6 +53,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_withdr
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_decision_questions.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_decision_coverage.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_source_decision_transcription.json'))
+CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_declared_rule_ranges.json'))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py', '--suite', 'evals/goal_source_handoffs.json'))

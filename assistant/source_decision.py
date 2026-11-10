@@ -11,6 +11,60 @@ GUIDANCE = '''check_source_decision可逐行核對固定格式的規則。若原
 
 _AMENDMENT = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _STATES = {'正式', '未採用', '排除'}
+_SCOPE_PREFIX = '決策規則範圍：'
+_RANGE = re.compile(r'\[D([1-9][0-9]{0,11}):L([1-9][0-9]{0,11})(?:-L([1-9][0-9]{0,11}))?\]')
+DELIVERY_TOOLS = {'finish', 'write_artifact', 'deliver'}
+SCOPE_GUIDANCE = ('decision_rule_scope來自使用者目標首行的規則範圍。missing_ranges是尚未完整查讀的區段。'
+                  '只用read_ranges補讀缺口，不重讀已有原行。若缺行不可取得，先列可確認資料，'
+                  '只請提供含該行的完整副本供重新匯入及另建目標。文字答覆無法補齊這份已宣告副本的原行。'
+                  '核算時ranges須涵蓋整份宣告，'
+                  '不可只送已知會符合的部分或加入其他區段。交付或產檔前須有當前條件的原文決策核對。')
+
+
+def _positions(ranges):
+    return [(item['document_id'], number) for item in ranges
+            for number in range(item['start_line'], item['end_line'] + 1)]
+
+
+def _validate_ranges(ranges):
+    document_ranges.validate_batch({'ranges': ranges})
+    if any(not 0 <= item['end_line'] - item['start_line'] < 32 for item in ranges):
+        raise ValueError('每段原文規則須指定有效的連續行。')
+    positions = _positions(ranges)
+    if len(positions) > 32 or len(set(positions)) != len(positions):
+        raise ValueError('原文規則最多32個不重複的行。')
+
+
+def declared_ranges(objective):
+    first = objective.partition('\n')[0].removesuffix('\r')
+    if not first.startswith(_SCOPE_PREFIX):
+        return []
+    ranges = []
+    for token in first.removeprefix(_SCOPE_PREFIX).split('、'):
+        match = _RANGE.fullmatch(token.strip())
+        if not match:
+            raise ValueError('決策規則範圍請在目標首行列出文件及行號，例如[D2:L2-L5]。')
+        did, start, end = match.groups()
+        ranges.append({'document_id': int(did), 'start_line': int(start), 'end_line': int(end or start)})
+    _validate_ranges(ranges)
+    return ranges
+
+
+def save_scope(db, gid, ranges, sources):
+    if not {row['document_id'] for row in ranges} <= {row['document_id'] for row in sources}:
+        raise ValueError('請先在目前對話匯入宣告的規則文件。')
+    db.execute('INSERT INTO autonomous_decision_scopes(goal_id,ranges_json) VALUES(?,?)',
+               (gid, json.dumps(ranges, ensure_ascii=False)))
+
+
+def read_scope(db, gid, objective):
+    row = db.execute('SELECT ranges_json FROM autonomous_decision_scopes WHERE goal_id=?', (gid,)).fetchone()
+    if row is None:
+        return []
+    ranges = json.loads(row[0])
+    if not ranges or ranges != declared_ranges(objective):
+        raise ValueError('保存的決策規則範圍與目標原文不一致。')
+    return ranges
 
 
 def validate(args):
@@ -21,17 +75,7 @@ def validate(args):
     if '｜' in args['scope']:
         raise ValueError('範圍名稱不可包含規則分隔符號。')
     decision_table.validate({key: args[key] for key in ('conditions', 'domains', 'known')} | {'rows': [], 'excluded': []})
-    document_ranges.validate_batch({'ranges': args['ranges']})
-    seen = set()
-    for item in args['ranges']:
-        did, start, end = (item[key] for key in document_ranges.BATCH_FIELDS)
-        if not 0 <= end - start < 32:
-            raise ValueError('每段原文規則須指定有效的連續行。')
-        for line in range(start, end + 1):
-            position = (did, line)
-            if position in seen or len(seen) == 32:
-                raise ValueError('原文規則最多32個不重複的行。')
-            seen.add(position)
+    _validate_ranges(args['ranges'])
     if 'amendment' in args and (not isinstance(args['amendment'], str) or not _AMENDMENT.fullmatch(args['amendment'])):
         raise ValueError('須指定本目標已保存的更正或補充編號。')
 
@@ -55,9 +99,8 @@ def _parse(text, size, *, user=False):
     return scope, status, values, result
 
 
-def _read_lines(ranges, steps, sources):
-    positions = [(item['document_id'], number) for item in ranges
-                 for number in range(item['start_line'], item['end_line'] + 1)]
+def _gather_lines(ranges, steps, sources):
+    positions = _positions(ranges)
     catalog = {row['document_id']: row for row in sources}
     found = {}
     for step in steps:
@@ -84,14 +127,34 @@ def _read_lines(ranges, steps, sources):
                 previous = found.setdefault((did, number), value)
                 if previous[1:] != value[1:]:
                     raise ValueError('同一版本規則行有不同內容。')
+    return positions, found
+
+
+def missing_ranges(ranges, steps, sources):
+    positions, found = _gather_lines(ranges, steps, sources)
+    missing = []
+    for did, number in positions:
+        if (did, number) in found:
+            continue
+        if missing and missing[-1]['document_id'] == did and missing[-1]['end_line'] == number - 1:
+            missing[-1]['end_line'] = number
+        else:
+            missing.append({'document_id': did, 'start_line': number, 'end_line': number})
+    return missing
+
+
+def _read_lines(ranges, steps, sources):
+    positions, found = _gather_lines(ranges, steps, sources)
     if len(found) != len(positions):
         raise ValueError('規則範圍有尚未完整查讀的行。請先查讀原文。')
     return [(did, number, *found[(did, number)]) for did, number in positions]
 
 
-def calculate(args, steps, sources, replies=(), guidance=()):
+def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
     validate(args)
-    lines = _read_lines(args['ranges'], steps, sources)
+    if declared and set(_positions(declared)) != set(_positions(args['ranges'])):
+        raise ValueError('核算範圍必須與目標首行的全部宣告相同，請先補讀缺口。')
+    lines = _read_lines(declared or args['ranges'], steps, sources)
     size = len(args['conditions'])
     amendment = None
     if token := args.get('amendment'):
@@ -135,27 +198,47 @@ def calculate(args, steps, sources, replies=(), guidance=()):
                    'evidence_sha256': goal_stages.digest([lines, amendment])}
     if amendment:
         observation['amendment'] = amendment
+    if declared:
+        observation['declared_ranges'] = declared
     return observation
 
 
-def validate_saved(db, *, replies_present, guidance_present):
-    goals = db.execute('''SELECT DISTINCT g.id,g.notes,g.sources_json FROM autonomous_goals g
-        JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_source_decision"%' ''')
-    for gid, notes, sources_json in goals:
+def checked_step(steps, declared, conditions_hash):
+    return next((step['sequence'] for step in reversed(steps)
+                 if step['action']['tool'] == 'check_source_decision'
+                 and step['observation'].get('declared_ranges') == declared
+                 and step['observation'].get('goal_conditions_sha256') == conditions_hash), None)
+
+
+def validate_saved(db, *, replies_present, guidance_present, scope_present=False):
+    query = '''SELECT DISTINCT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g
+        JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_source_decision"%'
+        OR s.observation_json LIKE '%"source_check_step"%' '''
+    if scope_present:
+        query += ' UNION SELECT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g JOIN autonomous_decision_scopes d ON d.goal_id=g.id'
+    for gid, notes, sources_json, objective in db.execute(query):
         raw_steps = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps '
                                'WHERE goal_id=? ORDER BY sequence', (gid,)).fetchall()
         replies = goal_reply_sources.read(db, gid, notes) if replies_present else []
         guidance = goal_guidance_sources.read(db, gid, notes, len(raw_steps)) if guidance_present else []
         sources = json.loads(sources_json)
+        declared = read_scope(db, gid, objective) if scope_present else []
+        if declared and not {row['document_id'] for row in declared} <= {row['document_id'] for row in sources}:
+            raise ValueError('決策規則範圍不屬於本目標的文件。')
         prior = []
         for sequence, raw_action, raw_observation in raw_steps:
             action, observation = json.loads(raw_action), json.loads(raw_observation)
             if action['tool'] == 'check_source_decision':
                 expected = calculate(action['args'], prior, sources,
                                      [row for row in replies if row['ask_sequence'] < sequence],
-                                     goal_guidance_sources.prior_sources(guidance, sequence))
+                                     goal_guidance_sources.prior_sources(guidance, sequence), declared=declared)
                 actual = {key: value for key, value in observation.items()
                           if key not in {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}}
                 if goal_stages.digest(actual) != goal_stages.digest(expected):
                     raise ValueError('保存的原文決策表與查讀步驟不一致。')
+            if (declared and action['tool'] in DELIVERY_TOOLS) or 'source_check_step' in observation:
+                scope_hash = observation.get('goal_conditions_sha256')
+                check = checked_step(prior, declared, scope_hash) if declared and isinstance(scope_hash, str) else None
+                if check is None or type(observation.get('source_check_step')) is not int or observation['source_check_step'] != check:
+                    raise ValueError('保存成果缺少相符的決策規則核對步驟。')
             prior.append({'sequence': sequence, 'action': action, 'observation': observation})

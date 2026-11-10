@@ -39,6 +39,7 @@ TABLES = {
     'task_runs': {'id', 'session_id', 'status', 'plan_json', 'result_json', 'error', 'created_at', 'finished_at'},
     'autonomous_goals': {'id', 'session_id', 'objective', 'status', 'sources_json', 'notes', 'question', 'result', 'notice', 'created_at', 'updated_at'},
     'autonomous_steps': {'id', 'goal_id', 'sequence', 'action_json', 'observation_json', 'created_at'},
+    'autonomous_decision_scopes': {'goal_id', 'ranges_json'},
     'autonomous_reply_sources': {'goal_id', 'ask_sequence', 'notes_start', 'answer'},
     'autonomous_guidance_sources': {'goal_id', 'number', 'notes_start', 'steps_seen', 'stamp', 'content'},
     'autonomous_question_withdrawals': {'goal_id', 'ask_sequence', 'guidance_number', 'question_sha256', 'guidance_sha256'},
@@ -84,6 +85,8 @@ def validate_database(path):
             raise ValueError('聊天草稿資料表不完整。')
         if len(actual_tables & {'autonomous_goals', 'autonomous_steps'}) == 1:
             raise ValueError('自主目標資料表不完整。')
+        if 'autonomous_decision_scopes' in actual_tables and 'autonomous_goals' not in actual_tables:
+            raise ValueError('決策規則範圍資料表不完整。')
         if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources'} and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
         if 'autonomous_question_withdrawals' in actual_tables and 'autonomous_guidance_sources' not in actual_tables:
@@ -99,7 +102,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals'} - delivery_tables - csv_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -194,7 +197,8 @@ def validate_database(path):
             validate_guidance_sources(db, table_present=guidance_present)
             from .source_decision import validate_saved as validate_source_decisions
             validate_source_decisions(db, replies_present='autonomous_reply_sources' in actual_tables,
-                                      guidance_present=guidance_present)
+                                      guidance_present=guidance_present,
+                                      scope_present='autonomous_decision_scopes' in actual_tables)
             if 'autonomous_question_withdrawals' in actual_tables:
                 from .goal_question_withdrawals import validate_saved as validate_withdrawals
                 validate_withdrawals(db, replies_present='autonomous_reply_sources' in actual_tables)

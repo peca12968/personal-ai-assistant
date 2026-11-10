@@ -1,0 +1,50 @@
+[
+  {
+    "id": "keep_existing_read_and_fetch_missing_tail",
+    "category": "goal_declared_rule_ranges",
+    "documents": [
+      {"name":"dispatch.txt","content":"淺桑交件，範圍為青北批。\n本批級別高，7 箱，窗口衛同仁。\n級別的完整選項是高或低。\n"},
+      {"name":"rules.txt","content":"範圍｜狀態｜級別：位置\n青北批｜正式｜低：前台。\n青北批二｜正式｜高：西架。\n青北批｜正式｜高：重架。\n"}
+    ],
+    "prompt": "決策規則範圍：[D2:L2-L4]\n核對淺桑青北批的本批位置，依完整指定規則區段和 [D1:L1-L3] 交付。已完整查讀的行可沿用，若規則還有未讀取的行，只補讀該缺口。保留數量、窗口及來源，只交文字。",
+    "prior_read_ranges": [
+      {"document_id":1,"start_line":1,"end_line":3},
+      {"document_id":2,"start_line":2,"end_line":2}
+    ],
+    "amendments": ["確認本次仍只交文字結果。"],
+    "criteria": [
+      "補讀指定區段中尚缺的第3至4行，不重讀第2行",
+      "核對完整區段後採本批重架，與另批西架區分",
+      "保留7箱、衛同仁及來源，直接定稿"
+    ]
+  },
+  {
+    "id": "use_both_copies_of_declared_rules",
+    "category": "goal_declared_rule_ranges",
+    "documents": [
+      {"name":"facts.txt","content":"菱岸送達為石乙批。\n本批確定常溫，11盒，窗口尤同仁。\n溫層可為常溫或低溫。\n"},
+      {"name":"first.txt","content":"原版規則及本次狀態\n石乙批｜未採用｜常溫：原甲台。\n石乙批｜正式｜低溫：冷藏室。\n"},
+      {"name":"updated.txt","content":"本次正式規則補頁\n石乙批｜正式｜常溫：新乙台。\n"}
+    ],
+    "prompt": "決策規則範圍：[D2:L2-L3]、[D3:L2]\n查 [D1:L1-L3] 和指定的兩份規則區段，交菱岸石乙批的送達結論。區分原版未採用的原甲台和本次正式位置，保留兩份來源和貨量、窗口。只交文字。",
+    "criteria": [
+      "兩份指定規則都納入核對，分開處理原甲台和新乙台",
+      "常溫採新乙台，保留11盒和尤同仁及引用",
+      "沒有追問已確認資料或宣稱已送達"
+    ]
+  },
+  {
+    "id": "missing_line_requires_corrected_source",
+    "category": "goal_declared_rule_ranges",
+    "documents": [
+      {"name":"facts.txt","content":"初霜交件，範圍澄丙批。\n本批重件，10袋，窗口沙同仁。\n級別為輕件或重件。\n"},
+      {"name":"rules.txt","content":"範圍｜狀態｜級別：去向\n澄丙批｜正式｜輕件：前台。\n"}
+    ],
+    "prompt": "決策規則範圍：[D2:L2-L3]\n查 [D1:L1-L3] 與指定規則後才定稿。第3行應為重件的正式去向。若本次副本缺該行，先交可確認的資料，只請我提供缺失的正式規則或完整副本。不要用第2行推測或重問已知數量與窗口。只交文字。",
+    "criteria": [
+      "說明D2第3行尚不可取得，重件去向待補，輕件規則不適用本批",
+      "只問缺失的重件正式去向或新版文件，保持等待",
+      "暫表保留10袋、沙同仁及重件，附實際已讀來源"
+    ]
+  }
+]
