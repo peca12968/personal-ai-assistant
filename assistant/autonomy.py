@@ -476,6 +476,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
                 ('\n' + quantity_evidence.GUIDANCE
                  if reply_sources or guidance_sources or any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
                 reason = 'cancelled'

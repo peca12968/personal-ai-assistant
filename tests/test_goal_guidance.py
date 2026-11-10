@@ -48,6 +48,7 @@ class GoalGuidanceTests(unittest.TestCase):
         self.assertIn('人數13', notes[1]['content'])
         self.assertEqual(engine.prompts[0].count('PRIVATE_STEERING'), 1)
         self.assertIn('最新明確的使用者更正優先',engine.prompts[0])
+        self.assertEqual(engine.prompts[0].count(a.goal_partials.FOLLOWUP_GUIDANCE), 1)
         other=a.create_goal(self.store,self.sid,'另一個工作')
         self.assertEqual(a.get_goal(self.store,self.sid,other)['notes'],'')
         self.assertNotIn('PRIVATE_STEERING',json.dumps(Assistant(self.store,None).prepare_context(self.sid,'繼續聊天'),ensure_ascii=False))

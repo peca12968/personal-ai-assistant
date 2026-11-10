@@ -64,8 +64,10 @@ class AutonomyTests(unittest.TestCase):
 
     def test_ask_reply_resume_and_session_isolation(self):
         gid = self.goal('安排會議')
-        result = a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='哪一天？')))
+        first = ScriptedEngine(action('ask', question='哪一天？'))
+        result = a.run_goal(self.store, self.sid, gid, first)
         self.assertEqual(result['status'], 'needs_input')
+        self.assertNotIn(a.goal_partials.FOLLOWUP_GUIDANCE, first.prompts[0])
         self.assertEqual(a.run_goal(self.store, self.sid, gid, None), result)
         other = self.store.new_session()
         with self.assertRaises(ValueError):
@@ -75,6 +77,7 @@ class AutonomyTests(unittest.TestCase):
         engine = ScriptedEngine(action('finish', report='明天下午的會議準備清單。'))
         result = a.run_goal(self.store, self.sid, gid, engine)
         self.assertIn('明天下午', engine.prompts[0])
+        self.assertEqual(engine.prompts[0].count(a.goal_partials.FOLLOWUP_GUIDANCE), 1)
         self.assertEqual(len(result['steps']), 2)
         with self.assertRaises(ValueError):
             a.reply(self.store, self.sid, gid, '不應覆寫成果', expected_fingerprint=reply_snapshot(self.store, self.sid, gid)["fingerprint"])
