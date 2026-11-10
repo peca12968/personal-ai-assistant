@@ -12,6 +12,9 @@ _OBJECTIVE = '[目標]'
 _NUMERIC_CHARS = str.maketrans('０１２３４５６７８９．／－＋％，−', '0123456789./-+%,-')
 _NUMBER = r'(?<![\dA-Za-z_./+\-])(?<![0-9],)(?P<number>-?[0-9]+(?:\.[0-9]+|/[0-9]+)?)'
 _LITERAL = re.compile(_NUMBER + r'(?![\dA-Za-z_./+\-%])(?!,[0-9])')
+_FIELD = re.compile(r'欄位「(?P<name>[^「」\r\n\x00]{1,80})」[ \t]*(?:為|[:：])[ \t]*\Z')
+_REQUIRED_KEYS = {'path', 'citation', 'quote'}
+_OPTIONAL_KEYS = {'conversion', 'field'}
 
 
 def _leaves(node, path=''):
@@ -57,14 +60,22 @@ def _numeric_match(quote, value, pattern, factor):
     return matches[0]
 
 
+def _field_position(quote, number_start, field):
+    match = _FIELD.search(quote[:number_start])
+    if (not isinstance(field, str) or field.strip() != field
+            or match is None or match['name'] != field):
+        raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
+    return match.span('name')
+
+
 def validate(rows, expression, ranges):
     leaves = dict(_leaves(expression))
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
     seen = set()
     for row in rows:
-        if (not isinstance(row, dict) or row.keys() not in ({'path', 'citation', 'quote'},
-                                                           {'path', 'citation', 'quote', 'conversion'})
+        if (not isinstance(row, dict) or not _REQUIRED_KEYS <= row.keys()
+                or row.keys() - _REQUIRED_KEYS - _OPTIONAL_KEYS
                 or not isinstance(row['path'], str) or row['path'] not in leaves or row['path'] in seen):
             raise ValueError('運算元證據須使用不同且實際存在的數字節點路徑。')
         path, citation, quote = row['path'], row['citation'], row['quote']
@@ -82,7 +93,9 @@ def validate(rows, expression, ranges):
                 or any(ch in quote for ch in '\0\r\n')):
             raise ValueError('運算元證據須提供一段最多 180 字的逐字短句。')
         pattern, factor = _conversion_spec(row['conversion']) if 'conversion' in row else (_LITERAL, 1)
-        _numeric_match(quote, leaves[path], pattern, factor)
+        token, _ = _numeric_match(quote, leaves[path], pattern, factor)
+        if 'field' in row:
+            _field_position(quote, token.start('number'), row['field'])
 
 
 def user_texts(objective, replies, guidance, sequence):
@@ -128,6 +141,9 @@ def bind(rows, expression, excerpts, user_sources):
             raise ValueError(f'運算元 {label} 的短句截斷了來源中的數值。')
         receipt = {**row, 'source_sha256': sha, 'quote_start': start, 'quote_end': start + len(quote),
                    'number_start': start + low, 'number_end': start + high, 'number': quote[low:high]}
+        if 'field' in row:
+            field_start, field_end = _field_position(quote, low, row['field'])
+            receipt.update(field_start=start + field_start, field_end=start + field_end)
         if 'conversion' in row:
             unit_start, unit_end = token.span('unit')
             receipt['conversion'] = {**row['conversion'], 'source_exact': str(number), 'factor_exact': str(factor),

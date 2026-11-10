@@ -488,6 +488,78 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_group_reuse_blocks_copied_field_across_different_documents(self):
+        ranges = []
+        specs = []
+        for number, name, count in ((1, '琥架', '4'), (2, '石架', '7')):
+            path = self.root / f'field-{number}.txt'
+            box_quote = f'欄位「{name}盒數」為 {count} 盒'
+            shared_quote = '欄位「共用規格」為 12 片'
+            path.write_text(box_quote + '。' + shared_quote + '。', encoding='utf-8')
+            did = self.store.attach_document(self.sid, path)
+            source = {'document_id': did, 'start_line': 1, 'end_line': 1}
+            ranges.append(source)
+            specs.append({'id': number, 'ranges': [source],
+                          'expression': {'operation': 'product', 'values': [count, '12']},
+                          'operands': [{'path': '/values/0', 'citation': f'[D{did}:L1]', 'quote': box_quote,
+                                        'field': f'{name}盒數'},
+                                       {'path': '/values/1', 'citation': f'[D{did}:L1]', 'quote': shared_quote,
+                                        'field': '共用規格'}]})
+        gid = a.create_goal(self.store, self.sid, '核對兩架片數')
+        initial = [item(1, '琥架片數', 'done', [1, 2]), item(2, '石架片數', 'done', [1, 3])]
+        self.run_actions(action('read_ranges', ranges=ranges),
+                         *(action('calculate_expression', expression=spec['expression']) for spec in specs),
+                         action('update_plan', items=initial, evidence_requirements=specs, verify_delivery=True),
+                         action('ask', question='最後更正？'), gid=gid)
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '欄位「琥架盒數」為 5 盒。\n本次只更正「琥架片數」，其餘項目的數量與算式均照舊。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+        review = a.get_goal(self.store, self.sid, gid)['work_plan']['delivery_review']
+        self.assertEqual(review['calculation_rechecks'], [{'id': 2, 'changed_item': 1, 'reason': 'shared_operand_fields'}])
+        self.assertNotIn('reusable_calculations', review)
+        specs[0]['expression']['values'][0] = '5'
+        specs[0]['operands'][0].update(citation='[補充#5]', quote='欄位「琥架盒數」為 5 盒')
+        current = {**initial[0], 'evidence_steps': [1, 6]}
+        final = self.run_actions(action('calculate_expression', expression=specs[0]['expression']),
+            action('update_plan', items=[current, initial[1]], reuse_document_steps=[1], evidence_requirements=specs),
+            action('calculate_expression', expression=specs[1]['expression']),
+            action('update_plan', items=[current, {**initial[1], 'evidence_steps': [1, 8]}],
+                   reuse_document_steps=[1], evidence_requirements=specs),
+            action('finish', report='琥60片、石84片。'), gid=gid)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertIn('運算元使用同一個明列欄位', final['steps'][6]['observation']['error'])
+        self.assertEqual(final['work_plan']['evidence_matches'][0]['operands'][0]['field'], '琥架盒數')
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+        observation = copy.deepcopy(final['steps'][8]['observation'])
+        observation['evidence_matches'][0]['operands'][0]['field_start'] += 1
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=9',
+                       (json.dumps(observation, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_operand_field_anchors_to_the_matching_number_and_composes_with_conversion(self):
+        source = '🧾欄位「原備」為 ５ 件。欄位「退回」為 ５ 件。欄位「重量」：50 公克。'
+        row = {'path': '', 'citation': '[目標]', 'quote': '欄位「退回」為 ５ 件', 'field': '退回'}
+        operand_evidence.validate([row], '5', ())
+        texts = operand_evidence.user_texts(source, (), (), 1)
+        proof, = operand_evidence.bind([row], '5', (), texts)
+        self.assertEqual(source[proof['field_start']:proof['field_end']], '退回')
+        self.assertEqual(source[proof['number_start']:proof['number_end']], '５')
+        for invalid in ({**row, 'field': '原備'}, {**row, 'quote': '退回」為 ５ 件'},
+                        {**row, 'quote': '欄位「退回」為 ５ 件', 'field': '退回 '}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '欄位名'):
+                operand_evidence.validate([invalid], '5', ())
+        converted = {**row, 'quote': '欄位「重量」：50 公克', 'field': '重量',
+                     'conversion': {'from': '公克', 'to': '公斤'}}
+        operand_evidence.validate([converted], '0.05', ())
+        proof, = operand_evidence.bind([converted], '0.05', (), texts)
+        self.assertEqual((source[proof['field_start']:proof['field_end']], proof['conversion']['converted_exact']),
+                         ('重量', '1/20'))
+
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
         affirmation = '「西架可交量」的數量與算式均照舊。'

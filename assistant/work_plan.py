@@ -12,6 +12,7 @@ RANGE_READERS = {'read', 'read_ranges'}
 RANGE_FIELDS = ('document_id', 'start_line', 'end_line')
 DELIVERY_TOOLS = {'finish', 'write_artifact', 'deliver'}
 CALCULATION_RECHECK_REASONS = {
+    'shared_operand_fields': '與更正項的運算元使用同一個明列欄位',
     'shared_document_ranges': '與更正項的指定文件行範圍重疊',
     'shared_operand_citations': '與更正項的運算元引用同一來源',
     'missing_source_requirements': '缺少可分開核對的文件範圍或運算元來源',
@@ -26,10 +27,11 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
 使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
 使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
+來源若明寫「欄位」和完整名稱，例如原句為『欄位「榆灣原備」為 25 包』，把完整原句放在quote，另在同一筆operands填field為「榆灣原備」，不含引號。欄位名須緊接數字之前的「為」或冒號，並與原話逐字相同。不同批次或欄位即使同值，也取實際適用的完整名稱及短句。同一個具名欄位在別處抄錄時，沿用相同名稱，整組確認仍須重算共用該欄的項目。沒有明列欄位名的原文使用既有格式。
 尚缺新數字而將項目標為pending、working或blocked時，可只更新items，原evidence_requirements會保留。若重列部分未變的要求，仍沿用原完整規約和舊條件。取得資料後，完成前再依目前條件確認完整的算式及來源；不要把暫表、待補註記或沿用的舊規約當成完成證據。
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。reusable_calculations列出可沿用的已完成項。兩項即使同引一行或一則回覆，若每段數字原話在該來源中的位置互不重疊，也可能沿用。separate_operand_excerpts表示使用了這項核對。保持可沿用項的原evidence_steps，重算更正項並保存其完整新規約和證據。數字短句用足以辨認欄位的原話，不以整行代替不同欄位的短句。新證據重疊時須重驗相關項目。
-delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
+delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -228,6 +230,9 @@ def _separate_operand_excerpts(shared_ranges, first_operands, second_operands):
 def _group_reuse_blocker(first, second, first_operands=(), second_operands=()):
     if not all(row.get('ranges') and row.get('operands') for row in (first, second)):
         return 'missing_source_requirements'
+    first_fields = {row['field'] for row in first['operands'] if 'field' in row}
+    if any(row.get('field') in first_fields for row in second['operands']):
+        return 'shared_operand_fields'
     left = list(map(_range_key, first['ranges']))
     right = list(map(_range_key, second['ranges']))
     shared_ranges = [(left_id, max(left_start, right_start), min(left_end, right_end))
