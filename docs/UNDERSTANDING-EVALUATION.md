@@ -209,6 +209,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_scoped_document_lookup.json 核對指定現行文件、舊版同欄、確實需要補充、同義寫法及同欄多筆。逐次核對實際送入的來源編號、原行及條件，另計工具送出的原文行數、模型呼叫、追問與結案；掃過的行與實際交給模型的行分開。原文片段可在後續模型呼叫中重送，統計工具回傳時只計每次回傳中的行數。
 
+以 evals/goal_batch_document_lookup.json 核對同文件多欄、別名缺漏、共用原行和只續查未完欄位。核對模型實際採用的查找字詞及續頁，將每個字詞的命中位置與原文對照。共用原行在同一次工具回傳只計一次，跨步驟重複仍計入。前後模型呼叫、完整提示量、提供原文量和成果分開比較。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

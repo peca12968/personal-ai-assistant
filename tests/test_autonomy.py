@@ -345,6 +345,45 @@ class AutonomyTests(unittest.TestCase):
         self.assertEqual(invalid['action']['tool'], 'invalid')
         self.assertTrue(final['observation']['citation_checks'][0]['range_valid'])
 
+    def test_literal_document_lookup_batches_distinct_pages_and_shares_excerpts(self):
+        lines = ['Code Other'] + [f'Code {n}' for n in range(2, 8)]
+        lines += [f'Other {n}' for n in range(8, 14)] + ['VeryLong ' + '長' * 8100]
+        did = self.attach('\n'.join(lines))
+        self.attach('Code Other', name='excluded.txt')
+        requests = [{'query': text, 'start_line': 1} for text in ('Code', 'Other', 'VeryLong', 'Absent')]
+        engine = ScriptedEngine(
+            action('find_document_text', document_id=did, queries=requests),
+            action('find_document_text', document_id=did, query='Other', start_line=13),
+            action('finish', report=f'把只有位置的結果當成已讀 [D{did}:L6]'),
+            action('finish', report=f'合併原行 [D{did}:L1]，另查續頁 [D{did}:L13]'))
+        result = a.run_goal(self.store, self.sid, self.goal(), engine)
+        batch, continuation, invalid, final = result['steps']
+        observation = batch['observation']
+        self.assertEqual([row['start_line'] for row in observation['excerpts']], [1, 2, 3, 4, 5, 8, 9, 10])
+        self.assertTrue(all(row['document_id'] == did for row in observation['excerpts']))
+        pages = observation['queries']
+        self.assertEqual([(p['query'], p['total_matching_lines'], p['next_start_line']) for p in pages],
+                         [('Code', 7, 7), ('Other', 7, 13), ('VeryLong', 1, None), ('Absent', 0, None)])
+        self.assertEqual([(p['matches'][0]['match_start_char'], p['matches'][0]['full_line_provided'])
+                          for p in pages[:3]], [(1, True), (6, True), (1, False)])
+        self.assertFalse(pages[0]['matches'][-1]['full_line_provided'])
+        self.assertEqual([e['start_line'] for e in continuation['observation']['excerpts']], [13])
+        self.assertNotIn('queries', continuation['observation'])
+        self.assertEqual(invalid['action']['tool'], 'invalid')
+        self.assertTrue(all(c['range_valid'] for c in final['observation']['citation_checks']))
+
+    def test_literal_document_lookup_rejects_duplicate_and_incomplete_batch(self):
+        did = self.attach('Code')
+        query = {'query': 'Code', 'start_line': 1}
+        for queries in ([], [query] * 2, [query] * 7, [query, {'query': 'Other'}],
+                        [query, {'query': 'Other', 'start_line': True}]):
+            with self.subTest(queries=queries), self.assertRaises(ValueError):
+                a.validate_action(json.loads(action('find_document_text', document_id=did, queries=queries)))
+        documents = self.store.documents(self.sid, include_content=True)
+        args = {'document_id': did, 'queries': [query, {'query': 'Other', 'start_line': 2}]}
+        with self.assertRaises(ValueError):
+            a.document_ranges.lookup(documents, args)
+
     def test_literal_document_lookup_validation_and_cancellation(self):
         did = self.attach('批號=01')
         args = {'document_id': did, 'query': '批號', 'start_line': 1}

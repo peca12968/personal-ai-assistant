@@ -123,6 +123,8 @@ def activity(row):
     requested = {k: v for k, v in args.items() if k in allowed}
     if tool == 'read_ranges':
         requested['ranges'] = args['ranges']
+    if tool == 'find_document_text' and 'queries' in args:
+        requested['queries'] = args['queries']
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
     fields = {'status', 'error', 'error_phase', 'calculation_failure', 'requested_ranges', 'exact', 'decimal', 'rounded',
@@ -179,7 +181,11 @@ def activity(row):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
     if tool == 'find_document_text':
-        outcome.update({key: observation[key] for key in ('total_matching_lines', 'next_start_line')})
+        if 'queries' in observation:
+            outcome['query_pages'] = [{key: page[key] for key in ('total_matching_lines', 'next_start_line')}
+                                      for page in observation['queries']]
+        else:
+            outcome.update({key: observation[key] for key in ('total_matching_lines', 'next_start_line')})
     if tool == 'read_conversation':
         outcome.update({k:observation[k] for k in ('message_id','requested_before','requested_after',
             'provided_before','provided_after','window_limited','order') if k in observation})

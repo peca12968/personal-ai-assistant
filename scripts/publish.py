@@ -94,6 +94,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_grounded_roles.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_source_fidelity.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_scoped_document_lookup.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_batch_document_lookup.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")
     run(sys.executable, "scripts/evaluate_tool_recovery.py")

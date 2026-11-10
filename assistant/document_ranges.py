@@ -1,10 +1,12 @@
 """Resolve explicit source ranges against this conversation's imported copies."""
 import re
 import unicodedata
+from itertools import zip_longest
 
 MAX_RANGES = 8
 MAX_LINES = 200
 MATCHES_PER_PAGE = 6
+LOOKUP_CHAR_BUDGET = 8000
 BATCH_FIELDS = ('document_id', 'start_line', 'end_line')
 STATUS_TEXT = {
     'provided': '指定範圍已完整提供，仍須核對內容。',
@@ -115,16 +117,38 @@ def read_batch(documents, args):
 
 
 LOOKUP_GUIDANCE = '''find_document_text在本目標指定的一份匯入副本找精確字面。args為{"document_id":2,"query":"核准號","start_line":1}。
+同一文件需查多個欄位或別名時，先合併成一次查找，args改用{"document_id":2,"queries":[{"query":"核准號","start_line":1},{"query":"放行核准","start_line":1}]}。最多六個不同字面，保留各自命中、原文和續頁位置。共用同一行只回傳一次；共用回傳預算使部分命中可能只有位置。只替仍需更多證據的字面續頁，不必重查已核對欄位。
 在較長的指定文件找完整欄名、批號或確切片語時優先用它，避免把舊版或另案命中帶入。逐行比對原字面，區分大小寫，每頁最多六個命中行；total_matching_lines是這份副本的全部字面命中行數。依next_start_line接續，或用較窄的字面定位現行行。完整回傳的原行才可引用；full_line_provided為false的長行用read_line從命中字元附近讀取，已取得目標欄位時，補查首頁摘要或鄰近上下文只讀所需短區段，不重讀整份。若仍缺證據，再按需要擴大查讀。
 零命中只表示這份文字副本沒有該字面。可能有同義寫法時改查具體別名或讀相關區段。命中也不代表生效，須核對上下文、批次及版本。使用者要求依文件找資料時，先核對適用來源，只問仍缺且會改變交付的資訊；不重複無效搜尋。'''
 
 
 def validate_lookup(args):
-    if not isinstance(args, dict) or set(args) != {'document_id', 'query', 'start_line'}:
-        raise ValueError('字面查找須指定文件、查找文字和起始行。')
-    if any(type(args[key]) is not int or not 1 <= args[key] < 10**12 for key in ('document_id', 'start_line')):
-        raise ValueError('來源編號與起始行須為正整數。')
-    query = args['query']
+    if not isinstance(args, dict) or set(args) not in (
+            {'document_id', 'query', 'start_line'}, {'document_id', 'queries'}):
+        raise ValueError('字面查找須指定一份文件，以及單筆或一批查找項目。')
+    if type(args['document_id']) is not int or not 1 <= args['document_id'] < 10**12:
+        raise ValueError('來源編號須為正整數。')
+    if 'queries' not in args:
+        requests = [{'query': args['query'], 'start_line': args['start_line']}]
+    else:
+        requests = args['queries']
+        if not isinstance(requests, list) or not 1 <= len(requests) <= 6:
+            raise ValueError('一批須包含 1 至 6 個不同字面。')
+    seen = set()
+    for request in requests:
+        if not isinstance(request, dict) or set(request) != {'query', 'start_line'}:
+            raise ValueError('每個查找項目須指定查找文字和起始行。')
+        start, query = request['start_line'], request['query']
+        if type(start) is not int or not 1 <= start < 10**12:
+            raise ValueError('起始行須為正整數。')
+        _validate_lookup_query(query)
+        if query in seen:
+            raise ValueError('同一批查找文字不可重複。')
+        seen.add(query)
+    return requests
+
+
+def _validate_lookup_query(query):
     if (not isinstance(query, str) or not 1 <= len(query) <= 120 or not query.strip()
             or query.splitlines() != [query] or '\x00' in query):
         raise ValueError('查找文字須為 1 至 120 字的單行字面。')
@@ -134,16 +158,8 @@ def validate_lookup(args):
         raise ValueError('查找文字含無效字元。') from exc
 
 
-def lookup(documents, args, cancel=None):
-    validate_lookup(args)
-    document = next((row for row in documents if row['id'] == args['document_id']), None)
-    if document is None:
-        raise ValueError('來源不在目前目標的已匯入文件中。')
-    start, query = args['start_line'], args['query']
-    lines = document['content'].splitlines()
-    if start > len(lines):
-        raise ValueError('起始行超出匯入副本的範圍。')
-
+def _lookup_page(lines, request, cancel):
+    start, query = request['start_line'], request['query']
     total, matches, next_start = 0, [], None
     for number, line in enumerate(lines, 1):
         if cancel is not None and cancel.is_set():
@@ -160,11 +176,43 @@ def lookup(documents, args, cancel=None):
                             'match_end_char': position + len(query), 'line_chars': len(line)})
         elif next_start is None:
             next_start = number
-    ranges = ' '.join(f"[D{document['id']}:L{hit['line_number']}]" for hit in matches)
-    excerpts = select_ranges(ranges, [document], MATCHES_PER_PAGE, 8000)[0] if matches else []
+    return {**request, 'total_matching_lines': total, 'matches': matches, 'next_start_line': next_start}
+
+
+def _lookup_excerpts(document, lines, pages):
+    groups = zip_longest(*(page['matches'] for page in pages))
+    positions = dict.fromkeys(hit['line_number'] for group in groups for hit in group if hit is not None)
+    selected = []
+    remaining = LOOKUP_CHAR_BUDGET
+    for number in positions:
+        size = len(f'L{number}: ') + len(lines[number - 1])
+        if size <= remaining:
+            selected.append(number)
+            remaining -= size
+            if len(selected) == MAX_RANGES:
+                break
+    ranges = ' '.join(f"[D{document['id']}:L{number}]" for number in sorted(selected))
+    return select_ranges(ranges, [document], MAX_RANGES, LOOKUP_CHAR_BUDGET)[0]
+
+
+def lookup(documents, args, cancel=None):
+    requests = validate_lookup(args)
+    document = next((row for row in documents if row['id'] == args['document_id']), None)
+    if document is None:
+        raise ValueError('來源不在目前目標的已匯入文件中。')
+    lines = document['content'].splitlines()
+    if any(request['start_line'] > len(lines) for request in requests):
+        raise ValueError('起始行超出匯入副本的範圍。')
+    pages = [_lookup_page(lines, request, cancel) for request in requests]
+    excerpts = _lookup_excerpts(document, lines, pages)
     provided = {row['start_line'] for row in excerpts}
-    for hit in matches:
-        hit['full_line_provided'] = hit['line_number'] in provided
-    return {'document_id': document['id'], 'sha256': document['sha256'], 'start_line': start,
-            'searched_line_count': len(lines), 'total_matching_lines': total, 'matches': matches,
-            'next_start_line': next_start, 'excerpts': excerpts}
+    for page in pages:
+        for hit in page['matches']:
+            hit['full_line_provided'] = hit['line_number'] in provided
+    source = {'document_id': document['id'], 'sha256': document['sha256']}
+    if 'queries' in args:
+        return {**source, 'searched_line_count': len(lines), 'queries': pages, 'excerpts': excerpts}
+    page = pages[0]
+    return {**source, 'start_line': page['start_line'], 'searched_line_count': len(lines),
+            'total_matching_lines': page['total_matching_lines'], 'matches': page['matches'],
+            'next_start_line': page['next_start_line'], 'excerpts': excerpts}
