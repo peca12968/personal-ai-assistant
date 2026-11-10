@@ -11,6 +11,9 @@ GUIDANCE = '''原量缺單位、相同欄位有兩筆數值，或比例基數有
 needs_evidence時保留原數及其他已核對值。若短句含多個數字而無法定位，先縮到該欄完整數值。單位待補只問該欄單位。只需確認換算值時，可再次核對，該候選另加unit_evidence，例如{"citation":"[補充#3]","quote":"本批配料的單位是公克","unit":"公克"}。另案單位不能補本批。equivalent代表同單位的數值相同，對同一欄位採一次；different代表換算後仍不同，保留各候選，若影響交付只問採哪筆或哪個基數。只要條件式成果時列分支，不另追問。工具核對文字及精確數值，來源適用範圍仍依已保存的使用者原話。
 若確認後還要算式，可在calculate_expression的expression旁直接加quantity_inputs，不必重送check_quantities。每筆寫path、step及從1起算的candidate，例如{"path":"/values/1","step":2,"candidate":1,"unit_evidence":{"citation":"[補充#3]","quote":"本批配料的單位是公克","unit":"公克"}}。只補單位就沿用原數並附這項證據；只確認採用哪個已核對的值就附selection，例如{"citation":"[補充#3]","quote":"本次採完成查驗件數為基數。"}。確認句須明確採用原候選的完整label。算式葉節點填核對後的精確值。若原數已更改，按新資料核對。同一條件已有可用的數量核對也可直接連結，不重讀。各袋分別有明確數值而只需加總時，直接用既有算式，無需比較為同一欄位。'''
 
+GUIDANCE += '''
+多筆來源以『欄位「完整名稱」為數值』明列同一欄位時，在check_quantities的args另填field為原文完整名稱。各候選的label用版本名稱，quote包含原句欄位與數值。程式核對同欄位的各筆原話和精確值。正式採用既有版本仍用selection。若最新回覆的完整原話是『正式更正欄位「完整名稱」為數值和單位。』，可直接在算式寫{"path":"/values/1","step":2,"replacement":{"citation":"[補充#3]","quote":"正式更正欄位「完整名稱」為 7 件。"}}，不用填candidate或再次送核對。引用須對應同一欄位及最新正式補充，算式數字用更正後精確值。原候選仍留在核對步驟。明確採用正式數值後不用再問；仍未確認時只問採用哪筆，若要求條件式就保留分支。'''
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -40,10 +43,12 @@ def _unit_evidence(value):
 
 
 def validate(args):
-    if (not isinstance(args, dict) or args.keys() != {'unit', 'candidates'}
+    if (not isinstance(args, dict) or args.keys() not in ({'unit', 'candidates'}, {'unit', 'candidates', 'field'})
             or not isinstance(args['unit'], str) or args['unit'] not in _TARGETS
             or not isinstance(args['candidates'], list) or not 1 <= len(args['candidates']) <= 4):
         raise ValueError('數量核對須有可用比較單位與一至四筆來源。')
+    if 'field' in args and not _short_text(args['field'], 80):
+        raise ValueError('同欄位核對須提供原文明列的完整欄位名。')
     seen = set()
     for row in args['candidates']:
         if (not isinstance(row, dict) or row.keys() not in ({'label', 'citation', 'quote'},
@@ -113,7 +118,7 @@ def _unit_confirmation(supplied, source):
     return {**supplied, **proof}
 
 
-def _candidate(row, source_texts, target):
+def _candidate(row, source_texts, target, field=None):
     citation, quote = row['citation'], row['quote']
     if citation not in source_texts:
         raise ValueError('數量核對須引用已完整查讀或當時已保存的本目標來源。')
@@ -121,6 +126,11 @@ def _candidate(row, source_texts, target):
     result = {key: row[key] for key in ('label', 'citation', 'quote')}
     result.update(_literal_quote(quote, text, sha))
     tokens = _tokens(quote)
+    if field is not None:
+        tokens = {span: value for span, value in tokens.items()
+                  if (match := operand_evidence._FIELD.search(quote[:span[0]])) and match['name'] == field}
+        if len(tokens) != 1:
+            raise ValueError('候選短句須有唯一明列欄位及緊接的原數值。')
     if len(tokens) != 1:
         return {**result, 'status': 'quantity_unconfirmed'}
     (low, high), (raw, unit, token_end) = next(iter(tokens.items()))
@@ -131,6 +141,9 @@ def _candidate(row, source_texts, target):
     number = exact_math.parse(raw)
     result.update(number=quote[low:high], source_exact=str(number), source_unit=unit,
                   number_start=start + low, number_end=start + high)
+    if field is not None:
+        field_start, field_end = operand_evidence._field_position(quote, low, field)
+        result.update(field=field, field_start=start + field_start, field_end=start + field_end)
     if 'unit_evidence' in row:
         supplied = row['unit_evidence']
         unit_source = source_texts.get(supplied['citation'])
@@ -161,7 +174,8 @@ def observe(args, steps, sources, objective='', replies=(), guidance=()):
     positions.update((row['citation'], row['steps_seen']) for row in guidance)
     source_texts.update((citation, (text, sha, positions.get(citation, 0)))
                         for citation, (text, sha) in operand_evidence.user_texts(objective, replies, guidance, sequence).items())
-    quantities = [_candidate(row, source_texts, args['unit']) for row in args['candidates']]
+    field = args.get('field')
+    quantities = [_candidate(row, source_texts, args['unit'], field) for row in args['candidates']]
     values = list(dict.fromkeys(row['converted_exact'] for row in quantities if row['status'] == 'confirmed'))
     if any(row['status'] != 'confirmed' for row in quantities):
         status = 'needs_evidence'
@@ -169,7 +183,10 @@ def observe(args, steps, sources, objective='', replies=(), guidance=()):
         status = 'different'
     else:
         status = 'equivalent' if len(quantities) > 1 else 'confirmed'
-    return {'status': status, 'unit': args['unit'], 'quantities': quantities, 'possible_exact': values}
+    result = {'status': status, 'unit': args['unit'], 'quantities': quantities, 'possible_exact': values}
+    if field is not None:
+        result['field'] = field
+    return result
 
 
 def validate_expression(args):
@@ -181,17 +198,21 @@ def validate_expression(args):
     if not isinstance(bindings, list) or not 1 <= len(bindings) <= len(leaves):
         raise ValueError('算式需連結一至多個不同的數字葉節點。')
     seen = set()
-    required = {'path', 'step', 'candidate'}
+    common = {'path', 'step'}
+    required = common | {'candidate'}
     for binding in bindings:
         if (not isinstance(binding, dict)
-                or binding.keys() not in (required, required | {'unit_evidence'}, required | {'selection'})
+                or binding.keys() not in (required, required | {'unit_evidence'}, required | {'selection'},
+                                           common | {'replacement'})
                 or not isinstance(binding['path'], str) or binding['path'] not in leaves or binding['path'] in seen
                 or type(binding['step']) is not int or not 1 <= binding['step'] <= 32
-                or type(binding['candidate']) is not int or not 1 <= binding['candidate'] <= 4):
-            raise ValueError('核對值須提供唯一算式路徑、先前核對步驟與候選序號。')
+                or ('candidate' in binding and (type(binding['candidate']) is not int
+                                                 or not 1 <= binding['candidate'] <= 4))):
+            raise ValueError('核對值須提供唯一算式路徑、先前核對步驟及候選序號或正式更正。')
         if ('unit_evidence' in binding and not _unit_evidence(binding['unit_evidence'])
-                or 'selection' in binding and not _user_excerpt(binding['selection'], {'citation', 'quote'})):
-            raise ValueError('核對值的單位或選用確認須引用已保存的完整補充。')
+                or 'selection' in binding and not _user_excerpt(binding['selection'], {'citation', 'quote'})
+                or 'replacement' in binding and not _user_excerpt(binding['replacement'], {'citation', 'quote'})):
+            raise ValueError('單位、選用確認或正式更正須引用已保存的完整補充。')
         seen.add(binding['path'])
 
 
@@ -214,6 +235,16 @@ def _selection_proof(selection, candidate, original, source):
     return {**selection, **proof}
 
 
+def _replacement_quantity(replacement, field, target, source):
+    text, _, _ = source
+    quote = replacement['quote']
+    head = re.match(rf'正式更正欄位「{re.escape(field)}」[ \t]*為[ \t]*', quote) if field else None
+    if (head is None or text.strip() != quote
+            or not _MEASURED.fullmatch(quote[head.end():].removesuffix('。').translate(operand_evidence._NUMERIC_CHARS))):
+        raise ValueError('正式更正須完整明列同一欄位、單一數值與單位。')
+    return _candidate({**replacement, 'label': field}, {replacement['citation']: source}, target, field)
+
+
 def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None):
     validate_expression(args)
     expression_math.check_cancel(cancel)
@@ -231,29 +262,40 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
         verified = observe(original, prior, sources, objective, replies, guidance)
         if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
             raise ValueError('原數量核對與保存的來源不一致。')
-        index = binding['candidate'] - 1
-        if index >= len(verified['quantities']):
-            raise ValueError('候選序號不在原數量核對。')
-        quantity = verified['quantities'][index]
-        receipt = {key: binding[key] for key in ('path', 'step', 'candidate')}
-        if 'unit_evidence' in binding:
-            confirmation = binding['unit_evidence']
-            _latest_confirmation(confirmation['citation'], number, sequence, replies, guidance)
-            if quantity['status'] != 'unit_unconfirmed':
-                raise ValueError('只可替原核對缺少單位的候選補單位。')
-            request = {'unit': original['unit'], 'candidates': [
-                {**original['candidates'][index], 'unit_evidence': confirmation}]}
-            quantity, = observe(request, steps, sources, objective, replies, guidance)['quantities']
-        elif 'selection' in binding:
-            selection = binding['selection']
-            source = _latest_confirmation(selection['citation'], number, sequence, replies, guidance)
-            receipt['selection'] = _selection_proof(selection, index, original, source)
-        elif (verified['status'] == 'different' or saved['observation'].get('goal_conditions_sha256') != scope):
-            raise ValueError('候選數量尚有差異或屬先前條件，須有目前正式補充才能沿用。')
+        if 'replacement' in binding:
+            replacement = binding['replacement']
+            source = _latest_confirmation(replacement['citation'], number, sequence, replies, guidance)
+            quantity = _replacement_quantity(replacement, verified.get('field'), original['unit'], source)
+            receipt = {'replacement': replacement}
+        else:
+            index = binding['candidate'] - 1
+            if index >= len(verified['quantities']):
+                raise ValueError('候選序號不在原數量核對。')
+            quantity = verified['quantities'][index]
+            receipt = {'candidate': binding['candidate']}
+            if 'unit_evidence' in binding:
+                confirmation = binding['unit_evidence']
+                _latest_confirmation(confirmation['citation'], number, sequence, replies, guidance)
+                if quantity['status'] != 'unit_unconfirmed':
+                    raise ValueError('只可替原核對缺少單位的候選補單位。')
+                request = {'unit': original['unit'], 'candidates': [
+                    {**original['candidates'][index], 'unit_evidence': confirmation}]}
+                if 'field' in original:
+                    request['field'] = original['field']
+                quantity, = observe(request, steps, sources, objective, replies, guidance)['quantities']
+            elif 'selection' in binding:
+                selection = binding['selection']
+                source = _latest_confirmation(selection['citation'], number, sequence, replies, guidance)
+                receipt['selection'] = _selection_proof(selection, index, original, source)
+            elif verified['status'] == 'different' or saved['observation'].get('goal_conditions_sha256') != scope:
+                raise ValueError('候選數量尚有差異或屬先前條件，須有目前正式補充才能沿用。')
+            elif 'field' in verified and verified['status'] == 'needs_evidence' and len(verified['quantities']) > 1:
+                raise ValueError('同欄位的候選尚未核對完整，須有正式採用或更正才能代入。')
         if (quantity['status'] != 'confirmed'
                 or exact_math.parse(quantity['converted_exact']) != exact_math.parse(leaves[binding['path']])):
             raise ValueError(f'算式位置 {binding["path"] or "根"} 與已確認的精確數量不符。')
-        bindings.append({**receipt, 'unit': original['unit'], 'quantity': quantity})
+        bindings.append({'path': binding['path'], 'step': number, **receipt,
+                         'unit': original['unit'], 'quantity': quantity})
     result = expression_math.calculate({'expression': args['expression']}, cancel)
     return {**result, 'quantity_inputs': bindings}
 

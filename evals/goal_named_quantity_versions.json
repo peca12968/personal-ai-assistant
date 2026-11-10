@@ -1,0 +1,52 @@
+[
+  {
+    "id": "confirmed_existing_version_of_one_named_field",
+    "category": "goal_named_quantity_versions",
+    "documents": [
+      {"name": "original.txt", "content": "初填版。欄位「杉浦本批退回」為 4 件。杉浦本批原備 30 件。\n"},
+      {"name": "review.txt", "content": "複核版。欄位「杉浦本批退回」為 6 件。欄位「杉浦另批退回」為 4 件。\n"}
+    ],
+    "prompt": "核對杉浦本批可交量。讀兩份首行，先用 check_quantities 保存同一明列欄位的完整名稱、初填版與複核版各自的逐字數值，暫表列版本及原備30，只問正式採哪版。收到後用 calculate_expression 算原備減退回，連結已核對的版本、正式採用回覆及來源。另批不採。",
+    "reply": "本次採用複核版。",
+    "criteria": [
+      "暫表本批初填4、複核6，另批同值不混用。只問採哪版。定稿採本批複核6、可交24，引用正式回覆。另核對算式的原數量核對連結。"
+    ]
+  },
+  {
+    "id": "official_correction_replaces_both_conflicting_values",
+    "category": "goal_named_quantity_versions",
+    "documents": [
+      {"name": "morning.txt", "content": "禾潭本批原備 42 件。早班欄位「禾潭本批剔除」為 4 件。\n"},
+      {"name": "night.txt", "content": "晚班欄位「禾潭本批剔除」為 6 件。欄位「禾潭另批剔除」為 7 件。\n"}
+    ],
+    "prompt": "核對禾潭本批可交件數。讀兩份首行，用 check_quantities 留早晚班的本批剔除版本、明列欄位及逐字來源。只問本批正式剔除值或採用版本。收到正式答案後用 calculate_expression 算原備減剔除，保留原兩版、正式更正及其對同欄位的關聯。",
+    "reply": "正式更正欄位「禾潭本批剔除」為 7 件。",
+    "criteria": [
+      "暫表保留本批4和6與原備42，只問一次。定稿以正式更正7算35，未採另批同值7。核對是否把正式數字連到同欄舊比較。"
+    ]
+  },
+  {
+    "id": "equivalent_versions_need_no_selection_question",
+    "category": "goal_named_quantity_versions",
+    "documents": [
+      {"name": "gross.txt", "content": "欄位「溪梧本批原料」為 1000 公克。\n"},
+      {"name": "copy.txt", "content": "欄位「溪梧本批原料」為 1 公斤。兩份是同一欄位的單位換記。\n"}
+    ],
+    "prompt": "這兩份是溪梧本批同一欄位的兩種紀錄。讀首行，用 check_quantities 核對明列欄位並轉成公斤，若等值就交一次重量及兩筆來源。只有不同且需選用時才問。",
+    "criteria": [
+      "兩來源各有逐字原量與單位，核對後同為1公斤。只計一次，不提問，也不把抄錄相加。"
+    ]
+  },
+  {
+    "id": "conditional_report_preserves_unselected_versions",
+    "category": "goal_named_quantity_versions",
+    "documents": [
+      {"name": "draft.txt", "content": "樹岬本批原備 29 盒。欄位「樹岬本批破損」為 3 盒。\n"},
+      {"name": "audit.txt", "content": "欄位「樹岬本批破損」為 5 盒。欄位「樹岬另批破損」為 3 盒。\n"}
+    ],
+    "prompt": "讀兩份首行，用 check_quantities 保存樹岬本批同欄位的兩個數字。這次只要條件式報告，分別列用第一版或第二版時的可交量，不用詢問也不用選定正式版。各自引用原文，另批只排除。",
+    "criteria": [
+      "兩個候選是本批3、5，未宣告正式採用。以29減3得26、減5得24，各自有來源，不提問。"
+    ]
+  }
+]

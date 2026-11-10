@@ -11,6 +11,74 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_named_versions_accept_only_current_same_field_replacement_and_restore(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '第 2 批配料'
+            docs = ['欄位「第 2 批配料」為 400 公克。欄位「第 3 批配料」為 600 公克。',
+                    '欄位「第 2 批配料」為 0.6 公斤。']
+            ranges, versions = [], []
+            for i, (name, text) in enumerate(zip(('初填版', '複核版'), docs, strict=True), 1):
+                path = root / f'version-{i}.txt'
+                path.write_text(text, encoding='utf-8')
+                did = store.attach_document(sid, path)
+                ranges.append({'document_id': did, 'start_line': 1, 'end_line': 1})
+                versions.append({'label': name, 'citation': f'[D{did}:L1]', 'quote': text.split('。')[0]})
+            gid = autonomy.create_goal(store, sid, '第 2 批主料 2 公斤，核對總重。')
+            wrong = {**versions[0], 'quote': '欄位「第 3 批配料」為 600 公克'}
+            expr = {'operation': 'sum', 'values': ['2', '0.6']}
+            waiting = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read_ranges', ranges=ranges),
+                action('check_quantities', unit='公斤', field=field, candidates=[wrong, versions[1]]),
+                action('check_quantities', unit='公斤', field=field, candidates=versions),
+                action('calculate_expression', expression=expr, quantity_inputs=[{'path': '/values/1', 'step': 3, 'candidate': 2}]),
+                action('ask', question='採哪版或正式配料數？')))
+            self.assertIn('唯一明列欄位', waiting['steps'][1]['observation']['error'])
+            checked = waiting['steps'][2]['observation']
+            self.assertEqual((checked['field'], checked['possible_exact'], checked['status']), (field, ['2/5', '3/5'], 'different'))
+            for quantity, text in zip(checked['quantities'], docs, strict=True):
+                self.assertEqual(text[quantity['field_start']:quantity['field_end']], field)
+            self.assertIn('候選數量尚有差異', waiting['steps'][3]['observation']['error'])
+            snapshot = goal_replies.snapshot(store, sid, gid)
+            reply = '正式更正欄位「第 2 批配料」為 0.75 公斤。'
+            goal_replies.save(store, sid, gid, reply, expected_fingerprint=snapshot['fingerprint'])
+            binding = {'path': '/values/1', 'step': 3, 'replacement': {'citation': '[補充#5]', 'quote': reply}}
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_expression', expression=expr, quantity_inputs=[binding]),
+                action('calculate_expression', expression={**expr, 'values': ['2', '0.75']}, quantity_inputs=[binding]),
+                action('finish', report='正式總重 2.75 公斤。')))
+            self.assertIn('與已確認的精確數量不符', result['steps'][5]['observation']['error'])
+            calculated = result['steps'][6]['observation']
+            self.assertEqual(calculated['exact'], '11/4')
+            proof, = calculated['quantity_inputs']
+            self.assertEqual(proof['step'], 3)
+            self.assertEqual(proof['replacement']['quote'], reply)
+            quantity = proof['quantity']
+            self.assertEqual((quantity['field'], quantity['converted_exact']), (field, '3/4'))
+            self.assertEqual(reply[quantity['field_start']:quantity['field_end']], field)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), result)
+            altered = copy.deepcopy(calculated)
+            altered['quantity_inputs'][0]['quantity']['field_end'] -= 1
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=7',
+                           (json.dumps(altered, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的算式與數量核對'):
+                validate_database(restored.path)
+
+    def test_replacement_rejects_conditional_wrong_field_and_incomplete_quantity(self):
+        good = '正式更正欄位「本批退回」為 7 件。'
+        for text, quote in (('如果核對通過。' + good, good), (good + '仍待確認。', good),
+                            (good.replace('本批', '另批'), good.replace('本批', '另批')),
+                            (good.replace(' 件', ''), good.replace(' 件', ''))):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, '同一欄位'):
+                quantity_evidence._replacement_quantity({'citation': '[補充#3]', 'quote': quote},
+                                                        '本批退回', '件', (text, 'a' * 64, 3))
+
     def test_calculation_reuses_pending_quantity_with_later_unit_and_binds_receipt(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
