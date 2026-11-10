@@ -331,6 +331,65 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(bound['number'], '−７．０')
         self.assertEqual(bound['quote_start'], 1)
 
+    def test_plan_operand_conversion_rechecks_mass_percent_and_restored_factor(self):
+        path = self.root / 'mass.txt'
+        path.write_text('本批主料 1.25 公斤。\n另批配料 450 毫克。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對本批抽取重量')
+        source_range = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        self.run_actions(action('read', **source_range), action('ask', question='本批配料及抽取率？'), gid=gid)
+        snapshot = goal_replies.snapshot(self.store, self.sid, gid)
+        reply = '本批配料 450 公克，抽取率 8％。'
+        goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=snapshot['fingerprint'])
+        expression = {'operation': 'product', 'values': [
+            {'operation': 'sum', 'values': ['1.25', '0.45']}, '0.08']}
+        operands = [
+            {'path': '/values/0/values/0', 'citation': f'[D{did}:L1]', 'quote': '本批主料 1.25 公斤'},
+            {'path': '/values/0/values/1', 'citation': '[補充#2]', 'quote': '本批配料 450 公克',
+             'conversion': {'from': '公克', 'to': '公斤'}},
+            {'path': '/values/1', 'citation': '[補充#2]', 'quote': '抽取率 8％',
+             'conversion': {'from': '%', 'to': 'ratio'}}]
+        requirement = {'id': 1, 'ranges': [source_range], 'expression': expression, 'operands': operands}
+        result = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', items=[item(task='核對抽取重量', state='done', refs=[1, 3])],
+                   verify_delivery=True, reuse_document_steps=[1], evidence_requirements=[requirement]),
+            action('finish', report='0.136 公斤。'), gid=gid)
+        self.assertEqual(result['steps'][2]['observation']['exact'], '17/125')
+        _, weight, rate = result['work_plan']['evidence_matches'][0]['operands']
+        self.assertEqual(weight['number'], '450')
+        self.assertEqual((weight['conversion']['factor_exact'], weight['conversion']['converted_exact']), ('1/1000', '9/20'))
+        self.assertEqual((rate['conversion']['unit'], rate['conversion']['converted_exact']), ('％', '2/25'))
+        for receipt in (weight, rate):
+            conversion = receipt['conversion']
+            self.assertEqual(reply[conversion['unit_start']:conversion['unit_end']], conversion['unit'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = copy.deepcopy(result['steps'][3]['observation'])
+        altered['evidence_matches'][0]['operands'][1]['conversion']['factor_exact'] = '1/1000000'
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_conversion_rejects_clipped_units_and_incompatible_dimensions(self):
+        row = {'path': '', 'citation': '[目標]', 'quote': '500g',
+               'conversion': {'from': 'g', 'to': 'kg'}}
+        operand_evidence.validate([row], '0.5', ())
+        bound, = operand_evidence.bind([row], '1/2', [], {'[目標]': ('本批500g。', 'a' * 64)})
+        self.assertEqual(bound['conversion']['source_exact'], '500')
+        for text in ('本批1500g。', '本批500g/m。', '本批500grams。'):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, '截斷'):
+                operand_evidence.bind([row], '0.5', [], {'[目標]': (text, 'a' * 64)})
+        with self.assertRaisesRegex(ValueError, '相同量綱'):
+            operand_evidence.validate([{**row, 'conversion': {'from': 'g', 'to': 'm'}}], '0.5', ())
+        with self.assertRaisesRegex(ValueError, '原數量及單位'):
+            operand_evidence.validate([{**row, 'quote': '500mg'}], '0.5', ())
+        with self.assertRaisesRegex(ValueError, '原數量及單位'):
+            operand_evidence.validate([row], '0.0005', ())
+
     def test_reuse_checks_original_evidence_set_complete_reads_and_version(self):
         file = self.root / 'sources.txt'
         file.write_text('甲批原值。\n乙批原值。', encoding='utf-8')

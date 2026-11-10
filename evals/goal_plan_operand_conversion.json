@@ -1,0 +1,66 @@
+[
+  {
+    "id": "confirmed_mass_uses_grams_instead_of_other_batch_milligrams",
+    "category": "goal_plan_operand_conversion",
+    "documents": [
+      {
+        "name": "weights.txt",
+        "content": "石芽本批主料 1.25 公斤，原配料 350 公克。\n石芽加批配料 450 毫克。\n"
+      }
+    ],
+    "prompt": "只核對石芽本批。讀 [D1:L1-L2]，保存公開工作清單「核對本批總重」，只問最後更正。收到後用 calculate_expression 加總，算式每個葉節點直接用換算後的公斤數。定稿前逐項核對清單，保留每個運算元的原話和換算依據。交本批公斤總重、原配料與更正。",
+    "reply": "本批配料正式更正為 450 公克，主料照原文。加批不算。",
+    "criteria": [
+      "本批 450 公克精確為 0.45 公斤，加 1.25 公斤得 1.7 公斤。",
+      "原配料 350 公克保留對照，取本批正式補充，沒有混用加批 450 毫克。"
+    ]
+  },
+  {
+    "id": "rate_percent_literal_becomes_exact_ratio",
+    "category": "goal_plan_operand_conversion",
+    "documents": [
+      {
+        "name": "inspection.txt",
+        "content": "桂倉本批送檢 250 件，原預估抽檢率 4%。\n對照的桂倉加批抽檢率 0.8%。\n"
+      }
+    ],
+    "prompt": "只算桂倉本批。讀 [D1:L1-L2]，建立工作清單「核對本批抽檢件數」，只問本批正式抽檢率。收到後以 calculate_expression 用總件數乘換算後的比例。交付前逐項核對，分開保存原來百分比、正式百分比、換算及算式的實際依據。定稿交抽檢件數。",
+    "reply": "本批正式抽檢率為 8%，250 件不變。加批只作對照。",
+    "criteria": [
+      "採本批 8% 並用精確 0.08，250 乘 0.08 得 20 件。",
+      "原預估 4% 只作對照，保留補充來源，不把加批 0.8% 代入。"
+    ]
+  },
+  {
+    "id": "group_factors_and_length_conversion_have_distinct_sources",
+    "category": "goal_plan_operand_conversion",
+    "documents": [
+      {
+        "name": "boards.txt",
+        "content": "禾磚本批有 3 箱，每箱 2 片，每片長 50 公分。\n禾磚備用板每片長 50 公釐。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1-L2]，保存清單「核對禾磚本批總長」，先問本批規格是否有變。確認後只算本批，以 calculate_expression 用箱數乘每箱片數，再乘每片換成公尺的長度。算式葉節點要用換算後的公尺值。交付前逐項核對清單及每個運算元的來源。定稿交算式和總長。",
+    "reply": "本批箱數、每箱片數與每片長都照文件。備用板不算。",
+    "criteria": [
+      "本批 3 箱乘 2 片乘 0.5 公尺得 3 公尺。",
+      "保留 3 箱、每箱 2 片與每片 50 公分的原話，排除備用板 50 公釐。"
+    ]
+  },
+  {
+    "id": "ordinary_sum_without_conversion_control",
+    "category": "goal_plan_operand_conversion",
+    "documents": [
+      {
+        "name": "labels.txt",
+        "content": "淡椿本批甲盒 5 張、乙盒 7 張。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1]，只問本批數字有沒有更新。收到後直接用工具加總，交張數和原行。不用工作清單。",
+    "reply": "兩盒張數照原文。",
+    "criteria": [
+      "核算 12 張並引用原行。",
+      "只有一次提問，沒有工作清單。"
+    ]
+  }
+]
