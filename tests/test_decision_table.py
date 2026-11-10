@@ -908,6 +908,71 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_natural_row_confirmation_applies_scope_first_and_skips_only_explicitly_unadopted_notes(self):
+        plan = {'conditions': ['入口', '箱態'], 'known': {'入口': '東口', '箱態': '開箱'},
+                'domains': {'入口': ['東口', '西口'], '箱態': ['開箱', '密封']}, 'excluded': [],
+                'rows': [{'when': ['東口', '開箱'], 'result': '甲台'}, {'when': ['西口', '開箱'], 'result': '丙台'},
+                         {'when': ['西口', '開箱'], 'result': '丁台'}, {'when': ['西口', '密封'], 'result': '乙台'}]}
+        cases = [{'入口': '東口', '箱態': '密封'}, {'入口': '西口', '箱態': '開箱'}]
+        quote = '本輪只有東口密封或西口開箱'
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對正式處置')
+
+            def run(*actions):
+                return autonomy.run_goal(store, sid, gid, ScriptedEngine(*actions))
+
+            def reply(text):
+                waiting = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=waiting['fingerprint'])
+
+            run(action('check_decision', **plan), action('ask', question='本輪配對？'))
+            reply('原條件撤回。' + quote + '。')
+            run(action('check_decision', known_update={'入口': None, '箱態': None}, source='[補充#2]',
+                       alternatives={'cases': cases, 'quote': quote, 'track_coverage': True}),
+                action('ask', question='入口？'))
+            reply('確認東口。')
+            run(action('check_decision', known_update={'入口': '東口'}, source='[補充#4]'),
+                action('ask', question='東口密封的正式台位？'))
+            reply('群聊提議「這一組正式用丁台」，未採用。')
+            before = autonomy.get_goal(store, sid, gid)
+            with self.assertRaisesRegex(ValueError, '沒有明確正式確認'):
+                decision_table.observe({'row_confirmation': '[補充#6]'}, before['steps'], before['reply_sources'])
+            run(action('ask', question='請確認目前唯一生效的結果。'))
+            text = '入口正式改為西口。這一組正式採用丁台。有人提議「甲台」，未採用。'
+            reply(text)
+            before = autonomy.get_goal(store, sid, gid)
+            sources = before['reply_sources']
+            with self.assertRaisesRegex(ValueError, '原有衝突結果'):
+                decision_table.observe({'row_confirmation': '[補充#7]'}, before['steps'],
+                                       [*sources[:-1], {**sources[-1], 'answer': text.replace('丁台', '甲台')}])
+            with self.assertRaisesRegex(ValueError, '欄位更正須在結果確認前'):
+                decision_table.observe({'row_confirmation': '[補充#7]'}, before['steps'],
+                                       [*sources[:-1], {**sources[-1], 'answer': '這一組正式用甲台。入口正式改為西口。'}])
+            final = run(action('check_decision', row_confirmation='[補充#7]'), action('finish', report='西口開箱去丁台。'))
+            checked = final['steps'][7]['observation']
+            self.assertEqual(checked['possible_results'], ['丁台'])
+            self.assertEqual(checked['current_row_rules'][0]['original_rows'], [2, 3])
+            self.assertEqual(checked['current_row_rules'][0]['when'], ['西口', '開箱'])
+            self.assertEqual(checked['current_alternatives']['implied_known'], {'箱態': '開箱'})
+            change, = checked['revision']['condition_changes']
+            self.assertEqual((change['before'], change['after']), ('東口', '西口'))
+            proof = checked['current_row_rules'][0]
+            self.assertEqual(text[proof['start']:proof['end']], '這一組正式採用丁台')
+            self.assertEqual(proof['source_sha256'], sources[-1]['sha256'])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            change['evidence']['end'] -= 1
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=8',
+                           (json.dumps(checked, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}

@@ -43,6 +43,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 NATURAL_UPDATE_GUIDANCE += '''
 本輪配對已確認唯一完整組合，仍缺原表結果或有同組衝突時，只問該組正式規則。可請使用者用整則原話「核對#6｜補規則｜週四｜6｜西廳」或「核對#6｜選規則｜側門｜有｜北桌」，核對編號用最後實際check_decision步驟，選項照原表欄序及原值，最後一格是處置。補規則用於缺列，選規則限同組原有結果。收到完整格式後只送{"revision":"[補充#7]"}或實際更正編號，不重建原表。current_row_rules列本輪採用、原列及正式補充。原表的記載與其他組的缺口仍可核對。沒有唯一生效組合或只需條件報告時，按原要求處理。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+本輪配對唯一且仍缺規則時，也可讓使用者直接說「這一組正式用西廳」或「本輪正式採用丁台」。同一則可先明寫「入口正式改為西口」，再寫「這一組正式採用丁台」；欄名與值須是原表完整文字。句子以句號或分行分開。可附「群聊提議『換東廳』，未採用」等明確不採用的引述。收到符合的自然原話，用check_decision的{"row_confirmation":"[補充#7]"}（實際來源編號），工具從原話套用正式欄位、確認唯一組合，再核對規則。只轉述或尚未決定就保留待查，不送此動作，也不把提案寫入新表。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -418,6 +421,12 @@ _REVISION_SOURCE = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _SCENARIO_START = re.compile(r'^(?:假設|假如|如果|若|(?:(?:另|只|僅)(?:做|想|供)?)?試算)')
 _PAIR_LIMIT = re.compile(r'(?:只|僅)(?:有|剩|可能|限|能)|限於|二選一')
 _ROW_REVISION_KINDS = {'補規則': 'row_completion', '選規則': 'row_selection'}
+_ROW_SENTENCE = re.compile(
+    r'(?:(?:這一組|本輪|本次)(?:的結果)?正式(?:使用|採用|定為|用)|正式確認(?:這一組|本輪|本次)(?:的?結果)?(?:為|是|採用|用)) *'
+    r'(?:「(?P<quoted>[^「」｜\x00\r\n]{1,120})」|(?P<plain>[\u3400-\u9fffA-Za-z0-9 -]{0,23}[廳台架區位口席桌門庫站室]))')
+_UNADOPTED_SENTENCE = re.compile(
+    r'(?:群聊提議|有人提議|有人建議|轉述|引述)(?:「[^「」]{1,200}」|『[^『』]{1,200}』)[，,] *(?:未採用|不採用|僅供參考)')
+_UNCERTAIN_PLAIN = re.compile(r'不|未|非|暫|待|若|或|可能|但|假設|試算|還要|再確認')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 
 
@@ -434,6 +443,10 @@ def validate_tool(args):
                 or not _REVISION_SOURCE.fullmatch(args['revision'])
                 or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
+    elif isinstance(args, dict) and 'row_confirmation' in args:
+        if (args.keys() != {'row_confirmation'} or not isinstance(args['row_confirmation'], str)
+                or not _REVISION_SOURCE.fullmatch(args['row_confirmation'])):
+            raise ValueError('自然規則確認只接受同一目標已保存的補充或更正編號。')
     elif isinstance(args, dict) and 'known_update' in args:
         if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario', 'alternatives'}
                 or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
@@ -661,18 +674,35 @@ def _row_revision_plan(base_step, base, text, source):
     when = _assignment(parts[2:-1], len(base['conditions']))
     result = parts[-1]
     _label(result)
+    expected, missing = _pending_rule_assignment(base)
+    if when != expected:
+        raise ValueError('只可補充目前唯一生效且仍有規則缺口的完整組合。')
+    evidence = {'citation': source['citation'], 'source_sha256': source['sha256'], 'quote': text}
+    plan, change = _resolve_row_rule(base, when, result, _ROW_REVISION_KINDS[parts[1]], missing, evidence)
+    return plan, [change], _current_result(plan)
+
+
+def _pending_rule_assignment(base):
+    invalid = '只可補充目前唯一生效且仍有規則缺口的完整組合。'
+    if not {'rows', 'domains', 'current_alternatives'} <= base.keys():
+        raise ValueError(invalid)
     observed = _current_result(base)
     rules = base.get('current_row_rules', [])
     matched = set(observed['matching_rows'])
     covered = {tuple(row['when']) for index, row in enumerate(base['rows'], 1) if index in matched}
     covered.update(tuple(rule['when']) for rule in rules if rule['row'] in matched)
     missing = {tuple(row) for row in observed['coverage']['missing_rows']}
-    if observed['status'] != 'incomplete_table' or covered | missing != {when}:
-        raise ValueError('只可補充目前唯一生效且仍有規則缺口的完整組合。')
-    kind = _ROW_REVISION_KINDS[parts[1]]
+    if observed['status'] != 'incomplete_table' or len(covered | missing) != 1:
+        raise ValueError(invalid)
+    when, = covered | missing
+    return when, when in missing
+
+
+def _resolve_row_rule(base, when, result, kind, missing, evidence):
+    rules = base.get('current_row_rules', [])
     original_rows = [index for index, row in enumerate(base['rows'], 1) if tuple(row['when']) == when]
     if kind == 'row_completion':
-        if when not in missing:
+        if not missing:
             raise ValueError('補規則只適用原表未記載的結果。')
         row = len(base['rows']) + sum(not rule['original_rows'] for rule in rules) + 1
     else:
@@ -681,9 +711,7 @@ def _row_revision_plan(base_step, base, text, source):
             raise ValueError('選規則須指定同組原有衝突結果之一。')
         row, = chosen
     change = {'kind': kind, 'when': list(when), 'result': result, 'row': row, 'original_rows': original_rows}
-    proof = {**change, 'citation': source['citation'], 'source_sha256': source['sha256'], 'quote': text}
-    plan = {**base, 'current_row_rules': [*rules, proof]}
-    return plan, [change], _current_result(plan)
+    return {**base, 'current_row_rules': [*rules, {**change, **evidence}]}, change
 
 
 def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources):
@@ -738,6 +766,74 @@ def _updated_plan(base, updates):
     return {**base, 'known': known}, changes
 
 
+def _natural_clauses(text):
+    return [clause.strip() for clause in re.split(r'[。；\r\n]+', text) if clause.strip()]
+
+
+def _unadopted_note(source):
+    clauses = _natural_clauses(_source_text(source))
+    return clauses and all(_UNADOPTED_SENTENCE.fullmatch(clause) for clause in clauses)
+
+
+def _natural_condition(base, clause):
+    for field, values in base['domains'].items():
+        if clause == f'{field}正式撤回':
+            return field, None
+        match = re.fullmatch(rf'{re.escape(field)}正式(?:改為|確認為|確認是) *(.*)', clause)
+        if match:
+            value = match[1]
+            if value.startswith('「') and value.endswith('」'):
+                value = value[1:-1]
+            if value in values:
+                return field, value
+    return None
+
+
+def _natural_row_clauses(base, source):
+    updates, result = {}, None
+    for clause in _natural_clauses(_source_text(source)):
+        if _UNADOPTED_SENTENCE.fullmatch(clause) or clause in {'原配對仍適用', '先前配對仍適用', '其他欄位照舊'}:
+            continue
+        formal = _ROW_SENTENCE.fullmatch(clause)
+        if formal and result is None:
+            value = formal['quoted'] or formal['plain']
+            _label(value)
+            if (value in {'待查', '未定', '尚未公布', '暫定'} or '或' in value
+                    or (formal['plain'] and _UNCERTAIN_PLAIN.search(value))):
+                raise ValueError('尚未確認的結果不能作為本輪正式規則。')
+            result = value, _source_excerpt(source, clause)
+            continue
+        condition = _natural_condition(base, clause) if result is None else None
+        if condition is None or condition[0] in updates:
+            raise ValueError('正式規則確認須用獨立完整原句，欄位更正須在結果確認前。')
+        field, value = condition
+        updates[field] = value, _source_excerpt(source, clause)
+    if result is None:
+        raise ValueError('這則補充沒有明確正式確認本輪規則。')
+    return updates, result
+
+
+def _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources):
+    if previous is None or not {'rows', 'domains', 'current_alternatives'} <= previous[1].keys():
+        raise ValueError('自然規則確認須先核對本輪配對及原表。')
+    base_step, base = previous
+    sources = _followup_sources(base_step, sequence, replies, guidance)
+    latest, _ = _latest_source(args['row_confirmation'], sources)
+    if any(not _unadopted_note(source) for citation, source in sources.items()
+           if citation != latest['citation'] and citation not in what_if_sources):
+        raise ValueError('另有尚未核對的補充，請先確認其影響。')
+    updates, (result, proof) = _natural_row_clauses(base, latest)
+    plan, changes = _updated_plan(base, {field: value for field, (value, _) in updates.items()})
+    when, missing = _pending_rule_assignment(plan)
+    kind = 'row_completion' if missing else 'row_selection'
+    plan, change = _resolve_row_rule(plan, when, result, kind, missing, proof)
+    receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': latest['citation'],
+               'source_sha256': latest['sha256'], 'change': change}
+    if changes:
+        receipt['condition_changes'] = [{**item, 'evidence': updates[item['field']][1]} for item in changes]
+    return plan, {**_current_result(plan), 'revision': receipt}
+
+
 def _bind_alternatives(alternatives, plan, source):
     cases, quote = alternatives['cases'], alternatives['quote']
     if not cases[0].keys() <= set(plan['conditions']):
@@ -752,11 +848,7 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
         raise ValueError('已知欄位重算需有同一目標已保存的決策核對。')
     base_step, base = previous
     sources = _followup_sources(base_step, sequence, replies, guidance)
-    positions = {citation: row.get('steps_seen', row.get('ask_sequence')) for citation, row in sources.items()}
-    latest = max(positions.values(), default=-1)
-    if [citation for citation, step in positions.items() if step == latest] != [args['source']]:
-        raise ValueError('已知欄位重算須引用本次最新且可辨認的補充。')
-    source = sources[args['source']]
+    source, positions = _latest_source(args['source'], sources)
     if _source_text(source).startswith(('核對#', '取代｜')):
         raise ValueError('正式更正須以原話的正式格式重算。')
     plan, changes = _updated_plan(base, args['known_update'])
@@ -780,6 +872,14 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
         result = {**result, 'what_if_result': _current_result(trial_plan),
                   'what_if_update': {'changes': trial_changes, 'evidence': trial_evidence}}
     return plan, {**result, 'known_update': receipt}
+
+
+def _latest_source(citation, sources):
+    positions = {key: source.get('steps_seen', source.get('ask_sequence')) for key, source in sources.items()}
+    latest = max(positions.values(), default=-1)
+    if [key for key, position in positions.items() if position == latest] != [citation]:
+        raise ValueError('已知欄位重算須引用本次最新且可辨認的補充。')
+    return sources[citation], positions
 
 
 def _separate_scenario_evidence(official, trial):
@@ -856,6 +956,8 @@ def _recheck_saved(steps, replies, guidance):
         validate_tool(args)
         if 'revision' in args:
             plan, expected = _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)
+        elif 'row_confirmation' in args:
+            plan, expected = _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources)
         elif 'known_update' in args:
             plan, expected = _apply_known_update(args, previous, sequence, replies, guidance)
         else:
@@ -873,13 +975,15 @@ def _recheck_saved(steps, replies, guidance):
 
 
 def observe(args, steps, replies=(), guidance=()):
-    if 'revision' not in args and 'known_update' not in args:
+    if not {'revision', 'known_update', 'row_confirmation'} & args.keys():
         return calculate(args)
     validate_tool(args)
     previous, rejected, what_if_sources = _recheck_saved(steps, replies, guidance)
     sequence = len(steps) + 1
     if 'known_update' in args:
         return _apply_known_update(args, previous, sequence, replies, guidance)[1]
+    if 'row_confirmation' in args:
+        return _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources)[1]
     return _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)[1]
 
 
@@ -893,7 +997,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                      "AND (action_json LIKE '%\"check_decision\"%' OR action_json LIKE '%\"invalid\"%') "
                      "ORDER BY sequence", (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
-                      and step['action']['args'].keys() & {'revision', 'known_update'} for step in steps)
+                      and step['action']['args'].keys() & {'revision', 'known_update', 'row_confirmation'} for step in steps)
         replies = goal_reply_sources.read(db, gid, notes) if revised and replies_present else []
         guidance = []
         if revised and guidance_present:

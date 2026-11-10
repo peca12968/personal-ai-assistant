@@ -136,6 +136,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_correlated_decision_updates.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_correlated_partial_coverage.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_scoped_decision_row_revision.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_natural_scoped_rule_confirmation.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_mixed_scope_updates.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")
