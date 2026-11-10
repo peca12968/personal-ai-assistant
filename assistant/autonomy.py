@@ -473,6 +473,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             quantity_scope = goal.get('quantity_adoption_scope')
             if quantity_scope:
                 payload['quantity_adoption_scope'] = quantity_scope
+            conditions_hash = work_plan.conditions(goal)
+            note_review = quantity_evidence.review_batch_notes(goal, conditions_hash, reply_sources, guidance_sources)
+            if note_review:
+                payload['quantity_note_review'] = note_review
             unresolved_quantity = any(step['action']['tool'] == 'check_quantities' and
                                       step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
                                       for step in payload['steps'])
@@ -510,6 +514,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + quantity_evidence.BATCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
                 ('\n' + quantity_evidence.BATCH_CORRECTION_GUIDANCE if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_quantity_fields' for step in payload['steps']) else '') +
+                ('\n' + quantity_evidence.BATCH_NOTE_REVIEW_GUIDANCE if note_review else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
@@ -521,7 +526,6 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 update(store, gid, 'paused', notice='參考文件已改變，未執行此次動作；請另建目標。')
                 break
             attempted = None
-            conditions_hash = work_plan.conditions(goal)
             try:
                 if len(raw) > 20000:
                     raise ValueError('動作輸出過長。')

@@ -11,6 +11,73 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_batch_note_review_retains_hypothesis_and_names_blocking_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            values = [f'版本「{name}」欄位「{field}」為 {number} 件。' for name, field, number in
+                      (('甲', stock, 44), ('乙', stock, 51), ('甲', returned, 4), ('乙', returned, 7))]
+            rules = [f'欄位「{returned}」｜採用版本｜{name}' for name in ('甲', '乙')]
+            path = root / 'counts.txt'
+            path.write_text('\n'.join(values + rules), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{returned}」｜[D{did}:L5-L6]\n分版核對。')
+            fields = [{'field': field, 'unit': '件', 'candidates': [
+                {'label': name, 'citation': f'[D{did}:L{line}]', 'quote': values[line - 1]}
+                for name, line in (('甲', start), ('乙', start + 1))]}
+                for field, start in ((stock, 1), (returned, 3))]
+            branch = {'step': 2, 'anchor_field': returned, 'operands': [],
+                      'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                      'bindings': [{'path': '/values/0', 'field': stock}, {'path': '/values/1', 'field': returned}]}
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=6),
+                action('check_quantity_fields', fields=fields), action('calculate_quantity_branches', **branch)),
+                max_steps=3)
+            def save(text):
+                snap = goal_guidance.snapshot(store, sid, gid)
+                goal_guidance.save(store, sid, gid, text, expected_fingerprint=snap['fingerprint'])
+            save('正式更正版本「甲」欄位「本批退回」為 6 件。')
+            hypothesis = '若試想把甲退回改成 11 件，這只是假設，維持第一輪正式數字。'
+            save(hypothesis)
+            two = ['[更正#1]', '[更正#2]']
+            engine = ScriptedEngine(action('calculate_quantity_branches', **branch, reviewed_notes=two))
+            first = autonomy.run_goal(store, sid, gid, engine, max_steps=1)
+            partial = first['steps'][3]['observation']
+            self.assertEqual(partial['branches'][0]['calculation']['exact'], '38')
+            review = json.loads(engine.prompts[0].split('目標與已觀察資料：\n')[-1])['quantity_note_review']
+            self.assertEqual((review['mode'], review['citations']), ('reviewed_notes', two))
+            self.assertEqual([note['status'] for note in review['notes']], ['formal_correction', 'hypothetical_retained'])
+            save('正式更正版本「甲」欄位「本批退回」為 8 件。')
+            three = two + ['[更正#3]']
+            updated = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **branch, reviewed_notes=three)), max_steps=1)
+            corrected = updated['steps'][4]['observation']
+            self.assertEqual([row['calculation']['exact'] for row in corrected['branches']], ['36', '44'])
+            self.assertEqual([row['number'] for row in corrected['correction_history']], ['6', '8'])
+            self.assertEqual(corrected['retained_notes'][0]['quote'], hypothesis)
+            save('試想把甲退回改成 11 件，這只是假設，維持目前正式數字。另加簽收人，姓名待查。')
+            engine = ScriptedEngine(action('calculate_quantity_branches', **branch, reviewed_notes=three + ['[更正#4]']))
+            final = autonomy.run_goal(store, sid, gid, engine, max_steps=1)
+            self.assertIn('[更正#4] 需要重核', final['steps'][5]['observation']['error'])
+            review = json.loads(engine.prompts[0].split('目標與已觀察資料：\n')[-1])['quantity_note_review']
+            self.assertEqual(review['mode'], 'recheck')
+            self.assertEqual(review['notes'][-1]['citation'], '[更正#4]')
+            self.assertEqual(review['notes'][-1]['status'], 'needs_recheck')
+            self.assertIsNone(quantity_evidence._hypothetical_target(
+                hypothesis, ['甲', '乙'], [stock, returned], corrected['correction_history'], {returned: {'unit': '件'}}))
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            corrected['retained_notes'][0]['quote'] = '僅供試算。'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                           (json.dumps(corrected, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版算式'):
+                validate_database(restored.path)
+
     def test_batch_correction_history_checks_mixed_note_order_and_supersedes_by_field(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

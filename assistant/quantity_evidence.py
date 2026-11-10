@@ -70,7 +70,15 @@ BATCH_CORRECTION_GUIDANCE = (
     '若原批次後有二至四則正式更正，改用"corrections":["[補充#4]","[補充#6]"]，'
     '依實際保存順序列齊原批次後的所有更正，包含前一輪已套用的更正。沿用原批次和算式。'
     'correction_history保留各則原話，同版同欄以最後一筆代入，不同版或欄各自生效。'
-    '試想、條件句、只說照原數或另有補充時需要重核；可沿用已讀文件，不再次詢問已確認的事項。')
+    '看到quantity_note_review時，優先依其編號和模式處理。')
+
+BATCH_NOTE_REVIEW_GUIDANCE = (
+    'quantity_note_review逐筆區分正式更正、明確維持目前數字的試想，以及需重核的補充。'
+    'mode為correction或corrections時，沿用原批次分版算式，以citations提供實際編號。'
+    'mode為reviewed_notes時，在原批次分版算式填"reviewed_notes":citations的完整有序清單。'
+    '工具保存試想原話但不代入。交付中分開列正式數值、試想與採用限制。'
+    'mode為recheck時不要重試這個批次的更正工具。按需重核的補充指出變更和缺口，'
+    '沿用可確認的原值或已核對更正，區分新交付要求和試算；只有影響交付且必須補資料時才問。')
 
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
@@ -84,6 +92,11 @@ _DOCUMENT_ADOPTION = re.compile(r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})
 _VERSION_CORRECTION = re.compile(
     r'正式更正版本「(?P<version>[^「」｜\x00\r\n]{1,80})」[ \t]*'
     r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})」[ \t]*為[ \t]*')
+_RETAINED_HYPOTHESIS = re.compile(
+    r'(?:若)?(?:試想|假設)(?:把|將)(?P<subject>[^，,。；;！？\r\n]{1,100})改成'
+    r'[ \t]*(?P<quantity>[^，,。；;！？\r\n]{1,80})[，,][ \t]*'
+    r'(?:這只是假設|這只是試想|僅供試算)[，,][ \t]*'
+    r'(?P<retention>維持第一輪正式數字|維持目前正式數字|沿用目前正式值)[。]?')
 _SCOPE_PREFIX = '數量採用範圍：'
 _SCOPE = re.compile(r'欄位「([^「」｜\x00\r\n]{1,80})」｜(.+)')
 _METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
@@ -492,17 +505,19 @@ def validate_branches(args):
     fields = {'step', 'expression', 'operands'}
     if (not isinstance(args, dict) or args.keys() not in
             (fields, fields | {'bindings'}, fields | {'bindings', 'anchor_field'},
-             fields | {'bindings', 'anchor_field', 'correction'}, fields | {'bindings', 'anchor_field', 'corrections'})
+             fields | {'bindings', 'anchor_field', 'correction'}, fields | {'bindings', 'anchor_field', 'corrections'},
+             fields | {'bindings', 'anchor_field', 'reviewed_notes'})
             or type(args['step']) is not int or not 1 <= args['step'] <= 32):
         raise ValueError('分版計算須提供本目標的核對步驟、算式與其餘運算元原文。')
     if 'correction' in args and (not isinstance(args['correction'], str) or not _USER.fullmatch(args['correction'])):
         raise ValueError('批次更正須引用本目標已保存的補充或更正編號。')
-    if 'corrections' in args:
-        citations = args['corrections']
-        if (not isinstance(citations, list) or not 2 <= len(citations) <= 4
+    if 'corrections' in args or 'reviewed_notes' in args:
+        citations = args.get('corrections', args.get('reviewed_notes'))
+        minimum = 1 if 'reviewed_notes' in args else 2
+        if (not isinstance(citations, list) or not minimum <= len(citations) <= 4
                 or any(not isinstance(citation, str) or not _USER.fullmatch(citation) for citation in citations)
                 or len(set(citations)) != len(citations)):
-            raise ValueError('多筆更正須按保存順序提供二至四個不同的補充或更正編號。')
+            raise ValueError('請按保存順序提供不同的補充或更正編號，最多四則。')
     expression = args['expression']
     expression_math.validate({'expression': expression}, placeholder=_BRANCH_LEAF)
     placeholders = [path for path, value in operand_evidence._leaves(expression) if value == _BRANCH_LEAF]
@@ -610,18 +625,23 @@ def _correction_transition(citations, goal, before, after, replies, guidance):
     raise ValueError('更正編號須依保存順序涵蓋原批次後到本次算式前的所有補充。')
 
 
+def _available_corrections(number, sequence, replies, guidance):
+    available = {row['citation']: (row['answer'], row['sha256'], row['ask_sequence']) for row in replies
+                 if number < row['ask_sequence'] < sequence}
+    available.update((row['citation'], (row['content'], row['sha256'], row['steps_seen'])) for row in guidance
+                     if number <= row['steps_seen'] < sequence)
+    return available
+
+
 def _correction_sources(args, sequence, replies, guidance):
     number = args['step']
     if 'correction' in args:
         citation = args['correction']
         return {citation: _latest_confirmation(citation, number, sequence, replies, guidance)}
-    if 'corrections' not in args:
+    citations = args.get('corrections', args.get('reviewed_notes'))
+    if citations is None:
         return {}
-    citations = args['corrections']
-    available = {row['citation']: (row['answer'], row['sha256'], row['ask_sequence']) for row in replies
-                 if number < row['ask_sequence'] < sequence}
-    available.update((row['citation'], (row['content'], row['sha256'], row['steps_seen'])) for row in guidance
-                     if number <= row['steps_seen'] < sequence)
+    available = _available_corrections(number, sequence, replies, guidance)
     if set(citations) != available.keys():
         raise ValueError('多筆更正須列齊原批次後到本次算式前已保存的補充或更正。')
     return {citation: available[citation] for citation in citations}
@@ -630,6 +650,18 @@ def _correction_sources(args, sequence, replies, guidance):
 def _batch_formula(args):
     return (args['expression'], sorted(args['bindings'], key=lambda row: row['path']),
             sorted(args['operands'], key=lambda row: row['path']))
+
+
+def _batch_comparisons(verified, declared):
+    comparisons = {}
+    for row in verified['comparisons']:
+        adoption = {**row['adoption'], 'records': verified['adoption_records']}
+        if verified['missing']:
+            adoption['missing'] = verified['missing']
+        if declared is not None:
+            adoption['declared_ranges'] = verified['adoption_ranges']
+        comparisons[row['field']] = {**row, 'adoption': adoption}
+    return comparisons
 
 
 def _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared, goal):
@@ -663,15 +695,7 @@ def _batch_for_branches(args, steps, sources, scope, objective, replies, guidanc
         latest = observe_fields(original, steps, sources, objective, replies, guidance, declared=declared)
         if latest != verified:
             raise ValueError('採用範圍已補讀，請以目前讀到的原文重新核對版本。')
-    comparisons = {}
-    for row in verified['comparisons']:
-        adoption = {**row['adoption'], 'records': verified['adoption_records']}
-        if verified['missing']:
-            adoption['missing'] = verified['missing']
-        if declared is not None:
-            adoption['declared_ranges'] = verified['adoption_ranges']
-        comparisons[row['field']] = {**row, 'adoption': adoption}
-    return comparisons, corrections
+    return _batch_comparisons(verified, declared), corrections
 
 
 def _version_sources(verified):
@@ -738,6 +762,112 @@ def _version_correction(citation, source, versions, fields, comparisons):
     return {**quantity, 'version_start': match.start('version'), 'version_end': match.end('version')}
 
 
+def _hypothetical_target(text, versions, fields, history, comparisons):
+    match = _RETAINED_HYPOTHESIS.fullmatch(text)
+    if match is None:
+        return None
+    value = _MEASURED.fullmatch(match['quantity'].translate(operand_evidence._NUMERIC_CHARS))
+    if value is None:
+        return None
+    subject = match['subject']
+    targets = [(version, field) for version in versions for field in fields if subject in {
+        version + field, version + '版' + field, f'版本「{version}」欄位「{field}」',
+        version + field.split('本批', 1)[-1], version + '版' + field.split('本批', 1)[-1]}]
+    if len(targets) != 1:
+        return None
+    version, field = targets[0]
+    if _factor(value['unit'], comparisons[field]['unit']) is None:
+        return None
+    if match['retention'] == '維持第一輪正式數字':
+        edits = [item for item in history if (item['label'], item['field']) == (version, field)]
+        if not history or edits != history[:1]:
+            return None
+    return version, field
+
+
+def _reviewed_quantity_notes(corrections, versions, fields, comparisons):
+    history, retained, review = [], [], []
+    for citation, source in corrections.items():
+        text, sha, _ = source
+        if _VERSION_CORRECTION.match(text):
+            try:
+                quantity = _version_correction(citation, source, versions, fields, comparisons)
+            except ValueError as exc:
+                review.append({'citation': citation, 'status': 'needs_recheck', 'reason': str(exc)})
+            else:
+                history.append(quantity)
+                review.append({'citation': citation, 'status': 'formal_correction',
+                               'version': quantity['label'], 'field': quantity['field']})
+            continue
+        target = _hypothetical_target(text, versions, fields, history, comparisons)
+        if target is None:
+            review.append({'citation': citation, 'status': 'needs_recheck',
+                           'reason': '補充無法核對為單筆正式更正或明確沿用目前數值的試想。'})
+            continue
+        version, field = target
+        note = {'citation': citation, 'status': 'hypothetical_retained', 'version': version, 'field': field}
+        retained.append({**note, 'quote': text, 'source_sha256': sha})
+        review.append(note)
+    return history, retained, review
+
+
+def _ordered_review_sources(goal, available, replies, guidance):
+    blocks = {row['citation']: (None, goal_reply_sources.note(row['question'], row['answer']))
+              for row in reversed(replies) if row['citation'] in available}
+    blocks.update((row['citation'], (row['notes_start'],
+                  goal_guidance_sources.note(row['content'], row['steps_seen'], row['recorded_at'])))
+                  for row in guidance if row['citation'] in available)
+    notes = goal['notes']
+    reverse = []
+    while blocks:
+        suffixes = [(citation, block) for citation, (start, block) in blocks.items()
+                    if notes.endswith(block) and (start is None or start == len(notes) - len(block))]
+        if not suffixes:
+            return {}
+        citation, block = max(suffixes, key=lambda pair: len(pair[1]))
+        reverse.append(citation)
+        notes = notes[:-len(block)]
+        del blocks[citation]
+    return {citation: available[citation] for citation in reversed(reverse)}
+
+
+def review_batch_notes(goal, scope, replies, guidance):
+    prior_branch = next((step for step in reversed(goal['steps'])
+                         if step['action']['tool'] == 'calculate_quantity_branches'
+                         and 'anchor_field' in step['action']['args']), None)
+    if prior_branch is None or prior_branch['observation'].get('goal_conditions_sha256') == scope:
+        return None
+    args = prior_branch['action']['args']
+    batch = next((step for step in goal['steps'] if step['sequence'] == args['step']
+                  and step['action']['tool'] == 'check_quantity_fields'), None)
+    if batch is None:
+        return None
+    available = _available_corrections(args['step'], len(goal['steps']) + 1, replies, guidance)
+    result = {'step': args['step'], 'anchor_field': args['anchor_field'], 'mode': 'recheck'}
+    if not 1 <= len(available) <= 4:
+        return {**result, 'reason': '原批次後的補充來源不足或超出四則。'}
+    ordered = _ordered_review_sources(goal, available, replies, guidance)
+    if not ordered:
+        return {**result, 'reason': '無法對照原批次後的完整補充順序。'}
+    current = {key: value for key, value in args.items()
+               if key not in {'correction', 'corrections', 'reviewed_notes'}}
+    current['reviewed_notes'] = list(ordered)
+    try:
+        comparisons, _ = _batch_for_branches(current, goal['steps'], goal['sources'], scope, goal['objective'],
+                                             replies, guidance, goal.get('quantity_adoption_scope'), goal)
+    except ValueError as exc:
+        return {**result, 'reason': str(exc)}
+    anchor = comparisons[args['anchor_field']]
+    candidates, citations = _version_sources(anchor)
+    versions = citations if _explicit_adoption(anchor) else candidates | citations
+    _, retained, review = _reviewed_quantity_notes(ordered, versions, [row['field'] for row in args['bindings']],
+                                                   comparisons)
+    mode = 'reviewed_notes' if retained else 'correction' if len(ordered) == 1 else 'corrections'
+    if any(row['status'] == 'needs_recheck' for row in review):
+        mode = 'recheck'
+    return {**result, 'mode': mode, 'citations': list(ordered), 'notes': review}
+
+
 def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel, declared, goal):
     comparisons, corrections = _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared, goal)
     if not set(bindings.values()) <= comparisons.keys():
@@ -750,8 +880,17 @@ def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, 
     versions = citations if _explicit_adoption(verified) else candidates | citations
     if not versions:
         raise ValueError('決定候選的欄位缺少版本名，無法列出分支。')
-    history = [_version_correction(citation, source, versions, bindings.values(), comparisons)
-               for citation, source in corrections.items()]
+    retained = []
+    if 'reviewed_notes' in args:
+        history, retained, review = _reviewed_quantity_notes(corrections, versions, bindings.values(), comparisons)
+        blocker = next((row for row in review if row['status'] == 'needs_recheck'), None)
+        if blocker:
+            raise ValueError(f"{blocker['citation']} 需要重核。{blocker['reason']}")
+        if not retained:
+            raise ValueError('沒有需保留的試想時，請使用正式更正的原有格式。')
+    else:
+        history = [_version_correction(citation, source, versions, bindings.values(), comparisons)
+                   for citation, source in corrections.items()]
     effective = {(item['label'], item['field']): item for item in history}
     operands = _branch_operands(args, steps, sources, objective, replies, guidance)
     inputs = [(path, args['step'], comparisons[field]) for path, field in bindings.items()]
@@ -759,8 +898,10 @@ def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, 
     expression_math.check_cancel(cancel)
     result = {'status': 'conditional_calculations', 'step': args['step'], 'anchor_field': args['anchor_field'],
               'adoption': adoption, 'operands': operands, **aligned}
-    if 'corrections' in args:
+    if {'corrections', 'reviewed_notes'} & args.keys():
         result['correction_history'] = history
+    if retained:
+        result['retained_notes'] = retained
     return result
 
 
@@ -920,7 +1061,7 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
                 if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
                     raise ValueError('保存的分版算式缺少有效數量條件。')
                 goal = None
-                if {'correction', 'corrections'} & action['args'].keys():
+                if {'correction', 'corrections', 'reviewed_notes'} & action['args'].keys():
                     history = conversation_history.saved_fingerprint(db, gid)
                     goal = {'id': gid, 'objective': objective, 'notes': notes, 'sources': sources,
                             'conversation_history': {'sha256': history} if history else None}
