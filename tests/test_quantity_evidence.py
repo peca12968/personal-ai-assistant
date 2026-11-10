@@ -4,13 +4,92 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant import autonomy, goal_guidance, goal_replies, quantity_evidence, quantity_report
+from assistant import autonomy, goal_guidance, goal_replies, quantity_evidence, quantity_report, quantity_report_fields
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_checked_report_fields_reuse_quantities_and_bind_exact_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            values = [f'版本「{name}」欄位「{field}」為 {number} 件。' for name, field, number in
+                      (('甲', stock, 44), ('乙', stock, 51), ('甲', returned, 4), ('乙', returned, 7))]
+            rules = [f'欄位「{returned}」｜採用版本｜{name}' for name in ('甲', '乙')]
+            records = ['欄位「簽收人」｜文字值｜待查', '欄位「簽收人」｜文字值｜「唐同仁」',
+                       '欄位「核對人」｜文字值｜「朱同仁」', '欄位「核對人」｜文字值｜「郭同仁」',
+                       '欄位「交接窗口」｜文字值｜「北櫃」']
+            path = root / 'counts.txt'
+            path.write_text('\n'.join(values + rules + records), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            declaration = quantity_report_fields.DIRECTIVE
+            objective = (f'數量採用範圍：欄位「{returned}」｜[D{did}:L5-L6]\n{declaration}\n'
+                         f'附加欄位：欄位「簽收人」｜[D{did}:L7-L8]\n'
+                         f'附加欄位：欄位「核對人」｜[D{did}:L9-L10]\n'
+                         f'附加欄位：欄位「交接窗口」｜[D{did}:L11-L12]\n'
+                         '附加欄位：欄位「值班人」｜使用者確認\n分版核對。')
+            with self.assertRaisesRegex(ValueError, '附加欄位須緊接'):
+                autonomy.create_goal(store, sid, f'{declaration}\n分版核對。')
+            with self.assertRaisesRegex(ValueError, '匯入附加欄位'):
+                autonomy.create_goal(store, sid, objective.replace(f'[D{did}:L7-L8]', '[D999:L1]'))
+            gid = autonomy.create_goal(store, sid, objective)
+            fields = [{'field': field, 'unit': '件', 'candidates': [
+                {'label': name, 'citation': f'[D{did}:L{line}]', 'quote': values[line - 1]}
+                for name, line in (('甲', start), ('乙', start + 1))]}
+                for field, start in ((stock, 1), (returned, 3))]
+            branch = {'step': 2, 'anchor_field': returned, 'operands': [],
+                      'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                      'bindings': [{'path': '/values/0', 'field': stock}, {'path': '/values/1', 'field': returned}]}
+
+            def reply(text):
+                review = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=review['fingerprint'])
+
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=11),
+                action('check_quantity_fields', fields=fields), action('calculate_quantity_branches', **branch),
+                action('ask', question='正式退回量？')))
+            reply('正式更正版本「甲」欄位「本批退回」為 6 件。')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **branch, correction='[補充#4]'),
+                action('ask', question='簽收人是誰？')))
+            review = goal_guidance.snapshot(store, sid, gid)
+            goal_guidance.save(store, sid, gid, '正式確認欄位「簽收人」待查。', expected_fingerprint=review['fingerprint'])
+            reply('正式確認欄位「簽收人」為「林同仁」。')
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **branch, reviewed_notes=['[補充#4]', '[更正#1]', '[補充#6]']),
+                action('finish', quantity_report_step=7)))
+            self.assertEqual(final['status'], 'report_ready')
+            calculated = final['steps'][6]['observation']
+            self.assertEqual([row['citation'] for row in calculated['correction_history']], ['[補充#4]'])
+            self.assertEqual([row['value'] for row in calculated['field_confirmations']], [None, '林同仁'])
+            table, fields_text = final['result'].split('### 全表附加欄位')
+            self.assertIn('(44 − 6) = 38 件', table)
+            self.assertIn('原值 4 件', table)
+            self.assertIn('「林同仁」 [補充#6]', fields_text)
+            self.assertIn(f'「唐同仁」 [D{did}:L8]', fields_text)
+            self.assertIn(f'「朱同仁」 [D{did}:L9]、「郭同仁」 [D{did}:L10]', fields_text)
+            self.assertIn(f'D{did} 第 12 行', fields_text)
+            self.assertNotIn(f'[D{did}:L12]', fields_text)
+            observation = final['steps'][-1]['observation']
+            self.assertEqual([row['status'] for row in observation['quantity_report_fields']],
+                             ['confirmed', 'conflicting', 'incomplete', 'unconfirmed'])
+            self.assertEqual(observation['quantity_report_fields'][0]['confirmation']['citation'], '[補充#6]')
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            observation['quantity_report_fields'][0]['confirmation']['source_sha256'] = '0' * 64
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=8',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版報告'):
+                validate_database(restored.path)
+
     def test_checked_report_rejects_freeform_and_keeps_hypotheses_out_of_results(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

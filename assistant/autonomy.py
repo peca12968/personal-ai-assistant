@@ -26,7 +26,7 @@ from . import date_tools
 from . import document_diff
 from . import decision_table
 from . import source_decision
-from . import quantity_evidence, quantity_report
+from . import quantity_evidence, quantity_report, quantity_report_fields
 from . import document_lines
 from . import json_documents
 from . import json_statistics
@@ -123,6 +123,7 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
                 ensure_current(db, sid, goal_draft)
             sources = signature([dict(row) for row in db.execute(
                 'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,))])
+            quantity_report_fields.declared(objective, sources)
             previous = goal_stages.capture(db, sid, parent_id) if parent_id is not None else None
             db.execute('INSERT INTO autonomous_goals(id,session_id,objective,status,sources_json) VALUES(?,?,?,?,?)',
                        (gid, sid, objective, 'pending', json.dumps(sources, ensure_ascii=False)))
@@ -387,6 +388,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         if 'partial_result' not in args:
             return question
     report_step = args.get('quantity_report_step') if name == 'finish' else None
+    report_data = {}
     if name == 'finish' and gid is not None:
         goal = get_goal(store, sid, gid)
         if quantity_report.required(goal['objective']) and report_step is None:
@@ -394,8 +396,9 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if report_step is not None:
         if gid is None:
             raise ValueError('分版報告須引用同一目標的算式。')
-        content = quantity_report.render(args, steps, work_plan.conditions(goal), goal, reply_sources,
-                                         guidance_sources, cancel)
+        report_data = quantity_report.render(args, steps, work_plan.conditions(goal), goal, reply_sources,
+                                             guidance_sources, cancel)
+        content = report_data.pop('report')
     else:
         content = args[goal_reply_sources.REPORT_FIELDS[name]]
     checks = check_citations(content, excerpts)
@@ -403,7 +406,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
     reply_checks = goal_reply_sources.citations(content, reply_sources)
     guidance_checks = goal_guidance_sources.citations(content, guidance_sources)
-    user_observation = {}
+    user_observation = report_data
     if reply_checks:
         user_observation['reply_citations'] = reply_checks
     if guidance_checks:
@@ -494,6 +497,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             checked_report = quantity_report.required(goal['objective'])
             if checked_report:
                 payload['quantity_report_required'] = True
+            report_fields = (quantity_report_fields.observe(goal, goal['steps'], reply_sources, guidance_sources)
+                             if checked_report else [])
+            if report_fields:
+                payload['quantity_report_fields'] = report_fields
             conditions_hash = work_plan.conditions(goal)
             note_review = quantity_evidence.review_batch_notes(goal, conditions_hash, reply_sources, guidance_sources)
             if note_review:
@@ -537,6 +544,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  and any(step['action']['tool'] == 'check_quantity_fields' for step in payload['steps']) else '') +
                 ('\n' + quantity_evidence.BATCH_NOTE_REVIEW_GUIDANCE if note_review else '') +
                 ('\n' + quantity_report.GUIDANCE if checked_report else '') +
+                ('\n' + quantity_report_fields.GUIDANCE if report_fields else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

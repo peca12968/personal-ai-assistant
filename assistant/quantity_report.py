@@ -2,7 +2,7 @@
 import json
 import re
 
-from . import conversation_history, goal_guidance_sources, goal_reply_sources, quantity_evidence, work_plan
+from . import conversation_history, goal_guidance_sources, goal_reply_sources, quantity_evidence, quantity_report_fields, work_plan
 
 
 DIRECTIVE = '文字交付：只列已核對的分版結果。'
@@ -22,10 +22,13 @@ _STATE_TEXT = {'outside_adoption': '受此欄採用限制', 'candidate_unavailab
 _ADOPTION_TEXT = {'incomplete': '採用範圍仍有缺行。', 'conflicting': '採用記載互相矛盾。',
                   'unrecorded': '本欄未有明文採用記載。',
                   'candidate_unavailable': '採用記載所指版本缺少可核對的數值。'}
+_FIELD_PENDING = {'incomplete': '指定文件缺行', 'conflicting': '文件記載不一致',
+                  'unconfirmed': '尚無一致的明文值', 'user_pending': '使用者確認待查'}
 
 
 def required(objective):
-    return DIRECTIVE in objective.splitlines()[:2]
+    lines = objective.splitlines()[:2]
+    return DIRECTIVE in lines or quantity_report_fields.DIRECTIVE in lines
 
 
 def validate(args):
@@ -74,7 +77,29 @@ def _input(row):
     return line
 
 
-def _report(observation):
+def _text_value(value):
+    return f'「{_plain(value)}」' if value is not None else '待查'
+
+
+def _fields_section(fields):
+    lines = ['', '### 全表附加欄位']
+    for row in fields:
+        display = _text_value(row['value'])
+        if row['status'] != 'confirmed':
+            display += f"（{_FIELD_PENDING[row['status']]}）"
+        if row['confirmation'] is not None:
+            display += ' ' + row['confirmation']['citation']
+        lines.append(f"- {_plain(row['field'])} · {display}")
+        if row['records']:
+            records = '、'.join(_text_value(record['value']) + ' ' + record['citation'] for record in row['records'])
+            lines.append(f'  - 文件記載 · {records}')
+        if row['missing']:
+            missing = '、'.join(f"D{record['document_id']} 第 {record['line']} 行" for record in row['missing'])
+            lines.append(f'  - 指定原行待查 · {missing}')
+    return lines
+
+
+def _report(observation, fields):
     adoption = observation['adoption']
     lines = ['## 分版條件結果', '', _ADOPTION_TEXT[adoption['status']], '',
              '| 版本 | 欄位及來源 | 已核對算式與結果 |',
@@ -89,6 +114,8 @@ def _report(observation):
         else:
             result = '待查'
         lines.append(f"| {_plain(branch['version'])} | {inputs} | {result} |")
+    if fields:
+        lines.extend(_fields_section(fields))
     lines.extend(['', '### 來源與補充'])
     for record in adoption['records']:
         lines.append(f"- 採用記載 · {_plain(record['field'])}採用{_plain(record['version'])} {record['citation']}")
@@ -121,13 +148,20 @@ def render(args, steps, scope, goal, replies, guidance, cancel=None):
         declared=goal.get('quantity_adoption_scope'), goal=goal)
     if observed != {key: value for key, value in prior['observation'].items() if key not in quantity_evidence._METADATA}:
         raise ValueError('最後的分版算式與可重驗的條件或來源不符。')
-    return _report(observed)
+    fields = quantity_report_fields.observe(goal, steps, replies, guidance)
+    if {row['field'] for row in fields} & {row['field'] for row in observed['comparisons']}:
+        raise ValueError('附加文字欄位名稱須與分版數量欄位分開。')
+    result = {'report': _report(observed, fields)}
+    if fields:
+        result['quantity_report_fields'] = fields
+    return result
 
 
 def validate_saved(db, *, replies_present, guidance_present, scope_present):
     query = '''SELECT DISTINCT g.id,g.objective,g.notes,g.sources_json,g.status,g.result
                FROM autonomous_goals g JOIN autonomous_steps s ON s.goal_id=g.id
-               WHERE s.action_json LIKE '%"quantity_report_step"%' OR s.observation_json LIKE '%"quantity_report_step"%' '''
+               WHERE s.action_json LIKE '%"quantity_report_step"%' OR s.observation_json LIKE '%"quantity_report_step"%'
+                  OR s.observation_json LIKE '%"quantity_report_fields"%' '''
     for gid, objective, notes, sources, status, result in db.execute(query):
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps '
                           'WHERE goal_id=? ORDER BY sequence', (gid,)).fetchall()
@@ -141,8 +175,8 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present):
         prior = []
         for sequence, action, observation in rows:
             action, observation = json.loads(action), json.loads(observation)
-            if 'quantity_report_step' in observation or (action['tool'] == 'finish' and
-                                                         'quantity_report_step' in action['args']):
+            if ({'quantity_report_step', 'quantity_report_fields'} & observation.keys()
+                    or (action['tool'] == 'finish' and 'quantity_report_step' in action['args'])):
                 scope = observation.get('goal_conditions_sha256')
                 if (action['tool'] != 'finish' or action['args'].keys() != {'quantity_report_step'}
                         or observation.get('quantity_report_step') != action['args']['quantity_report_step']
@@ -150,7 +184,8 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present):
                     raise ValueError('保存的分版報告缺少有效的步驟或條件。')
                 expected = render(action['args'], prior, scope, goal, replies, guidance)
                 committed = status == 'report_ready' and sequence == len(rows)
-                if (observation.get('report') != expected
-                        or (committed and (result != expected or scope != work_plan.conditions(goal)))):
+                actual = {key: observation[key] for key in ('report', 'quantity_report_fields') if key in observation}
+                if (actual != expected
+                        or (committed and (result != expected['report'] or scope != work_plan.conditions(goal)))):
                     raise ValueError('保存的分版報告與已執行算式不一致。')
             prior.append({'sequence': sequence, 'action': action, 'observation': observation})

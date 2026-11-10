@@ -5,7 +5,7 @@ from fractions import Fraction
 
 from . import (
     conversation_history, document_units, exact_math, expression_math, goal_guidance_sources, goal_reply_sources,
-    operand_evidence, source_decision, work_plan,
+    operand_evidence, quantity_report_fields, source_decision, work_plan,
 )
 from .document_table import _SAME_UNIT_ONLY
 
@@ -785,8 +785,9 @@ def _hypothetical_target(text, versions, fields, history, comparisons):
     return version, field
 
 
-def _reviewed_quantity_notes(corrections, versions, fields, comparisons):
-    history, retained, review = [], [], []
+def _reviewed_quantity_notes(corrections, versions, fields, comparisons, objective, sources):
+    independent_fields = {row['field'] for row in quantity_report_fields.declared(objective, sources)} - comparisons.keys()
+    history, retained, field_confirmations, review = [], [], [], []
     for citation, source in corrections.items():
         text, sha, _ = source
         if _VERSION_CORRECTION.match(text):
@@ -799,6 +800,13 @@ def _reviewed_quantity_notes(corrections, versions, fields, comparisons):
                 review.append({'citation': citation, 'status': 'formal_correction',
                                'version': quantity['label'], 'field': quantity['field']})
             continue
+        confirmation = quantity_report_fields.confirmation(text) if independent_fields else None
+        if confirmation is not None and confirmation[0] in independent_fields:
+            field, value = confirmation
+            note = {'citation': citation, 'status': 'field_confirmation', 'field': field}
+            field_confirmations.append({**note, 'value': value, 'quote': text, 'source_sha256': sha})
+            review.append(note)
+            continue
         target = _hypothetical_target(text, versions, fields, history, comparisons)
         if target is None:
             review.append({'citation': citation, 'status': 'needs_recheck',
@@ -808,7 +816,7 @@ def _reviewed_quantity_notes(corrections, versions, fields, comparisons):
         note = {'citation': citation, 'status': 'hypothetical_retained', 'version': version, 'field': field}
         retained.append({**note, 'quote': text, 'source_sha256': sha})
         review.append(note)
-    return history, retained, review
+    return history, retained, field_confirmations, review
 
 
 def _ordered_review_sources(goal, available, replies, guidance):
@@ -860,9 +868,9 @@ def review_batch_notes(goal, scope, replies, guidance):
     anchor = comparisons[args['anchor_field']]
     candidates, citations = _version_sources(anchor)
     versions = citations if _explicit_adoption(anchor) else candidates | citations
-    _, retained, review = _reviewed_quantity_notes(ordered, versions, [row['field'] for row in args['bindings']],
-                                                   comparisons)
-    mode = 'reviewed_notes' if retained else 'correction' if len(ordered) == 1 else 'corrections'
+    _, retained, field_confirmations, review = _reviewed_quantity_notes(
+        ordered, versions, [row['field'] for row in args['bindings']], comparisons, goal['objective'], goal['sources'])
+    mode = 'reviewed_notes' if retained or field_confirmations else 'correction' if len(ordered) == 1 else 'corrections'
     if any(row['status'] == 'needs_recheck' for row in review):
         mode = 'recheck'
     return {**result, 'mode': mode, 'citations': list(ordered), 'notes': review}
@@ -880,14 +888,15 @@ def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, 
     versions = citations if _explicit_adoption(verified) else candidates | citations
     if not versions:
         raise ValueError('決定候選的欄位缺少版本名，無法列出分支。')
-    retained = []
+    retained, field_confirmations = [], []
     if 'reviewed_notes' in args:
-        history, retained, review = _reviewed_quantity_notes(corrections, versions, bindings.values(), comparisons)
+        history, retained, field_confirmations, review = _reviewed_quantity_notes(
+            corrections, versions, bindings.values(), comparisons, objective, sources)
         blocker = next((row for row in review if row['status'] == 'needs_recheck'), None)
         if blocker:
             raise ValueError(f"{blocker['citation']} 需要重核。{blocker['reason']}")
-        if not retained:
-            raise ValueError('沒有需保留的試想時，請使用正式更正的原有格式。')
+        if not retained and not field_confirmations:
+            raise ValueError('沒有需保留的試想或附加欄位確認時，請使用正式更正的原有格式。')
     else:
         history = [_version_correction(citation, source, versions, bindings.values(), comparisons)
                    for citation, source in corrections.items()]
@@ -902,6 +911,8 @@ def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, 
         result['correction_history'] = history
     if retained:
         result['retained_notes'] = retained
+    if field_confirmations:
+        result['field_confirmations'] = field_confirmations
     return result
 
 
