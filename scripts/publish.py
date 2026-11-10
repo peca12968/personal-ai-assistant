@@ -103,6 +103,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_revision.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_revision_comparison.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_batch_decision_revision.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_replacement.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")
     run(sys.executable, "scripts/evaluate_tool_recovery.py")

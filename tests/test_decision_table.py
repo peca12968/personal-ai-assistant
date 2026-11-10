@@ -514,6 +514,80 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(early['after'], {'status': 'incomplete_table', 'recorded_results': ['甲', '乙']})
         self.assertEqual(late['after'], comparison['after'])
 
+    def test_replace_two_rejected_batches_from_the_original_and_restore(self):
+        plan = {'conditions': ['區位', '門證'], 'domains': {'區位': ['北', '南'], '門證': ['有', '無']},
+                'known': {'區位': '北', '門證': '無'}, 'excluded': [],
+                'rules': [{'priority': 0, 'when': {}, 'result': '前台'},
+                          {'priority': 1, 'when': {'區位': '南'}, 'result': '南席'}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '依正式補正核對')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='請提供首批補充。')))
+            for citation, reply in (
+                    ('[補充#2]', '核對#1｜條件｜區位｜南\n核對#1｜條件｜門證｜臨時'),
+                    ('[補充#4]', '取代｜[補充#2]\r\n核對#1｜條件｜門證｜未領')):
+                waiting = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, reply, expected_fingerprint=waiting['fingerprint'])
+                paused = autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', revision=citation),
+                    action('ask', question='請提供完整補正。')))
+                self.assertEqual(paused['steps'][-2]['action']['tool'], 'invalid')
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '取代｜[補充#4]\n核對#1｜條件｜門證｜有',
+                              expected_fingerprint=waiting['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[補充#6]', compare=True),
+                action('finish', report='北區前台，門證有。')))
+            checked = final['steps'][6]['observation']
+            receipt = checked['revision']
+            self.assertEqual(receipt['base_step'], 1)
+            self.assertEqual(receipt['comparison']['retained_known'], {'區位': '北'})
+            self.assertEqual(checked['possible_results'], ['前台'])
+            self.assertEqual(receipt['replaces'], {'step': 5, 'citation': '[補充#4]',
+                'source_sha256': final['reply_sources'][1]['sha256'],
+                'error': final['steps'][4]['observation']['error']})
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            changed = {**final['steps'][2]['observation'], 'error': '替換原退回原因'}
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                           (json.dumps(changed, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '取代首行'):
+                validate_database(restored.path)
+
+    def test_replacement_requires_right_rejection_time_and_scope(self):
+        plan = {'conditions': ['區位', '門證'], 'domains': {'區位': ['北', '南'], '門證': ['有', '無']},
+                'known': {'區位': '北', '門證': '有'}, 'excluded': [['南', '有']],
+                'rules': [{'priority': 0, 'when': {}, 'result': '前台'}]}
+        base = {'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                'observation': decision_table.calculate(plan)}
+        ask = {'sequence': 2, 'action': {'tool': 'ask'}, 'observation': {}}
+        first = {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': 'a' * 64,
+                 'answer': '核對#1｜條件｜區位｜南\n核對#1｜條件｜門證｜臨時'}
+        failed_action = json.loads(action('check_decision', revision=first['citation']))
+        with self.assertRaisesRegex(ValueError, '第 2 行') as error:
+            decision_table.observe(failed_action['args'], [base, ask], replies=[first])
+        failure = {'sequence': 3, 'action': {'tool': 'invalid'}, 'observation': {
+            'error': str(error.exception), 'error_phase': 'execution', 'failed_action': failed_action}}
+        replacement = {'citation': '[更正#1]', 'steps_seen': 3, 'sha256': 'b' * 64,
+                       'content': '取代｜[補充#2]\n核對#1｜條件｜門證｜無'}
+        args = {'revision': replacement['citation']}
+        steps = [base, ask, failure]
+        valid = decision_table.observe(args, steps, replies=[first], guidance=[replacement])
+        self.assertEqual(valid['revision']['replaces']['step'], 3)
+        for guidance in ([{**replacement, 'steps_seen': 2}],
+                         [{**replacement, 'content': '取代｜[補充#1]\n核對#1｜條件｜門證｜無'}],
+                         [replacement, {**replacement, 'citation': '[更正#2]'}]):
+            with self.subTest(guidance=guidance), self.assertRaisesRegex(ValueError, '取代首行'):
+                decision_table.observe(args, steps, replies=[first], guidance=guidance)
+        with self.assertRaisesRegex(ValueError, '可行情境不相容'):
+            decision_table.observe(args, steps, replies=[first], guidance=[
+                {**replacement, 'content': '取代｜[補充#2]\n核對#1｜條件｜區位｜南'}])
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

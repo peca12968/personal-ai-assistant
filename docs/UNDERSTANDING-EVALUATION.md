@@ -227,6 +227,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_batch_decision_revision.json 核對兩欄共同生效、條件與優先混合、第二行無效及原編號不受合併影響。核對實際送入的補充、整批前後狀態及無效工具步驟。對照假設時按前後各自的已知值重算；不在更正的優先範圍內，仍可能受同批另一個條件更正影響。
 
+以 evals/goal_decision_replacement.json 核對退回後的完整補正、未重述的欄位、錯誤取代編號及連續退回。分開評讀定稿和實際工具是否保存原核對、重驗退回原因及採用新來源。還原時重新比對工具退回及來源，先前已保存的單筆及整批重算照原規則核對。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
