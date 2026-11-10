@@ -973,6 +973,74 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_field_reference_checks_each_branch_and_binds_the_later_choice(self):
+        fields = ['配送班別', '指定複核班別']
+        plan = {'conditions': fields, 'known': dict.fromkeys(fields, '早班'),
+                'domains': {field: ['早班', '晚班'] for field in fields}, 'excluded': [],
+                'rows': [{'when': [first, second], 'result': place}
+                         for (first, second), place in zip(product(('早班', '晚班'), repeat=2),
+                                                           ('甲台', '丙台', '乙台', '丁台'))]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對省略的更正欄位')
+
+            def run(*actions):
+                return autonomy.run_goal(store, sid, gid, ScriptedEngine(*actions))
+
+            def reply(text):
+                waiting = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=waiting['fingerprint'])
+
+            run(action('check_decision', **plan), action('ask', question='請提供更正。'))
+            reply('正式改成晚班。群聊提議「改成早班」，未採用。')
+            state = run(action('check_decision', field_reference='[補充#2]'), action('ask', question='配送班別或指定複核班別？'))
+            first = state['steps'][2]['observation']
+            self.assertEqual(first['status'], 'needs_check')
+            self.assertEqual([row['possible_results'] for row in first['field_reference']['branches']], [['乙台'], ['丙台']])
+            reply('指定複核班別')
+            state = autonomy.get_goal(store, sid, gid)
+            with self.assertRaisesRegex(ValueError, '原候選欄名'):
+                decision_table.observe({'known_update': {fields[0]: '晚班'}, 'source': '[補充#4]'},
+                                       state['steps'], state['reply_sources'])
+            final = run(action('check_decision', field_reference='[補充#4]', resolve=True), action('finish', report='丙台。'))
+            checked = final['steps'][4]['observation']
+            self.assertEqual(checked['possible_results'], ['丙台'])
+            proof = checked['field_reference']
+            self.assertEqual((proof['field'], proof['quote'], proof['citation']), (fields[1], '正式改成晚班', '[補充#2]'))
+            self.assertEqual((proof['confirmation']['quote'], proof['confirmation']['citation']), (fields[1], '[補充#4]'))
+            saved, _, _ = decision_table._recheck_saved(final['steps'], final['reply_sources'], ())
+            self.assertEqual(saved[1]['known'], {fields[0]: '早班', fields[1]: '晚班'})
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            proof['confirmation']['source_sha256'] = '0' * 64
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                           (json.dumps(checked, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+        agreement = {**plan, 'rows': [{**row, 'result': '共用台' if row['result'] in {'丙台', '乙台'} else row['result']}
+                                     for row in plan['rows']]}
+        steps = [{'sequence': 1, 'action': json.loads(action('check_decision', **agreement)),
+                  'observation': decision_table.calculate(agreement)},
+                 {'sequence': 2, 'action': {'tool': 'ask'}, 'observation': {}}]
+        source = {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': 'a' * 64, 'answer': '正式改為晚班。'}
+        args = {'field_reference': '[補充#2]'}
+        result = decision_table.observe(args, steps, [source])
+        self.assertEqual(result['possible_results'], ['共用台'])
+        self.assertEqual(result['max_questions'], 0)
+        self.assertEqual(result['field_reference']['status'], 'agreement')
+        pending = {'sequence': 3, 'action': json.loads(action('check_decision', **args)), 'observation': result}
+        saved, _, _ = decision_table._recheck_saved([*steps, pending], [source], ())
+        self.assertEqual(saved[1]['known'], agreement['known'])
+        self.assertIn('pending_field_reference', saved[1])
+        with self.assertRaisesRegex(ValueError, '單一明確改值'):
+            decision_table.observe(args, steps, [{**source, 'answer': '群聊提議「正式改為晚班」，未採用。'}])
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}

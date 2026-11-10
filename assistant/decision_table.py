@@ -46,6 +46,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 NATURAL_UPDATE_GUIDANCE += '''
 本輪配對唯一且仍缺規則時，也可讓使用者直接說「這一組正式用西廳」或「本輪正式採用丁台」。同一則可先明寫「入口正式改為西口」，再寫「這一組正式採用丁台」；欄名與值須是原表完整文字。句子以句號或分行分開。可附「群聊提議『換東廳』，未採用」等明確不採用的引述。收到符合的自然原話，用check_decision的{"row_confirmation":"[補充#7]"}（實際來源編號），工具從原話套用正式欄位、確認唯一組合，再核對規則。只轉述或尚未決定就保留待查，不送此動作，也不把提案寫入新表。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+有宣告選項的原表時，若整則補充明確只更改一欄、卻省略欄名，例如「正式改成晚班。」，用check_decision的{"field_reference":"[補充#3]"}核對，並用實際來源。可另列整句明確未採用的提案。工具比對完整選項，逐個可能欄位分開核對。只有唯一候選時直接套用；各候選的確定結果一致時直接交共同結果並保留欄位待查。其餘若使用者需確定結果，先列各分支，只問是哪個欄位，無須重問已知值。收到一個完整欄名，送{"field_reference":"[補充#5]","resolve":true}，引用欄名答覆。最後引用原值的補充及欄名確認。未採用的轉述不進入這個流程；候選未確認時，不先用完整新表或known_update猜欄位。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -427,7 +430,9 @@ _ROW_SENTENCE = re.compile(
 _UNADOPTED_SENTENCE = re.compile(
     r'(?:群聊提議|有人提議|有人建議|轉述|引述)(?:「[^「」]{1,200}」|『[^『』]{1,200}』)[，,] *(?:未採用|不採用|僅供參考)')
 _UNCERTAIN_PLAIN = re.compile(r'不|未|非|暫|待|若|或|可能|但|假設|試算|還要|再確認')
+_FIELDLESS_CHANGE = re.compile(r'(?:這一欄|那一欄|這欄|那欄)?(?:正式)?(?:改為|改成) *(?P<value>.+)')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
+_TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference'}
 
 
 class _RejectedRevision(ValueError):
@@ -447,6 +452,11 @@ def validate_tool(args):
         if (args.keys() != {'row_confirmation'} or not isinstance(args['row_confirmation'], str)
                 or not _REVISION_SOURCE.fullmatch(args['row_confirmation'])):
             raise ValueError('自然規則確認只接受同一目標已保存的補充或更正編號。')
+    elif isinstance(args, dict) and 'field_reference' in args:
+        if (args.keys() not in ({'field_reference'}, {'field_reference', 'resolve'})
+                or not isinstance(args['field_reference'], str) or not _REVISION_SOURCE.fullmatch(args['field_reference'])
+                or ('resolve' in args and args['resolve'] is not True)):
+            raise ValueError('欄位指代核對須引用已保存的補充，確認欄名時另用resolve。')
     elif isinstance(args, dict) and 'known_update' in args:
         if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario', 'alternatives'}
                 or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
@@ -775,15 +785,22 @@ def _unadopted_note(source):
     return clauses and all(_UNADOPTED_SENTENCE.fullmatch(clause) for clause in clauses)
 
 
+def _natural_update_source(citation, base_step, sequence, replies, guidance, what_if_sources):
+    sources = _followup_sources(base_step, sequence, replies, guidance)
+    latest, _ = _latest_source(citation, sources)
+    if any(not _unadopted_note(source) for key, source in sources.items()
+           if key != citation and key not in what_if_sources):
+        raise ValueError('另有尚未核對的補充，請先確認其影響。')
+    return latest
+
+
 def _natural_condition(base, clause):
     for field, values in base['domains'].items():
         if clause == f'{field}正式撤回':
             return field, None
         match = re.fullmatch(rf'{re.escape(field)}正式(?:改為|確認為|確認是) *(.*)', clause)
         if match:
-            value = match[1]
-            if value.startswith('「') and value.endswith('」'):
-                value = value[1:-1]
+            value = _unquote_value(match[1])
             if value in values:
                 return field, value
     return None
@@ -817,11 +834,7 @@ def _apply_natural_row_confirmation(args, previous, sequence, replies, guidance,
     if previous is None or not {'rows', 'domains', 'current_alternatives'} <= previous[1].keys():
         raise ValueError('自然規則確認須先核對本輪配對及原表。')
     base_step, base = previous
-    sources = _followup_sources(base_step, sequence, replies, guidance)
-    latest, _ = _latest_source(args['row_confirmation'], sources)
-    if any(not _unadopted_note(source) for citation, source in sources.items()
-           if citation != latest['citation'] and citation not in what_if_sources):
-        raise ValueError('另有尚未核對的補充，請先確認其影響。')
+    latest = _natural_update_source(args['row_confirmation'], base_step, sequence, replies, guidance, what_if_sources)
     updates, (result, proof) = _natural_row_clauses(base, latest)
     plan, changes = _updated_plan(base, {field: value for field, (value, _) in updates.items()})
     when, missing = _pending_rule_assignment(plan)
@@ -832,6 +845,72 @@ def _apply_natural_row_confirmation(args, previous, sequence, replies, guidance,
     if changes:
         receipt['condition_changes'] = [{**item, 'evidence': updates[item['field']][1]} for item in changes]
     return plan, {**_current_result(plan), 'revision': receipt}
+
+
+def _unquote_value(text):
+    return text[1:-1] if text.startswith('「') and text.endswith('」') else text
+
+
+def _reference_value(source):
+    clauses = [clause for clause in _natural_clauses(_source_text(source))
+               if not _UNADOPTED_SENTENCE.fullmatch(clause) and clause != '其他欄位照舊']
+    if len(clauses) != 1 or not (match := _FIELDLESS_CHANGE.fullmatch(clauses[0])):
+        raise ValueError('省略欄名的更正須是單一明確改值原句。')
+    value = _unquote_value(match['value'])
+    _label(value)
+    return value, _source_excerpt(source, clauses[0])
+
+
+def _choose_reference(base, source):
+    pending = base.get('pending_field_reference')
+    if pending is None:
+        raise ValueError('目前沒有待確認的欄位指代。')
+    clauses = _natural_clauses(_source_text(source))
+    choices = {branch['field'] for branch in pending['branches']}
+    field = _unquote_value(clauses[0]) if len(clauses) == 1 else None
+    if field is not None and field not in choices:
+        field = _unquote_value(re.sub(r'^(?:是|指|確認欄位為) *', '', clauses[0]))
+    if field not in choices:
+        raise ValueError('請只確認先前候選中的一個完整欄名。')
+    core = {key: value for key, value in base.items() if key != 'pending_field_reference'}
+    plan, _ = _updated_plan(core, {field: pending['value']})
+    result = _current_result(plan)
+    if result['status'] == 'no_match':
+        raise ValueError('所選欄位改值與目前可行情境不相容，請確認原條件。')
+    proof = {**pending, 'status': 'applied', 'field': field, 'confirmation': _source_excerpt(source, clauses[0])}
+    return plan, {**result, 'field_reference': proof}
+
+
+def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources):
+    if previous is None or 'domains' not in previous[1]:
+        raise ValueError('欄位指代核對須先有完整選項的原決策表。')
+    base_step, base = previous
+    source = _natural_update_source(args['field_reference'], base_step, sequence, replies, guidance, what_if_sources)
+    if args.get('resolve'):
+        return _choose_reference(base, source)
+    if 'pending_field_reference' in base:
+        raise ValueError('先確認已保存的候選欄位。')
+    value, evidence = _reference_value(source)
+    candidates = [field for field in base['conditions']
+                  if value in base['domains'][field] and base['known'].get(field) != value]
+    if not candidates:
+        raise ValueError('更正值找不到可改的原表欄位。')
+    plans = [_updated_plan(base, {field: value})[0] for field in candidates]
+    results = [_current_result(plan) for plan in plans]
+    proof = {'base_step': base_step, 'base_sha256': digest(base), 'value': value, **evidence,
+             'branches': [{'field': field, **_result_summary(result)} for field, result in zip(candidates, results)]}
+    if len(candidates) == 1:
+        if results[0]['status'] == 'no_match':
+            raise ValueError('更正值與目前可行情境不相容。')
+        return plans[0], {**results[0], 'field_reference': {**proof, 'status': 'applied', 'field': candidates[0]}}
+    agreed = all(result['status'] == 'resolved' and result['possible_results'] == results[0].get('possible_results')
+                 for result in results)
+    proof['status'] = 'agreement' if agreed else 'needs_field'
+    observation = {'status': 'resolved' if agreed else 'needs_check', 'max_questions': 0 if agreed else 1,
+                   'field_reference': proof}
+    if agreed:
+        observation['possible_results'] = results[0]['possible_results']
+    return {**base, 'pending_field_reference': proof}, observation
 
 
 def _bind_alternatives(alternatives, plan, source):
@@ -943,6 +1022,20 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
     return rejected
 
 
+def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources):
+    if 'field_reference' in args:
+        return _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources)
+    if not _TRANSITION_FIELDS & args.keys():
+        return args, calculate(args)
+    if previous is not None and 'pending_field_reference' in previous[1]:
+        raise ValueError('已保存的欄位指代仍待確認，請先確認原候選欄名。')
+    if 'known_update' in args:
+        return _apply_known_update(args, previous, sequence, replies, guidance)
+    if 'row_confirmation' in args:
+        return _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources)
+    return _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)
+
+
 def _recheck_saved(steps, replies, guidance):
     previous = rejected = None
     what_if_sources = set()
@@ -954,14 +1047,7 @@ def _recheck_saved(steps, replies, guidance):
             continue
         args, sequence = action['args'], step['sequence']
         validate_tool(args)
-        if 'revision' in args:
-            plan, expected = _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)
-        elif 'row_confirmation' in args:
-            plan, expected = _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources)
-        elif 'known_update' in args:
-            plan, expected = _apply_known_update(args, previous, sequence, replies, guidance)
-        else:
-            plan, expected = args, calculate(args)
+        plan, expected = _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources)
         actual = {key: value for key, value in step['observation'].items() if key not in _STEP_METADATA}
         if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('決策表結果與保存的可行情境不一致。')
@@ -975,16 +1061,12 @@ def _recheck_saved(steps, replies, guidance):
 
 
 def observe(args, steps, replies=(), guidance=()):
-    if not {'revision', 'known_update', 'row_confirmation'} & args.keys():
+    if not _TRANSITION_FIELDS & args.keys():
         return calculate(args)
     validate_tool(args)
     previous, rejected, what_if_sources = _recheck_saved(steps, replies, guidance)
     sequence = len(steps) + 1
-    if 'known_update' in args:
-        return _apply_known_update(args, previous, sequence, replies, guidance)[1]
-    if 'row_confirmation' in args:
-        return _apply_natural_row_confirmation(args, previous, sequence, replies, guidance, what_if_sources)[1]
-    return _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)[1]
+    return _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources)[1]
 
 
 def validate_saved(db, *, replies_present=False, guidance_present=False):
@@ -997,7 +1079,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                      "AND (action_json LIKE '%\"check_decision\"%' OR action_json LIKE '%\"invalid\"%') "
                      "ORDER BY sequence", (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
-                      and step['action']['args'].keys() & {'revision', 'known_update', 'row_confirmation'} for step in steps)
+                      and step['action']['args'].keys() & _TRANSITION_FIELDS for step in steps)
         replies = goal_reply_sources.read(db, gid, notes) if revised and replies_present else []
         guidance = []
         if revised and guidance_present:

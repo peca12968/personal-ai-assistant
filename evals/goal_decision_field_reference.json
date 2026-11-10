@@ -1,0 +1,46 @@
+[
+  {
+    "id":"unique_literal_option_resolves_unnamed_field",
+    "category":"goal_decision_field_reference",
+    "documents":[
+      {"name":"facts.txt","content":"岬台 J8 原班別早班、入口北口。班別早班或晚班，入口北口或南口，四組都可能。\n"},
+      {"name":"policy.txt","content":"早班不論入口皆送前台。晚班北口送西台，晚班南口送東台。\n"}
+    ],
+    "prompt":"讀兩份首行，先用決策工具核對 J8 原安排，問一次本輪更正。收到後用同一張表核對。如果省略欄名但值只對應一個可改欄位，直接用該欄，不再問。提議另列。",
+    "reply":"正式改成晚班。群聊提議「入口改南口」，未採用。",
+    "criteria":["正式晚班、北口、西台，沒有追問。","晚班原句和未採用提議分開，保留原表。"]
+  },
+  {
+    "id":"different_outcomes_ask_only_for_the_field",
+    "category":"goal_decision_field_reference",
+    "documents":[
+      {"name":"facts.txt","content":"彤岸 C7 原先配送班別早班、複核班別早班。兩個欄位都只有早班或晚班，四組都可能。\n"},
+      {"name":"policy.txt","content":"配送早班且複核早班走甲台。配送晚班且複核早班走乙台。配送早班且複核晚班走丙台。兩欄都是晚班走丁台。\n"}
+    ],
+    "prompt":"讀兩份首行，使用完整欄名配送班別及複核班別，先用決策工具保存 C7 原安排，再問一次更正。如果省略欄名有兩種可能，先列各自去向；只有去向不同才多問一次哪個欄。收到欄名後沿用已提供的值，不重問，交結果及來源。",
+    "replies":["正式改成晚班。", "配送班別"],
+    "criteria":["暫表配送改晚走乙、複核改晚走丙；第二問只確認哪欄。","定稿配送晚班、複核早班、乙台，引用原更正及欄名確認。"]
+  },
+  {
+    "id":"common_outcome_does_not_guess_the_updated_field",
+    "category":"goal_decision_field_reference",
+    "documents":[
+      {"name":"facts.txt","content":"蘆沙 M4 原送樣班別早班、查驗班別早班。兩欄只有早班或晚班，四組都可能。\n"},
+      {"name":"policy.txt","content":"兩欄早班去前台。只有一欄晚班去覆核席。兩欄晚班去後台。\n"}
+    ],
+    "prompt":"讀兩份首行，欄名用送樣班別及查驗班別。先用決策工具核對 M4 原安排，再問一次當天更正。若每種可能指代的去向相同，直接交去向，未確認的更正欄位保留待查。不要重寫原表。",
+    "reply":"正式改為晚班。",
+    "criteria":["兩個可能指代都去覆核席，直接交付不再問。","沒有把任一班別定為晚班、也沒有把兩欄同時改晚；欄位仍待查。"]
+  },
+  {
+    "id":"quoted_change_does_not_become_a_field_reference",
+    "category":"goal_decision_field_reference",
+    "documents":[
+      {"name":"facts.txt","content":"禾院 E2 原登錄班別早班、送件班別早班。各欄只有早班或晚班。\n"},
+      {"name":"policy.txt","content":"兩欄早班去甲台。只有登錄晚班去乙台，只有送件晚班去丙台。兩欄晚班去丁台。\n"}
+    ],
+    "prompt":"讀兩份首行，用決策工具核對 E2 原安排，再問有無更正。只採明確正式更正，若只是提案且原安排維持，直接交原安排和來源。",
+    "reply":"群聊提議「正式改成晚班」，未採用。原安排維持。",
+    "criteria":["仍是兩欄早班、甲台。","未採用提議不觸發欄位選擇，無第二問。"]
+  }
+]
