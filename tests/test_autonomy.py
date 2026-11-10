@@ -329,6 +329,8 @@ class AutonomyTests(unittest.TestCase):
             action('finish', report=f'第 8 行已提供 [D{did}:L8]'))
         result = a.run_goal(self.store, self.sid, gid, engine)
         first, second, no_match, invalid, final = result['steps']
+        self.assertNotIn(a.document_ranges.LOOKUP_EVIDENCE_GUIDANCE, engine.prompts[0])
+        self.assertTrue(all(a.document_ranges.LOOKUP_EVIDENCE_GUIDANCE in p for p in engine.prompts[1:]))
         page = first['observation']
         self.assertEqual(page['total_matching_lines'], 8)
         self.assertEqual(page['next_start_line'], 7)

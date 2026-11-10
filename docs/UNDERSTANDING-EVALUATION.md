@@ -213,6 +213,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_multi_document_lookup.json 核對分散於多份副本的欄位。檢查模型選了哪些適用來源、同名欄位是否留在各自範圍、字面無命中和原文待確認是否區分，以及暫表及定稿是否只追問真正缺項。用獨立查找與備份還原檢查原文位置，保留未匯入或超出範圍的離線控制。
 
+以 evals/goal_evidence_sufficiency.json 比較足夠原文、候選值指向附註、段落採用標記，以及使用者要求完整區段的控制。收集前固定 required_source_rows 作為必要證據下限；其餘回傳行不能一概判定多餘。逐筆看模型在何處補讀、各結論是否受原文支持，並核對完整區段仍按原要求提供。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
