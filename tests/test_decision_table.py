@@ -588,6 +588,71 @@ class DecisionTableTests(unittest.TestCase):
             decision_table.observe(args, steps, replies=[first], guidance=[
                 {**replacement, 'content': '取代｜[補充#2]\n核對#1｜條件｜區位｜南'}])
 
+    def test_natural_known_update_retracts_only_selected_value_and_requires_latest_source(self):
+        plan = {'conditions': ['入口', '證件'], 'known': {'入口': '東', '證件': '有'},
+                'rows': [{'when': [entrance, permit], 'result': '入場' if permit == '有' else '等待'}
+                         for entrance, permit in product(('東', '西'), ('有', '無'))]}
+        step = {'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                'observation': decision_table.calculate(plan)}
+        ask = {'sequence': 2, 'action': {'tool': 'ask'}, 'observation': {}}
+        source = {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': 'b' * 64,
+                  'answer': '證件原值撤回。入口不動。'}
+        args = {'known_update': {'證件': None}, 'source': source['citation']}
+        result = decision_table.observe(args, [step, ask], [source])
+        self.assertEqual(result['possible_results'], ['入場', '等待'])
+        self.assertEqual(result['question']['condition'], '證件')
+        self.assertEqual(result['matching_rows'], [1, 2])
+        self.assertEqual(result['known_update']['changes'], [{'field': '證件', 'before': '有', 'after': None}])
+        self.assertEqual(plan['known'], {'入口': '東', '證件': '有'})
+        with self.assertRaisesRegex(ValueError, '最新且可辨認'):
+            decision_table.observe(args, [step, ask], [source], [
+                {'citation': '[更正#1]', 'steps_seen': 2, 'sha256': 'c' * 64, 'content': '最新補充。'}])
+        with self.assertRaisesRegex(ValueError, '正式格式'):
+            decision_table.observe(args, [step, ask], [{**source, 'answer': '核對#1｜條件｜證件｜無'}])
+        for change in ({'證件': '未發'}, {'證': None}, {'入口': True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                decision_table.observe({**args, 'known_update': change}, [step, ask], [source])
+
+    def test_natural_what_if_keeps_actual_base_for_later_formal_revision_and_restore(self):
+        plan = {'conditions': ['班別', '門證'], 'domains': {'班別': ['早', '晚'], '門證': ['有', '無']},
+                'known': {'班別': '早', '門證': '有'}, 'excluded': [['晚', '無']],
+                'rules': [{'priority': 0, 'when': {}, 'result': '前台'},
+                          {'priority': 1, 'when': {'班別': '晚'}, 'result': '南席'}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對實際及假設安排')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='請提供試算條件。')))
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '試算晚班，原安排維持早班。',
+                              expected_fingerprint=waiting['fingerprint'])
+            initial = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', known_update={'班別': '晚'}, source='[補充#2]', what_if=True),
+                action('ask', question='請提供正式條件。')))
+            trial = initial['steps'][2]['observation']
+            self.assertEqual(trial['possible_results'], ['前台'])
+            self.assertEqual(trial['what_if_result']['possible_results'], ['南席'])
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '核對#1｜條件｜門證｜無',
+                              expected_fingerprint=waiting['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[補充#4]'), action('finish', report='本次前台。')))
+            checked = final['steps'][4]['observation']
+            self.assertEqual(checked['possible_results'], ['前台'])
+            self.assertEqual(checked['revision']['base_step'], 1)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            changed = {**trial, 'what_if_result': {'possible_results': ['假結論']}}
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                           (json.dumps(changed, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

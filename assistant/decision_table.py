@@ -27,6 +27,8 @@ disputed_relations列出參與矛盾循環的原連線，工具不以它們推�
 
 REPLACEMENT_GUIDANCE = '''正式整批補充被check_decision退回後，需要補正時，只問一次完整的新補充。請使用者在首行寫「取代｜[補充#3]」（用實際退回的補充或更正編號），接著寫一至四行原核對編號與要採用的更正。收到後仍用{"revision":"[補充#5]"}，只傳新補充的實際編號。新補充取代整批退回內容，未重述欄位沿用原核對。revision.replaces保存上次退回步驟、來源與原因。若新批再因內容無效被退回，下次須指向該次退回的來源。取代編號不符時保留原核對，依要求交代原因或請使用者確認，勿把未核實的值改送完整表。'''
 
+NATURAL_UPDATE_GUIDANCE = '''同一目標已有決策核對及最新自然語句補充，且只需調整已知欄位時，用check_decision的{"known_update":{"區位":"南","門證":null},"source":"[補充#3]"}，填實際來源及完整欄名。只轉錄本次明確更正的值；原值撤回、改為待查，或原先確認值已不能再沿用時，填null移除已知值，不能寫成相反值。未改的欄位及原表規則由工具沿用。程式核對來源位置、欄位及相容性，文字是否支持轉錄須由你先核對。舊值、未採用提案、另案及引述不成為本次事實。若回覆只說「其中一欄變了」，這是目前待澄清的欄位，不會增加原表的 excluded。若哪一欄變動會影響本次決定，直接問一次是哪欄，等確定後以原核對做 known_update；無須先重算一張加入臨時排除的表。若缺漏不會改變使用者要的結果，保留未知後直接交付。若只求假設試算，加"what_if":true，試算結果在what_if_result，頂層仍為本次實際核對，原表及本次條件不改。正式格式維持revision；要修改規則或選項時沿用完整核對。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -369,6 +371,16 @@ def validate_tool(args):
                 or not _REVISION_SOURCE.fullmatch(args['revision'])
                 or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
+    elif isinstance(args, dict) and 'known_update' in args:
+        if (set(args) not in ({'known_update', 'source'}, {'known_update', 'source', 'what_if'})
+                or not isinstance(args['source'], str) or not _REVISION_SOURCE.fullmatch(args['source'])
+                or ('what_if' in args and type(args['what_if']) is not bool)
+                or not isinstance(args['known_update'], dict) or not 1 <= len(args['known_update']) <= 5):
+            raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
+        for field, value in args['known_update'].items():
+            _label(field)
+            if value is not None:
+                _label(value)
     else:
         validate(args)
 
@@ -468,13 +480,24 @@ def _revision_comparison(base, plan, changes, result):
     return comparison
 
 
-def _revision_source(citation, base_step, sequence, replies, guidance, rejected):
+def _followup_sources(base_step, sequence, replies, guidance):
     sources = {row['citation']: row for row in replies if base_step < row['ask_sequence'] < sequence}
     sources.update((row['citation'], row) for row in guidance if base_step <= row['steps_seen'] < sequence)
+    return sources
+
+
+def _source_text(source):
+    return source.get('answer', source.get('content'))
+
+
+def _revision_source(citation, base_step, sequence, replies, guidance, rejected, what_if_sources):
+    sources = _followup_sources(base_step, sequence, replies, guidance)
+    for ignored in what_if_sources:
+        sources.pop(ignored, None)
     source = sources.get(citation)
     if source is None:
         raise ValueError('局部重算須引用最新核對後唯一保存的正式補充或更正。')
-    text = source.get('answer', source.get('content'))
+    text = _source_text(source)
     header, _, body = text.partition('\n')
     if header.startswith('取代｜'):
         replaces = rejected['receipt'] if rejected else None
@@ -502,12 +525,12 @@ def _revision_plan(base_step, base, text):
     return plan, changes, calculate(plan)
 
 
-def _apply_revision(args, previous, sequence, replies, guidance, rejected):
+def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources):
     if previous is None:
         raise ValueError('局部重算需有同一目標已保存的決策核對。')
     base_step, base = previous
     source, text, replaces, citations = _revision_source(args['revision'], base_step, sequence, replies, guidance,
-                                                         rejected)
+                                                         rejected, what_if_sources)
     try:
         plan, changes, result = _revision_plan(base_step, base, text)
         if (replaces is not None or len(changes) > 1) and result['status'] == 'no_match':
@@ -529,6 +552,42 @@ def _apply_revision(args, previous, sequence, replies, guidance, rejected):
     return plan, {**result, 'revision': receipt}
 
 
+def _apply_known_update(args, previous, sequence, replies, guidance):
+    if previous is None:
+        raise ValueError('已知欄位重算需有同一目標已保存的決策核對。')
+    base_step, base = previous
+    sources = _followup_sources(base_step, sequence, replies, guidance)
+    positions = {citation: row.get('steps_seen', row.get('ask_sequence')) for citation, row in sources.items()}
+    latest = max(positions.values(), default=-1)
+    if [citation for citation, step in positions.items() if step == latest] != [args['source']]:
+        raise ValueError('已知欄位重算須引用本次最新且可辨認的補充。')
+    source = sources[args['source']]
+    if _source_text(source).startswith(('核對#', '取代｜')):
+        raise ValueError('正式更正須以原話的正式格式重算。')
+    domains = base.get('domains')
+    if domains is None:
+        domains = dict(zip(base['conditions'], zip(*(row['when'] for row in base['rows']))))
+    known = dict(base['known'])
+    changes = []
+    for field, value in args['known_update'].items():
+        if field not in domains or (value is not None and value not in domains[field]):
+            raise ValueError('已知欄位重算須使用原表欄名及選項。')
+        changes.append({'field': field, 'before': known.get(field), 'after': value})
+        if value is None:
+            known.pop(field, None)
+        else:
+            known[field] = value
+    plan = {**base, 'known': known}
+    result = calculate(plan)
+    receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': args['source'],
+               'source_sha256': source['sha256'], 'changes': changes}
+    if args.get('what_if'):
+        return base, {**calculate(base), 'known_update': receipt, 'what_if_result': result}
+    if result['status'] == 'no_match':
+        raise ValueError('更新值與原表的可行情境不相容，原核對保留。')
+    return plan, {**result, 'known_update': receipt}
+
+
 def failed_revision(step):
     observation = step['observation']
     failed = observation.get('failed_action')
@@ -539,13 +598,13 @@ def failed_revision(step):
     return args if isinstance(args, dict) and 'revision' in args else None
 
 
-def _verified_rejection(step, previous, replies, guidance, rejected):
+def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sources):
     args = failed_revision(step)
     if args is None:
         return rejected
     try:
         validate_tool(args)
-        _apply_revision(args, previous, step['sequence'], replies, guidance, rejected)
+        _apply_revision(args, previous, step['sequence'], replies, guidance, rejected, what_if_sources)
     except _RejectedRevision as exc:
         if step['observation'].get('error') == str(exc):
             return {'citations': exc.citations, 'receipt': {'step': step['sequence'],
@@ -557,32 +616,42 @@ def _verified_rejection(step, previous, replies, guidance, rejected):
 
 def _recheck_saved(steps, replies, guidance):
     previous = rejected = None
+    what_if_sources = set()
     for step in steps:
         action = step['action']
         if action.get('tool') == 'invalid':
-            rejected = _verified_rejection(step, previous, replies, guidance, rejected)
+            rejected = _verified_rejection(step, previous, replies, guidance, rejected, what_if_sources)
         if action.get('tool') != 'check_decision':
             continue
         args, sequence = action['args'], step['sequence']
         validate_tool(args)
         if 'revision' in args:
-            plan, expected = _apply_revision(args, previous, sequence, replies, guidance, rejected)
+            plan, expected = _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)
+        elif 'known_update' in args:
+            plan, expected = _apply_known_update(args, previous, sequence, replies, guidance)
         else:
             plan, expected = args, calculate(args)
         actual = {key: value for key, value in step['observation'].items() if key not in _STEP_METADATA}
         if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('決策表結果與保存的可行情境不一致。')
+        if args.get('what_if'):
+            what_if_sources.add(args['source'])
+            continue
         previous = sequence, plan
         rejected = None
-    return previous, rejected
+        what_if_sources.clear()
+    return previous, rejected, what_if_sources
 
 
 def observe(args, steps, replies=(), guidance=()):
-    if 'revision' not in args:
+    if 'revision' not in args and 'known_update' not in args:
         return calculate(args)
     validate_tool(args)
-    previous, rejected = _recheck_saved(steps, replies, guidance)
-    return _apply_revision(args, previous, len(steps) + 1, replies, guidance, rejected)[1]
+    previous, rejected, what_if_sources = _recheck_saved(steps, replies, guidance)
+    sequence = len(steps) + 1
+    if 'known_update' in args:
+        return _apply_known_update(args, previous, sequence, replies, guidance)[1]
+    return _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources)[1]
 
 
 def validate_saved(db, *, replies_present=False, guidance_present=False):
@@ -595,7 +664,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                      "AND (action_json LIKE '%\"check_decision\"%' OR action_json LIKE '%\"invalid\"%') "
                      "ORDER BY sequence", (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
-                      and 'revision' in step['action'].get('args', {}) for step in steps)
+                      and step['action']['args'].keys() & {'revision', 'known_update'} for step in steps)
         replies = goal_reply_sources.read(db, gid, notes) if revised and replies_present else []
         guidance = []
         if revised and guidance_present:

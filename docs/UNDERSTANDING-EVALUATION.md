@@ -229,6 +229,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_decision_replacement.json 核對退回後的完整補正、未重述的欄位、錯誤取代編號及連續退回。分開評讀定稿和實際工具是否保存原核對、重驗退回原因及採用新來源。還原時重新比對工具退回及來源，先前已保存的單筆及整批重算照原規則核對。
 
+以 evals/goal_natural_decision_updates.json 評讀日常補充中的當前更正、撤回、欄位歧義、與結果無關的缺漏及假設。分開核對模型對原話的理解與工具保留原表的結果。工具驗證最新來源、欄位、選項及相容性，還原時分開核對實際值和試算值。記錄額外追問和工具呼叫，模型轉錄仍須依原話評讀。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
