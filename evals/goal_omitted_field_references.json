@@ -1,0 +1,83 @@
+[
+  {
+    "id": "known_regression_moved_total_in_parallel_clause",
+    "category": "goal_omitted_field_references",
+    "documents": [
+      {"name": "north.txt", "content": "北倉原有 18 箱，已移走 5 箱。\n"},
+      {"name": "south.txt", "content": "南倉原有 24 箱，已移走 7 箱。\n"}
+    ],
+    "prompt": "做兩倉留存表。工作項目用「北倉留存」及「南倉留存」。讀兩份文件首行，分別用精確算式，先保存已核對的清單、逐運算元原話和暫表，啟用交付核對，問最後有無異動。若後續有暫未定的數量，只補問會影響該欄的資訊，並保留另一倉目前可確認的值。最終交兩倉正式結果及各自來源。",
+    "replies": [
+      "北倉正式更正為移走 6 箱。若南倉交接沒有補登，才維持原數，目前還在等確認。",
+      "南倉正式確認另補登 2 箱，移走總數為 9 箱。北倉剛才的正式更正照舊。"
+    ],
+    "criteria": [
+      "第二問只問南倉正式移走總數，或等價的原移走數／補登後移走總數。保留南倉原有24及北倉已確認12。",
+      "定稿北12、南15，原移走7、補登2與正式移走9分開。"
+    ]
+  },
+  {
+    "id": "parallel_unchanged_field_uses_its_own_document_value",
+    "category": "goal_omitted_field_references",
+    "documents": [
+      {"name": "alpha.txt", "content": "禾浦甲批複核員是唐同仁，接收人是曾同仁。\n"},
+      {"name": "beta.txt", "content": "禾浦乙批複核員是吳同仁，接收人是余同仁。\n"}
+    ],
+    "prompt": "讀兩份文件首行，做甲乙兩批各自的複核員與接收人對照。先暫列並問今天有無正式異動，再交定稿及依據。兩批的欄位分開。",
+    "reply": "甲批複核改由阮同仁，乙批照原來那位。乙批接收人另改江同仁。沒提到的照各自文件。",
+    "criteria": [
+      "直接交甲複核阮、接收曾，乙複核吳、接收江。乙照舊接回複核欄及乙的原值，不沿用甲的阮。只問初次異動一次，各自有來源。"
+    ]
+  },
+  {
+    "id": "parallel_pending_adjustment_keeps_the_other_inputs",
+    "category": "goal_omitted_field_references",
+    "documents": [
+      {"name": "pine.txt", "content": "溪松甲批原有 43 片，原記裂損 5 片。出貨窗口是霍同仁。\n"},
+      {"name": "elm.txt", "content": "溪松乙批原有 39 片，原記裂損 4 片。出貨窗口是包同仁。\n"}
+    ],
+    "prompt": "查兩份首行，先給甲乙可出貨片數及各自窗口的暫表，問最後更正，之後交可出貨正式數及依據。可出貨等於原有減裂損。必要欄位待定時只問缺項。",
+    "replies": [
+      "甲批裂損改記 6 片；乙批那筆等晚班補登才結數。兩個窗口都照原記錄。",
+      "乙批正式裂損總數是 7 片，已包含晚班補登。"
+    ],
+    "criteria": [
+      "第二問只問乙批正式裂損總數，保留乙原有39、窗口包與甲可出37，不追問原有或窗口。",
+      "定稿甲37、乙32，兩窗口各自保留，乙原裂損4與正式總數7分開。"
+    ]
+  },
+  {
+    "id": "ambiguous_delta_only_needs_the_target_field",
+    "category": "goal_omitted_field_references",
+    "documents": [
+      {"name": "stock.txt", "content": "橙亭本批原有 32 件。\n"},
+      {"name": "moved.txt", "content": "橙亭本批已移出 8 件。\n"}
+    ],
+    "prompt": "查兩份文件首行，先給橙亭留存暫表並問是否更正，再給正式留存。留存是原有減已移出。保留兩欄原值與更正來源。",
+    "replies": [
+      "橙亭核定要補登 3 件，只會加到一欄。單據沒寫是加到原有還是已移出，另一欄照原文，沒有其他異動。",
+      "補登是加到已移出。"
+    ],
+    "criteria": [
+      "第二問只確認3件應加到原有還是已移出，不重問數量、不猜採用欄。暫表保留原有32、原移出8、待歸欄的已確定增量3。",
+      "兩筆補充合用，正式移出11，原有仍32，正式留存21。原移出8及增量3可追溯。"
+    ]
+  },
+  {
+    "id": "explicit_topic_shift_overrides_neighboring_quantity",
+    "category": "goal_omitted_field_references",
+    "documents": [
+      {"name": "bay.txt", "content": "柳埠南區裝袋 22 袋，星期二上午交接。\n"},
+      {"name": "bank.txt", "content": "柳埠北區裝袋 18 袋，星期三上午交接。\n"}
+    ],
+    "prompt": "做柳埠南北區交接表。查兩份首行，先給暫表並問異動，再交各區裝袋數與正式交接時間和來源。",
+    "replies": [
+      "南區裝袋數正式改為 25 袋。另一件事，北區交接時間等補登後才有正式值。南區時間照原文，北區裝袋數已確認不變。",
+      "北區交接改為星期四下午。"
+    ],
+    "criteria": [
+      "第二問只問北區正式交接時間，保留南25及星期二上午、北18，不追問數量。",
+      "定稿南25星期二上午、北18星期四下午，原時間和新時間來源分清。"
+    ]
+  }
+]
