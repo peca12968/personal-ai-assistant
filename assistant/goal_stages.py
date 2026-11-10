@@ -167,8 +167,12 @@ def activity(row):
     if tool in ('check_decision', 'check_source_decision'):
         decision = observation['decision'] if tool == 'check_source_decision' else observation
         results = decision.get('possible_results', decision.get('recorded_results', []))
-        outcome.update(status=decision['status'], matching_row_count=len(decision.get('matching_rows', [])),
-                       decision_rows_omitted=True)
+        if 'priority_cases' in decision:
+            outcome.update(status=decision['status'], priority_case_count=len(decision['priority_cases']),
+                           needs_evidence=decision.get('needs_evidence', False), decision_rows_omitted=True)
+        else:
+            outcome.update(status=decision['status'], matching_row_count=len(decision.get('matching_rows', [])),
+                           decision_rows_omitted=True)
         result_count = 'recorded_result_count' if 'recorded_results' in decision else 'possible_result_count'
         outcome[result_count] = len(results)
         if 'coverage' in decision:

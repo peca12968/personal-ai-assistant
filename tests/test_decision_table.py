@@ -90,6 +90,78 @@ class DecisionTableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '全部組合最多32'):
             decision_table.calculate(big)
 
+    def test_priority_rules_keep_overrides_and_select_the_next_condition(self):
+        plan = {'conditions': ['西門', '東門', '類別'], 'known': {}, 'excluded': [],
+                'domains': {'西門': ['有', '無'], '東門': ['有', '無'], '類別': ['甲', '乙']},
+                'rules': [{'priority': 0, 'when': {}, 'result': '待命'},
+                          {'priority': 1, 'when': {'西門': '有'}, 'result': '西台'},
+                          {'priority': 2, 'when': {'類別': '乙'}, 'result': '待命'},
+                          {'priority': 3, 'when': {'類別': '乙', '東門': '有'}, 'result': '東台'}]}
+        before = decision_table.calculate(plan)
+        self.assertEqual((before['status'], before['question']['condition'], before['max_questions']),
+                         ('needs_check', '類別', 2))
+        self.assertEqual(before['priority_cases'][1], {
+            'when': ['有', '有', '乙'], 'status': 'resolved', 'priority': 3,
+            'winning_rules': [4], 'overridden_rules': [1, 2, 3], 'recorded_results': ['東台']})
+        after = decision_table.calculate({**plan, 'known': {'類別': '乙'}})
+        self.assertEqual((after['question']['condition'], after['max_questions']), ('東門', 1))
+        final = decision_table.calculate({**plan, 'known': {'類別': '乙', '東門': '有'}})
+        self.assertEqual((final['status'], final['possible_results']), ('resolved', ['東台']))
+        self.assertNotIn('question', final)
+
+    def test_priority_rules_separate_conflict_missing_and_explicit_exclusion(self):
+        plan = {'conditions': ['分級'], 'domains': {'分級': ['低', '高', '待', '免']},
+                'known': {}, 'excluded': [['免']],
+                'rules': [{'priority': 0, 'when': {'分級': '低'}, 'result': '前台'},
+                          {'priority': 1, 'when': {'分級': '高'}, 'result': '甲'},
+                          {'priority': 1, 'when': {'分級': '高'}, 'result': '乙'}]}
+        report = decision_table.calculate(plan)
+        self.assertEqual(report['status'], 'incomplete_table')
+        self.assertEqual(report['recorded_results'], ['前台', '甲', '乙'])
+        self.assertEqual(report['coverage'], {
+            'missing_rows': [['待']], 'conflicting_rows': [{'when': ['高'], 'rules': [2, 3], 'results': ['甲', '乙']}],
+            'excluded_rows': [['免']]})
+        self.assertEqual(report['question']['branches'], [
+            {'value': '低', 'max_questions': 0, 'possible_results': ['前台'], 'needs_evidence': False},
+            {'value': '高', 'max_questions': 0, 'possible_results': [], 'needs_evidence': True},
+            {'value': '待', 'max_questions': 0, 'possible_results': [], 'needs_evidence': True}])
+        high = decision_table.calculate({**plan, 'known': {'分級': '高'}})
+        self.assertTrue(high['needs_evidence'])
+        self.assertNotIn('question', high)
+        excluded = decision_table.calculate({**plan, 'known': {'分級': '免'}})
+        self.assertEqual((excluded['status'], excluded['possible_results']), ('no_match', []))
+
+    def test_priority_rules_validate_bounds_and_saved_winners(self):
+        default = {'priority': 0, 'when': {}, 'result': '前台'}
+        plan = {'conditions': ['級別'], 'domains': {'級別': ['高', '低']},
+                'known': {'級別': '高'}, 'excluded': [], 'rules': [default,
+                    {'priority': 1, 'when': {'級別': '高'}, 'result': '側架'}]}
+        for rule in ({**default, 'priority': True}, {**default, 'when': {'級別': '外'}},
+                     {**default, 'when': {'版號': '甲'}}, {**default, 'priority': 101}):
+            with self.subTest(rule=rule), self.assertRaises(ValueError):
+                decision_table.calculate({**plan, 'rules': [rule]})
+        with self.assertRaises(ValueError):
+            decision_table.calculate({**plan, 'rules': [default] * 17})
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對分級處置')
+            state = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', **plan), action('finish', report='送側架。')))
+            backup = create_backup(store.path)
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), state)
+            observation = state['steps'][0]['observation']
+            self.assertEqual(observation['priority_cases'][0]['winning_rules'], [2])
+            observation['priority_cases'][0]['winning_rules'] = [1]
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=1',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

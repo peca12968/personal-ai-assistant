@@ -10,7 +10,9 @@ GUIDANCE = '''check_decision: {"conditions":["入口","通行證"],"rows":[{"whe
 若已知各欄完整選項，且各種組合皆可發生或已明文排除例外，另傳domains（如{"入口":["北門","南門"],"通行證":["有","無"]}）與excluded（依欄位順序列明文排除的組合，沒有則[]）。此模式各欄選項組合最多32種。保留已公布的對應；不同同級資料若針對同一組合給不同結果，在rows為該組合分列，不自行選定。只有明文不可能或排除的組合放excluded，缺規則與另案安排都不是排除，也不能代填缺列。分清兩份表是否適用同一事項。無法確定適用範圍或完整選項時沿用一般分析。收到正式補充後只新增有效對應或修正已解決的列，保留舊來源及適用範圍。
 incomplete_table表示目前相容組合中有缺列或不同結果。coverage列出相容的缺列、衝突與明文排除，recorded_results僅為已記載結果。保留仍有來源的部分；需要唯一結果時，只問影響本次決策的處置規則或哪份說法生效，勿重問已確認欄位。收到可解決缺列或衝突的正式補充後，先更新該筆對應並再次執行check_decision，再交付。其餘適用的欄位、規則和排除照原資料，舊步驟保留。要求只交條件式成果時，標示缺漏或衝突，不追問。其他範圍的缺列不阻擋本次可確定的結果。
 matching_rows是所送表格的1起算列號，並非原文件行號。resolved表示符合已知條件的各列結果相同，直接交付並保留無須核對的欄位為待查。needs_check時，question給最少化最壞追問輪數的第一欄與各答案可能結果，同分依表列欄位順序。若使用者需要唯一結果且允許提問，先交仍有依據的暫表，只問該欄；收到確定答覆後，沿用相同表列，只更新known並重算。若使用者只要條件式交付或明確不提問，保留所有相容分支後直接交付。no_match表示已知值與所送表列不相容，核對適用範圍及來源，不補造結論。
-這個工具只計算送入的對照表，不能證明表格完整性或條件已核對。保留原需求和已知欄位，原文、使用者更正及回覆仍各用相應來源。'''
+這個工具只計算送入的對照表，不能證明表格完整性或條件已核對。保留原需求和已知欄位，原文、使用者更正及回覆仍各用相應來源。
+原文已明定可行情境、規則優先級及同級衝突時，優先用rules取代rows，讓程式展開並核對每個相容情境，並提供conditions、domains、excluded、known。例如rules為[{"priority":0,"when":{},"result":"前台"},{"priority":2,"when":{"級別":"高"},"result":"南架"}]。最多16條，priority為0至100整數且較大優先，只按原文明定關係轉錄。when只列該規則明定的限制，空物件只用於明文通用規則。不要推定最後一條或較具體的規則優先。
+priority_cases逐一列適用的最高級規則、被覆蓋規則和仍缺依據的情境。同級有不同處置時保留各結果；沒有適用規則時保留缺口。winning_rules及overridden_rules是所送規則的1起算編號，引用仍用已讀的實際原行。若有question，先確認會區分結果或是否需要來源的欄位。max_questions只計確認欄位，不計補正式規則。沒有可區分的欄位且needs_evidence為真時，核對仍缺的依據。收到確認值後沿用同一規則重算。只要條件式暫表時按要求交付，不追問。'''
 
 
 def _label(value):
@@ -57,10 +59,11 @@ def _declared_scenarios(args, conditions):
 
 
 def validate(args):
-    base = {'conditions', 'rows', 'known'}
-    if not isinstance(args, dict) or set(args) not in (base, base | {'domains', 'excluded'}):
-        raise ValueError('決策表需提供conditions、rows與known，可同時提供domains及excluded。')
-    conditions, rows, known = args['conditions'], args['rows'], args['known']
+    base = {'conditions', 'known'}
+    cases = {'domains', 'excluded'}
+    if not isinstance(args, dict) or set(args) not in (base | {'rows'}, base | cases | {'rows'}, base | cases | {'rules'}):
+        raise ValueError('決策表需提供conditions、known及rows，或提供domains、excluded及分級rules。')
+    conditions, known = args['conditions'], args['known']
     if not isinstance(conditions, list) or not 1 <= len(conditions) <= 5:
         raise ValueError('決策表需有1至5個條件。')
     for name in conditions:
@@ -72,6 +75,10 @@ def validate(args):
     for value in known.values():
         _label(value)
     declared, excluded = _declared_scenarios(args, conditions)
+    if 'rules' in args:
+        _validate_priority_rules(args['rules'], args['domains'])
+        return declared, excluded
+    rows = args['rows']
     minimum = 1 if declared is None else 0
     if not isinstance(rows, list) or not minimum <= len(rows) <= 32:
         raise ValueError('決策表最多32列；未宣告欄位選項時至少需要一列。')
@@ -94,6 +101,24 @@ def validate(args):
     if any(len(set(values)) > 4 for values in zip(*assignments)):
         raise ValueError('每個條件最多4種表列值。')
     return declared, excluded
+
+
+def _validate_priority_rules(rules, domains):
+    if not isinstance(rules, list) or not 1 <= len(rules) <= 16:
+        raise ValueError('分級決策需提供1至16條明文規則。')
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) != {'priority', 'when', 'result'}:
+            raise ValueError('分級規則須提供priority、when及result。')
+        priority, condition = rule['priority'], rule['when']
+        if type(priority) is not int or not 0 <= priority <= 100:
+            raise ValueError('規則優先級須為0至100的整數。')
+        if not isinstance(condition, dict) or not condition.keys() <= domains.keys():
+            raise ValueError('規則條件須使用宣告欄名。')
+        for field, value in condition.items():
+            _label(value)
+            if value not in domains[field]:
+                raise ValueError('規則條件值須為宣告選項。')
+        _label(rule['result'])
 
 
 def question_order(assignments, labels, active):
@@ -121,8 +146,55 @@ def question_order(assignments, labels, active):
     return depth, first, branches
 
 
+def _priority_case(assignment, conditions, rules):
+    values = dict(zip(conditions, assignment))
+    matched = [(index, rule) for index, rule in enumerate(rules, 1)
+               if all(values[field] == value for field, value in rule['when'].items())]
+    priority = max((rule['priority'] for _, rule in matched), default=None)
+    winning = [(index, rule['result']) for index, rule in matched if rule['priority'] == priority]
+    outcomes = list(dict.fromkeys(result for _, result in winning))
+    status = 'missing_rule' if not winning else 'resolved' if len(outcomes) == 1 else 'conflicting_rules'
+    return {'when': list(assignment), 'status': status, 'priority': priority,
+            'winning_rules': [index for index, _ in winning],
+            'overridden_rules': [index for index, rule in matched if rule['priority'] != priority],
+            'recorded_results': outcomes}
+
+
+def _calculate_priority(args, declared, excluded):
+    conditions, known, rules = args['conditions'], args['known'], args['rules']
+    fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
+    compatible = [row for row in declared if all(row[index] == value for index, value in fixed)]
+    cases = [_priority_case(row, conditions, rules) for row in compatible if row not in excluded]
+    observation = {'priority_cases': cases, 'coverage': {
+        'missing_rows': [case['when'] for case in cases if case['status'] == 'missing_rule'],
+        'conflicting_rows': [{'when': case['when'], 'rules': case['winning_rules'], 'results': case['recorded_results']}
+                             for case in cases if case['status'] == 'conflicting_rules'],
+        'excluded_rows': [list(row) for row in compatible if row in excluded],
+    }}
+    if not cases:
+        return {'status': 'no_match', **observation, 'possible_results': []}
+    labels = [case['recorded_results'][0] if case['status'] == 'resolved' else None for case in cases]
+    depth, first, groups = question_order([case['when'] for case in cases], labels, tuple(range(len(cases))))
+    needs_evidence = None in labels
+    results = list(dict.fromkeys(result for case in cases for result in case['recorded_results']))
+    observation.update(max_questions=depth, needs_evidence=needs_evidence)
+    if first is not None:
+        branches = []
+        for value, indices, remaining in groups:
+            outcomes = list(dict.fromkeys(labels[index] for index in indices))
+            branches.append({'value': value, 'max_questions': remaining,
+                             'possible_results': [outcome for outcome in outcomes if outcome is not None],
+                             'needs_evidence': None in outcomes})
+        observation['question'] = {'condition': conditions[first], 'branches': branches}
+    if needs_evidence:
+        return {'status': 'incomplete_table', **observation, 'recorded_results': results}
+    return {'status': 'resolved' if first is None else 'needs_check', **observation, 'possible_results': results}
+
+
 def calculate(args):
     declared, excluded = validate(args)
+    if 'rules' in args:
+        return _calculate_priority(args, declared, excluded)
     conditions, rows, known = args['conditions'], args['rows'], args['known']
     fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
     def matches(assignment):

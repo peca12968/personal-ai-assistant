@@ -215,6 +215,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_evidence_sufficiency.json 比較足夠原文、候選值指向附註、段落採用標記，以及使用者要求完整區段的控制。收集前固定 required_source_rows 作為必要證據下限；其餘回傳行不能一概判定多餘。逐筆看模型在何處補讀、各結論是否受原文支持，並核對完整區段仍按原要求提供。
 
+以 evals/goal_priority_rules.json 核對高級覆蓋、重疊規則的先問欄位、同級衝突與低分類直接交付。逐條比對模型傳入的優先級、原文條件與已確認值。另以獨立枚舉驗證相容情境、規則採用及最少追問。程式核算輪數只含欄位，補正式來源另計。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
