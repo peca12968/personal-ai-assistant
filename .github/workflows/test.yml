@@ -75,6 +75,7 @@ jobs:
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_quantity_adoption_scope.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_quantity_branches.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_aligned_quantity_branches.json
+      - run: python scripts/evaluate_goal_replies.py --suite evals/goal_quantity_field_batch.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_scoped_amendments.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_withdrawn_questions.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_questions.json

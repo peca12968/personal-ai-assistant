@@ -1,0 +1,43 @@
+[
+  {
+    "id": "one_shared_adoption_check_for_three_versioned_fields",
+    "category": "goal_quantity_field_batch",
+    "documents": [
+      {"name": "stock.txt", "content": "版本「晚班」欄位「青潭本批原備」為 52 件。\n版本「早班」欄位「青潭本批原備」為 46 件。\n"},
+      {"name": "deductions.txt", "content": "版本「早班」欄位「青潭本批退回」為 6 件。\n版本「晚班」欄位「青潭本批退回」為 9 件。\n版本「晚班」欄位「青潭本批留驗」為 4 件。\n版本「早班」欄位「青潭本批留驗」為 3 件。\n"},
+      {"name": "adoption.txt", "content": "欄位「青潭本批退回」｜採用版本｜早班\n欄位「青潭本批退回」｜採用版本｜晚班\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「青潭本批退回」｜[D3:L1-L2]\n讀 [D1:L1-L2]、[D2:L1-L4] 和採用範圍。用退回欄的採用記載列候選，原備、退回及留驗均按完整版本名配對。各版可交量為原備減退回再減留驗，逐版附算式、數值與採用來源。只交條件結果，不追問、不合計。",
+    "criteria": ["早班46減6再減3得37件，晚班52減9再減4得39件。三欄及兩筆採用來源各自對應。無追問、合計或正式量。另查三欄是否一次完成核對。"]
+  },
+  {
+    "id": "unread_adoption_line_and_missing_versioned_field_survive_batch",
+    "category": "goal_quantity_field_batch",
+    "documents": [
+      {"name": "counts.txt", "content": "版本「巡核」欄位「北棧本批原備」為 36 盒。\n版本「巡核」欄位「北棧本批退回」為 5 盒。\n版本「登錄」欄位「北棧本批退回」為 3 盒。\n"},
+      {"name": "partial.txt", "content": "欄位「北棧本批退回」｜採用版本｜巡核\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「北棧本批退回」｜[D2:L1-L2]\n讀 [D1:L1-L3] 與能讀到的採用行。按同版原備減退回試算巡核及登錄的可交量。保留缺少的採用行和缺少的同版數字，已有數字逐欄引用。只交各版的條件結果，無需追問或定稿。",
+    "criteria": ["巡核36減5得31盒，登錄退回3但缺原備，保留待查。D2第2行缺漏，已有採用巡核原文有引用。無提問、正式量或跨版代用。另查分支與共同缺行紀錄。"]
+  },
+  {
+    "id": "batch_keeps_independent_adoption_and_missing_unit_separate",
+    "category": "goal_quantity_field_batch",
+    "documents": [
+      {"name": "counts.txt", "content": "版本「甲」欄位「湖架本批原備」為 50 包。\n版本「乙」欄位「湖架本批原備」為 55 包。\n版本「甲」欄位「湖架本批退回」為 5 包。\n版本「乙」欄位「湖架本批退回」為 8。\n"},
+      {"name": "register.txt", "content": "欄位「湖架本批退回」｜採用版本｜甲\n欄位「湖架本批退回」｜採用版本｜乙\n欄位「湖架本批原備」｜採用版本｜乙\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「湖架本批退回」｜[D2:L1-L3]\n讀 [D1:L1-L4] 和採用範圍。以本批退回採用列兩個版本，逐版按同版原備減退回核算可交量。明文採用限制或缺單位時保留數字、來源和各自缺口，不給該版結果，也不要追問。",
+    "criteria": ["甲原備50未採用，甲退回5仍可引用。乙原備55可引用，退回8缺單位。兩版各有不同缺口，無可交量及追問。另查兩個結構化分支未產生算式結果。"]
+  },
+  {
+    "id": "ordinary_single_field_uses_formal_adoption_without_batch",
+    "category": "goal_quantity_field_batch",
+    "documents": [
+      {"name": "counts.txt", "content": "松架本批原備 41 瓶。\n版本「初」欄位「松架本批退回」為 5 瓶。\n版本「複」欄位「松架本批退回」為 7 瓶。\n"},
+      {"name": "register.txt", "content": "欄位「松架本批退回」｜採用版本｜複\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「松架本批退回」｜[D2:L1]\n讀 [D1:L1-L3] 和採用範圍。本批原備固定，以唯一正式採用版退回量算原備減退回，附數字和採用引用。不用提問。",
+    "criteria": ["採複7，41減7得34瓶。原備、複版數值與採用行都有引用。無追問，原有單欄正式綁定可查。"]
+  }
+]

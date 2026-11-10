@@ -166,6 +166,10 @@ def activity(row):
         outcome['branch_count'] = len(observation['branches'])
         outcome['calculated_branch_count'] = sum(row['status'] == 'calculated' for row in observation['branches'])
         outcome['quantity_branch_details_omitted'] = True
+    if tool == 'check_quantity_fields':
+        outcome['field_count'] = len(observation['comparisons'])
+        outcome['missing_adoption_line_count'] = len(observation['missing'])
+        outcome['quantity_field_details_omitted'] = True
     if tool == 'ask' and 'partial_result' in observation:
         outcome['partial_result_omitted'] = True
     if tool in ('check_decision', 'check_source_decision'):
@@ -236,6 +240,8 @@ def activity(row):
             result['failed_attempt']['calculation_details_omitted'] = True
         if failed['tool'] == 'calculate_quantity_branches':
             result['failed_attempt']['quantity_branch_details_omitted'] = True
+        if failed['tool'] == 'check_quantity_fields':
+            result['failed_attempt']['quantity_field_details_omitted'] = True
     return result
 
 

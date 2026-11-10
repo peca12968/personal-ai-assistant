@@ -248,6 +248,9 @@ def validate_action(value):
     if name == 'check_quantities':
         quantity_evidence.validate(args)
         return value
+    if name == 'check_quantity_fields':
+        quantity_evidence.validate_fields(args)
+        return value
     if name == 'calculate_quantity_branches':
         quantity_evidence.validate_branches(args)
         return value
@@ -315,10 +318,11 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
                                          declared=declared_rule_ranges)
-    if name == 'check_quantities':
+    if name in {'check_quantities', 'check_quantity_fields'}:
         goal = get_goal(store, sid, gid)
-        return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources,
-                                         declared=goal.get('quantity_adoption_scope'))
+        observe = quantity_evidence.observe_fields if name == 'check_quantity_fields' else quantity_evidence.observe
+        return observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources,
+                       declared=goal.get('quantity_adoption_scope'))
     if name == 'calculate_quantity_branches':
         goal = get_goal(store, sid, gid)
         return quantity_evidence.calculate_branches(args, steps, goal['sources'], work_plan.conditions(goal),
@@ -472,6 +476,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             unresolved_quantity = any(step['action']['tool'] == 'check_quantities' and
                                       step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
                                       for step in payload['steps'])
+            has_excerpts = any(step['observation'].get('excerpts') for step in payload['steps'])
             withdrawals = goal.get('withdrawn_questions', ())
             if withdrawals:
                 payload['withdrawn_questions'] = [
@@ -497,11 +502,12 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
-                 if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                 if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE
-                 if reply_sources or guidance_sources or any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                 if reply_sources or guidance_sources or has_excerpts else '') +
                 ('\n' + quantity_evidence.BRANCH_GUIDANCE if unresolved_quantity else '') +
                 ('\n' + quantity_evidence.ALIGNED_BRANCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
+                ('\n' + quantity_evidence.BATCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

@@ -37,14 +37,27 @@ BRANCH_GUIDANCE = (
     '唯一正式採用仍用calculate_expression與quantity_inputs。')
 
 ALIGNED_BRANCH_GUIDANCE = (
-    '若同一採用版本決定多個欄位，先用check_quantities分開核對各完整欄位，候選label逐字使用原文版名。'
-    '宣告欄位的核對自動套用完整採用範圍；其他欄位的核對也填完全相同的adoption_ranges，保留另欄採用限制。'
+    '若同一採用版本決定多個欄位，且各欄已有分開保存的check_quantities步驟，可沿用這些核對。'
+    '各完整欄位的候選label逐字使用原文版名，且核對使用同一完整採用範圍。'
     '再用calculate_quantity_branches，例如{"step":3,"expression":{"operation":"difference",'
     '"values":["$candidate","$candidate"]},"bindings":[{"path":"/values/0","step":2},'
     '{"path":"/values/1","step":3}],"operands":[]}。外層step是決定版本範圍的核對，須出現在bindings。'
     '每個版本欄位各用一個$candidate，bindings用實際步驟和葉路徑。固定數字仍用operands附逐字來源。'
     '以完整版本名配對，不按行序、數字或近似版名。分支缺同版欄位、單位或遇另欄明文採用限制時，保留原值及缺口，不借用其他版。'
     '只有原問或來源支持各欄共用版本時才使用跨欄配對。')
+
+BATCH_GUIDANCE = (
+    '同一採用範圍下要分版核算二至四個欄位時，優先一次用check_quantity_fields核對各欄，'
+    'args為{"fields":[{"field":"完整欄位名","unit":"件","candidates":[{"label":"原文版名","citation":"[D1:L1]","quote":"逐字原文"}]},'
+    '{"field":"另一完整欄位名","unit":"件","candidates":[]}]}。每欄用已讀原行及完整版名；'
+    '整欄確實缺數時才留空，某版缺數時保留該欄其他已核對版本。'
+    '已宣告範圍時須含宣告欄位，由工具把同一範圍套到全批；未宣告時才在外層填adoption_ranges。'
+    '數值原行單獨查讀。缺採用行、另欄採用或缺單位時保存對應缺口。'
+    '算式一次引用該批核對，例如{"step":2,"anchor_field":"決定候選的完整欄位名",'
+    '"expression":{"operation":"difference","values":["$candidate","$candidate"]},'
+    '"bindings":[{"path":"/values/0","field":"完整原備欄位名"},{"path":"/values/1","field":"完整退回欄位名"}],"operands":[]}。'
+    'step填實際check_quantity_fields步驟，anchor_field須在bindings內。'
+    '批次後直接引用欄位，不重送單欄核對。單欄及唯一正式採用仍使用原有流程。')
 
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
@@ -104,15 +117,19 @@ def read_scope(db, gid, objective, sources):
     return _verified_scope(row[0], objective, sources) if row else None
 
 
-def _apply_scope(args, declared):
-    if declared is None or args.get('field', declared['field']) != declared['field']:
-        return args
+def _scoped_ranges(args, declared):
     ranges = declared['ranges']
     if 'adoption_ranges' in args:
         supplied = set(source_decision._positions(args['adoption_ranges']))
         if supplied != set(source_decision._positions(ranges)):
             raise ValueError('數量採用須涵蓋目標首行宣告的全部區段。請省略adoption_ranges以套用宣告。')
-    return {**args, 'field': declared['field'], 'adoption_ranges': ranges}
+    return ranges
+
+
+def _apply_scope(args, declared):
+    if declared is None or args.get('field', declared['field']) != declared['field']:
+        return args
+    return {**args, 'field': declared['field'], 'adoption_ranges': _scoped_ranges(args, declared)}
 
 
 def _user_excerpt(evidence, fields):
@@ -126,11 +143,11 @@ def _unit_evidence(value):
             and isinstance(value['unit'], str) and value['unit'] in _TARGETS - {'ratio'})
 
 
-def validate(args):
+def validate(args, *, batch_field=False):
     required = {'unit', 'candidates'}
     if (not isinstance(args, dict) or not required <= args.keys() <= required | {'field', 'adoption_ranges'}
             or not isinstance(args['unit'], str) or args['unit'] not in _TARGETS
-            or not isinstance(args['candidates'], list) or not 1 <= len(args['candidates']) <= 4):
+            or not isinstance(args['candidates'], list) or not (0 if batch_field else 1) <= len(args['candidates']) <= 4):
         raise ValueError('數量核對須有可用比較單位與一至四筆來源。')
     if 'field' in args and not _short_text(args['field'], 80):
         raise ValueError('同欄位核對須提供原文明列的完整欄位名。')
@@ -152,7 +169,7 @@ def validate(args):
         if key in seen:
             raise ValueError('候選數量不可重複引用同一則短句。')
         seen.add(key)
-        if 'adoption_ranges' in args:
+        if batch_field or 'adoption_ranges' in args:
             label = row['label']
             if (not _DOCUMENT.fullmatch(row['citation']) or label in versions
                     or any(char in label for char in '「」｜')):
@@ -162,6 +179,23 @@ def validate(args):
             evidence = row['unit_evidence']
             if not _unit_evidence(evidence) or evidence['citation'] == row['citation']:
                 raise ValueError('單位補正須引用另一則保存的使用者答覆或更正，並指定支援的單位。')
+
+
+def validate_fields(args):
+    if (not isinstance(args, dict) or args.keys() not in ({'fields'}, {'fields', 'adoption_ranges'})
+            or not isinstance(args['fields'], list) or not 2 <= len(args['fields']) <= 4):
+        raise ValueError('批次數量核對須提供二至四個欄位及一份共用採用範圍。')
+    if 'adoption_ranges' in args:
+        source_decision._validate_ranges(args['adoption_ranges'])
+    names = set()
+    for field in args['fields']:
+        if not isinstance(field, dict) or field.keys() != {'field', 'unit', 'candidates'}:
+            raise ValueError('批次中的每個欄位只接受完整名稱、比較單位及候選原文。')
+        validate(field, batch_field=True)
+        name = field['field']
+        if name in names or any(char in name for char in '「」｜'):
+            raise ValueError('批次核對須使用不同的原文完整欄位名。')
+        names.add(name)
 
 
 def _tokens(text):
@@ -257,14 +291,7 @@ def _candidate(row, source_texts, target, field=None):
             'converted_exact': str(converted)}
 
 
-def _document_adoption(field, ranges, lines, quantities, source_texts):
-    for quantity in quantities:
-        label = quantity['label']
-        text = source_texts[quantity['citation']][0]
-        version = re.search(rf'版本「({re.escape(label)})」[ \t]*欄位「\Z', text[:quantity['field_start']])
-        if version is None:
-            raise ValueError('候選版名須逐字出現在該欄位及數字前的原文。')
-        quantity.update(version_start=version.start(1), version_end=version.end(1))
+def _adoption_lines(ranges, lines):
     records, missing = [], []
     for did, line in source_decision._positions(ranges):
         citation = f'[D{did}:L{line}]'
@@ -276,6 +303,18 @@ def _document_adoption(field, ranges, lines, quantities, source_texts):
         match = _DOCUMENT_ADOPTION.fullmatch(text.strip().removesuffix('。'))
         if match and _short_text(match['field'], 80) and _short_text(match['version'], 80):
             records.append({**match.groupdict(), 'citation': citation, 'source_sha256': sha, 'quote': text})
+    return records, missing
+
+
+def _document_adoption(field, adoption, quantities, source_texts):
+    for quantity in quantities:
+        label = quantity['label']
+        text = source_texts[quantity['citation']][0]
+        version = re.search(rf'版本「({re.escape(label)})」[ \t]*欄位「\Z', text[:quantity['field_start']])
+        if version is None:
+            raise ValueError('候選版名須逐字出現在該欄位及數字前的原文。')
+        quantity.update(version_start=version.start(1), version_end=version.end(1))
+    records, missing = adoption
     result = {'records': records}
     if missing:
         return {**result, 'status': 'incomplete', 'missing': missing}
@@ -291,29 +330,27 @@ def _document_adoption(field, ranges, lines, quantities, source_texts):
     return {**result, 'status': 'adopted', 'version': version, 'candidate': candidate}
 
 
-def observe(args, steps, sources, objective='', replies=(), guidance=(), *, declared=None):
-    validate(args)
-    effective = _apply_scope(args, declared)
-    uses_declared = effective is not args
-    args = effective
-    if uses_declared:
-        validate(args)
+def _candidate_ranges(args):
     refs = [match for row in args['candidates'] if (match := _DOCUMENT.fullmatch(row['citation']))]
-    ranges = [{'document_id': int(match[1]), 'start_line': int(match[2]), 'end_line': int(match[2])}
-              for match in refs]
-    adoption_ranges = args.get('adoption_ranges', [])
-    _, lines = source_decision.gather_lines(ranges + adoption_ranges, steps, sources)
+    return [{'document_id': int(match[1]), 'start_line': int(match[2]), 'end_line': int(match[2])}
+            for match in refs]
+
+
+def _source_texts(lines, objective, replies, guidance, sequence):
     source_texts = {f'[D{did}:L{line}]': (text, sha, position)
                     for (did, line), (position, sha, text) in lines.items()}
-    sequence = len(steps) + 1
     positions = {row['citation']: row['ask_sequence'] for row in replies}
     positions.update((row['citation'], row['steps_seen']) for row in guidance)
     source_texts.update((citation, (text, sha, positions.get(citation, 0)))
                         for citation, (text, sha) in operand_evidence.user_texts(objective, replies, guidance, sequence).items())
+    return source_texts
+
+
+def _compare(args, source_texts, adoption):
     field = args.get('field')
     quantities = [_candidate(row, source_texts, args['unit'], field) for row in args['candidates']]
     values = list(dict.fromkeys(row['converted_exact'] for row in quantities if row['status'] == 'confirmed'))
-    if any(row['status'] != 'confirmed' for row in quantities):
+    if not quantities or any(row['status'] != 'confirmed' for row in quantities):
         status = 'needs_evidence'
     elif len(values) > 1:
         status = 'different'
@@ -322,11 +359,49 @@ def observe(args, steps, sources, objective='', replies=(), guidance=(), *, decl
     result = {'status': status, 'unit': args['unit'], 'quantities': quantities, 'possible_exact': values}
     if field is not None:
         result['field'] = field
-    if adoption_ranges:
-        result['adoption'] = _document_adoption(field, adoption_ranges, lines, quantities, source_texts)
-        if uses_declared:
-            result['adoption']['declared_ranges'] = adoption_ranges
+    if adoption is not None:
+        result['adoption'] = _document_adoption(field, adoption, quantities, source_texts)
     return result
+
+
+def observe(args, steps, sources, objective='', replies=(), guidance=(), *, declared=None):
+    validate(args)
+    effective = _apply_scope(args, declared)
+    uses_declared = effective is not args
+    if uses_declared:
+        validate(effective)
+    ranges = effective.get('adoption_ranges', [])
+    _, lines = source_decision.gather_lines(_candidate_ranges(effective) + ranges, steps, sources)
+    texts = _source_texts(lines, objective, replies, guidance, len(steps) + 1)
+    result = _compare(effective, texts, _adoption_lines(ranges, lines) if ranges else None)
+    if uses_declared:
+        result['adoption']['declared_ranges'] = ranges
+    return result
+
+
+def observe_fields(args, steps, sources, objective='', replies=(), guidance=(), *, declared=None):
+    validate_fields(args)
+    fields = args['fields']
+    ranges = args.get('adoption_ranges')
+    if declared is not None:
+        if declared['field'] not in {field['field'] for field in fields}:
+            raise ValueError('批次核對須包含目標宣告的採用欄位。')
+        ranges = _scoped_ranges(args, declared)
+    if not ranges:
+        raise ValueError('批次核對需指定全批共用的採用範圍。')
+    _check_scope_sources({'ranges': ranges}, sources)
+    candidates = [item for field in fields for item in _candidate_ranges(field)]
+    _, lines = source_decision.gather_lines(candidates + ranges, steps, sources)
+    texts = _source_texts(lines, objective, replies, guidance, len(steps) + 1)
+    records, missing = _adoption_lines(ranges, lines)
+    comparisons = []
+    for field in fields:
+        result = _compare(field, texts, (records, missing))
+        result['adoption'].pop('records')
+        result['adoption'].pop('missing', None)
+        comparisons.append(result)
+    return {'status': 'quantity_fields_checked', 'adoption_ranges': ranges,
+            'adoption_records': records, 'missing': missing, 'comparisons': comparisons}
 
 
 def validate_expression(args):
@@ -399,7 +474,8 @@ def _verified_comparison(number, steps, sources, objective, replies, guidance, d
 
 def validate_branches(args):
     fields = {'step', 'expression', 'operands'}
-    if (not isinstance(args, dict) or args.keys() not in (fields, fields | {'bindings'})
+    if (not isinstance(args, dict) or args.keys() not in
+            (fields, fields | {'bindings'}, fields | {'bindings', 'anchor_field'})
             or type(args['step']) is not int or not 1 <= args['step'] <= 32):
         raise ValueError('分版計算須提供本目標的核對步驟、算式與其餘運算元原文。')
     expression = args['expression']
@@ -411,17 +487,21 @@ def validate_branches(args):
         bindings = {placeholders[0]: args['step']}
     else:
         rows = args['bindings']
+        key = 'field' if 'anchor_field' in args else 'step'
         if not isinstance(rows, list) or not 2 <= len(rows) == len(placeholders) <= 4:
             raise ValueError('跨欄分版需有二至四個版本欄位及對應的代入位置。')
         bindings = {}
         for row in rows:
-            if (not isinstance(row, dict) or row.keys() != {'path', 'step'}
-                    or not isinstance(row['path'], str) or row['path'] not in placeholders or row['path'] in bindings
-                    or type(row['step']) is not int or not 1 <= row['step'] <= 32 or row['step'] in bindings.values()):
-                raise ValueError('跨欄綁定須用不同數量核對步驟和不同的候選位置。')
-            bindings[row['path']] = row['step']
-        if args['step'] not in bindings.values():
-            raise ValueError('跨欄綁定須包含決定候選版本的數量核對步驟。')
+            if (not isinstance(row, dict) or row.keys() != {'path', key}
+                    or not isinstance(row['path'], str) or row['path'] not in placeholders or row['path'] in bindings):
+                raise ValueError('跨欄綁定須使用實際的不同候選位置。')
+            value = row[key]
+            valid = _short_text(value, 80) if key == 'field' else type(value) is int and 1 <= value <= 32
+            if not valid or value in bindings.values():
+                raise ValueError('跨欄綁定須用不同數量核對步驟或不同批次欄位。')
+            bindings[row['path']] = value
+        if args.get('anchor_field', args['step']) not in bindings.values():
+            raise ValueError('跨欄綁定須包含決定候選版本的數量核對步驟或欄位。')
     operand_evidence.validate(args['operands'], expression, None, omitted_paths=bindings)
     return bindings
 
@@ -473,6 +553,35 @@ def _branch_comparison(number, steps, sources, scope, objective, replies, guidan
     return verified, set(source_decision._positions(ranges))
 
 
+def _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared):
+    number = args['step']
+    saved = next((step for step in steps if step['sequence'] == number), None)
+    if saved is None or saved['action']['tool'] != 'check_quantity_fields':
+        raise ValueError('分版算式須引用本目標已完成的批次數量核對。')
+    if saved['observation'].get('goal_conditions_sha256') != scope:
+        raise ValueError('分版計算須先依目前補充或更正重新核對版本。')
+    if declared is not None and args['anchor_field'] != declared['field']:
+        raise ValueError('批次分版須由目標宣告的採用欄位決定候選版本。')
+    original = saved['action']['args']
+    prior = [step for step in steps if step['sequence'] < number]
+    verified = observe_fields(original, prior, sources, objective, replies, guidance, declared=declared)
+    if verified != {key: value for key, value in saved['observation'].items() if key not in _METADATA}:
+        raise ValueError('原批次數量核對與保存的來源不一致。')
+    if verified['missing']:
+        latest = observe_fields(original, steps, sources, objective, replies, guidance, declared=declared)
+        if latest != verified:
+            raise ValueError('採用範圍已補讀，請以目前讀到的原文重新核對版本。')
+    comparisons = {}
+    for row in verified['comparisons']:
+        adoption = {**row['adoption'], 'records': verified['adoption_records']}
+        if verified['missing']:
+            adoption['missing'] = verified['missing']
+        if declared is not None:
+            adoption['declared_ranges'] = verified['adoption_ranges']
+        comparisons[row['field']] = {**row, 'adoption': adoption}
+    return comparisons
+
+
 def _version_sources(verified):
     candidates = {row['label']: (index, row) for index, row in enumerate(verified['quantities'], 1)}
     citations = {}
@@ -497,10 +606,9 @@ def _aligned_input(version, comparison, candidates, citations, restricted):
     return {**inputs, 'status': candidate[1]['status'] if candidate else 'candidate_unavailable'}
 
 
-def _aligned_branches(args, versions, bindings, comparisons, cancel):
+def _aligned_branches(args, versions, inputs_by_path, cancel):
     evidence = []
-    for path, number in bindings.items():
-        verified = comparisons[number]
+    for path, number, verified in inputs_by_path:
         info = {'path': path, 'step': number, 'field': verified['field'], 'unit': verified['unit'],
                 'adoption_status': verified['adoption']['status']}
         candidates, citations = _version_sources(verified)
@@ -517,10 +625,33 @@ def _aligned_branches(args, versions, bindings, comparisons, cancel):
     return {'comparisons': [entry[0] for entry in evidence], 'branches': branches}
 
 
+def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel, declared):
+    comparisons = _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared)
+    if not set(bindings.values()) <= comparisons.keys():
+        raise ValueError('分版綁定只能引用批次內已核對的完整欄位名。')
+    verified = comparisons[args['anchor_field']]
+    adoption = verified['adoption']
+    if adoption['status'] == 'adopted':
+        raise ValueError('決定候選的文件核對已有唯一正式採用版本。')
+    candidates, citations = _version_sources(verified)
+    versions = citations if _explicit_adoption(verified) else candidates | citations
+    if not versions:
+        raise ValueError('決定候選的欄位缺少版本名，無法列出分支。')
+    operands = _branch_operands(args, steps, sources, objective, replies, guidance)
+    inputs = [(path, args['step'], comparisons[field]) for path, field in bindings.items()]
+    aligned = _aligned_branches(args, versions, inputs, cancel)
+    expression_math.check_cancel(cancel)
+    return {'status': 'conditional_calculations', 'step': args['step'], 'anchor_field': args['anchor_field'],
+            'adoption': adoption, 'operands': operands, **aligned}
+
+
 def calculate_branches(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
                        declared=None):
     bindings = validate_branches(args)
     expression_math.check_cancel(cancel)
+    if 'anchor_field' in args:
+        return _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel,
+                                         declared)
     anchor = args['step']
     verified, ranges = _branch_comparison(anchor, steps, sources, scope, objective, replies, guidance, declared, anchor=True)
     operands = _branch_operands(args, steps, sources, objective, replies, guidance)
@@ -539,7 +670,8 @@ def calculate_branches(args, steps, sources, scope, objective='', replies=(), gu
                 raise ValueError('跨欄分版須核對不同欄位，且每欄使用完全相同的採用範圍。')
             comparisons[number] = other
             fields.add(other['field'])
-        aligned = _aligned_branches(args, versions, bindings, comparisons, cancel)
+        inputs = [(path, number, comparisons[number]) for path, number in bindings.items()]
+        aligned = _aligned_branches(args, versions, inputs, cancel)
         expression_math.check_cancel(cancel)
         return {**result, **aligned}
 
@@ -633,7 +765,8 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
             scopes[gid] = _verified_scope(payload, objective, json.loads(source_json))
     query = '''SELECT DISTINCT g.id,g.notes,g.sources_json,g.objective FROM autonomous_goals g
                JOIN autonomous_steps s ON s.goal_id=g.id WHERE s.action_json LIKE '%"check_quantities"%'
-               OR s.action_json LIKE '%"quantity_inputs"%' OR s.action_json LIKE '%"calculate_quantity_branches"%' '''
+               OR s.action_json LIKE '%"check_quantity_fields"%' OR s.action_json LIKE '%"quantity_inputs"%'
+               OR s.action_json LIKE '%"calculate_quantity_branches"%' '''
     for gid, notes, source_json, objective in db.execute(query):
         sources = json.loads(source_json)
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
@@ -648,6 +781,12 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的數量核對與原話或換算結果不一致。')
+            if action['tool'] == 'check_quantity_fields':
+                expected = observe_fields(action['args'], prior, sources, objective, replies, guidance,
+                                          declared=scopes.get(gid))
+                actual = {key: value for key, value in observation.items() if key not in _METADATA}
+                if actual != expected:
+                    raise ValueError('保存的批次數量核對與原話或採用範圍不一致。')
             if action['tool'] == 'calculate_expression' and 'quantity_inputs' in action['args']:
                 scope = observation.get('goal_conditions_sha256')
                 if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
