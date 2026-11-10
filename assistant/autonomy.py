@@ -327,7 +327,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         goal = get_goal(store, sid, gid)
         return quantity_evidence.calculate_branches(args, steps, goal['sources'], work_plan.conditions(goal),
                                                     goal['objective'], reply_sources, guidance_sources, cancel,
-                                                    declared=goal.get('quantity_adoption_scope'))
+                                                    declared=goal.get('quantity_adoption_scope'), goal=goal)
     if name == 'calculate_expression':
         if 'quantity_inputs' in args:
             goal = get_goal(store, sid, gid)
@@ -508,6 +508,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + quantity_evidence.BRANCH_GUIDANCE if unresolved_quantity else '') +
                 ('\n' + quantity_evidence.ALIGNED_BRANCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
                 ('\n' + quantity_evidence.BATCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
+                ('\n' + quantity_evidence.BATCH_CORRECTION_GUIDANCE if (reply_sources or guidance_sources)
+                 and any(step['action']['tool'] == 'check_quantity_fields' for step in payload['steps']) else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

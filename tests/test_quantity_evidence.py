@@ -11,6 +11,119 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_batch_correction_fills_exact_branch_and_replays_with_later_notes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            values = [f'版本「{name}」欄位「{field}」為 {number} 件。' for name, field, number in
+                      (('甲', stock, 35), ('甲', returned, 4), ('乙', returned, 6))]
+            rules = [f'欄位「{returned}」｜採用版本｜{name}' for name in ('甲', '乙')]
+            path = root / 'counts.txt'
+            path.write_text('\n'.join(values + rules), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{returned}」｜[D{did}:L4-L5]\n分版核對。')
+            fields = [{'field': field, 'unit': '件', 'candidates': [
+                {'label': label, 'citation': f'[D{did}:L{line}]', 'quote': values[line - 1]}
+                for label, line in rows]} for field, rows in
+                ((stock, [('甲', 1)]), (returned, [('甲', 2), ('乙', 3)]))]
+            branch = {'step': 2, 'anchor_field': returned, 'operands': [],
+                      'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                      'bindings': [{'path': '/values/0', 'field': stock}, {'path': '/values/1', 'field': returned}]}
+            initial = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=5),
+                action('check_quantity_fields', fields=fields), action('calculate_quantity_branches', **branch),
+                action('ask', question='乙版原備多少？')))
+            initial_branches = initial['steps'][2]['observation']['branches']
+            self.assertEqual(initial_branches[1]['inputs'][0]['status'], 'candidate_unavailable')
+            reply = '正式更正版本「乙」欄位「本批原備」為 42 件。'
+            snap = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, reply, expected_fingerprint=snap['fingerprint'])
+            corrected_args = {**branch, 'correction': '[補充#4]'}
+            wrong_formula = {**corrected_args, 'expression': {**branch['expression'], 'operation': 'sum'}}
+            engine = ScriptedEngine(action('calculate_quantity_branches', **branch),
+                                    action('calculate_quantity_branches', **wrong_formula),
+                                    action('calculate_quantity_branches', **corrected_args))
+            updated = autonomy.run_goal(store, sid, gid, engine, max_steps=3)
+            self.assertIn('重新核對', updated['steps'][4]['observation']['error'])
+            self.assertIn('須沿用原批次', updated['steps'][5]['observation']['error'])
+            self.assertIn('"correction":"[補充#4]"', engine.prompts[0])
+            current = updated['steps'][6]['observation']
+            self.assertEqual(current['branches'][0], initial_branches[0])
+            second = current['branches'][1]
+            self.assertEqual(second['calculation']['exact'], '36')
+            corrected = second['inputs'][0]
+            self.assertNotIn('original_quantity', corrected)
+            self.assertEqual(corrected['quantity']['quote'], reply)
+            self.assertEqual(corrected['quantity']['citation'], '[補充#4]')
+            self.assertEqual(current['adoption']['status'], 'conflicting')
+            snap = goal_guidance.snapshot(store, sid, gid)
+            goal_guidance.save(store, sid, gid, '正式更正版本「乙」欄位「本批退回」為 7 件。',
+                               expected_fingerprint=snap['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_quantity_branches', **corrected_args),
+                action('calculate_quantity_branches', **{**branch, 'correction': '[更正#1]'})), max_steps=2)
+            self.assertIn('最新', final['steps'][7]['observation']['error'])
+            self.assertIn('只有這一則', final['steps'][8]['observation']['error'])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            tampered = copy.deepcopy(current)
+            tampered['branches'][1]['inputs'][0]['quantity']['number'] = '41'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=7',
+                           (json.dumps(tampered, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版算式'):
+                validate_database(restored.path)
+
+    def test_batch_correction_does_not_change_adoption_or_accept_hypotheticals(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            values = [f'版本「{name}」欄位「{field}」為 {number} 件。' for name, field, number in
+                      (('甲', stock, 20), ('乙', stock, 25), ('甲', returned, 3), ('乙', returned, 6))]
+            rules = [f'欄位「{field}」｜採用版本｜{name}' for field, name in
+                     ((returned, '甲'), (returned, '乙'), (stock, '乙'))]
+            path = root / 'counts.txt'
+            path.write_text('\n'.join(values + rules), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            fields = [{'field': field, 'unit': '件', 'candidates': [
+                {'label': label, 'citation': f'[D{did}:L{line}]', 'quote': values[line - 1]}
+                for label, line in (('甲', start), ('乙', start + 1))]} for field, start in ((stock, 1), (returned, 3))]
+            batch = {'fields': fields, 'adoption_ranges': [{'document_id': did, 'start_line': 5, 'end_line': 7}]}
+            branch = {'step': 2, 'anchor_field': returned, 'operands': [],
+                      'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                      'bindings': [{'path': '/values/0', 'field': stock}, {'path': '/values/1', 'field': returned}],
+                      'correction': '[更正#1]'}
+            for note, failure in (('若之後正式更正版本「甲」欄位「本批原備」為 30 件，現在仍照原數。', '整則'),
+                                  ('正式更正版本「甲補登」欄位「本批原備」為 30 件。', '既有候選'),
+                                  ('正式更正版本「甲」欄位「本批原備」為 30 公斤。', '單位'),
+                                  ('正式更正版本「甲」欄位「本批原備」為 30 件。', None)):
+                gid = autonomy.create_goal(store, sid, '分版核對。')
+                autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                    action('read', document_id=did, start_line=1, end_line=7),
+                    action('check_quantity_fields', **batch)), max_steps=2)
+                snap = goal_guidance.snapshot(store, sid, gid)
+                goal_guidance.save(store, sid, gid, note, expected_fingerprint=snap['fingerprint'])
+                result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                    action('calculate_quantity_branches', **branch)), max_steps=1)
+                observed = result['steps'][2]['observation']
+                if failure:
+                    self.assertIn(failure, observed['error'])
+                else:
+                    first, second = observed['branches']
+                    self.assertNotIn('calculation', first)
+                    original = first['inputs'][0]
+                    self.assertEqual(original['status'], 'outside_adoption')
+                    self.assertEqual(original['original_quantity']['number'], '20')
+                    self.assertEqual(original['quantity']['number'], '30')
+                    self.assertEqual(second['calculation']['exact'], '19')
+            validate_database(store.path)
+
     def test_field_batch_reuses_scope_and_rechecks_saved_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

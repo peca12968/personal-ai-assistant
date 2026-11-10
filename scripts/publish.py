@@ -102,6 +102,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_quantity_branches.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_aligned_quantity_branches.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_quantity_field_batch.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_quantity_batch_correction.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_scoped_amendments.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_withdrawn_questions.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_questions.json")

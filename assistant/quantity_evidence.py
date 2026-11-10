@@ -3,7 +3,10 @@ import json
 import re
 from fractions import Fraction
 
-from . import document_units, exact_math, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence, source_decision
+from . import (
+    conversation_history, document_units, exact_math, expression_math, goal_guidance_sources, goal_reply_sources,
+    operand_evidence, source_decision, work_plan,
+)
 from .document_table import _SAME_UNIT_ONLY
 
 
@@ -59,6 +62,13 @@ BATCH_GUIDANCE = (
     'step填實際check_quantity_fields步驟，anchor_field須在bindings內。'
     '批次後直接引用欄位，不重送單欄核對。單欄及唯一正式採用仍使用原有流程。')
 
+BATCH_CORRECTION_GUIDANCE = (
+    '若原批次核對後只新增一則正式更正，例如『正式更正版本「甲」欄位「本批退回」為 6 件。』，'
+    '直接重用原批次和原算式，args另填"correction":"[補充#4]"或實際更正編號。'
+    '程式核對原話、完整版本與欄位和補充前後的條件。只代入指定欄位的該版數值，保留原值、其他原文及採用限制。'
+    '缺同版數字也可用符合格式的更正補齊。列明更新值及更正來源，原值有資料時一併保留。'
+    '試想、條件句、只說照原數或另有補充時不可帶correction。需要重核時可沿用已讀文件，不再次詢問已確認的事項。')
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -68,6 +78,9 @@ _BARE = re.compile(operand_evidence._LITERAL.pattern + _BOUNDARY)
 _DOCUMENT = operand_evidence._DOCUMENT
 _USER = operand_evidence._USER
 _DOCUMENT_ADOPTION = re.compile(r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})」｜採用版本｜(?P<version>[^「」｜\x00\r\n]{1,80})')
+_VERSION_CORRECTION = re.compile(
+    r'正式更正版本「(?P<version>[^「」｜\x00\r\n]{1,80})」[ \t]*'
+    r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})」[ \t]*為[ \t]*')
 _SCOPE_PREFIX = '數量採用範圍：'
 _SCOPE = re.compile(r'欄位「([^「」｜\x00\r\n]{1,80})」｜(.+)')
 _METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
@@ -475,9 +488,12 @@ def _verified_comparison(number, steps, sources, objective, replies, guidance, d
 def validate_branches(args):
     fields = {'step', 'expression', 'operands'}
     if (not isinstance(args, dict) or args.keys() not in
-            (fields, fields | {'bindings'}, fields | {'bindings', 'anchor_field'})
+            (fields, fields | {'bindings'}, fields | {'bindings', 'anchor_field'},
+             fields | {'bindings', 'anchor_field', 'correction'})
             or type(args['step']) is not int or not 1 <= args['step'] <= 32):
         raise ValueError('分版計算須提供本目標的核對步驟、算式與其餘運算元原文。')
+    if 'correction' in args and (not isinstance(args['correction'], str) or not _USER.fullmatch(args['correction'])):
+        raise ValueError('批次更正須引用本目標已保存的補充或更正編號。')
     expression = args['expression']
     expression_math.validate({'expression': expression}, placeholder=_BRANCH_LEAF)
     placeholders = [path for path, value in operand_evidence._leaves(expression) if value == _BRANCH_LEAF]
@@ -553,12 +569,53 @@ def _branch_comparison(number, steps, sources, scope, objective, replies, guidan
     return verified, set(source_decision._positions(ranges))
 
 
-def _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared):
+def _single_correction_transition(citation, goal, before, after, replies, guidance):
+    if goal is None or before == after:
+        raise ValueError('批次更正須核對更正前後不同的工作條件。')
+    notes = goal['notes']
+    source = next((row for row in guidance if row['citation'] == citation), None)
+    if source is not None:
+        block = goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at'])
+        starts = (source['notes_start'],)
+    else:
+        source = next(row for row in replies if row['citation'] == citation)
+        block = goal_reply_sources.note(source['question'], source['answer'])
+        starts = (match.start() for match in re.finditer(re.escape(block), notes))
+    for start in starts:
+        end = start + len(block)
+        if (notes[start:end] == block
+                and work_plan.conditions({**goal, 'notes': notes[:start]}) == before
+                and work_plan.conditions({**goal, 'notes': notes[:end]}) == after):
+            return
+    raise ValueError('批次核對後只有這一則正式更正時，才可沿用其餘數量。')
+
+
+def _batch_formula(args):
+    return (args['expression'], sorted(args['bindings'], key=lambda row: row['path']),
+            sorted(args['operands'], key=lambda row: row['path']))
+
+
+def _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared, goal):
     number = args['step']
     saved = next((step for step in steps if step['sequence'] == number), None)
     if saved is None or saved['action']['tool'] != 'check_quantity_fields':
         raise ValueError('分版算式須引用本目標已完成的批次數量核對。')
-    if saved['observation'].get('goal_conditions_sha256') != scope:
+    previous_scope = saved['observation'].get('goal_conditions_sha256')
+    citation = args.get('correction')
+    correction = None
+    if citation is not None:
+        correction = _latest_confirmation(citation, number, len(steps) + 1, replies, guidance)
+        _single_correction_transition(citation, goal, previous_scope, scope, replies, guidance)
+        earlier = [_batch_formula(step['action']['args']) for step in steps
+                   if step['action']['tool'] == 'calculate_quantity_branches'
+                   and step['action']['args'].get('step') == number
+                   and step['action']['args'].get('anchor_field') == args['anchor_field']
+                   and step['observation'].get('goal_conditions_sha256') == previous_scope]
+        if earlier and _batch_formula(args) not in earlier:
+            raise ValueError('正式更正僅更新數值，須沿用原批次已核對的分版算式與來源。')
+        if any(row['citation'] == citation for row in args['operands']):
+            raise ValueError('版本數量更正只能代入指定分支的欄位。')
+    elif previous_scope != scope:
         raise ValueError('分版計算須先依目前補充或更正重新核對版本。')
     if declared is not None and args['anchor_field'] != declared['field']:
         raise ValueError('批次分版須由目標宣告的採用欄位決定候選版本。')
@@ -579,7 +636,7 @@ def _batch_for_branches(args, steps, sources, scope, objective, replies, guidanc
         if declared is not None:
             adoption['declared_ranges'] = verified['adoption_ranges']
         comparisons[row['field']] = {**row, 'adoption': adoption}
-    return comparisons
+    return comparisons, correction
 
 
 def _version_sources(verified):
@@ -595,18 +652,22 @@ def _explicit_adoption(verified):
     return verified['adoption']['status'] in {'adopted', 'conflicting', 'candidate_unavailable'}
 
 
-def _aligned_input(version, comparison, candidates, citations, restricted):
+def _aligned_input(version, comparison, candidates, citations, restricted, correction):
     inputs = {**comparison, 'adoption_citations': citations.get(version, [])}
     candidate = candidates.get(version)
     if candidate is not None:
         index, quantity = candidate
         inputs.update(candidate=index, quantity=quantity)
+    if correction is not None and (version, comparison['field']) == (correction['label'], correction['field']):
+        if candidate is not None:
+            inputs['original_quantity'] = inputs['quantity']
+        inputs['quantity'] = correction
     if restricted and version not in citations:
         return {**inputs, 'status': 'outside_adoption'}
-    return {**inputs, 'status': candidate[1]['status'] if candidate else 'candidate_unavailable'}
+    return {**inputs, 'status': inputs.get('quantity', {}).get('status', 'candidate_unavailable')}
 
 
-def _aligned_branches(args, versions, inputs_by_path, cancel):
+def _aligned_branches(args, versions, inputs_by_path, cancel, correction=None):
     evidence = []
     for path, number, verified in inputs_by_path:
         info = {'path': path, 'step': number, 'field': verified['field'], 'unit': verified['unit'],
@@ -616,7 +677,7 @@ def _aligned_branches(args, versions, inputs_by_path, cancel):
     branches = []
     for version in versions:
         expression_math.check_cancel(cancel)
-        inputs = [_aligned_input(version, *entry) for entry in evidence]
+        inputs = [_aligned_input(version, *entry, correction) for entry in evidence]
         branch = {'version': version, 'inputs': inputs, 'status': 'needs_evidence'}
         if all(row['status'] == 'confirmed' for row in inputs):
             values = {row['path']: row['quantity']['converted_exact'] for row in inputs}
@@ -625,8 +686,24 @@ def _aligned_branches(args, versions, inputs_by_path, cancel):
     return {'comparisons': [entry[0] for entry in evidence], 'branches': branches}
 
 
-def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel, declared):
-    comparisons = _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared)
+def _version_correction(citation, source, versions, fields, comparisons):
+    text = source[0]
+    match = _VERSION_CORRECTION.match(text)
+    if (match is None
+            or not _MEASURED.fullmatch(text[match.end():].removesuffix('。').translate(operand_evidence._NUMERIC_CHARS))):
+        raise ValueError('分版更正須為一整則正式原話，明列版本、欄位、數值與單位。')
+    version, field = match['version'], match['field']
+    if version not in versions or field not in fields:
+        raise ValueError('正式更正須對應本次既有候選版本與算式中的完整欄位。')
+    quantity = _candidate({'citation': citation, 'label': version, 'quote': text},
+                          {citation: source}, comparisons[field]['unit'], field)
+    if quantity['status'] != 'confirmed':
+        raise ValueError('正式更正的單位須能換算至該欄位的比較單位。')
+    return {**quantity, 'version_start': match.start('version'), 'version_end': match.end('version')}
+
+
+def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel, declared, goal):
+    comparisons, source = _batch_for_branches(args, steps, sources, scope, objective, replies, guidance, declared, goal)
     if not set(bindings.values()) <= comparisons.keys():
         raise ValueError('分版綁定只能引用批次內已核對的完整欄位名。')
     verified = comparisons[args['anchor_field']]
@@ -637,21 +714,22 @@ def _calculate_batch_branches(args, bindings, steps, sources, scope, objective, 
     versions = citations if _explicit_adoption(verified) else candidates | citations
     if not versions:
         raise ValueError('決定候選的欄位缺少版本名，無法列出分支。')
+    correction = _version_correction(args['correction'], source, versions, bindings.values(), comparisons) if source else None
     operands = _branch_operands(args, steps, sources, objective, replies, guidance)
     inputs = [(path, args['step'], comparisons[field]) for path, field in bindings.items()]
-    aligned = _aligned_branches(args, versions, inputs, cancel)
+    aligned = _aligned_branches(args, versions, inputs, cancel, correction)
     expression_math.check_cancel(cancel)
     return {'status': 'conditional_calculations', 'step': args['step'], 'anchor_field': args['anchor_field'],
             'adoption': adoption, 'operands': operands, **aligned}
 
 
 def calculate_branches(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
-                       declared=None):
+                       declared=None, goal=None):
     bindings = validate_branches(args)
     expression_math.check_cancel(cancel)
     if 'anchor_field' in args:
         return _calculate_batch_branches(args, bindings, steps, sources, scope, objective, replies, guidance, cancel,
-                                         declared)
+                                         declared, goal)
     anchor = args['step']
     verified, ranges = _branch_comparison(anchor, steps, sources, scope, objective, replies, guidance, declared, anchor=True)
     operands = _branch_operands(args, steps, sources, objective, replies, guidance)
@@ -800,8 +878,13 @@ def validate_saved(db, *, replies_present, guidance_present, scope_present=False
                 scope = observation.get('goal_conditions_sha256')
                 if not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope):
                     raise ValueError('保存的分版算式缺少有效數量條件。')
+                goal = None
+                if 'correction' in action['args']:
+                    history = conversation_history.saved_fingerprint(db, gid)
+                    goal = {'id': gid, 'objective': objective, 'notes': notes, 'sources': sources,
+                            'conversation_history': {'sha256': history} if history else None}
                 expected = calculate_branches(action['args'], prior, sources, scope, objective, replies, guidance,
-                                              declared=scopes.get(gid))
+                                              declared=scopes.get(gid), goal=goal)
                 actual = {key: value for key, value in observation.items() if key not in _METADATA}
                 if actual != expected:
                     raise ValueError('保存的分版算式與版本及原文數量不一致。')
