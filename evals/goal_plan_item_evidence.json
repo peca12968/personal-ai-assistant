@@ -1,0 +1,66 @@
+[
+  {
+    "id": "equal_results_keep_separate_formulas",
+    "category": "goal_plan_item_evidence",
+    "documents": [
+      {
+        "name": "stock.txt",
+        "content": "竹穗批原有 20 件，報廢 4 件。\n泉角批原有 19 件，報廢 3 件。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1-L2]，保存公開工作清單，兩項為「計算竹穗可交件數」與「計算泉角可交件數」。暫不計算，只問本批是否另有更正。收到後分別用獨立的 calculate_expression 計算（不要合併），交付前逐項核對清單證據確實來自各自原式。定稿列兩個算式、可交件數及來源。",
+    "reply": "兩批都維持文件的原數和報廢數。請定稿。",
+    "criteria": [
+      "竹穗 20 減 4 為 16，泉角 19 減 3 也為 16，保留兩項及各自原文。",
+      "兩項引用各自正確的計算步驟，即使結果相同也不混用；只追問一次。"
+    ]
+  },
+  {
+    "id": "adjacent_read_ranges_remain_item_specific",
+    "category": "goal_plan_item_evidence",
+    "documents": [
+      {
+        "name": "sites.txt",
+        "content": "光砂線甲口位於二樓，窗口夏同仁。\n光砂線乙口位於三樓，窗口杜同仁。\n"
+      }
+    ],
+    "prompt": "保存公開工作清單，兩項為「核對甲口」與「核對乙口」。用兩個獨立查讀步驟核對 [D1:L1] 和 [D1:L2]，各項只連到各自完整查讀；給暫表且只問本次巡檢人。收到後沿用原查讀，交付前逐項核對清單證據的實際行號。定稿交兩口樓層、窗口和巡檢人。",
+    "reply": "巡檢人為胡同仁，原文件的兩個位置和窗口都照舊。",
+    "criteria": [
+      "甲口二樓、夏同仁，乙口三樓、杜同仁，巡檢人胡同仁，保留各自原行。",
+      "各項沿用各自已完成的讀取，無額外查讀、只問一次。"
+    ]
+  },
+  {
+    "id": "one_item_needs_both_source_and_calculation",
+    "category": "goal_plan_item_evidence",
+    "documents": [
+      {
+        "name": "supplies.txt",
+        "content": "栗色批紙盒 3 組，每組 6 個。\n替補窗口為金同仁。\n"
+      }
+    ],
+    "prompt": "建立公開清單，「核對紙盒總數」需同時核對 [D1:L1] 和獨立的 calculate_expression，「核對替補窗口」只核對 [D1:L2]。先分兩步讀兩行，暫表只問本次組數是否仍為 3；收到後做計算。正式交付前逐項核對清單證據，保留同一項同時使用原行及算式。定稿列總數及窗口。",
+    "reply": "本次組數確定是 3，每組仍 6 個，窗口照文件。",
+    "criteria": [
+      "紙盒共 18 個，算式 3 乘 6，窗口金同仁，引用正確原行。",
+      "數量項同時連正確原行與算式，窗口項連第 2 行；只問一次。"
+    ]
+  },
+  {
+    "id": "ordinary_delivery_without_typed_item_targets",
+    "category": "goal_plan_item_evidence",
+    "documents": [
+      {
+        "name": "tag.txt",
+        "content": "梧泉櫃清點標籤 W-409，窗口張同仁。\n"
+      }
+    ],
+    "prompt": "只要標籤與窗口。讀 [D1:L1]，問一次本次窗口是否更新，收到回覆後直接定稿，不用建清單。",
+    "reply": "窗口照原文。請交標籤與窗口。",
+    "criteria": [
+      "交 W-409、張同仁與原行。",
+      "僅一問，沒有額外清單或計算。"
+    ]
+  }
+]

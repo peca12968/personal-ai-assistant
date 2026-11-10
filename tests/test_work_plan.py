@@ -205,6 +205,72 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '只能明確開啟'):
             p.validate({'items': [item()], 'verify_delivery': False})
 
+    def test_equal_results_cannot_supply_the_other_items_expression(self):
+        first = {'operation': 'difference', 'values': ['20', '4']}
+        second = {'operation': 'difference', 'values': ['19', '3']}
+        pending = [item(1, '計算竹穗件數'), item(2, '計算泉角件數')]
+        requirements = [{'id': 1, 'expression': first}, {'id': 2, 'expression': second}]
+        wrong = [item(1, '計算竹穗件數', 'done', [3]), item(2, '計算泉角件數', 'done', [2])]
+        right = [item(1, '計算竹穗件數', 'done', [2]), item(2, '計算泉角件數', 'done', [3])]
+        result = self.run_actions(
+            action('update_plan', items=pending, evidence_requirements=requirements, verify_delivery=True),
+            action('calculate_expression', expression=first),
+            action('calculate_expression', expression=second),
+            action('update_plan', items=wrong),
+            action('update_plan', items=right),
+            action('finish', report='兩批各16件。'))
+        self.assertEqual([s['observation']['exact'] for s in result['steps'][1:3]], ['16', '16'])
+        self.assertIn('項目 1 的步驟 3 與指定算式不符', result['steps'][3]['observation']['error'])
+        self.assertEqual(result['work_plan']['evidence_matches'],
+                         [{'id': 1, 'expression_step': 2}, {'id': 2, 'expression_step': 3}])
+        self.assertIn('指定算式或原文已核對 · 項目 1、2', p.describe(result['work_plan']))
+        self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 5)
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), result)
+        altered = copy.deepcopy(result['steps'][4]['observation'])
+        altered['evidence_matches'][0]['expression_step'] = 3
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(altered, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_typed_mixed_item_reuses_its_read_and_requires_current_expression(self):
+        path = self.root / 'boxes.txt'
+        path.write_text('原有3組，每組6個。\n窗口金同仁。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對紙盒及窗口')
+        quantity = {'id': 1, 'ranges': [{'document_id': did, 'start_line': 1, 'end_line': 1}],
+                    'expression': {'operation': 'product', 'values': ['3', '6']}}
+        contact = {'id': 2, 'ranges': [{'document_id': did, 'start_line': 2, 'end_line': 2}]}
+        self.run_actions(action('read', **quantity['ranges'][0]), action('read', **contact['ranges'][0]),
+            action('update_plan', items=[item(1, '核對紙盒', refs=[1]), item(2, '核對窗口', 'done', [2])],
+                   verify_delivery=True, evidence_requirements=[quantity, contact]), gid=gid)
+        snapshot = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '本次改為4組。', expected_fingerprint=snapshot['fingerprint'])
+        review = a.get_goal(self.store, self.sid, gid)['work_plan']['delivery_review']
+        self.assertEqual(review['open_items'], [1])
+        self.assertEqual(review['reusable_documents'], [
+            {'id': 1, 'evidence_steps': [1]}, {'id': 2, 'evidence_steps': [2]}])
+        updated = {**quantity, 'expression': {'operation': 'product', 'values': ['4', '6']}}
+        wrong = [item(1, '核對紙盒', 'done', [2, 4]), item(2, '核對窗口', 'done', [2])]
+        right = [item(1, '核對紙盒', 'done', [1, 4]), item(2, '核對窗口', 'done', [2])]
+        result = self.run_actions(
+            action('calculate_expression', expression=updated['expression']),
+            action('update_plan', items=right, reuse_document_steps=[1, 2]),
+            action('update_plan', items=wrong, reuse_document_steps=[2], evidence_requirements=[updated]),
+            action('update_plan', items=right, reuse_document_steps=[1, 2], evidence_requirements=[updated]),
+            action('finish', report='24個，窗口金同仁。'), gid=gid)
+        self.assertIn('算式要求來自舊條件', result['steps'][4]['observation']['error'])
+        self.assertIn('未查讀指定文件範圍', result['steps'][5]['observation']['error'])
+        self.assertEqual(result['work_plan']['evidence_matches'],
+                         [{'id': 1, 'read_steps': [1], 'expression_step': 4}, {'id': 2, 'read_steps': [2]}])
+        self.assertEqual([row['sequence'] for row in result['work_plan']['reused_document_steps']], [1, 2])
+        self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 7)
+        validate_database(self.store.path)
+
     def test_reuse_checks_original_evidence_set_complete_reads_and_version(self):
         file = self.root / 'sources.txt'
         file.write_text('甲批原值。\n乙批原值。', encoding='utf-8')

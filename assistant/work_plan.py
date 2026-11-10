@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 
+from . import document_ranges, expression_math
 from .documents import check_citations
 
 STATES = {'pending': '待處理', 'working': '處理中', 'done': '助理回報完成',
@@ -18,6 +19,7 @@ done需連到至少一個已執行、沒有錯誤且屬於目前目標條件的�
 work_plan是最近一次清單；conditions_current=false代表目標補充或來源已變，舊完成標記待重新核對。先判斷哪些項目受新補充影響。更正後的計算要用目前條件重新執行，尚未核對的項目恢復pending或working。既有步驟的goal_conditions_sha256由程式產生，不要自行輸出它。
 如果同一清單的已完成項目原先只以read或read_ranges完整查讀為依據，而且查讀範圍仍適用，可在本次update_plan的args另加reuse_document_steps，例如{"items":[...],"reuse_document_steps":[2]}。原項目須保留整組原有evidence_steps，程式會核對保存的讀取範圍與同版本文件。只列本次實際沿用的舊查讀步驟，不必重讀同樣範圍。原先依賴計算、搜尋或其他工具的項目不能用這個例外。沿用原文件原行不代表保留被更正的值；依最新確認重算受影響的結果。已完整查讀的文件項目可標完成；另一個缺漏欄位可用ask補充，不需要把查讀項目改成受阻。
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
+使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
 
@@ -31,7 +33,7 @@ def conditions(goal):
 
 
 def validate(args):
-    if (not isinstance(args, dict) or args.keys() - {'items', 'reuse_document_steps', 'verify_delivery'}
+    if (not isinstance(args, dict) or args.keys() - {'items', 'reuse_document_steps', 'verify_delivery', 'evidence_requirements'}
             or not isinstance(args.get('items'), list) or not 1 <= len(args['items']) <= 8):
         raise ValueError('工作清單需為1至8項。')
     if 'verify_delivery' in args and args['verify_delivery'] is not True:
@@ -65,6 +67,27 @@ def validate(args):
             raise ValueError('受阻或調整需求需說明原因。')
     if working > 1:
         raise ValueError('同一時間最多一項工作標記為處理中。')
+    if 'evidence_requirements' in args:
+        _validate_requirements(args['evidence_requirements'], ids)
+
+
+def _validate_requirements(requirements, ids):
+    if not isinstance(requirements, list) or not 1 <= len(requirements) <= len(ids):
+        raise ValueError('指定證據須對應一項或多項工作。')
+    seen = set()
+    for row in requirements:
+        if (not isinstance(row, dict) or set(row) not in ({'id', 'ranges'}, {'id', 'expression'},
+                                                           {'id', 'ranges', 'expression'})
+                or type(row['id']) is not int or row['id'] not in ids or row['id'] in seen):
+            raise ValueError('指定證據須使用不同的工作項目編號，並提供原文範圍或算式。')
+        seen.add(row['id'])
+        if 'ranges' in row:
+            document_ranges.validate_batch({'ranges': row['ranges']})
+            if any(not 1 <= end - start + 1 <= document_ranges.MAX_LINES
+                   for _, start, end in map(_range_key, row['ranges'])):
+                raise ValueError('指定證據的文件範圍不符。')
+        if 'expression' in row:
+            expression_math.validate({'expression': row['expression']})
 
 
 def latest(steps):
@@ -77,6 +100,9 @@ def latest(steps):
                 value['reused_document_steps'] = observation['reused_document_steps']
             if observation.get('verify_delivery') is True:
                 value['verify_delivery'] = True
+            for key in ('evidence_requirements', 'evidence_matches'):
+                if key in observation:
+                    value[key] = observation[key]
             return value
     return None
 
@@ -85,12 +111,8 @@ def _range_key(row):
     return tuple(row.get(field) for field in RANGE_FIELDS) if isinstance(row, dict) else ()
 
 
-def _read_proof(step, scope, sources):
+def _complete_read(step, sources):
     action, observation = step['action'], step['observation']
-    old_scope = observation.get('goal_conditions_sha256')
-    if (action['tool'] not in RANGE_READERS or not isinstance(old_scope, str)
-            or not re.fullmatch(r'[a-f0-9]{64}', old_scope) or old_scope == scope):
-        raise ValueError('沿用證據須為已記錄舊條件的完整文件查讀。')
     requested = observation.get('requested_ranges')
     original = [action['args']] if action['tool'] == 'read' else action['args'].get('ranges')
     if not isinstance(requested, list) or not isinstance(original, list) or not original:
@@ -115,9 +137,71 @@ def _read_proof(step, scope, sources):
     checks = check_citations(tokens, excerpts)
     if len(checks) != len(ranges) or any(not check['range_valid'] for check in checks):
         raise ValueError('沿用證據沒有完整覆蓋原查讀範圍。')
+    return ranges, excerpts
+
+
+def _read_proof(step, scope, sources):
+    old_scope = step['observation'].get('goal_conditions_sha256')
+    if (step['action']['tool'] not in RANGE_READERS or not isinstance(old_scope, str)
+            or not re.fullmatch(r'[a-f0-9]{64}', old_scope) or old_scope == scope):
+        raise ValueError('沿用證據須為已記錄舊條件的完整文件查讀。')
+    ranges, _ = _complete_read(step, sources)
     raw = json.dumps(step, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return {'sequence': step['sequence'], 'document_ids': sorted({key[0] for key in ranges}),
             'read_sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def _merge_requirements(rows, previous, scope, sources):
+    requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
+    document_ids = {source['document_id'] for source in sources}
+    for row in rows:
+        old = requirements.get(row['id'])
+        if old:
+            prior = {key: value for key, value in old.items() if key != 'defined_scope'}
+            if (not prior.keys() <= row.keys()
+                    or (old['defined_scope'] == scope and any(row[key] != value for key, value in prior.items()))):
+                raise ValueError(f'項目 {row["id"]} 已保存指定證據。請保留證據種類及目前條件下的原要求。')
+        if any(source['document_id'] not in document_ids for source in row.get('ranges', ())):
+            raise ValueError(f'項目 {row["id"]} 的指定範圍不在本目標文件內。')
+        requirements[row['id']] = {**row, 'defined_scope': scope}
+    return requirements
+
+
+def _match_item_evidence(item, requirement, steps, scope, sources):
+    number = item['id']
+    ranges = list(map(_range_key, requirement.get('ranges', ())))
+    expression = {'expression': requirement['expression']} if 'expression' in requirement else None
+    if expression is not None and requirement['defined_scope'] != scope:
+        raise ValueError(f'項目 {number} 的算式要求來自舊條件，請依目前條件重新確認原式。')
+    match = {'id': number}
+    excerpts = []
+    for ref in item['evidence_steps']:
+        step = steps[ref]
+        action = step['action']
+        if ranges and action['tool'] in RANGE_READERS:
+            _, actual = _complete_read(step, sources)
+            relevant = [row for row in actual if any(
+                row['document_id'] == did and row['start_line'] <= end and start <= row['end_line']
+                for did, start, end in ranges)]
+            if not relevant:
+                raise ValueError(f'項目 {number} 的步驟 {ref} 未查讀指定文件範圍。')
+            excerpts.extend(relevant)
+            match.setdefault('read_steps', []).append(ref)
+        elif expression is not None and action['tool'] == 'calculate_expression':
+            if action['args'] != expression or 'expression_step' in match:
+                raise ValueError(f'項目 {number} 的步驟 {ref} 與指定算式不符。')
+            expected = expression_math.calculate(expression)
+            if any(step['observation'].get(key) != value for key, value in expected.items()):
+                raise ValueError(f'項目 {number} 的步驟 {ref} 缺少可重驗的精確算式結果。')
+            match['expression_step'] = ref
+        else:
+            raise ValueError(f'項目 {number} 的步驟 {ref} 不屬於指定的查讀或算式。')
+    if expression is not None and 'expression_step' not in match:
+        raise ValueError(f'項目 {number} 缺少指定算式的實際計算。')
+    tokens = ' '.join(f'[D{did}:L{start}-L{end}]' for did, start, end in ranges)
+    if any(not check['range_valid'] for check in check_citations(tokens, excerpts)):
+        raise ValueError(f'項目 {number} 缺少完整指定文件範圍。')
+    return match
 
 
 def observe(args, steps, scope, sources=()):
@@ -129,7 +213,9 @@ def observe(args, steps, scope, sources=()):
     by_sequence = {row['sequence']: row for row in steps}
     reused = args.get('reuse_document_steps', [])
     previous_items = {row['id']: row for row in previous['items']} if previous else {}
+    requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources)
     proofs = {}
+    matches = []
     for item in args['items']:
         for number in item['evidence_steps']:
             step = by_sequence.get(number)
@@ -143,12 +229,15 @@ def observe(args, steps, scope, sources=()):
                 raise ValueError('完成證據失敗、不完整或來自舊條件；請重新取得適用證據。')
             if item['state'] == 'done' and number in reused:
                 old = previous_items.get(item['id'])
-                if (old is None or old['state'] != 'done' or item['evidence_steps'] != old['evidence_steps']
-                        or any(by_sequence.get(ref, {}).get('action', {}).get('tool') not in RANGE_READERS
-                               for ref in old['evidence_steps'])):
+                if (not requirements.get(item['id'], {}).get('ranges')
+                        and (old is None or old['state'] != 'done' or item['evidence_steps'] != old['evidence_steps']
+                             or any(by_sequence.get(ref, {}).get('action', {}).get('tool') not in RANGE_READERS
+                                    for ref in old['evidence_steps']))):
                     raise ValueError('只能沿用同一個原已完成且只以文件查讀為依據的項目。')
                 if number not in proofs:
                     proofs[number] = _read_proof(step, scope, sources)
+        if item['state'] == 'done' and item['id'] in requirements:
+            matches.append(_match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources))
     if set(proofs) != set(reused):
         raise ValueError('沿用清單只能列本次完成項目實際引用的舊查讀步驟。')
     result = {'status': 'plan_recorded', 'items': json.loads(json.dumps(args['items'])),
@@ -158,11 +247,34 @@ def observe(args, steps, scope, sources=()):
         result['reused_document_steps'] = [proofs[number] for number in reused]
     if args.get('verify_delivery') or (previous and previous.get('verify_delivery')):
         result['verify_delivery'] = True
+    if requirements:
+        result['evidence_requirements'] = [requirements[item['id']] for item in args['items'] if item['id'] in requirements]
+        result['evidence_matches'] = matches
     return result
 
 
 def _open_items(plan):
     return [row['id'] for row in plan['items'] if row['state'] not in ('done', 'superseded')]
+
+
+def _covering_read_steps(requirement, old_excerpts):
+    targets = {(did, line) for did, start, end in map(_range_key, requirement['ranges'])
+               for line in range(start, end + 1)}
+    coverage = {}
+    for number, excerpts in old_excerpts.items():
+        intervals = [_range_key(row) for row in excerpts]
+        coverage[number] = {(did, line) for did, line in targets
+                            if any(doc == did and start <= line <= end for doc, start, end in intervals)}
+    selected = []
+    limit = 5 if 'expression' in requirement else 6
+    while targets and coverage and len(selected) < limit:
+        number = max(coverage, key=lambda ref: len(coverage[ref] & targets))
+        covered = coverage.pop(number) & targets
+        if not covered:
+            break
+        selected.append(number)
+        targets -= covered
+    return sorted(selected) if not targets else []
 
 
 def _delivery_review(plan, goal, scope, sources_current):
@@ -172,19 +284,41 @@ def _delivery_review(plan, goal, scope, sources_current):
               'recheck_items': [], 'reusable_documents': []}
     if plan['conditions_current']:
         return review
+    typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
+    old_excerpts = {}
+    if typed_reads and sources_current:
+        for number, step in by_sequence.items():
+            if step['action']['tool'] not in RANGE_READERS:
+                continue
+            try:
+                _read_proof(step, scope, goal['sources'])
+            except ValueError:
+                continue
+            old_excerpts[number] = step['observation']['excerpts']
     for item in plan['items']:
+        typed = typed_reads.get(item['id'])
+        if typed and item['state'] != 'superseded':
+            refs = _covering_read_steps(typed, old_excerpts)
+            if refs:
+                review['reusable_documents'].append({'id': item['id'], 'evidence_steps': refs})
+            if item['state'] == 'done' and (not refs or 'expression' in typed):
+                review['recheck_items'].append(item['id'])
+            continue
         if item['state'] != 'done':
             continue
         refs = item['evidence_steps']
-        try:
-            if not sources_current:
-                raise ValueError('文件版本已改。')
+        reusable = []
+        if sources_current:
             for number in refs:
-                _read_proof(by_sequence[number], scope, goal['sources'])
-        except (ValueError, KeyError):
+                try:
+                    _read_proof(by_sequence[number], scope, goal['sources'])
+                except (ValueError, KeyError):
+                    continue
+                reusable.append(number)
+        if reusable != refs:
             review['recheck_items'].append(item['id'])
-        else:
-            review['reusable_documents'].append({'id': item['id'], 'evidence_steps': refs})
+        if reusable and reusable == refs:
+            review['reusable_documents'].append({'id': item['id'], 'evidence_steps': reusable})
     return review
 
 
@@ -228,6 +362,9 @@ def describe(value):
     if 'delivery_review' in value:
         review = value['delivery_review']
         lines.append('工作清單已通過交付核對。' if review['ready'] else '交付前仍需核對目前的工作清單。')
+    if value.get('evidence_matches'):
+        numbers = '、'.join(str(row['id']) for row in value['evidence_matches'])
+        lines.append('指定算式或原文已核對 · 項目 ' + numbers)
     for item in value['items']:
         refs = '；依據步驟 ' + '、'.join(map(str, item['evidence_steps'])) if item['evidence_steps'] else ''
         lines.append(f"{item['id']}. {item['task']} — {STATES[item['state']]}{refs}")
@@ -251,7 +388,8 @@ def validate_saved(db):
                     raise ValueError('工作清單缺少有效的條件紀錄。')
                 expected = observe(action['args'], prior, scope, sources)
                 if any(observation.get(key) != expected.get(key)
-                       for key in ('status', 'items', 'reused_document_steps', 'verify_delivery')):
+                       for key in ('status', 'items', 'reused_document_steps', 'verify_delivery',
+                                   'evidence_requirements', 'evidence_matches')):
                     raise ValueError('工作清單與保存動作不一致。')
             if action['tool'] in DELIVERY_TOOLS or 'plan_check_step' in observation:
                 scope = observation.get('goal_conditions_sha256')
