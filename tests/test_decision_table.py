@@ -772,6 +772,66 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(common['max_questions'], 0)
         self.assertEqual(common['current_alternatives']['remaining_cases'], cases)
 
+    def test_partial_paired_coverage_identifies_the_question_before_requesting_rule_evidence(self):
+        plan = {'conditions': ['日期', '件數'], 'known': {'日期': '週二', '件數': '6'},
+                'domains': {'日期': ['週二', '週四'], '件數': ['6', '9']}, 'excluded': [],
+                'rows': [{'when': ['週二', '6'], 'result': '東廳'}, {'when': ['週二', '9'], 'result': '北廳'},
+                         {'when': ['週四', '9'], 'result': '西廳'}]}
+        cases = [{'日期': '週二', '件數': '9'}, {'日期': '週四', '件數': '6'}]
+        quote = '本輪只有週二9件或週四6件'
+        update = {'known_update': {'日期': None, '件數': None}, 'source': '[補充#2]',
+                  'alternatives': {'cases': cases, 'quote': quote}}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '分配廳別')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='本輪配對？')))
+
+            def reply(text):
+                waiting = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=waiting['fingerprint'])
+
+            reply('原日期與件數撤回。' + quote + '。')
+            before = autonomy.get_goal(store, sid, gid)
+            legacy = decision_table.observe(update, before['steps'], before['reply_sources'])
+            self.assertEqual(legacy['status'], 'incomplete_table')
+            self.assertNotIn('question', legacy)
+            tracked = {**update, 'alternatives': {**update['alternatives'], 'track_coverage': True}}
+            first = autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **tracked),
+                action('ask', question='請確認日期。', partial_result='週二北廳。週四廳別待查。')))
+            observed = first['steps'][2]['observation']
+            self.assertEqual(observed['coverage_cases'], [
+                {'when': ['週二', '9'], 'status': 'resolved', 'matching_rows': [2], 'recorded_results': ['北廳']},
+                {'when': ['週四', '6'], 'status': 'missing_rule', 'matching_rows': [], 'recorded_results': []}])
+            self.assertEqual(observed['max_questions'], 1)
+            self.assertEqual(observed['question'], {'condition': '日期', 'branches': [
+                {'value': '週二', 'max_questions': 0, 'possible_results': ['北廳'], 'needs_evidence': False},
+                {'value': '週四', 'max_questions': 0, 'possible_results': [], 'needs_evidence': True}]})
+            reply('正式確認週二。')
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', known_update={'日期': '週二'}, source='[補充#4]'),
+                action('finish', report='週二9件用北廳。')))
+            self.assertEqual(final['steps'][4]['observation']['possible_results'], ['北廳'])
+            self.assertEqual(final['steps'][4]['observation']['coverage']['missing_rows'], [])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            observed['question']['branches'][1]['needs_evidence'] = False
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                           (json.dumps(observed, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+        conflicting = {**plan, 'known': {}, 'rows': [*plan['rows'], {'when': ['週二', '9'], 'result': '南廳'}]}
+        result = decision_table.calculate(conflicting, alternatives=tracked['alternatives'])
+        self.assertEqual([case['status'] for case in result['coverage_cases']], ['conflicting_rules', 'missing_rule'])
+        self.assertEqual(result['coverage_cases'][0]['recorded_results'], ['北廳', '南廳'])
+        self.assertTrue(all(branch['needs_evidence'] for branch in result['question']['branches']))
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}

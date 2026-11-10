@@ -1,0 +1,48 @@
+[
+  {
+    "id": "coverage_date_choice_avoids_missing_hall_rule",
+    "category": "goal_correlated_partial_coverage",
+    "documents": [
+      {"name":"calendar.txt","content":"安樺 E7 原定週二、6 面。日期只有週二或週四，板數只有 6 或 9，四組都可能。\n"},
+      {"name":"venues.txt","content":"週二 6 面用東廳，週二 9 面用北廳。週四 6 面的廳別規則尚未公布。週四 9 面用西廳。\n"}
+    ],
+    "prompt":"讀兩份首行，用決策工具保存 E7 原安排，問一次本輪更新。若更新後其中一組缺廳別規則，先列本輪兩組各自可確認的內容。只問一個能決定是否還要補廳別規則的欄位，避免先追問尚未生效那組的規則。收到答覆後用同一張表交可確定的安排。",
+    "replies":["原日期與板數一起撤回。本輪只可能週二 9 面或週四 6 面，還沒確定採哪組。","正式確認週二，上一則的本輪配對仍適用。"],
+    "criteria":["暫表週二9面北廳，週四6面廳別待查，未排除可行的週四6面。","第二問只問日期，沒有先問週四廳別；最後週二9面北廳。"]
+  },
+  {
+    "id":"coverage_unneeded_conflicting_document_rows",
+    "category":"goal_correlated_partial_coverage",
+    "documents":[
+      {"name":"facts.txt","content":"霧潮 L2 原安排正門、無封條。入口正門或側門，封條有或無，四組都可。\n"},
+      {"name":"main.txt","content":"正門無封條到外桌，正門有封條到前桌，側門有封條到北桌。\n"},
+      {"name":"peer.txt","content":"與 main.txt 同級，側門有封條到南桌，側門無封條到中桌。\n"}
+    ],
+    "prompt":"讀三份首行。用決策工具保存 L2 原安排，再問當班更新。若仍有兩種組合，先列可確定結果和同組衝突。如果先確認入口就可能確定處置，先只問入口。收到答覆後照當班配對核對，勿替另一組選文件。",
+    "replies":["入口及封條原值撤回。本班只有正門有封條或側門有封條，哪組尚待確認。","入口確認是正門。原配對仍適用。"],
+    "criteria":["暫表正門有封條到前桌；側門有封條的北桌和南桌衝突，暫不採用其中之一。","第二問只問入口，最後正門有封條、前桌，引用正式確認和原規則。"]
+  },
+  {
+    "id":"coverage_condition_only_preserves_two_different_gaps",
+    "category":"goal_correlated_partial_coverage",
+    "documents":[
+      {"name":"facts.txt","content":"石柏 D9 原定早班、4 箱。時段只有早班或晚班，箱數可為 4、8；四種皆可。\n"},
+      {"name":"desk-a.txt","content":"早班 4 箱到甲架，早班 8 箱到乙架，晚班 4 箱未公布。\n"},
+      {"name":"desk-b.txt","content":"本文件與 desk-a.txt 同級：早班 8 箱到丙架，晚班 8 箱到丁架。\n"}
+    ],
+    "prompt":"讀三份首行，用決策工具保存 D9 原安排，問一次更新，再交本輪各種可能的條件報告。每組依缺規則或文件衝突分開標待查。不要再提問或代選定稿。",
+    "reply":"撤回原時段和箱數。本輪只剩早班 8 箱或晚班 4 箱，仍待確認。",
+    "criteria":["早班8箱的乙架、丙架衝突，晚班4箱缺規則。兩組各自保留，沒有採用丁架或沿用原甲架。","只問一次，結果不確定且區分兩種缺口。"]
+  },
+  {
+    "id":"coverage_unreachable_rule_gap_does_not_block_shared_result",
+    "category":"goal_correlated_partial_coverage",
+    "documents":[
+      {"name":"facts.txt","content":"柳岩 C1 原定小車、單件。車型只有小車或大車，包件只有單件或雙件，四種皆可。\n"},
+      {"name":"docks.txt","content":"小車單件用甲位，小車雙件及大車單件都用乙位。大車雙件的車位未公布。\n"}
+    ],
+    "prompt":"讀兩份首行，用決策工具保存 C1 原安排，問一次本輪更新。若所有本輪可行情境都有相同車位，可直接交車位，未確認的原欄位各自待查。不因其他輪次的缺規則追問。",
+    "reply":"原車型與包件都撤回。本輪只有小車雙件或大車單件，兩組未選。",
+    "criteria":["小車雙件及大車單件都為乙位，車型及包件各自待查。","不把大車雙件的缺規則當成本輪缺口，不再追問。"]
+  }
+]

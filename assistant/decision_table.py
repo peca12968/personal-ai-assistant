@@ -37,6 +37,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 NATURAL_UPDATE_GUIDANCE += '''
 最新原話明列本輪只可能是二至八個配對，且每組都明列相同的兩個以上完整欄位時，在known_update旁加"alternatives":{"cases":[{"日期":"週三","件數":"18"},{"日期":"週五","件數":"12"}],"quote":"本輪只剩兩種可能：週三18件或週五12件"}。用實際source、原表的完整選項及逐字的限制短句。已撤回的原已知值用null，沒有欄位要改可給空物件。這些配對只限制本輪，不改原表excluded和規則。未採用提案、獨立待查，或只說某個欄變動但未列完整配對時，不填alternatives。current_alternatives.remaining_cases是仍可能的配對，implied_known是依仍可能配對可推得的欄位，引用配對原話及正式確認。若各配對結果一致或使用者只要條件成果，直接交付；須確認時只問會區分結果的欄位。收到確認只更新該欄，工具會沿用本輪配對。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+原表用明列domains和rows，且有可行組合未公布結果或同一組有多個結果時，送本輪alternatives請同時填"track_coverage":true在alternatives內。原表的缺列仍缺，互相衝突的來源仍並列。coverage_cases逐組列已知結果、缺規則或衝突，recorded_results是各組原有記載。若使用者要本次確定結果，question可先確認能決定是否或哪一組須補規則的欄位；先交可核對部分，再只問該欄。等確定仍適用的缺口才補問規則，不能把未公布當成不可能。max_questions只計確認條件。只要條件報告或禁止追問時，各組照實交付，不問。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -295,22 +298,28 @@ def _calculate_priority(args, compatible, excluded):
         observation['disputed_relations'] = disputed
     if not cases:
         return {'status': 'no_match', **observation, 'possible_results': []}
-    labels = [case['recorded_results'][0] if case['status'] == 'resolved' else None for case in cases]
-    depth, first, groups = question_order([case['when'] for case in cases], labels, tuple(range(len(cases))))
-    needs_evidence = None in labels
     results = list(dict.fromkeys(result for case in cases for result in case['recorded_results']))
-    observation.update(max_questions=depth, needs_evidence=needs_evidence)
+    observation.update(_case_questions(conditions, cases))
+    if observation['needs_evidence']:
+        return {'status': 'incomplete_table', **observation, 'recorded_results': results}
+    return {'status': 'needs_check' if 'question' in observation else 'resolved', **observation, 'possible_results': results}
+
+
+def _case_questions(conditions, cases, *, distinguish_gaps=False):
+    outcomes = [case['recorded_results'][0] if case['status'] == 'resolved' else None for case in cases]
+    labels = [(outcome, tuple(case['when']) if outcome is None and distinguish_gaps else ())
+              for outcome, case in zip(outcomes, cases)]
+    depth, first, groups = question_order([case['when'] for case in cases], labels, tuple(range(len(cases))))
+    result = {'max_questions': depth, 'needs_evidence': None in outcomes}
     if first is not None:
         branches = []
         for value, indices, remaining in groups:
-            outcomes = list(dict.fromkeys(labels[index] for index in indices))
+            distinct = dict.fromkeys(outcomes[index] for index in indices)
             branches.append({'value': value, 'max_questions': remaining,
-                             'possible_results': [outcome for outcome in outcomes if outcome is not None],
-                             'needs_evidence': None in outcomes})
-        observation['question'] = {'condition': conditions[first], 'branches': branches}
-    if needs_evidence:
-        return {'status': 'incomplete_table', **observation, 'recorded_results': results}
-    return {'status': 'resolved' if first is None else 'needs_check', **observation, 'possible_results': results}
+                             'possible_results': [outcome for outcome in distinct if outcome is not None],
+                             'needs_evidence': None in distinct})
+        result['question'] = {'condition': conditions[first], 'branches': branches}
+    return result
 
 
 def calculate(args, *, alternatives=None, require_all=False):
@@ -330,7 +339,8 @@ def calculate(args, *, alternatives=None, require_all=False):
     if 'rules' in args:
         result = _calculate_priority(args, [row for row in declared if matches(row)], excluded)
     else:
-        result = _calculate_rows(args, declared, excluded, matches)
+        result = _calculate_rows(args, declared, excluded, matches,
+                                 track_coverage=bool(alternatives and alternatives.get('track_coverage')))
     if alternatives is None:
         return result
 
@@ -344,7 +354,7 @@ def calculate(args, *, alternatives=None, require_all=False):
     return {**result, 'current_alternatives': {**alternatives, 'remaining_cases': remaining, 'implied_known': implied}}
 
 
-def _calculate_rows(args, declared, excluded, matches):
+def _calculate_rows(args, declared, excluded, matches, *, track_coverage=False):
     conditions, rows = args['conditions'], args['rows']
     active = tuple(index for index, row in enumerate(rows) if matches(row['when']))
 
@@ -371,6 +381,18 @@ def _calculate_rows(args, declared, excluded, matches):
                                    'excluded_rows': [list(assignment) for assignment in compatible
                                                      if assignment in excluded]}
         if missing or conflicts:
+            if track_coverage:
+                coverage_cases = []
+                for assignment in compatible:
+                    if assignment in excluded:
+                        continue
+                    indices = reported.get(assignment, [])
+                    status = 'missing_rule' if not indices else 'conflicting_rules' if len(indices) > 1 else 'resolved'
+                    coverage_cases.append({'when': list(assignment), 'status': status,
+                                           'matching_rows': [index + 1 for index in indices],
+                                           'recorded_results': outcomes(indices)})
+                observation.update(coverage_cases=coverage_cases,
+                                   **_case_questions(conditions, coverage_cases, distinguish_gaps=True))
             return {'status': 'incomplete_table', **observation, 'recorded_results': outcomes(active)}
     observation['possible_results'] = outcomes(active)
     if not active:
@@ -436,7 +458,9 @@ def _validate_update_fields(updates, *, allow_empty=False):
 
 
 def _validate_alternatives(alternatives):
-    if not isinstance(alternatives, dict) or alternatives.keys() != {'cases', 'quote'}:
+    required = {'cases', 'quote'}
+    if (not isinstance(alternatives, dict) or not required <= alternatives.keys() <= required | {'track_coverage'}
+            or ('track_coverage' in alternatives and alternatives['track_coverage'] is not True)):
         raise ValueError('本輪配對須提供各組條件及同則補充的逐字原話。')
     _label(alternatives['quote'])
     cases = alternatives['cases']
@@ -668,7 +692,7 @@ def _bind_alternatives(alternatives, plan, source):
         raise ValueError('本輪配對須使用原表欄位。')
     if not _PAIR_LIMIT.search(quote) or _SCENARIO_START.match(quote) or quote.startswith(('「', '『', '引用', '引述')):
         raise ValueError('本輪配對須引用明確限制目前可能組合的原話。')
-    return {'cases': cases, **_source_excerpt(source, quote)}
+    return {**alternatives, **_source_excerpt(source, quote)}
 
 
 def _apply_known_update(args, previous, sequence, replies, guidance):
