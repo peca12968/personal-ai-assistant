@@ -4,7 +4,7 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
 from . import goal_question_withdrawals, goal_reply_sources
-from .goal_guidance import _snapshot, append_waiting_recheck, snapshot
+from .goal_guidance import _snapshot, append_waiting_recheck, apply_waiting_review, snapshot
 
 
 def save(store, sid, gid, answer, *, expected_fingerprint):
@@ -49,7 +49,7 @@ def withdraw(store, sid, gid, correction_number, *, expected_fingerprint):
         review = goal.get('reference_review')
         if (review and review['field_reference']['status'] != 'needs_field' and current['step_count'] + 2 <= MAX_STEPS
                 and source['citation'] == review['field_reference']['recheck']['evidence']['citation']):
-            append_waiting_recheck(db, current, goal['notes'])
+            return apply_waiting_review(db, current)
         goal_question_withdrawals.record(db, gid, options, source)
         db.execute("UPDATE autonomous_goals SET question='',status='paused',notice=?,updated_at=CURRENT_TIMESTAMP "
                    "WHERE id=? AND session_id=?", ('已依所選更正撤下問題，可開始／接續。', gid, sid))

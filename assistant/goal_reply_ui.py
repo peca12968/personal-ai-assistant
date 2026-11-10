@@ -112,14 +112,15 @@ class GoalReplyWindow:
             self.notice.set('請先核對並選擇一筆已保存的更正。')
             return
         try:
-            goal_replies.withdraw(self.store, self.sid, self.gid, int(chosen),
-                                  expected_fingerprint=self.current['fingerprint'])
+            outcome = goal_replies.withdraw(self.store, self.sid, self.gid, int(chosen),
+                                            expected_fingerprint=self.current['fingerprint'])
         except Exception as exc:
             messagebox.showerror('問題尚未撤下', str(exc), parent=self.window)
             return
         self.reload()
         try:
             self.saved(self.gid, None)
-            self.notice.set('問題已撤下，原提問與暫表可在目標詳情查看。請回原視窗開始／接續。')
+            self.notice.set('欄名部分已撤下，請核對保留的補問。' if outcome['goal']['question'] else
+                            '問題已撤下，原提問與暫表可在目標詳情查看。請回原視窗開始／接續。')
         except Exception as exc:
             self.notice.set('問題已撤下。請回原視窗重新整理後接續。' + str(exc))

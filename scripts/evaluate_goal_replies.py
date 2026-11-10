@@ -116,7 +116,10 @@ def followup_change(case, key):
     change = case.get(key)
     if key not in case:
         return None
-    if not isinstance(change, dict) or change.keys() not in ({'correction'}, {'correction', 'reply'}):
+    shapes = ({'correction'}, {'correction', 'reply'})
+    if key == 'reference_waiting_change':
+        shapes += ({'correction', 'reply', 'reply_question'},)
+    if not isinstance(change, dict) or change.keys() not in shapes:
         raise ValueError('接續更正案例須指定正式補充，可另有一次釐清答覆。')
     for value in change.values():
         autonomy.text(value, 4000)
@@ -236,7 +239,8 @@ def main():
                     save_report(trace_path, row)
                     if state['status'] == 'paused':
                         state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                    elif state['status'] == 'needs_input' and 'reply' in change:
+                    elif (state['status'] == 'needs_input' and 'reply' in change
+                          and state['question'] == change.get('reply_question', state['question'])):
                         observed = goal_replies.snapshot(store, sid, gid)
                         correction['reply'] = goal_replies.save(store, sid, gid, change['reply'],
                                                               expected_fingerprint=observed['fingerprint'])

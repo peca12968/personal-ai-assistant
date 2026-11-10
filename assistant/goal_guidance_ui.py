@@ -44,7 +44,8 @@ class GoalGuidanceWindow:
         try:
             saved = guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
             rechecked = 'reference_report' in self.current or (
-                self.current['goal']['status'] == 'needs_input' and saved['goal']['status'] == 'paused')
+                self.current['goal']['status'] == 'needs_input'
+                and self.current['goal']['question'] != saved['goal']['question'])
             self.content.delete('1.0','end');self.reload();self.changed()
             if saved['goal'].get('reference_review'):
                 self.notice.set(decision_table.describe_waiting_review(saved['goal']['reference_review']))

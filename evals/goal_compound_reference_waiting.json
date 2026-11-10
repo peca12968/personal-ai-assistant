@@ -1,0 +1,38 @@
+[
+  {
+    "id":"agreement_leaves_only_the_independent_contact_question",
+    "category":"goal_compound_reference_waiting",
+    "documents":[
+      {"name":"facts.txt","content":"潭橋 U8 的接收班別、檢視班別原為早班，入口北口。兩欄各為早班或晚班，入口北口或南口，八組皆可。通知對象待確認，與班別及去向無關。\n"},
+      {"name":"policy.txt","content":"雙早班走前台，雙晚班走後台。單欄晚班時，北口接收晚班走東台，北口檢視晚班走西台；南口兩種都走聯絡台。\n"}
+    ],
+    "prompt":"讀兩份首行，按接收班別、檢視班別、入口的順序核對八組。先問當次更正。若省略欄名導致去向分開，在同一步提問內分列原欄名及獨立補問『本次要通知誰？』，有結構化的分項功能時使用。後續若明確更正使兩種去向相同，只留下獨立補問。通知對象回覆後交去向、通知對象和來源，欄名保留待查。只列對象，無須實際通知。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"入口正式改為南口。","reply_question":"本次要通知誰？","reply":"羅值班員"},
+    "criteria":["先在同一步分別問第一筆欄名及通知對象。","改南口後兩個分支都走聯絡台，只留下原樣的通知對象問題。","羅值班員只作為通知對象，交聯絡台及來源，第一筆欄名待查。"]
+  },
+  {
+    "id":"different_destinations_keep_both_items",
+    "category":"goal_compound_reference_waiting",
+    "documents":[
+      {"name":"facts.txt","content":"岸尾 P5 原收樣班別、備份班別皆早班。各欄可早班、晚班或夜班，九組均可。交付份數是另一個獨立待查項目。\n"},
+      {"name":"policy.txt","content":"雙早班去前室，雙晚班去後室。收樣晚班且備份早班去甲室，收樣早班且備份晚班去乙室。收樣夜班且備份早班去丙室，收樣夜班且備份晚班去丁室。備份夜班一律去夜室。\n"}
+    ],
+    "prompt":"讀兩份首行，按收樣班別、備份班別的順序保存九組規則，先問本輪更正。省略欄名時，先核對各分支；同一提問分列第一筆欄名及獨立的『要交付幾份？』，有結構化的分項功能時使用。若後續正式更正仍讓兩種指代去不同處，保留兩項等待，更新分支。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"收樣班別正式改為夜班。"},
+    "criteria":["原題分列第一筆欄名及交付份數。","改成夜班後重核丙室與丁室，兩項仍待回答，原提問不改動。"]
+  },
+  {
+    "id":"dependent_contact_keeps_the_original_unstructured_question",
+    "category":"goal_compound_reference_waiting",
+    "documents":[
+      {"name":"facts.txt","content":"松洲 N1 原拆包時段、交接時段皆早段，入口北口。兩欄各早段或晚段，入口北口或南口，八組皆可。通知對象必須是第一筆更正所指欄位的負責人，須記錄完整欄名及人名。\n"},
+      {"name":"policy.txt","content":"雙早段去前室，雙晚段去後室。單欄晚段時，北口拆包晚段去甲室，北口交接晚段去乙室，南口一律去共用室。\n"}
+    ],
+    "prompt":"讀兩份首行，按拆包時段、交接時段、入口的順序核對八組並先問當次更正。若省略欄名，請保留原欄名及該欄負責人的相依關係，整題同時確認，不可拆開。即使之後去向相同，成果也必須知道原欄名與其負責人。",
+    "reply":"正式改成晚段。",
+    "reference_waiting_change":{"correction":"入口正式改為南口。"},
+    "criteria":["原問題要求確認欄名及該欄負責人。","新更正只保存原話，不刪除仍必要的相依問題。"]
+  }
+]

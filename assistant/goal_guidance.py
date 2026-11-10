@@ -93,16 +93,20 @@ def eligibility(value):
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 
-def _append_reference_recheck(db, goal, notes, sequence, args, observation):
+def _append_step(db, goal, notes, sequence, action, observation):
     gid = goal['id']
     history = conversation_history.saved_fingerprint(db, gid)
     scope = {**goal, 'notes': notes, 'sources': json.loads(goal['sources_json'])}
     if history is not None:
         scope['conversation_history'] = {'sha256': history}
     observation = {**observation, 'goal_conditions_sha256': work_plan.conditions(scope)}
-    action = {'tool': 'check_decision', 'args': args, 'note': '依使用者正式更正重新核對原候選分支'}
     db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
                (gid, sequence, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
+
+
+def _append_reference_recheck(db, goal, notes, sequence, args, observation):
+    action = {'tool': 'check_decision', 'args': args, 'note': '依使用者正式更正重新核對原候選分支'}
+    _append_step(db, goal, notes, sequence, action, observation)
 
 
 def _save_reference_recheck(db, goal, notes, step_count):
@@ -126,20 +130,33 @@ def append_waiting_recheck(db, current, notes):
     _append_reference_recheck(db, goal, notes, current['step_count'] + 1, args, goal['reference_review'])
 
 
-def _apply_waiting_review(db, current):
+def apply_waiting_review(db, current):
     goal = current['goal']
     review = goal.get('reference_review')
     if review is None:
         return current
-    still_waiting = review['field_reference']['status'] == 'needs_field'
-    if current['step_count'] + (3 if still_waiting else 2) > MAX_STEPS:
+    proof = review['field_reference']
+    still_waiting = proof['status'] == 'needs_field'
+    remaining = proof['waiting_recheck'].get('remaining_question', '')
+    if current['step_count'] + (3 if still_waiting or remaining else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核欄名與交付，請帶入進度建立下一階段。')
     if still_waiting:
         return current
     append_waiting_recheck(db, current, goal['notes'])
     goal_question_withdrawals.record(db, goal['id'], current['question_withdrawal'], goal['guidance_sources'][-1])
-    db.execute("UPDATE autonomous_goals SET status='paused',question='',notice=? WHERE id=?",
-               ('已重核並撤下原欄名問題；請接續更新成果。', goal['id']))
+    status, notice = 'paused', '已重核並撤下原欄名問題。請接續更新成果。'
+    if remaining:
+        steps = _steps(db, goal['id'])
+        excerpts = [row for step in steps for row in step['observation'].get('excerpts', [])]
+        citations = goal_partials.question_citations(remaining, excerpts, goal.get('reply_sources', ()), goal['guidance_sources'])
+        observation = {'question': remaining}
+        if citations:
+            observation['question_citations'] = citations
+        action = {'tool': 'ask', 'args': {'question': remaining}, 'note': '依重核結果保留原題的獨立補問'}
+        _append_step(db, goal, goal['notes'], current['step_count'] + 2, action, observation)
+        status, notice = 'needs_input', '已撤下原題的欄名部分，請只回答保留的補問。'
+    db.execute('UPDATE autonomous_goals SET status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (status, remaining, notice, goal['id']))
     return _snapshot(db, goal['session_id'], goal['id'])
 
 
@@ -168,4 +185,4 @@ def save(store, sid, gid, content, *, expected_fingerprint):
             _save_reference_recheck(db, goal, notes, step_count)
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))
-        return _apply_waiting_review(db, _snapshot(db,sid,gid))
+        return apply_waiting_review(db, _snapshot(db,sid,gid))

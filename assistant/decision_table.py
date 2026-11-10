@@ -52,7 +52,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
 
-WAITING_REFERENCE_GUIDANCE = '''只有原欄名單純用來區分決策結果，且沒有其他待問資訊時，ask的question才逐字使用field_reference_question，分支放在partial_result。使用者要求一定要知道歷史欄名或另有問題時，照實寫完整問題。field_reference.waiting_recheck代表等待期間已按順序重核；原暫表是歷史。若原問已撤下，依共同結果交付且欄名仍待查。若仍有分歧且原問已有欄名答覆，用check_decision的resolve引用原問的補充；保留更正後的現行值。'''
+WAITING_REFERENCE_GUIDANCE = '''原欄名只用來區分決策結果時，ask的question可逐字使用field_reference_question，分支放在partial_result。另有一項與欄名、分支均無關的必要補問，且使用者允許分項時，將完整獨立問句填reference_remaining，question依序接上field_reference_question、換行、該獨立問句、換行、「請分兩行回答，先回完整欄名，再答補問。」。若要求確定歷史欄名、補問相依或要求維持整題，使用一般ask。field_reference.waiting_recheck是等待期間的重核，原暫表是歷史。若欄名已無必要，原題撤下；有remaining_question時，其後新題及其回答只對應獨立補問，不能用來resolve。若仍有分歧且原問已有欄名答覆，用resolve引用原問補充；分兩行的回覆只採第一行判定欄名，第二行回答補問。'''
+
+_REFERENCE_REPLY_HINT = '請分兩行回答，先回完整欄名，再答補問。'
 
 
 def _label(value):
@@ -871,7 +873,8 @@ def _choose_reference(base, source):
     pending = base.get('pending_field_reference')
     if pending is None:
         raise ValueError('目前沒有待確認的欄位指代。')
-    clauses = _natural_clauses(_source_text(source))
+    remaining, lines = _compound_reply(pending, source)
+    clauses = [lines['field'].strip()] if lines else _natural_clauses(_source_text(source))
     choices = {branch['field'] for branch in pending['branches']}
     field = _unquote_value(clauses[0]) if len(clauses) == 1 else None
     if field is not None and field not in choices:
@@ -883,7 +886,12 @@ def _choose_reference(base, source):
     result = _current_result(plan)
     if result['status'] == 'no_match':
         raise ValueError('所選欄位改值與目前可行情境不相容，請確認原條件。')
-    proof = {**pending, 'status': 'applied', 'field': field, 'confirmation': _source_excerpt(source, clauses[0])}
+    proof = {**pending, 'status': 'applied', 'field': field}
+    if lines:
+        proof['confirmation'] = _reply_line(source, lines, 'field')
+        proof['remaining_reply'] = {'question': remaining, **_reply_line(source, lines, 'remaining')}
+    else:
+        proof['confirmation'] = _source_excerpt(source, clauses[0])
     return plan, {**result, 'field_reference': proof}
 
 
@@ -953,14 +961,47 @@ def reference_report(steps, result):
     return None
 
 
+def _reference_question(proof):
+    fields = '、'.join(f'「{branch["field"]}」' for branch in proof['branches'])
+    return f'第一筆改值指哪個欄位？請回完整欄名{fields}。'
+
+
 def reference_question(step):
-    if step['action']['tool'] != 'check_decision':
-        return None
-    proof = step['observation'].get('field_reference', {})
-    if proof.get('status') == 'needs_field':
-        fields = '、'.join(f'「{branch["field"]}」' for branch in proof['branches'])
-        return f'第一筆改值指哪個欄位？請回完整欄名{fields}。'
+    if step['action']['tool'] == 'check_decision':
+        proof = step['observation'].get('field_reference', {})
+        if proof.get('status') == 'needs_field':
+            return _reference_question(proof)
     return None
+
+
+def _valid_remaining(question):
+    return (isinstance(question, str) and 2 <= len(question) <= 300 and question == question.strip()
+            and bool(re.fullmatch(r'[^？?\r\n\x00]+[？?]', question)))
+
+
+def validate_reference_ask(args, steps):
+    remaining = args['reference_remaining']
+    original = reference_question(steps[-1]) if steps else None
+    if (not original or not _valid_remaining(remaining) or args.keys() - {'question', 'partial_result', 'reference_remaining'}
+            or args.get('question') != '\n'.join((original, remaining, _REFERENCE_REPLY_HINT))):
+        raise ValueError('分項提問須緊接欄名核對，並依指定格式另列一個完整的獨立問句。')
+
+
+def _compound_reply(proof, source):
+    question = source.get('question', '').split('\n')
+    if (len(question) != 3 or question[0] != _reference_question(proof)
+            or not _valid_remaining(question[1]) or question[2] != _REFERENCE_REPLY_HINT):
+        return None, None
+    lines = re.fullmatch(r'(?P<field>[^\r\n]+)\r?\n(?P<remaining>[^\r\n]+)', _source_text(source))
+    if not lines or not lines['field'].strip() or not lines['remaining'].strip():
+        raise ValueError('請分兩行保存答覆，第一行為完整欄名，第二行回答獨立補問。')
+    return question[1], lines
+
+
+def _reply_line(source, lines, name):
+    start, end = lines.span(name)
+    return {'citation': source['citation'], 'source_sha256': source['sha256'],
+            'start': start, 'end': end, 'quote': lines[name]}
 
 
 def _waiting_reference(steps):
@@ -968,10 +1009,14 @@ def _waiting_reference(steps):
         return None
     checked, ask = steps[-2:]
     question = reference_question(checked)
-    if (question and ask['sequence'] == checked['sequence'] + 1 and ask['action']['tool'] == 'ask'
-            and ask['action']['args'].get('question') == ask['observation'].get('question') == question):
+    args = ask['action'].get('args', {})
+    if (not question or ask['sequence'] != checked['sequence'] + 1 or ask['action']['tool'] != 'ask'
+            or not isinstance(args, dict) or args.get('question') != ask['observation'].get('question')):
+        return None
+    if 'reference_remaining' in args:
+        validate_reference_ask(args, steps[:-1])
         return ask
-    return None
+    return ask if args.get('question') == question else None
 
 
 def _apply_waiting_recheck(args, previous, sequence, steps, guidance):
@@ -988,8 +1033,10 @@ def _apply_waiting_recheck(args, previous, sequence, steps, guidance):
     for source in sources:
         plan, observation = _recheck_reference(base_step, plan, source)
         changes.append(observation['field_reference']['recheck'])
-    proof = {**observation['field_reference'],
-             'waiting_recheck': {'ask_sequence': ask['sequence'], 'changes': changes}}
+    waiting = {'ask_sequence': ask['sequence'], 'changes': changes}
+    if 'reference_remaining' in ask['action']['args']:
+        waiting['remaining_question'] = ask['action']['args']['reference_remaining']
+    proof = {**observation['field_reference'], 'waiting_recheck': waiting}
     if 'pending_field_reference' in plan:
         plan = {**plan, 'pending_field_reference': proof}
     return plan, {**observation, 'field_reference': proof}
@@ -1014,6 +1061,8 @@ def describe_waiting_review(review):
     proof = review['field_reference']
     source = proof['recheck']['evidence']['citation']
     if proof['status'] != 'needs_field':
+        if proof['waiting_recheck'].get('remaining_question'):
+            return f'依 {source} 重核後，原欄名已不影響目前結果，獨立補問仍需回答。'
         return f'依 {source} 重核後，原欄名已不影響目前結果，可依該更正撤下原問題。'
     branches = '、'.join(f"原先指{row['field']}時為{'／'.join(row.get('possible_results') or ['待查'])}"
                         for row in proof['branches'])
@@ -1033,7 +1082,8 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
         raise ValueError('欄位指代核對須先有完整選項的原決策表。')
     base_step, base = previous
     citation = args['field_reference']
-    carried_ask = base.get('pending_field_reference', {}).get('waiting_recheck', {}).get('ask_sequence')
+    waiting = base.get('pending_field_reference', {}).get('waiting_recheck', {})
+    carried_ask = waiting.get('ask_sequence')
     if args.get('resolve') and carried_ask is not None and citation == f'[補充#{carried_ask}]':
         carried = next((item for item in replies if item['ask_sequence'] == carried_ask), None)
         if carried is None or _followup_sources(base_step, sequence, replies, guidance):
@@ -1041,6 +1091,9 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
         return _choose_reference(base, carried)
     source = _natural_update_source(citation, base_step, sequence, replies, guidance, what_if_sources)
     if args.get('resolve'):
+        if (waiting.get('remaining_question') and source.get('ask_sequence') == carried_ask + 2
+                and source['question'] == waiting['remaining_question']):
+            raise ValueError('這筆答覆只對應保留的獨立補問。')
         return _choose_reference(base, source)
     if args.get('recheck'):
         return _recheck_reference(base_step, base, source)
@@ -1191,6 +1244,12 @@ def _recheck_saved(steps, replies, guidance):
     what_if_sources = set()
     for index, step in enumerate(steps):
         action = step['action']
+        ask_args = action.get('args')
+        if action.get('tool') == 'ask' and isinstance(ask_args, dict) and 'reference_remaining' in ask_args:
+            if (not index or steps[index-1]['sequence'] != step['sequence'] - 1
+                    or ask_args.get('question') != step['observation'].get('question')):
+                raise ValueError('保存的分項提問與原欄名核對不一致。')
+            validate_reference_ask(ask_args, steps[:index])
         if action.get('tool') == 'invalid':
             rejected = _verified_rejection(step, previous, replies, guidance, rejected, what_if_sources)
         if action.get('tool') != 'check_decision':
@@ -1224,8 +1283,8 @@ def observe(args, steps, replies=(), guidance=()):
 
 
 def validate_saved(db, *, replies_present=False, guidance_present=False):
-    for gid, notes in db.execute(
-            "SELECT DISTINCT g.id,g.notes FROM autonomous_goals g JOIN autonomous_steps s ON g.id=s.goal_id "
+    for gid, notes, status, question in db.execute(
+            "SELECT DISTINCT g.id,g.notes,g.status,g.question FROM autonomous_goals g JOIN autonomous_steps s ON g.id=s.goal_id "
             "WHERE s.action_json LIKE '%\"check_decision\"%'"):
         steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for sequence, action, observation in db.execute(
@@ -1242,6 +1301,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             count = db.execute('SELECT COUNT(*) FROM autonomous_steps WHERE goal_id=?', (gid,)).fetchone()[0]
             guidance = goal_guidance_sources.read(db, gid, notes, count)
         _recheck_saved(steps, replies, guidance)
+        by_sequence = {step['sequence']: step for step in steps}
         for step in steps:
             if step['action']['tool'] != 'check_decision' or not step['action']['args'].get('waiting_recheck'):
                 continue
@@ -1260,3 +1320,11 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                        'WHERE goal_id=? AND ask_sequence=?', (gid, ask)).fetchone() if has_table else None
                 if withdrawn != (source['number'], source['sha256']):
                     raise ValueError('等待重核缺少與更正相符的原提問撤下紀錄。')
+                if remaining := proof['waiting_recheck'].get('remaining_question'):
+                    successor = by_sequence.get(step['sequence'] + 1)
+                    if (not successor or successor['action']['tool'] != 'ask'
+                            or successor['action']['args'] != {'question': remaining}
+                            or successor['observation'].get('question') != remaining):
+                        raise ValueError('原分項提問缺少相符的保留補問。')
+                    if status == 'needs_input' and successor['sequence'] == count and question != remaining:
+                        raise ValueError('目前等待的問題與已保存的保留補問不一致。')

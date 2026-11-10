@@ -230,7 +230,7 @@ def validate_action(value):
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
     name, args = value['tool'], value['args']
     if name == 'ask':
-        if not isinstance(args, dict) or set(args) not in ({'question'}, {'question', 'partial_result'}):
+        if not isinstance(args, dict) or 'question' not in args or args.keys() - {'question', 'partial_result', 'reference_remaining'}:
             raise ValueError('詢問須提供問題，可另附待補期間的成果。')
         text(args['question'], 800)
         if 'partial_result' in args:
@@ -387,6 +387,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return date_tools.calculate(args)
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
     if name == 'ask':
+        if 'reference_remaining' in args:
+            decision_table.validate_reference_ask(args, steps)
         question = {'question': args['question']}
         sources = goal_partials.question_citations(args['question'], excerpts, reply_sources, guidance_sources)
         if sources is not None:
