@@ -479,15 +479,20 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
                 declared = rule_scope['ranges'] if rule_scope else []
                 check = None
-                if declared and action['tool'] in source_decision.DELIVERY_TOOLS:
-                    check = source_decision.checked_step(goal['steps'], declared, conditions_hash)
-                    if check is None:
-                        raise ValueError('交付前請按目前條件核對全部宣告的原文規則區段。')
+                plan_check = None
+                if action['tool'] in work_plan.DELIVERY_TOOLS:
+                    plan_check = work_plan.check_delivery(goal['work_plan'], conditions_hash, action, goal['steps'])
+                    if declared:
+                        check = source_decision.checked_step(goal['steps'], declared, conditions_hash)
+                        if check is None:
+                            raise ValueError('交付前請按目前條件核對全部宣告的原文規則區段。')
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
                                       reply_sources=reply_sources, guidance_sources=guidance_sources,
                                       declared_rule_ranges=declared)
                 if check is not None:
                     observation['source_check_step'] = check
+                if plan_check is not None:
+                    observation['plan_check_step'] = plan_check
             except (ValueError, TypeError, KeyError) as exc:
                 action = {'tool': 'invalid', 'args': {}, 'note': '工具要求未通過驗證'}
                 observation = {'error': str(exc)[:500],

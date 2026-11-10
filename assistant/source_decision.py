@@ -4,6 +4,7 @@ import re
 from itertools import product
 
 from . import decision_table, document_ranges, goal_guidance_sources, goal_reply_sources, goal_stages
+from .work_plan import DELIVERY_TOOLS
 
 
 GUIDANCE = '''check_source_decision可逐行核對固定格式的規則。若原文使用「範圍｜狀態｜條件一、條件二：結果」，用此工具代替自行轉錄。傳入scope完整範圍名稱、conditions欄序、domains完整選項、known本次已確認值，以及ranges已完整查讀的原規則區段（最多8段共32行，包含另案及未採用的行，不含標題）。範圍必須完整相同。文件狀態只能是正式、未採用或排除。排除行省略冒號和結果。範例「甲批｜正式｜高、室內：甲架」。
@@ -17,7 +18,6 @@ _AMENDMENT = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _STATES = {'正式', '未採用', '排除'}
 _SCOPE_PREFIX = '決策規則範圍：'
 _RANGE = re.compile(r'\[D([1-9][0-9]{0,11}):L([1-9][0-9]{0,11})(?:-L([1-9][0-9]{0,11}))?\]')
-DELIVERY_TOOLS = {'finish', 'write_artifact', 'deliver'}
 SCOPE_GUIDANCE = ('decision_rule_scope來自使用者目標首行的規則範圍。missing_ranges是尚未完整查讀的區段。'
                   '只用read_ranges補讀缺口，不重讀已有原行。若缺行不可取得，先列可確認資料，'
                   '只請提供含該行的完整副本供重新匯入及另建目標。文字答覆無法補齊這份已宣告副本的原行。'

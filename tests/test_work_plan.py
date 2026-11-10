@@ -140,6 +140,71 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_guarded_finish_blocks_stale_plan_then_links_current_evidence(self):
+        file = self.root / 'count.txt'
+        file.write_text('原數32件，報廢5件。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, file)
+        gid = a.create_goal(self.store, self.sid, '核對可交件數')
+        reading = item(1, '核對原文', 'done', [1])
+        old = item(2, '計算可交件數', 'done', [2])
+        self.run_actions(
+            action('read', document_id=did, start_line=1, end_line=1),
+            action('calculate', operation='difference', values=['32', '5']),
+            action('update_plan', items=[reading, old], verify_delivery=True), gid=gid)
+        snapshot = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '本批報廢改為7件。', expected_fingerprint=snapshot['fingerprint'])
+        pending = a.get_goal(self.store, self.sid, gid)['work_plan']
+        self.assertEqual(pending['delivery_review'], {'ready': False, 'open_items': [], 'recheck_items': [2],
+            'reusable_documents': [{'id': 1, 'evidence_steps': [1]}]})
+        result = self.run_actions(
+            action('finish', report='27件。'),
+            action('calculate', operation='difference', values=['32', '7']),
+            action('update_plan', items=[reading, item(2, '計算可交件數', 'done', [5])], reuse_document_steps=[1]),
+            action('finish', report='25件。'), gid=gid)
+        self.assertEqual(result['steps'][3]['action']['tool'], 'invalid')
+        self.assertIn('仍依舊條件', result['steps'][3]['observation']['error'])
+        self.assertEqual(result['steps'][4]['observation']['exact'], '25')
+        self.assertTrue(result['work_plan']['verify_delivery'])
+        self.assertTrue(result['work_plan']['delivery_review']['ready'])
+        self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 6)
+        self.assertEqual(result['result'], '25件。')
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = {**result['steps'][-1]['observation'], 'plan_check_step': 3}
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=7',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '交付步驟與保存的清單核對'):
+            validate_database(restored.path)
+
+    def test_guarded_file_delivery_rejects_open_plan_and_old_file(self):
+        gid = a.create_goal(self.store, self.sid, '依清單交付月費', file_delivery=True)
+        initial = self.run_actions(
+            action('update_plan', items=[item()], verify_delivery=True),
+            action('write_artifact', filename='premature.txt', content='不應建立'),
+            action('calculate', operation='product', values=['120', '12']),
+            action('update_plan', items=[item(state='done', refs=[3])]),
+            action('write_artifact', filename='old.txt', content='1440元'), gid=gid)
+        self.assertIn('未完成項目 1', initial['steps'][1]['observation']['error'])
+        self.assertEqual([file['name'] for file in initial['artifacts']], ['old.txt'])
+        snapshot = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '改算6個月。', expected_fingerprint=snapshot['fingerprint'])
+        result = self.run_actions(
+            action('calculate', operation='product', values=['120', '6']),
+            action('update_plan', items=[item(state='done', refs=[6])]),
+            action('deliver', report='舊版', filenames=['old.txt']),
+            action('write_artifact', filename='new.txt', content='720元'),
+            action('deliver', report='本次720元', filenames=['new.txt']), gid=gid)
+        self.assertIn('缺少目前條件下的清單核對', result['steps'][7]['observation']['error'])
+        self.assertEqual(result['steps'][8]['observation']['plan_check_step'], 7)
+        self.assertEqual(result['steps'][9]['observation']['plan_check_step'], 7)
+        self.assertEqual(result['result'], '本次720元')
+        validate_database(self.store.path)
+        with self.assertRaisesRegex(ValueError, '只能明確開啟'):
+            p.validate({'items': [item()], 'verify_delivery': False})
+
     def test_reuse_checks_original_evidence_set_complete_reads_and_version(self):
         file = self.root / 'sources.txt'
         file.write_text('甲批原值。\n乙批原值。', encoding='utf-8')
