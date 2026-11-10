@@ -115,7 +115,7 @@ def _parse(text, size, *, user=False):
     return scope, status, values, result, version
 
 
-def _gather_lines(ranges, steps, sources):
+def gather_lines(ranges, steps, sources):
     positions = _positions(ranges)
     catalog = {row['document_id']: row for row in sources}
     found = {}
@@ -147,7 +147,7 @@ def _gather_lines(ranges, steps, sources):
 
 
 def missing_ranges(ranges, steps, sources):
-    positions, found = _gather_lines(ranges, steps, sources)
+    positions, found = gather_lines(ranges, steps, sources)
     missing = []
     for did, number in positions:
         if (did, number) in found:
@@ -160,7 +160,7 @@ def missing_ranges(ranges, steps, sources):
 
 
 def _read_lines(ranges, steps, sources):
-    positions, found = _gather_lines(ranges, steps, sources)
+    positions, found = gather_lines(ranges, steps, sources)
     if len(found) != len(positions):
         raise ValueError('規則範圍有尚未完整查讀的行。請先查讀原文。')
     return [(did, number, *found[(did, number)]) for did, number in positions]

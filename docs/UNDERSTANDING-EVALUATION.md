@@ -548,6 +548,8 @@ manifest區分draft_failed、draft_needs_input、goal_failed及goal_collected；
 
 `evals/goal_plan_operand_conversion.json` 核對本批公克更正與另批毫克、百分比轉比例、分組數量與公分轉公尺，以及普通加總。分開核對實際算式、原單位、換算倍率、換算值和採用的來源。另驗證跨量綱、單位遭截斷及備份倍率遭改動時的拒絕。
 
+`evals/goal_quantity_resolution.json` 核對原數已知而單位缺漏、兩筆等值、比例基數未定及兩筆正式數值不同。分開評讀暫表、實際追問、選用結果及數量工具紀錄。確認只補單位時原數仍綁原行，並在備份還原後重驗補充及候選值。
+
 ## 理解評估的失敗邊界保存（2026-11-05）
 
 `evaluate_understanding.py --live --report data/evaluations/<新名稱>.json`在正常Codex及明確選用本機模型兩種模式，都先將實際請求寫入`<報告完整檔名>.attempts/<序號>.request.json`，flush及fsync成功後才呼叫引擎。側錄綁定報告路徑、建立時間、全部選取ID、完整案例及來源／提示／收集器／驗證器／側錄器指紋，本機模式另綁定模型選用指紋。序號檔名不採用使用者案例ID作為路徑。

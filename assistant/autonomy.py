@@ -26,6 +26,7 @@ from . import date_tools
 from . import document_diff
 from . import decision_table
 from . import source_decision
+from . import quantity_evidence
 from . import document_lines
 from . import json_documents
 from . import json_statistics
@@ -237,6 +238,9 @@ def validate_action(value):
     if name == 'check_source_decision':
         source_decision.validate(args)
         return value
+    if name == 'check_quantities':
+        quantity_evidence.validate(args)
+        return value
     if name == 'calculate_expression':
         expression_math.validate(args)
         return value
@@ -298,6 +302,9 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
                                          declared=declared_rule_ranges)
+    if name == 'check_quantities':
+        goal = get_goal(store, sid, gid)
+        return quantity_evidence.observe(args, steps, goal['sources'], goal['objective'], reply_sources, guidance_sources)
     if name == 'calculate_expression':
         return expression_math.calculate(args, cancel)
     if name == 'read_conversation':
@@ -460,6 +467,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
+                ('\n' + quantity_evidence.GUIDANCE
+                 if reply_sources or guidance_sources or any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():
                 reason = 'cancelled'

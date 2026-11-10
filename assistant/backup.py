@@ -190,6 +190,8 @@ def validate_database(path):
             from .goal_partials import validate_saved as validate_partials
             guidance_present = 'autonomous_guidance_sources' in actual_tables
             validate_saved(db, replies_present='autonomous_reply_sources' in actual_tables, guidance_present=guidance_present)
+            from .quantity_evidence import validate_saved as validate_quantities
+            validate_quantities(db, replies_present='autonomous_reply_sources' in actual_tables, guidance_present=guidance_present)
             validate_partials(db, reply_sources_present='autonomous_reply_sources' in actual_tables,
                               guidance_sources_present=guidance_present)
             from .goal_reply_sources import validate_saved as validate_reply_sources

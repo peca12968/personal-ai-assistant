@@ -1,0 +1,74 @@
+[
+  {
+    "id": "ask_missing_unit_and_use_the_original_number",
+    "category": "goal_quantity_resolution",
+    "documents": [
+      {
+        "name": "weights.txt",
+        "content": "飛桐本批主料 1.20 公斤，配料 450（單位待填）。\n飛桐追加批配料 450 毫克。\n"
+      }
+    ],
+    "prompt": "只算飛桐本批。讀 [D1:L1-L2]，先用可核對的資料列暫表，只有缺少會改變公斤總重的資訊才追問。收到後以 calculate_expression 加總公斤數，保留原始 450 和補充各自提供的內容及來源。定稿列本批公斤總重。",
+    "reply": "本批配料的單位是公克。",
+    "criteria": [
+      "暫表保留主料 1.20 公斤及配料 450 待補單位，只問本批配料的單位。",
+      "原值450取本批原文，公克取補充，換算0.45公斤，總重1.65公斤。追加批毫克不代入，不重問數字。"
+    ]
+  },
+  {
+    "id": "equivalent_units_do_not_create_conflict",
+    "category": "goal_quantity_resolution",
+    "documents": [
+      {
+        "name": "current.txt",
+        "content": "楓鹿本批前段容積 0.7 公升。\n"
+      },
+      {
+        "name": "mirror.txt",
+        "content": "楓鹿本批前段容積 700 mL。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1]、[D2:L1]，先問這兩筆是否都是楓鹿本批前段，收到答覆後用工具核對是否真的不同。同值時只採這個量一次，交本批前段的公升數與兩筆原值。只有不同才追問採用哪筆。",
+    "reply": "兩筆都是同一個楓鹿本批前段的記錄。",
+    "criteria": [
+      "0.7 公升和700 mL精確相同，交0.7公升，沒有相加。",
+      "保留兩筆實際來源及等值原因，收到答覆後不再追問。"
+    ]
+  },
+  {
+    "id": "ratio_base_needs_only_the_scope_confirmation",
+    "category": "goal_quantity_resolution",
+    "documents": [
+      {
+        "name": "inspection.txt",
+        "content": "青苔本批共 250 件，其中合格 200 件。本次抽檢率為 8%。\n本次抽檢基數欄未註明採總件數或合格件數。\n"
+      }
+    ],
+    "prompt": "只算青苔本批。讀 [D1:L1-L2]，列可確定的抽檢率和兩個候選基數，只問會影響正式抽檢件數的那項資訊。收到後用 calculate_expression 算正式件數，交代基數和比例各自來源。",
+    "reply": "基數採合格件數。",
+    "criteria": [
+      "暫表保留8%和候選250、200件，單問基數採總件數或合格件數。",
+      "採原文200及8%，引用正式確認的基數範圍，結果16件，不重問已知數字。"
+    ]
+  },
+  {
+    "id": "unequal_same_field_records_need_an_adoption_decision",
+    "category": "goal_quantity_resolution",
+    "documents": [
+      {
+        "name": "sheet-a.txt",
+        "content": "米雨本批剩餘料 1.4 公斤。\n"
+      },
+      {
+        "name": "sheet-b.txt",
+        "content": "米雨本批剩餘料 1200 公克。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1]、[D2:L1]，兩份均是米雨本批、優先順序未定。交付一筆正式公斤數。若換成同單位仍不同，暫表列兩值和來源，只問採哪份。收到後按確認值定稿。",
+    "reply": "正式採第二份。兩份都保留對照。",
+    "criteria": [
+      "換算成1.4和1.2公斤後保留衝突，暫表只問採哪份。",
+      "定稿採第二份1.2公斤，第一份1.4公斤保留對照，不相加或平均。"
+    ]
+  }
+]

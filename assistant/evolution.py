@@ -52,6 +52,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_d
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_item_evidence.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_operand_evidence.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_operand_conversion.json'))
+CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_quantity_resolution.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_scoped_amendments.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_withdrawn_questions.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_decision_questions.json'))
