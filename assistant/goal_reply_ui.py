@@ -54,6 +54,8 @@ class GoalReplyWindow:
                 lines[2:2] = [label, goal['partial_result']]
             if goal.get('reference_review'):
                 lines.insert(-1, decision_table.describe_waiting_review(goal['reference_review']))
+            if self.current.get('reference_partial_reply'):
+                lines.insert(-1, '只答一項時，請寫「欄名：完整欄名」或「補問：你的答案」。')
             if goal.get('question_citations'):
                 refs = goal['question_citations']
                 tokens = dict.fromkeys(row['citation'] for row in refs['documents'] + refs['replies'] + refs.get('guidance', []))
@@ -89,8 +91,8 @@ class GoalReplyWindow:
             return
         try:
             budget = self.prepare_resume() if resume else None
-            goal_replies.save(self.store, self.sid, self.gid, self.content.get('1.0', 'end'),
-                              expected_fingerprint=self.current['fingerprint'])
+            outcome = goal_replies.save(self.store, self.sid, self.gid, self.content.get('1.0', 'end'),
+                                        expected_fingerprint=self.current['fingerprint'])
         except Exception as exc:
             messagebox.showerror('回答尚未保存', str(exc), parent=self.window)
             return
@@ -98,6 +100,10 @@ class GoalReplyWindow:
         self.reload()
         # Saving is committed before starting. Never imply rollback on start failure.
         try:
+            if outcome['goal']['status'] == 'needs_input':
+                self.saved(self.gid, None)
+                self.notice.set(outcome['goal']['notice'])
+                return
             started = self.saved(self.gid, budget)
             self.notice.set('回答已保存，已啟動接續一輪；請在原視窗查看進度或停止。' if resume and started else
                             '回答已保存；尚未接續，可回原視窗按開始／接續。')

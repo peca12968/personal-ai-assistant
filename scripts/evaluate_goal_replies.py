@@ -126,6 +126,18 @@ def followup_change(case, key):
     return change
 
 
+def partial_followups(case):
+    entries = case.get('partial_followup', [])
+    if not isinstance(entries, list) or len(entries) > 2:
+        raise ValueError('分項答覆案例最多兩則。')
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.keys() not in ({'reply'}, {'reply', 'question'}):
+            raise ValueError('分項案例須有答覆，可指定當時的完整問句。')
+        for value in entry.values():
+            autonomy.text(value, 4000)
+    return entries
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -140,6 +152,7 @@ def main():
             waiting_change(case)
             followup_change(case, 'report_change')
             followup_change(case, 'reference_waiting_change')
+            partial_followups(case)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -246,6 +259,24 @@ def main():
                                                               expected_fingerprint=observed['fingerprint'])
                         save_report(trace_path, row)
                         state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                if partial := partial_followups(case):
+                    row['partial_followup'] = []
+                    for entry in partial:
+                        turn = {'before': state, 'input': entry}
+                        row['partial_followup'].append(turn)
+                        if state['status'] != 'needs_input' or state['question'] != entry.get('question', state['question']):
+                            turn['skipped'] = True
+                            break
+                        observed = goal_replies.snapshot(store, sid, gid)
+                        before_calls = len(row['calls'])
+                        turn['saved'] = goal_replies.save(store, sid, gid, entry['reply'],
+                                                          expected_fingerprint=observed['fingerprint'])
+                        assert len(row['calls']) == before_calls
+                        state = autonomy.get_goal(store, sid, gid)
+                        turn['after_save'] = state
+                        save_report(trace_path, row)
+                        if state['status'] == 'paused':
+                            state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
                 if change := followup_change(case, 'report_change'):
                     if state['status'] != 'report_ready':
                         raise ValueError('未交付前一份成果，未提交成果更正。')

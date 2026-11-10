@@ -59,6 +59,8 @@ def _snapshot(db, sid, gid):
               'step_count':review['step_count'], 'sources_match':review['sources_match']}
     if options:
         result['question_withdrawal'] = options
+    if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(_steps(db, gid)):
+        result['reference_partial_reply'] = True
     if goal['status'] == 'report_ready' and not review['file_delivery']:
         steps = _steps(db, gid)
         if reference := decision_table.reference_report(steps, goal['result']):
@@ -130,6 +132,17 @@ def append_waiting_recheck(db, current, notes):
     _append_reference_recheck(db, goal, notes, current['step_count'] + 1, args, goal['reference_review'])
 
 
+def append_followup_question(db, goal, notes, sequence, question, note):
+    excerpts = [row for step in _steps(db, goal['id']) for row in step['observation'].get('excerpts', [])]
+    citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
+                                                  goal.get('guidance_sources', ()))
+    observation = {'question': question}
+    if citations:
+        observation['question_citations'] = citations
+    action = {'tool': 'ask', 'args': {'question': question}, 'note': note}
+    _append_step(db, goal, notes, sequence, action, observation)
+
+
 def apply_waiting_review(db, current):
     goal = current['goal']
     review = goal.get('reference_review')
@@ -146,14 +159,7 @@ def apply_waiting_review(db, current):
     goal_question_withdrawals.record(db, goal['id'], current['question_withdrawal'], goal['guidance_sources'][-1])
     status, notice = 'paused', '已重核並撤下原欄名問題。請接續更新成果。'
     if remaining:
-        steps = _steps(db, goal['id'])
-        excerpts = [row for step in steps for row in step['observation'].get('excerpts', [])]
-        citations = goal_partials.question_citations(remaining, excerpts, goal.get('reply_sources', ()), goal['guidance_sources'])
-        observation = {'question': remaining}
-        if citations:
-            observation['question_citations'] = citations
-        action = {'tool': 'ask', 'args': {'question': remaining}, 'note': '依重核結果保留原題的獨立補問'}
-        _append_step(db, goal, goal['notes'], current['step_count'] + 2, action, observation)
+        append_followup_question(db, goal, goal['notes'], current['step_count'] + 2, remaining, '依重核結果保留原題的獨立補問')
         status, notice = 'needs_input', '已撤下原題的欄名部分，請只回答保留的補問。'
     db.execute('UPDATE autonomous_goals SET status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                (status, remaining, notice, goal['id']))

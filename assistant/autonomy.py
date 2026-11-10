@@ -324,8 +324,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        if args.get('waiting_recheck'):
-            raise ValueError('等待中的重核只由保存使用者更正或答覆時產生。')
+        if args.get('waiting_recheck') or args.get('partial_reply'):
+            raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
@@ -551,6 +551,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.WAITING_REFERENCE_GUIDANCE
                  if reference_question or any(step['action']['tool'] == 'check_decision'
                      and step['action']['args'].get('waiting_recheck') for step in payload['steps']) else '') +
+                ('\n' + decision_table.PARTIAL_REFERENCE_GUIDANCE
+                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('partial_reply')
+                        for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE

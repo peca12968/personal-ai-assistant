@@ -826,6 +826,8 @@ python -m assistant --reset-companion --profile-revision 1
 
 若助理在同一題中將欄名及一項獨立補問分開列出，例如「本次要通知誰？」，保存更正後若欄名已不影響結果，原題留在歷史，目前只顯示獨立補問。重新載入「回答目前問題」，直接回覆保留的問句。若欄名仍會影響結果，原題兩項都保留，依題目提示分兩行回答。相依或沒有分開列出的複合問題沿用原題。
 
+分項提問也可先答一項。只回欄名時寫「欄名：接收班別」，只答獨立補問時寫「補問：羅值班員」。保存後只顯示另一項，可直接回覆其答案。原答覆與下一則答覆各有自己的來源。兩項都已確認時，可一次分兩行回答。兩行可都加前綴，也可直接填兩項答案。
+
 命令列先以 `--goal-reply-status 目標編號 --session 對話編號` 查看指紋與 `question_withdrawal.correction_numbers`，再使用 `--withdraw-goal-question 目標編號 --goal-correction 編號 --goal-fingerprint 所見指紋 --session 對話編號` 保存撤下。可用 `--goal-status` 查看撤下紀錄。這些命令不啟動模型。
 
 ### 核對完整決策表與最少追問

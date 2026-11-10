@@ -1,0 +1,39 @@
+[
+  {
+    "id":"field_answer_leaves_only_the_contact_question",
+    "category":"goal_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"港梧 B4 原接收班別、檢查班別均早班。兩欄各可早班或晚班，四組皆可。通知對象獨立待查，與欄名及去向無關。\n"},
+      {"name":"policy.txt","content":"雙早班去前台，雙晚班去後台。接收晚班且檢查早班去甲台，接收早班且檢查晚班去乙台。\n"}
+    ],
+    "prompt":"讀兩份首行，以接收班別、檢查班別的順序保存四組，問一次本輪更正。省略欄名且結果不同時，同一步分列第一筆欄名及獨立的『這次要通知誰？』，若支援分項就用分項功能。若我先只確認欄名，保存去向及欄名，後續只問通知對象。最後列去向、通知對象及來源，無須真的通知。",
+    "reply":"正式改成晚班。",
+    "partial_followup":[{"reply":"欄名：接收班別"},{"question":"這次要通知誰？","reply":"許值班員"}],
+    "criteria":["只回接收班別後，保存接收晚班、檢查早班、甲台，只留原樣通知補問。","下一筆許值班員只綁定通知補問，成果引用各自來源。"]
+  },
+  {
+    "id":"independent_answer_keeps_only_the_field_with_updated_branches",
+    "category":"goal_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"鏡林 W2 的巡檢班別、整理班別原為早班。各欄可早班、晚班或夜班，九組皆可。交付份數獨立待查。\n"},
+      {"name":"policy.txt","content":"雙早班去前室，雙晚班去後室。巡檢晚班且整理早班去甲室，巡檢早班且整理晚班去乙室。巡檢夜班且整理早班去丙室，巡檢夜班且整理晚班去丁室。整理夜班一律去夜室。\n"}
+    ],
+    "prompt":"讀兩份首行，以巡檢班別、整理班別的順序保存九組，問當次更正。省略欄名且結果不同時，同一步分列欄名與獨立的『本輪要交付幾份？』，若支援分項就使用。等候時有新條件先重核，若我先只回答份數，保存份數並只問第一筆欄名。定稿引用每筆來源，較新的夜班值繼續適用。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"巡檢班別正式改為夜班。"},
+    "partial_followup":[{"reply":"補問：7 份"},{"question":"第一筆改值指哪個欄位？請回完整欄名「巡檢班別」、「整理班別」。","reply":"巡檢班別"}],
+    "criteria":["先保存 7 份，只留下第一筆欄名，使用丙室、丁室的新版分支。","回欄名後，巡檢仍為夜班、整理早班，交丙室及 7 份，來源分開。"]
+  },
+  {
+    "id":"both_reply_lines_still_complete_the_original_question",
+    "category":"goal_partial_reference_reply",
+    "documents":[
+      {"name":"facts.txt","content":"霧泉 M9 原採樣時段、校對時段均早段。各可早段或晚段，四組皆可。領件人是獨立待查項。\n"},
+      {"name":"policy.txt","content":"雙早段去前室，雙晚段去後室。採樣晚段且校對早段去甲室，採樣早段且校對晚段去乙室。\n"}
+    ],
+    "prompt":"讀兩份首行，以採樣時段、校對時段的順序保存四組，問當次更正。省略欄名且結果不同時，同一步分列第一筆欄名及獨立的『本輪由誰領件？』，若支援分項就使用。若我一次分兩行回覆欄名與人名，直接依各自內容交去向和領件人，不另問。",
+    "reply":"正式改為晚段。",
+    "partial_followup":[{"reply":"校對時段\n范同仁"}],
+    "criteria":["兩行回答完整時不產生單項追問，保留原答。","校對改晚段走乙室，領件人是范同仁。"]
+  }
+]

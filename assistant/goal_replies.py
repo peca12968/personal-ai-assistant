@@ -3,8 +3,30 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import goal_question_withdrawals, goal_reply_sources
-from .goal_guidance import _snapshot, append_waiting_recheck, apply_waiting_review, snapshot
+from . import decision_table, goal_question_withdrawals, goal_reply_sources
+from .goal_guidance import (_append_step, _snapshot, _steps, append_followup_question, append_waiting_recheck,
+                            apply_waiting_review, snapshot)
+
+
+def _save_partial_followup(db, current, notes, kind, review):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    rechecked = review is not None and review['field_reference']['status'] == 'needs_field'
+    if not current['sources_match'] or count + (3 if kind == 'field' else 4) + int(rechecked) > MAX_STEPS:
+        raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
+    if rechecked:
+        append_waiting_recheck(db, current, notes)
+    steps = _steps(db, gid)
+    replies = goal_reply_sources.read(db, gid, notes)
+    args = {'field_reference': replies[-1]['citation'], 'partial_reply': True}
+    result = decision_table.observe(args, steps, replies, goal.get('guidance_sources', ()))
+    action = {'tool': 'check_decision', 'args': args, 'note': '保存原分項提問已回答的項目'}
+    _append_step(db, goal, notes, len(steps) + 1, action, result)
+    remaining = result['field_reference']['partial_reply']['next_question']
+    append_followup_question(db, {**goal, 'reply_sources': replies}, notes, len(steps) + 2,
+                             remaining, '保留原分項提問尚未回答的項目')
+    db.execute("UPDATE autonomous_goals SET notes=?,status='needs_input',question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               (notes, remaining, '已保存這一項。請回答剩下的問題。', gid))
 
 
 def save(store, sid, gid, answer, *, expected_fingerprint):
@@ -24,6 +46,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
         review = goal.get('reference_review')
+        if current.get('reference_partial_reply') and (kind := decision_table.partial_reply_kind(_steps(db, gid), answer)):
+            _save_partial_followup(db, current, notes, kind, review)
+            return _snapshot(db, sid, gid)
         if review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
             append_waiting_recheck(db, current, notes)
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
