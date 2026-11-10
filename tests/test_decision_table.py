@@ -653,6 +653,62 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_mixed_natural_update_runs_trial_from_updated_actual_and_replays_only_actual(self):
+        plan = {'conditions': ['入口', '門證'], 'known': {'入口': '東', '門證': '有'},
+                'rows': [{'when': [entrance, permit],
+                          'result': '前台' if entrance == '東' else '放行' if permit == '有' else '等待'}
+                         for entrance, permit in product(('東', '西'), ('有', '無'))]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '分開核對目前安排及試算')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='正式更新和試算條件？')))
+            waiting = goal_replies.snapshot(store, sid, gid)
+            text = '入口正式改西。撤回門證有的觀察。假設門證無，只做試算。'
+            goal_replies.save(store, sid, gid, text, expected_fingerprint=waiting['fingerprint'])
+
+            def evidence(quote):
+                return [{'citation': '[補充#2]', 'quote': quote}]
+
+            official = {'入口': evidence('入口正式改西'), '門證': evidence('撤回門證有的觀察')}
+            trial = {'updates': {'門證': '無'}, 'evidence': {'門證': evidence('假設門證無')}}
+            args = {'known_update': {'入口': '西', '門證': None}, 'source': '[補充#2]',
+                    'evidence': official, 'scenario': trial}
+            first = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', **{**args, 'evidence': {**official, '入口': evidence(text)}}),
+                action('check_decision', **{**args, 'scenario': {**trial, 'evidence': {'門證': evidence('門證無')}}}),
+                action('check_decision', **args), action('ask', question='門證正式確認了嗎？')))
+            self.assertIn('互不重疊', first['steps'][2]['observation']['error'])
+            self.assertIn('假設或試算標記', first['steps'][3]['observation']['error'])
+            mixed = first['steps'][4]['observation']
+            self.assertEqual(mixed['known_update']['base_step'], 1)
+            self.assertEqual(mixed['possible_results'], ['放行', '等待'])
+            self.assertEqual(mixed['what_if_result']['possible_results'], ['等待'])
+            self.assertEqual(mixed['what_if_update']['changes'], [{'field': '門證', 'before': None, 'after': '無'}])
+            bound = mixed['what_if_update']['evidence']['門證'][0]
+            self.assertEqual(text[bound['start']:bound['end']], '假設門證無')
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '門證正式確認有。', expected_fingerprint=waiting['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', known_update={'門證': '有'}, source='[補充#6]'),
+                action('finish', report='西入口放行。')))
+            checked = final['steps'][6]['observation']
+            self.assertEqual(checked['possible_results'], ['放行'])
+            self.assertEqual(checked['known_update']['base_step'], 5)
+            self.assertEqual(checked['known_update']['changes'][0]['before'], None)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            bound['start'] += 1
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                           (json.dumps(mixed, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}

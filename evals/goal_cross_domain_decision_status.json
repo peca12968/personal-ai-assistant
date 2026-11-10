@@ -1,0 +1,55 @@
+[
+  {
+    "id": "lab_official_channel_then_backup_what_if",
+    "category": "goal_cross_domain_decision_status",
+    "documents": [
+      {"name": "status.txt", "content": "冷析 L4 的正式狀態：出樣管為甲，備援泵為停。外班 L40 使用備援泵運轉。\n"},
+      {"name": "policy.txt", "content": "出樣管只有甲、乙；備援泵只有運轉、停。四種組合均可。\n甲管停泵或運轉均送玻璃台。乙管停泵送保留台；乙管且備援泵運轉送分析台。\n"}
+    ],
+    "prompt": "讀 [D1:L1]、[D2:L1-L2]，先用決策工具核對 L4 現況。然後只問一次當班更新。收到後使用同一套規則核對正式去向和使用者另外要求的試算，試算以更新後正式條件為起點。保留正式條件、假設值及各自來源。只交文字。",
+    "reply": "本次 L4 正式把出樣管從甲改為乙，備援泵仍為停。另做試算：假設 L4 的備援泵改為運轉，出樣管照剛才正式更新，問會送哪裡。外班的運轉紀錄不要當本次。",
+    "criteria": ["正式乙管、停泵、保留台。", "試算乙管、泵運轉、分析台，試算不改正式條件。", "初次只問一次，正式與試算均有各自依據，無額外追問。"]
+  },
+  {
+    "id": "publishing_official_withdrawal_then_hypothetical_approval",
+    "category": "goal_cross_domain_decision_status",
+    "documents": [
+      {"name": "status.txt", "content": "晨訊 P6 昨日核對：目標版為完整，校對授權已給。今天仍沿用，除非有正式更正。\n"},
+      {"name": "policy.txt", "content": "目標版可為完整或摘要，校對授權可為已給或未給，四種均可。\n完整且已給：發長版。摘要且已給：發短版。未給時，不分版本都先保留。\n"}
+    ],
+    "prompt": "讀 [D1:L1] 及 [D2:L1-L2]。先以決策工具保存晨訊 P6 原狀態，再問我當天變更。收到後同時交正式可確認的安排及我明確要求的試算，遇待查照列所有可能的正式結果，不用再問。引用規則、原狀態和補充。",
+    "reply": "P6 今天正式改成摘要。撤回原先『校對授權已給』，今天尚待核對，不能說未給。只做試算：假設這份摘要的校對授權後續確認為已給。",
+    "criteria": ["正式目標摘要，授權原已給已撤回，現在待查；若已給則短版，若未給則保留。", "另外試算假設授權已給，得到短版，沒有把它設成正式。", "原值、正式改動與假設分開引用，不再追問。"]
+  },
+  {
+    "id": "theater_hypothetical_never_becomes_next_actual_plan",
+    "category": "goal_cross_domain_decision_status",
+    "documents": [
+      {"name": "status.txt", "content": "黑盒 T5 初始正式方案：舞台為東，出口燈為滅。\n"},
+      {"name": "policy.txt", "content": "舞台為東或西，出口燈亮或滅，四種均可。東舞台無論出口燈狀態均先排練。西舞台若出口燈滅先暫停，若亮可演出。\n"}
+    ],
+    "prompt": "讀兩份首行，先用決策工具核對黑盒 T5 原安排，再只問舞台更新。依回覆以同一套規則核對並在暫表列正式安排與我要求的試算，再只問是否有出口燈正式回報。回覆後重核正式狀態並交文字，保留先前試算的身份。",
+    "replies": ["T5 舞台正式改為西，出口燈仍滅。只做試算：假設出口燈變成亮，舞台使用剛確認的西。", "目前出口燈正式撤回原先滅的觀察，現場尚未核對。西舞台的正式更正維持。就照條件交付，不必再問。"],
+    "criteria": ["第二問前正式西、燈滅、暫停，試算西、燈亮、可演出。", "最後正式西、出口燈待查；若亮可演出、若滅暫停，先前試算不構成確認。", "只有兩問，階段分別引用各自正式與試算資料。"]
+  },
+  {
+    "id": "display_readiness_not_blocked_by_unknown_exact_reserve",
+    "category": "goal_cross_domain_decision_status",
+    "documents": [
+      {"name": "display.txt", "content": "竹紙展 B7 本輪要 18 面可用板。已完成測試的 20 面可用；另有 3 面測試未完，可能有 0 到 3 面可用。\n"},
+      {"name": "history.txt", "content": "B70 上輪有 24 面可用。B7 替代方案草案寫『把未測的都當可用』，未採用。\n"}
+    ],
+    "prompt": "依兩份首行，交 B7 是否達 18 面的安排門檻、可用範圍和精確量狀態。若已能判斷門檻，保留精確量待查並直接交付。",
+    "criteria": ["達門檻，因至少 20；可能 20 到 23，精確量待查。", "沒有使用另輪 24、未採用草案或宣稱佈展已完成。", "原數和待查狀態有來源，沒有追問。"]
+  },
+  {
+    "id": "receiving_conditional_options_only_and_independent_status",
+    "category": "goal_cross_domain_decision_status",
+    "documents": [
+      {"name": "monitor.txt", "content": "巡修 G8 的傳感器安裝已完成，正式檢查結果待出。昨晚 G8A 記錄通過。\n"},
+      {"name": "policy.txt", "content": "G8 正式檢查通過才可封盒；未通過送回調整。現有安裝紀錄不含檢查結論。\n"}
+    ],
+    "prompt": "依兩份首行交 G8 的處置條件卡。分開列安裝狀態、正式檢查狀態、兩種可能處置和目前是否能確定。只要條件卡，無須追問。",
+    "criteria": ["安裝已完成，正式檢查待查，處置未定。", "通過封盒、未通過送回，G8A 的舊通過紀錄不適用。", "引用來源，沒有追問或宣稱已封盒。"]
+  }
+]

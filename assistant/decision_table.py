@@ -31,6 +31,9 @@ REPLACEMENT_GUIDANCE = '''正式整批補充被check_decision退回後，需要�
 NATURAL_UPDATE_GUIDANCE = '''同一目標已有決策核對及最新自然語句補充，且只需調整已知欄位時，用check_decision的{"known_update":{"區位":"南","門證":null},"source":"[補充#3]"}，填實際來源及完整欄名。只轉錄本次明確更正的值；原值撤回、改為待查，或原先確認值已不能再沿用時，填null移除已知值，不能寫成相反值。未改的欄位及原表規則由工具沿用。程式核對來源位置、欄位及相容性，文字是否支持轉錄須由你先核對。舊值、未採用提案、另案及引述不成為本次事實。若回覆只說「其中一欄變了」，這是目前待澄清的欄位，不會增加原表的 excluded。若哪一欄變動會影響本次決定，直接問一次是哪欄，等確定後以原核對做 known_update；無須先重算一張加入臨時排除的表。若缺漏不會改變使用者要的結果，保留未知後直接交付。若只求假設試算，加"what_if":true，試算結果在what_if_result，頂層仍為本次實際核對，原表及本次條件不改。正式格式維持revision；要修改規則或選項時沿用完整核對。
 若補充同時談本批、相近名稱、另案或舊狀態，先辨認各句的對象、時間及是否採用。沒有本次改動就沿用原核對。對象不明而影響結論時只確認是哪個，待答覆後把原狀態短句和最新指代確認一起引用。遇到這類混合或跨輪補充，或使用者要求引用原話，請為每個更動欄位附evidence，例如{"時段":[{"citation":"[補充#3]","quote":"本批改成晚班"}]}。每欄一至兩則，由早到晚，最後一則必須是source。quote逐字擷取唯一可定位的原文，連同必要的對象或撤回措辭。不要重寫引文。核對短句確實支持該欄的改值、撤回或試算，再採用。成果需要交代採用的原話或範圍時，引用本次採用的短句，並簡短標記可能混淆的相近名稱或舊狀態各屬哪一案。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+同一則最新補充同時明確更新正式條件，並要求以更新後的正式條件為起點做一次假設時，用同一個check_decision。known_update、source及evidence放正式改動，另附"scenario":{"updates":{"原欄名":"試算值"},"evidence":{"原欄名":[{"citation":"[補充#3]","quote":"假設…"}]}}，不用what_if:true。正式與試算各附逐字短句，最新來源的正式短句與試算短句不能重疊；試算短句從原文的假設、如果、若或試算標記開始。只改明列欄位，撤回用null。工具先算正式結果，再從更新後的條件只套用試算欄位，回傳what_if_result與what_if_update。只保存正式條件供之後接續；交付分開標示兩種結果及各自原話。未要求試算的提案不填scenario。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -357,6 +360,7 @@ def calculate(args):
 
 
 _REVISION_SOURCE = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
+_SCENARIO_START = re.compile(r'^(?:假設|假如|如果|若|(?:(?:另|只|僅)(?:做|想|供)?)?試算)')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 
 
@@ -374,19 +378,31 @@ def validate_tool(args):
                 or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
     elif isinstance(args, dict) and 'known_update' in args:
-        if (args.keys() - {'known_update', 'source', 'what_if', 'evidence'}
+        if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario'}
                 or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
-                or ('what_if' in args and type(args['what_if']) is not bool)
-                or not isinstance(args['known_update'], dict) or not 1 <= len(args['known_update']) <= 5):
+                or ('what_if' in args and type(args['what_if']) is not bool)):
             raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
-        for field, value in args['known_update'].items():
-            _label(field)
-            if value is not None:
-                _label(value)
+        _validate_update_fields(args['known_update'])
         if 'evidence' in args:
             _validate_update_evidence(args['evidence'], args['known_update'], args['source'])
+        if 'scenario' in args:
+            scenario = args['scenario']
+            if ('what_if' in args or 'evidence' not in args or not isinstance(scenario, dict)
+                    or scenario.keys() != {'updates', 'evidence'}):
+                raise ValueError('同則正式更新與試算須分別提供欄位及原話證據。')
+            _validate_update_fields(scenario['updates'])
+            _validate_update_evidence(scenario['evidence'], scenario['updates'], args['source'])
     else:
         validate(args)
+
+
+def _validate_update_fields(updates):
+    if not isinstance(updates, dict) or not 1 <= len(updates) <= 5:
+        raise ValueError('已知欄位重算需指定一至五個欄位及最新補充來源。')
+    for field, value in updates.items():
+        _label(field)
+        if value is not None:
+            _label(value)
 
 
 def _validate_update_evidence(evidence, updates, latest_citation):
@@ -571,6 +587,23 @@ def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_
     return plan, {**result, 'revision': receipt}
 
 
+def _updated_plan(base, updates):
+    domains = base.get('domains')
+    if domains is None:
+        domains = dict(zip(base['conditions'], zip(*(row['when'] for row in base['rows']))))
+    known = dict(base['known'])
+    changes = []
+    for field, value in updates.items():
+        if field not in domains or (value is not None and value not in domains[field]):
+            raise ValueError('已知欄位重算須使用原表欄名及選項。')
+        changes.append({'field': field, 'before': known.get(field), 'after': value})
+        if value is None:
+            known.pop(field, None)
+        else:
+            known[field] = value
+    return {**base, 'known': known}, changes
+
+
 def _apply_known_update(args, previous, sequence, replies, guidance):
     if previous is None:
         raise ValueError('已知欄位重算需有同一目標已保存的決策核對。')
@@ -583,20 +616,7 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
     source = sources[args['source']]
     if _source_text(source).startswith(('核對#', '取代｜')):
         raise ValueError('正式更正須以原話的正式格式重算。')
-    domains = base.get('domains')
-    if domains is None:
-        domains = dict(zip(base['conditions'], zip(*(row['when'] for row in base['rows']))))
-    known = dict(base['known'])
-    changes = []
-    for field, value in args['known_update'].items():
-        if field not in domains or (value is not None and value not in domains[field]):
-            raise ValueError('已知欄位重算須使用原表欄名及選項。')
-        changes.append({'field': field, 'before': known.get(field), 'after': value})
-        if value is None:
-            known.pop(field, None)
-        else:
-            known[field] = value
-    plan = {**base, 'known': known}
+    plan, changes = _updated_plan(base, args['known_update'])
     result = calculate(plan)
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': args['source'],
                'source_sha256': source['sha256'], 'changes': changes}
@@ -606,7 +626,25 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
         return base, {**calculate(base), 'known_update': receipt, 'what_if_result': result}
     if result['status'] == 'no_match':
         raise ValueError('更新值與原表的可行情境不相容，原核對保留。')
+    if 'scenario' in args:
+        scenario = args['scenario']
+        trial_evidence = _bind_update_evidence(scenario['evidence'], sources, positions)
+        _separate_scenario_evidence(receipt['evidence'], trial_evidence)
+        trial_plan, trial_changes = _updated_plan(plan, scenario['updates'])
+        result = {**result, 'what_if_result': calculate(trial_plan),
+                  'what_if_update': {'changes': trial_changes, 'evidence': trial_evidence}}
     return plan, {**result, 'known_update': receipt}
+
+
+def _separate_scenario_evidence(official, trial):
+    official = [excerpts[-1] for excerpts in official.values()]
+    trial = [excerpts[-1] for excerpts in trial.values()]
+    if any(_SCENARIO_START.match(row['quote']) for row in official):
+        raise ValueError('正式更正須引用獨立正式原話，不可引用試算短句。')
+    if any(not _SCENARIO_START.match(row['quote']) for row in trial):
+        raise ValueError('試算短句須從原文的假設或試算標記開始。')
+    if any(left['start'] < right['end'] and right['start'] < left['end'] for left in official for right in trial):
+        raise ValueError('正式更新與試算須引用同一則補充中互不重疊的原話。')
 
 
 def _bind_update_evidence(evidence, sources, positions):
