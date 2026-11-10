@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from assistant import autonomy as a, work_plan as p, goal_guidance
+from assistant import autonomy as a, work_plan as p, goal_guidance, goal_replies, goal_stages, operand_evidence
 from assistant.autonomy_status import goal_context
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
@@ -270,6 +270,66 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual([row['sequence'] for row in result['work_plan']['reused_document_steps']], [1, 2])
         self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 7)
         validate_database(self.store.path)
+
+    def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
+        path = self.root / 'lengths.txt'
+        path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '本批倍數為 2，核對總長。')
+        source_range = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        self.run_actions(action('read', **source_range), action('ask', question='另加長度？'), gid=gid)
+        snapshot = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '本批另加 7 公尺。', expected_fingerprint=snapshot['fingerprint'])
+        expression = {'operation': 'sum', 'values': [
+            {'operation': 'product', 'values': ['8', '0.5', '2']}, '7']}
+        operands = [
+            {'path': '/values/0/values/0', 'citation': f'[D{did}:L1]', 'quote': '本批有 8 片'},
+            {'path': '/values/0/values/1', 'citation': f'[D{did}:L1]', 'quote': '每片長 1/2 公尺'},
+            {'path': '/values/0/values/2', 'citation': '[目標]', 'quote': '倍數為 2'},
+            {'path': '/values/1', 'citation': '[補充#2]', 'quote': '本批另加 7 公尺'}]
+        requirement = {'id': 1, 'ranges': [source_range], 'expression': expression, 'operands': operands}
+        ready = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', items=[item(task='核對總長', state='done', refs=[1, 3])],
+                   verify_delivery=True, reuse_document_steps=[1], evidence_requirements=[requirement]), gid=gid)
+        self.assertEqual(ready['steps'][2]['observation']['exact'], '15')
+        bound = ready['work_plan']['evidence_matches'][0]['operands']
+        self.assertEqual([row['number'] for row in bound], ['8', '1/2', '2', '7'])
+        self.assertEqual(bound[0]['quote_start'], 1)
+        self.assertEqual(bound[-1]['source_sha256'], ready['reply_sources'][0]['sha256'])
+        with self.store.connect() as db:
+            row = db.execute('SELECT * FROM autonomous_goals WHERE id=?', (gid,)).fetchone()
+            checkpoint = goal_stages.checkpoint(db, row)['work_plan']
+        self.assertTrue(checkpoint['operand_evidence_omitted'])
+        self.assertNotIn('本批另加 7 公尺', json.dumps(checkpoint, ensure_ascii=False))
+        result = self.run_actions(action('finish', report='15 公尺。'), gid=gid)
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = copy.deepcopy(result['steps'][3]['observation'])
+        altered['evidence_matches'][0]['operands'][1]['number_start'] += 1
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_operand_literal_requires_whole_number_unique_quote_and_available_source(self):
+        row = {'path': '', 'citation': '[目標]', 'quote': '7'}
+        operand_evidence.validate([row], '7', ())
+        for text, reason in (('本批為17', '截斷'), ('本批是7，另批也是7', '唯一定位'),
+                             ('備用長度為7/2', '截斷'), ('本批有7%', '截斷')):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, reason):
+                operand_evidence.bind([row], '7', [], {'[目標]': (text, 'a' * 64)})
+        with self.assertRaisesRegex(ValueError, '每個數字'):
+            operand_evidence.validate([row], {'operation': 'sum', 'values': ['7', '7']}, ())
+        with self.assertRaisesRegex(ValueError, '當時已保存'):
+            operand_evidence.bind([{**row, 'citation': '[補充#9]'}], '7', [], {})
+        quoted = {**row, 'quote': '原值 −７．０ 公尺'}
+        operand_evidence.validate([quoted], '-7', ())
+        bound, = operand_evidence.bind([quoted], '-7', [], {'[目標]': ('📍' + quoted['quote'], 'a' * 64)})
+        self.assertEqual(bound['number'], '−７．０')
+        self.assertEqual(bound['quote_start'], 1)
 
     def test_reuse_checks_original_evidence_set_complete_reads_and_version(self):
         file = self.root / 'sources.txt'

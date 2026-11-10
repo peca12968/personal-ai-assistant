@@ -306,7 +306,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return conversation_history.search(store, sid, gid, args, cancel)
     if name == 'update_plan':
         goal = get_goal(store, sid, gid)
-        return work_plan.observe(args, steps, work_plan.conditions(goal), goal['sources'])
+        return work_plan.observe(args, steps, work_plan.conditions(goal), goal['sources'], objective=goal['objective'],
+                                 reply_sources=reply_sources, guidance_sources=guidance_sources)
     if name == 'compare_documents':
         return document_diff.compare(documents, args, cancel)
     if name == 'read_line':

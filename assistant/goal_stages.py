@@ -248,6 +248,11 @@ def checkpoint(db, row):
     plan = work_plan.latest([{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                              'observation': json.loads(r['observation_json'])} for r in rows])
     if plan is not None:
+        for key in ('evidence_requirements', 'evidence_matches'):
+            if any('operands' in entry for entry in plan.get(key, ())):
+                plan[key] = [{field: data for field, data in entry.items() if field != 'operands'}
+                             for entry in plan[key]]
+                plan['operand_evidence_omitted'] = True
         value['work_plan'] = plan
     return value
 

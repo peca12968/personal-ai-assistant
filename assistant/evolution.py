@@ -50,6 +50,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_progre
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_dependencies.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_delivery_review.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_item_evidence.json'))
+CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_plan_operand_evidence.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_scoped_amendments.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_withdrawn_questions.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_decision_questions.json'))

@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 
-from . import document_ranges, expression_math
+from . import document_ranges, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence
 from .documents import check_citations
 
 STATES = {'pending': '待處理', 'working': '處理中', 'done': '助理回報完成',
@@ -20,6 +20,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 如果同一清單的已完成項目原先只以read或read_ranges完整查讀為依據，而且查讀範圍仍適用，可在本次update_plan的args另加reuse_document_steps，例如{"items":[...],"reuse_document_steps":[2]}。原項目須保留整組原有evidence_steps，程式會核對保存的讀取範圍與同版本文件。只列本次實際沿用的舊查讀步驟，不必重讀同樣範圍。原先依賴計算、搜尋或其他工具的項目不能用這個例外。沿用原文件原行不代表保留被更正的值；依最新確認重算受影響的結果。已完整查讀的文件項目可標完成；另一個缺漏欄位可用ask補充，不需要把查讀項目改成受阻。
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
 使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
+使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
 
@@ -76,8 +77,9 @@ def _validate_requirements(requirements, ids):
         raise ValueError('指定證據須對應一項或多項工作。')
     seen = set()
     for row in requirements:
-        if (not isinstance(row, dict) or set(row) not in ({'id', 'ranges'}, {'id', 'expression'},
-                                                           {'id', 'ranges', 'expression'})
+        if (not isinstance(row, dict) or row.keys() - {'id', 'ranges', 'expression', 'operands'}
+                or 'id' not in row or not row.keys() & {'ranges', 'expression'}
+                or ('operands' in row and 'expression' not in row)
                 or type(row['id']) is not int or row['id'] not in ids or row['id'] in seen):
             raise ValueError('指定證據須使用不同的工作項目編號，並提供原文範圍或算式。')
         seen.add(row['id'])
@@ -88,6 +90,8 @@ def _validate_requirements(requirements, ids):
                 raise ValueError('指定證據的文件範圍不符。')
         if 'expression' in row:
             expression_math.validate({'expression': row['expression']})
+        if 'operands' in row:
+            operand_evidence.validate(row['operands'], row['expression'], row.get('ranges', ()))
 
 
 def latest(steps):
@@ -167,7 +171,7 @@ def _merge_requirements(rows, previous, scope, sources):
     return requirements
 
 
-def _match_item_evidence(item, requirement, steps, scope, sources):
+def _match_item_evidence(item, requirement, steps, scope, sources, user_sources):
     number = item['id']
     ranges = list(map(_range_key, requirement.get('ranges', ())))
     expression = {'expression': requirement['expression']} if 'expression' in requirement else None
@@ -201,10 +205,16 @@ def _match_item_evidence(item, requirement, steps, scope, sources):
     tokens = ' '.join(f'[D{did}:L{start}-L{end}]' for did, start, end in ranges)
     if any(not check['range_valid'] for check in check_citations(tokens, excerpts)):
         raise ValueError(f'項目 {number} 缺少完整指定文件範圍。')
+    if 'operands' in requirement:
+        try:
+            match['operands'] = operand_evidence.bind(requirement['operands'], requirement['expression'],
+                                                     excerpts, user_sources)
+        except ValueError as exc:
+            raise ValueError(f'項目 {number} 的運算元證據未通過。{exc}') from exc
     return match
 
 
-def observe(args, steps, scope, sources=()):
+def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
     validate(args)
     previous = latest(steps)
     by_id = {row['id']: row for row in args['items']}
@@ -214,6 +224,7 @@ def observe(args, steps, scope, sources=()):
     reused = args.get('reuse_document_steps', [])
     previous_items = {row['id']: row for row in previous['items']} if previous else {}
     requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources)
+    user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, len(steps) + 1)
     proofs = {}
     matches = []
     for item in args['items']:
@@ -237,7 +248,7 @@ def observe(args, steps, scope, sources=()):
                 if number not in proofs:
                     proofs[number] = _read_proof(step, scope, sources)
         if item['state'] == 'done' and item['id'] in requirements:
-            matches.append(_match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources))
+            matches.append(_match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources))
     if set(proofs) != set(reused):
         raise ValueError('沿用清單只能列本次完成項目實際引用的舊查讀步驟。')
     result = {'status': 'plan_recorded', 'items': json.loads(json.dumps(args['items'])),
@@ -373,20 +384,26 @@ def describe(value):
     return '\n'.join(lines)
 
 
-def validate_saved(db):
-    goals = db.execute("SELECT DISTINCT g.id,g.sources_json FROM autonomous_goals g JOIN autonomous_steps s "
+def validate_saved(db, *, replies_present=False, guidance_present=False):
+    goals = db.execute("SELECT DISTINCT g.id,g.sources_json,g.objective,g.notes FROM autonomous_goals g JOIN autonomous_steps s "
                        "ON s.goal_id=g.id WHERE s.action_json LIKE '%update_plan%' "
                        "OR s.observation_json LIKE '%\"plan_check_step\"%'")
-    for gid, source_json in goals:
+    for gid, source_json, objective, notes in goals:
         sources = json.loads(source_json)
+        rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
+                          'ORDER BY sequence', (gid,)).fetchall()
+        has_operands = any('"operands"' in row[1] for row in rows)
+        replies = goal_reply_sources.read(db, gid, notes) if has_operands and replies_present else []
+        guidance = goal_guidance_sources.read(db, gid, notes, len(rows)) if has_operands and guidance_present else []
         prior = []
-        for sequence, action_json, observation_json in db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,)):
+        for sequence, action_json, observation_json in rows:
             action, observation = json.loads(action_json), json.loads(observation_json)
             if action['tool'] == 'update_plan':
                 scope = observation.get('goal_conditions_sha256')
                 if not isinstance(scope, str) or not re.fullmatch('[a-f0-9]{64}', scope):
                     raise ValueError('工作清單缺少有效的條件紀錄。')
-                expected = observe(action['args'], prior, scope, sources)
+                expected = observe(action['args'], prior, scope, sources, objective=objective,
+                                   reply_sources=replies, guidance_sources=guidance)
                 if any(observation.get(key) != expected.get(key)
                        for key in ('status', 'items', 'reused_document_steps', 'verify_delivery',
                                    'evidence_requirements', 'evidence_matches')):

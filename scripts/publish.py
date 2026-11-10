@@ -84,6 +84,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_plan_dependencies.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_plan_delivery_review.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_plan_item_evidence.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_plan_operand_evidence.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_scoped_amendments.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_withdrawn_questions.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_questions.json")

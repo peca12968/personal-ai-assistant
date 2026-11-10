@@ -1,0 +1,66 @@
+[
+  {
+    "id": "current_correction_and_same_value_other_batch",
+    "category": "goal_plan_operand_evidence",
+    "documents": [
+      {
+        "name": "stock.txt",
+        "content": "松藍本批原有 32 件，原報廢 5 件。\n松藍追加批原有 32 件，報廢 7 件。\n"
+      }
+    ],
+    "prompt": "只交松藍本批。讀 [D1:L1-L2] 並保存公開工作清單，項目為「核對本批可交件數」。先只問本批最後更正。收到後用獨立 calculate_expression 核對，交付前在清單逐項驗證，保留算式每個運算元的實際原話及來源。定稿分開交代原報廢數、正式更正及本批可交件數。",
+    "reply": "松藍本批報廢更正為 7 件。松藍本批原有數量照原文。追加批的資料不代入本批。",
+    "criteria": [
+      "正式本批為 32 減 7 等於 25，原報廢 5 件只作對照。",
+      "32 取本批文件第 1 行，7 取正式補充，排除追加批同值，只有一次提問。"
+    ]
+  },
+  {
+    "id": "exact_equivalence_and_objective_number",
+    "category": "goal_plan_operand_evidence",
+    "documents": [
+      {
+        "name": "sizes.txt",
+        "content": "杉泉工坊本批有 8 片板，每片長 1/2 公尺。\n備用板每片長 0.5 公尺。\n"
+      }
+    ],
+    "prompt": "杉泉工坊只算本批板材的兩倍長度，倍數明定為 2。查 [D1:L1-L2] 並建清單「核對本批雙份總長」，暫不計算，只問這次是否仍按本批記載。收到後以 calculate_expression 將 8、每片長的有限小數 0.5 及倍數 2 放在同一個乘積。交付前逐項核對，每個運算元須有實際短句和來源。交結果、公尺及來源。",
+    "reply": "確認本批原數與每片長不變。備用板不用。",
+    "criteria": [
+      "核算 8 × 0.5 × 2 = 8 公尺，逐一保留本批件數、原長 1/2、目標所給的 2。",
+      "採第 1 行的本批長度，備用板同值不混用，只有一次提問。"
+    ]
+  },
+  {
+    "id": "nested_expression_uses_correct_field_for_each_leaf",
+    "category": "goal_plan_operand_evidence",
+    "documents": [
+      {
+        "name": "supplies.txt",
+        "content": "桂原批裝箱 3 組，每組 6 個，另保留備用 6 個。\n雲段批每組 8 個，供另案。\n"
+      }
+    ],
+    "prompt": "只交桂原批可用紙盒總數。讀 [D1:L1-L2] 並保存清單「核對桂原可用紙盒」。先問本批是否有最後更正。收到後用 calculate_expression 做巢狀運算，組數乘每組個數，再加備用。交付前逐項核對，分開保留三個運算元的實際短句和來源。定稿列式及總數。",
+    "reply": "桂原批每組改為 8 個，組數與備用數照原文。雲段批仍屬另案。",
+    "criteria": [
+      "實際為 3 乘 8 再加 6，得到 30；只更新每組數。",
+      "3 和備用 6 都取本批第 1 行，8 取正式更正而非雲段同值，只有一次提問。"
+    ]
+  },
+  {
+    "id": "ordinary_exact_calculation_control",
+    "category": "goal_plan_operand_evidence",
+    "documents": [
+      {
+        "name": "tags.txt",
+        "content": "青沄批有 2 束、每束 7 張。\n"
+      }
+    ],
+    "prompt": "讀 [D1:L1]，先問束數是否維持，收到後用工具算總張數。直接交結果和原文，不用工作清單。",
+    "reply": "束數維持 2，依原文。",
+    "criteria": [
+      "交 14 張及原文。",
+      "只有一次提問，沒有工作清單。"
+    ]
+  }
+]
