@@ -4,7 +4,7 @@ import unittest
 from itertools import product
 from pathlib import Path
 
-from assistant import autonomy, decision_table, goal_replies
+from assistant import autonomy, decision_table, goal_guidance, goal_replies
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
@@ -294,6 +294,85 @@ class DecisionTableTests(unittest.TestCase):
                            (json.dumps(observation, ensure_ascii=False), gid))
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
+
+    def test_formal_decision_revision_chain_preserves_original_rules_and_sources(self):
+        plan = {'conditions': ['班別'], 'domains': {'班別': ['早', '晚']}, 'known': {}, 'excluded': [],
+                'rules': [{'when': {}, 'result': '甲桌'}, {'when': {}, 'result': '乙桌'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '早'}},
+                               {'higher': 1, 'lower': 2, 'when': {'班別': '晚'}}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對班別與原規則')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='正式班別？')))
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '核對#1｜條件｜班別｜晚',
+                              expected_fingerprint=waiting['fingerprint'])
+            paused = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[補充#2]')), max_steps=1)
+            self.assertEqual(paused['steps'][2]['observation']['revision']['change'],
+                             {'kind': 'condition', 'field': '班別', 'before': None, 'after': '晚'})
+            editable = goal_guidance.snapshot(store, sid, gid)
+            goal_guidance.save(store, sid, gid, '核對#3｜優先｜2｜2｜1',
+                               expected_fingerprint=editable['fingerprint'])
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[更正#1]'),
+                action('finish', report='依班別補充 [補充#2] 與優先更正 [更正#1] 送乙桌。')))
+            observation = final['steps'][3]['observation']
+            self.assertEqual(observation['possible_results'], ['乙桌'])
+            receipt = observation['revision']
+            self.assertEqual((receipt['base_step'], receipt['citation']), (3, '[更正#1]'))
+            self.assertEqual(receipt['change']['before'], plan['precedence'][1])
+            self.assertEqual(receipt['change']['after'], {'higher': 2, 'lower': 1, 'when': {'班別': '晚'}})
+            self.assertEqual(final['steps'][0]['action']['args'], plan)
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            receipt['source_sha256'] = '0' * 64
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+    def test_formal_decision_revision_rejects_stale_ambiguous_or_undeclared_edits(self):
+        plan = {'conditions': ['班別'], 'domains': {'班別': ['早', '晚']}, 'known': {},
+                'excluded': [], 'rows': [{'when': ['早'], 'result': '甲'}, {'when': ['晚'], 'result': '乙'}]}
+        step = {'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                'observation': decision_table.calculate(plan)}
+        ask = {'sequence': 2, 'action': {'tool': 'ask'}, 'observation': {}}
+        source = {'citation': '[補充#2]', 'ask_sequence': 2, 'sha256': 'b' * 64,
+                  'answer': '核對#1｜條件｜班別｜晚'}
+        args = {'revision': '[補充#2]'}
+        for answer in ('核對#2｜條件｜班別｜晚', '核對#1｜條件｜班別｜中',
+                       '核對#1｜條件｜區位｜晚', '引述：核對#1｜條件｜班別｜晚'):
+            with self.subTest(answer=answer), self.assertRaises(ValueError):
+                decision_table.observe(args, [step, ask], [{**source, 'answer': answer}])
+        with self.assertRaises(ValueError):
+            decision_table.observe(args, [step, ask], [source], [
+                {'citation': '[更正#1]', 'steps_seen': 2, 'content': '後續更正', 'sha256': 'c' * 64}])
+        with self.assertRaises(ValueError):
+            decision_table.observe(args, [step, ask], [])
+        with self.assertRaises(ValueError):
+            decision_table.validate_tool({**args, 'known': {'班別': '早'}})
+
+    def test_formal_precedence_revision_consolidates_identical_confirmed_direction(self):
+        plan = {'conditions': ['班別'], 'domains': {'班別': ['早', '晚']}, 'known': {'班別': '晚'},
+                'excluded': [], 'rules': [{'when': {}, 'result': '甲'}, {'when': {}, 'result': '乙'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '晚'}},
+                               {'higher': 2, 'lower': 1, 'when': {'班別': '晚'}}]}
+        steps = [{'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                  'observation': decision_table.calculate(plan)}]
+        source = {'citation': '[更正#1]', 'steps_seen': 1, 'sha256': 'a' * 64,
+                  'content': '核對#1｜優先｜1｜2｜1'}
+        revised = decision_table.observe({'revision': '[更正#1]'}, steps, guidance=[source])
+        self.assertEqual(revised['possible_results'], ['乙'])
+        self.assertEqual(revised['revision']['change']['retained_relation'], 1)
+        self.assertEqual(revised['priority_cases'][0]['active_precedence'], [1])
+        self.assertEqual(plan['precedence'][0], {'higher': 1, 'lower': 2, 'when': {'班別': '晚'}})
 
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:

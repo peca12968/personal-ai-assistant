@@ -232,7 +232,7 @@ def validate_action(value):
         number_rounding.validate(args)
         return value
     if name == 'check_decision':
-        decision_table.validate(args)
+        decision_table.validate_tool(args)
         return value
     if name == 'check_source_decision':
         source_decision.validate(args)
@@ -294,7 +294,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        return decision_table.calculate(args)
+        return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
                                          declared=declared_rule_ranges)

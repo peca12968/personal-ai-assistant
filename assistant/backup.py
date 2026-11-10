@@ -184,7 +184,8 @@ def validate_database(path):
                 read(db, gid)
         if 'autonomous_steps' in actual_tables:
             from .decision_table import validate_saved as validate_decisions
-            validate_decisions(db)
+            validate_decisions(db, replies_present='autonomous_reply_sources' in actual_tables,
+                               guidance_present='autonomous_guidance_sources' in actual_tables)
             from .work_plan import validate_saved
             validate_saved(db)
             from .goal_partials import validate_saved as validate_partials

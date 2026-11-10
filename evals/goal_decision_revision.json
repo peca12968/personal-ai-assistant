@@ -1,0 +1,86 @@
+[
+  {
+    "id": "formal_condition_reply_keeps_original_rule_table",
+    "category": "goal_decision_revision",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "柏泉批 12 盒，窗口莫同仁。班別待查，原安排標籤有。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "班別早或晚，標籤有或無，四種組合皆可能。以下兩條皆適用。\n甲條：送東櫃。\n乙條：送西櫃。\n早班甲優先乙，晚班乙優先甲。\n"
+      }
+    ],
+    "prompt": "請先一步批次查 [D1:L1] 和 [D2:L1-L4]，第 2 步用決策工具按原規則核對一次，再交暫表並只問班別。正式答覆會用「核對#2｜條件｜欄名｜值」。收到後保留原規則重算，交柏泉批文字定稿。",
+    "criteria": [
+      "暫表分開早東、晚西，只問班別。",
+      "按晚班定稿西櫃，保留原標籤有、12 盒、莫同仁及正式答覆。"
+    ],
+    "reply": "核對#2｜條件｜班別｜晚"
+  },
+  {
+    "id": "reverse_one_scoped_relationship_without_changing_its_scope",
+    "category": "goal_decision_revision",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "梧陸批 8 卷，窗口沈同仁，班別為晚。本次優先關係仍待正式確認。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "班別早或晚；依原行的優先範圍。甲、乙都適用。\n甲條：交甲桌。\n乙條：交乙桌。\n第 1 關係只適用早班，甲條優先乙條。\n第 2 關係只適用晚班，原記載甲條優先乙條。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L5]，第 2 步用決策工具按原記載核對暫定。再只確認晚班第 2 關係要不要改成乙優先甲。正式答覆以「核對#2｜優先｜關係編號｜優先規則編號｜被覆蓋規則編號」保存。依答覆重算，交梧陸批文字定稿。",
+    "criteria": [
+      "按原記載先得晚班甲桌暫定，等待只確認第 2 關係。",
+      "正式答覆後晚班乙桌，早班關係維持甲優先乙。",
+      "保留 8 卷、沈同仁及原文和補充各自引用。"
+    ],
+    "reply": "核對#2｜優先｜2｜2｜1"
+  },
+  {
+    "id": "saved_correction_after_waiting_reuses_decision",
+    "category": "goal_decision_revision",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "秋荷批 5 桶，窗口盧同仁。區位待查。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "區位內或外，兩條均適用。\n甲條：交青室。\n乙條：交灰室。\n內區甲優先乙，外區乙優先甲。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L4]，第 2 步用決策工具核對，再問區位並保留暫表。若我先保存正式更正並撤下問題，請直接依同一組原規則重算。更正格式為「核對#2｜條件｜欄名｜值」。交秋荷批文字定稿。",
+    "criteria": [
+      "起初只問區位並保留兩個分支。",
+      "更正確認外區後直接定稿灰室，保留 5 桶、盧同仁及更正來源。"
+    ],
+    "waiting_change": {
+      "correction": "核對#2｜條件｜區位｜外",
+      "withdraw": true
+    }
+  },
+  {
+    "id": "ordinary_reply_keeps_existing_recheck_path",
+    "category": "goal_decision_revision",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "篁河批 11 箱，窗口童同仁。交貨時段尚未確認。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "交貨時段是上午或下午。甲、乙均適用。\n甲條：東台。\n乙條：北台。\n上午甲優先乙，下午乙優先甲。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L4]，第 2 步用決策工具核對，然後只問交貨時段。收到自然語句答覆後依原規則核對並交篁河批文字定稿。",
+    "criteria": [
+      "只問交貨時段，暫表分開東台與北台。",
+      "收到下午後定稿北台，保留 11 箱、童同仁及實際原話。"
+    ],
+    "reply": "我們這批下午交貨，已經確認。"
+  }
+]

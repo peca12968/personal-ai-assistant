@@ -181,6 +181,9 @@ def activity(row):
             outcome['coverage_counts'] = {key: len(value) for key, value in decision['coverage'].items()}
         if 'max_questions' in decision:
             outcome['max_questions'] = decision['max_questions']
+        if 'revision' in decision:
+            revision = decision['revision']
+            outcome['decision_revision'] = {key: revision[key] for key in ('base_step', 'citation')}
         if tool == 'check_source_decision':
             outcome['source_rows_omitted'] = True
             if 'competing_adoptions' in observation:

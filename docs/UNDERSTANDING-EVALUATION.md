@@ -221,6 +221,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_scoped_rule_precedence.json 核對相反班別順序、只問有效欄位、局部循環及不適用連線。逐條對照送入工具的原文條件、規則及補充，並另用枚舉核對每個情境的生效及爭議連線。
 
+以 evals/goal_decision_revision.json 核對正式答覆改欄位、確認或反轉一條既有優先關係、保存更正後接續、以及自然語句的對照。分開確認實際模型送入的編號、對應原話、原表、差異與重算結果。備份還原重新產生核對及來源指紋。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

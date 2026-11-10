@@ -1,9 +1,13 @@
 """Evaluate a finite table of possible scenarios and choose the next useful question."""
 import json
+import re
 from functools import cache
 from itertools import product
 from itertools import combinations
 from math import prod
+
+from . import goal_guidance_sources, goal_reply_sources
+from .goal_stages import digest
 
 
 GUIDANCE = '''check_decision: {"conditions":["入口","通行證"],"rows":[{"when":["北門","有"],"result":"入場"},{"when":["北門","無"],"result":"等待"}],"known":{"入口":"北門"}}。
@@ -16,7 +20,8 @@ matching_rows是所送表格的1起算列號，並非原文件行號。resolved�
 priority_cases逐一列適用的最高級規則、被覆蓋規則和仍缺依據的情境。同級有不同處置時保留各結果；沒有適用規則時保留缺口。winning_rules及overridden_rules是所送規則的1起算編號，引用仍用已讀的實際原行。若有question，先確認會區分結果或是否需要來源的欄位。max_questions只計確認欄位，不計補正式規則。沒有可區分的欄位且needs_evidence為真時，核對仍缺的依據。收到確認值後沿用同一規則重算。只要條件式暫表時按要求交付，不追問。
 原文只有成對的無條件優先記載時，同樣用rules，各條省略priority，另傳precedence，例如[[1,2]]表示第1條優先於第2條。只送原文明定的關係，連彼此矛盾的方向也照實保留；沒有記載時可用空陣列。不要將部分順序轉成數字或推成同級。若關係只在特定條件成立，不可當作通用連線。
 若優先關係只在特定條件或版本生效，用{"higher":1,"lower":2,"when":{"班別":"晚"}}替代該對編號，可與無條件編號對混用。when只填原文明定的條件與值。逐一在相容情境內核對順序，同一情境才可能構成循環。active_precedence與disputed_precedence是送入precedence的1起算序號，引用時仍用實際原文。未生效的關係不參與傳遞。
-disputed_relations列出參與矛盾循環的原連線，工具不以它們推導其他順序。不矛盾的無條件關係可以傳遞，即使中間規則未觸發。未被覆蓋的候選若有不同結果，unranked_pairs列出尚無有效優先依據的組合，cyclic_pairs列出受循環影響的組合。只問仍會影響本次的候選關係；正式補充只修改它確實確認或取代的關係，再保留原規則重算。'''
+disputed_relations列出參與矛盾循環的原連線，工具不以它們推導其他順序。不矛盾的無條件關係可以傳遞，即使中間規則未觸發。未被覆蓋的候選若有不同結果，unranked_pairs列出尚無有效優先依據的組合，cyclic_pairs列出受循環影響的組合。只問仍會影響本次的候選關係；正式補充只修改它確實確認或取代的關係，再保留原規則重算。
+若使用者以「核對#2｜條件｜班別｜晚」或「核對#2｜優先｜2｜2｜1」作為完整單行正式答覆或主動更正，可只送{"revision":"[補充#3]"}或實際更正編號。程式核對原話指定的最新決策步驟，沿用原表及規則。條件格式為步驟、條件、欄名、值；優先格式為步驟、優先、關係序號、優先規則編號、被覆蓋規則編號，只能確認或反轉該關係原方向，適用條件不變。來源須是該核對後唯一一則已保存的補充或更正。自然語句、不同格式或多項改動沿用完整重算；不要自行把原話改寫為正式格式。結果引用實際補充或更正及原行。'''
 
 
 def _label(value):
@@ -343,14 +348,118 @@ def calculate(args):
             'question': {'condition': conditions[first], 'branches': branches}}
 
 
-def validate_saved(db):
-    for action_json, observation_json in db.execute(
-            "SELECT action_json,observation_json FROM autonomous_steps WHERE action_json LIKE '%\"check_decision\"%'"):
-        action = json.loads(action_json)
+_REVISION_SOURCE = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
+_STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
+
+
+def validate_tool(args):
+    if isinstance(args, dict) and 'revision' in args:
+        if (set(args) != {'revision'} or not isinstance(args['revision'], str)
+                or not _REVISION_SOURCE.fullmatch(args['revision'])):
+            raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
+    else:
+        validate(args)
+
+
+def _edge_key(edge):
+    if isinstance(edge, dict):
+        return (edge['higher'], edge['lower']), frozenset(edge['when'].items())
+    return tuple(edge), frozenset()
+
+
+def _revise_precedence(plan, values):
+    if any(not re.fullmatch(r'[1-9][0-9]?', value) for value in values):
+        raise ValueError('優先更正須指定關係序號及兩個規則編號。')
+    number, higher, lower = map(int, values)
+    edges = list(plan.get('precedence', ()))
+    if number > len(edges):
+        raise ValueError('優先更正須對應原核對中已列的關係。')
+    old = edges[number - 1]
+    pair, scope = _edge_key(old)
+    if (higher, lower) not in (pair, pair[::-1]):
+        raise ValueError('優先更正只能確認或反轉同一對規則。')
+    new = {**old, 'higher': higher, 'lower': lower} if isinstance(old, dict) else [higher, lower]
+    change = {'kind': 'precedence', 'relation': number, 'before': old, 'after': new}
+    existing = next((index for index, edge in enumerate(edges, 1)
+                     if index != number and _edge_key(edge) == ((higher, lower), scope)), None)
+    if existing is None:
+        edges[number - 1] = new
+    else:
+        del edges[number - 1]
+        change['retained_relation'] = existing - (existing > number)
+    plan['precedence'] = edges
+    return change
+
+
+def _apply_revision(args, previous, sequence, replies, guidance):
+    if previous is None:
+        raise ValueError('局部重算需有同一目標已保存的決策核對。')
+    base_step, base = previous
+    sources = [row for row in replies if base_step < row['ask_sequence'] < sequence]
+    sources.extend(row for row in guidance if base_step <= row['steps_seen'] < sequence)
+    if len(sources) != 1 or sources[0]['citation'] != args['revision']:
+        raise ValueError('局部重算須引用最新核對後唯一保存的正式補充或更正。')
+    source = sources[0]
+    text = source.get('answer', source.get('content'))
+    parts = text.split('｜')
+    if text.strip() != text or text.splitlines() != [text] or parts[0] != f'核對#{base_step}':
+        raise ValueError('補充原話須為一行，並指定本目標最新的決策核對編號。')
+    plan = dict(base)
+    if len(parts) == 4 and parts[1] == '條件':
+        field, value = parts[2:]
+        if value not in base.get('domains', {}).get(field, ()):
+            raise ValueError('條件更正須使用原核對的宣告欄位及選項。')
+        change = {'kind': 'condition', 'field': field, 'before': base['known'].get(field), 'after': value}
+        plan['known'] = {**base['known'], field: value}
+    elif len(parts) == 5 and parts[1] == '優先':
+        change = _revise_precedence(plan, parts[2:])
+    else:
+        raise ValueError('補充原話未使用單筆條件或優先更正格式。')
+    receipt = {'base_step': base_step, 'base_sha256': digest(base),
+               'citation': source['citation'], 'source_sha256': source['sha256'], 'change': change}
+    return plan, {**calculate(plan), 'revision': receipt}
+
+
+def _recheck_saved(steps, replies, guidance):
+    previous = None
+    for step in steps:
+        action = step['action']
         if action.get('tool') != 'check_decision':
             continue
-        observation = json.loads(observation_json)
-        tool_result = {key: value for key, value in observation.items()
-                       if key not in {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}}
-        if json.dumps(tool_result, sort_keys=True) != json.dumps(calculate(action['args']), sort_keys=True):
+        args, sequence = action['args'], step['sequence']
+        validate_tool(args)
+        if 'revision' in args:
+            plan, expected = _apply_revision(args, previous, sequence, replies, guidance)
+        else:
+            plan, expected = args, calculate(args)
+        actual = {key: value for key, value in step['observation'].items() if key not in _STEP_METADATA}
+        if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('決策表結果與保存的可行情境不一致。')
+        previous = sequence, plan
+    return previous
+
+
+def observe(args, steps, replies=(), guidance=()):
+    if 'revision' not in args:
+        return calculate(args)
+    validate_tool(args)
+    previous = _recheck_saved(steps, replies, guidance)
+    return _apply_revision(args, previous, len(steps) + 1, replies, guidance)[1]
+
+
+def validate_saved(db, *, replies_present=False, guidance_present=False):
+    for gid, notes in db.execute(
+            "SELECT DISTINCT g.id,g.notes FROM autonomous_goals g JOIN autonomous_steps s ON g.id=s.goal_id "
+            "WHERE s.action_json LIKE '%\"check_decision\"%'"):
+        steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
+                 for sequence, action, observation in db.execute(
+                     "SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? "
+                     "AND action_json LIKE '%\"check_decision\"%' ORDER BY sequence", (gid,))]
+        revised = any(step['action'].get('tool') == 'check_decision'
+                      and 'revision' in step['action'].get('args', {}) for step in steps)
+        replies = goal_reply_sources.read(db, gid, notes) if revised and replies_present else []
+        guidance = []
+        if revised and guidance_present:
+            count = db.execute('SELECT COUNT(*) FROM autonomous_steps WHERE goal_id=?', (gid,)).fetchone()[0]
+            guidance = goal_guidance_sources.read(db, gid, notes, count)
+        _recheck_saved(steps, replies, guidance)
