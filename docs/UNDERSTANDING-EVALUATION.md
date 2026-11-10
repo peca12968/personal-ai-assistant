@@ -223,6 +223,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_decision_revision.json 核對正式答覆改欄位、確認或反轉一條既有優先關係、保存更正後接續、以及自然語句的對照。分開確認實際模型送入的編號、對應原話、原表、差異與重算結果。備份還原重新產生核對及來源指紋。
 
+以 evals/goal_decision_revision_comparison.json 核對定稿是否保留舊結果、正式新結果、未更動欄位及必要的其他假設範圍。另驗證條件改變但結果相同，以及只要求本次簡短交付時的原路徑。假設分支和原核對狀態獨立核對。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

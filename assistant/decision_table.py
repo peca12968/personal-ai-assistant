@@ -21,7 +21,8 @@ priority_cases逐一列適用的最高級規則、被覆蓋規則和仍缺依據
 原文只有成對的無條件優先記載時，同樣用rules，各條省略priority，另傳precedence，例如[[1,2]]表示第1條優先於第2條。只送原文明定的關係，連彼此矛盾的方向也照實保留；沒有記載時可用空陣列。不要將部分順序轉成數字或推成同級。若關係只在特定條件成立，不可當作通用連線。
 若優先關係只在特定條件或版本生效，用{"higher":1,"lower":2,"when":{"班別":"晚"}}替代該對編號，可與無條件編號對混用。when只填原文明定的條件與值。逐一在相容情境內核對順序，同一情境才可能構成循環。active_precedence與disputed_precedence是送入precedence的1起算序號，引用時仍用實際原文。未生效的關係不參與傳遞。
 disputed_relations列出參與矛盾循環的原連線，工具不以它們推導其他順序。不矛盾的無條件關係可以傳遞，即使中間規則未觸發。未被覆蓋的候選若有不同結果，unranked_pairs列出尚無有效優先依據的組合，cyclic_pairs列出受循環影響的組合。只問仍會影響本次的候選關係；正式補充只修改它確實確認或取代的關係，再保留原規則重算。
-若使用者以「核對#2｜條件｜班別｜晚」或「核對#2｜優先｜2｜2｜1」作為完整單行正式答覆或主動更正，可只送{"revision":"[補充#3]"}或實際更正編號。程式核對原話指定的最新決策步驟，沿用原表及規則。條件格式為步驟、條件、欄名、值；優先格式為步驟、優先、關係序號、優先規則編號、被覆蓋規則編號，只能確認或反轉該關係原方向，適用條件不變。來源須是該核對後唯一一則已保存的補充或更正。自然語句、不同格式或多項改動沿用完整重算；不要自行把原話改寫為正式格式。結果引用實際補充或更正及原行。'''
+若使用者以「核對#2｜條件｜班別｜晚」或「核對#2｜優先｜2｜2｜1」作為完整單行正式答覆或主動更正，可只送{"revision":"[補充#3]"}或實際更正編號。程式核對原話指定的最新決策步驟，沿用原表及規則。條件格式為步驟、條件、欄名、值；優先格式為步驟、優先、關係序號、優先規則編號、被覆蓋規則編號，只能確認或反轉該關係原方向，適用條件不變。來源須是該核對後唯一一則已保存的補充或更正。自然語句、不同格式或多項改動沿用完整重算；不要自行把原話改寫為正式格式。結果引用實際補充或更正及原行。
+使用者要求對照前後或說明未受影響範圍時，送{"revision":"[補充#3]","compare":true}。revision.comparison的before、after分別是舊核對和這次重算，retained_known保留未改的已知欄位。優先關係有明文範圍時，scope_comparison另外列各種假設條件的前後結果，其他已知欄位保持原值。用它核對如「晚班有變、早班仍用原規則」，不要把假設分支當成本次已確認。未決時只列仍有依據的候選；引用仍用原文或已保存的補充。只要求本次結果時維持單一revision參數。'''
 
 
 def _label(value):
@@ -354,8 +355,9 @@ _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha2
 
 def validate_tool(args):
     if isinstance(args, dict) and 'revision' in args:
-        if (set(args) != {'revision'} or not isinstance(args['revision'], str)
-                or not _REVISION_SOURCE.fullmatch(args['revision'])):
+        if (set(args) not in ({'revision'}, {'revision', 'compare'}) or not isinstance(args['revision'], str)
+                or not _REVISION_SOURCE.fullmatch(args['revision'])
+                or ('compare' in args and type(args['compare']) is not bool)):
             raise ValueError('局部重算只接受一個已保存的補充或更正編號。')
     else:
         validate(args)
@@ -391,6 +393,30 @@ def _revise_precedence(plan, values):
     return change
 
 
+def _result_summary(result):
+    return {key: result[key] for key in ('status', 'possible_results', 'recorded_results') if key in result}
+
+
+def _revision_comparison(base, plan, change, result):
+    comparison = {'before': _result_summary(calculate(base)), 'after': _result_summary(result),
+                  'retained_known': {name: value for name, value in base['known'].items()
+                                     if name != change.get('field')}}
+    if change['kind'] != 'precedence' or not isinstance(change['before'], dict) or not change['before']['when']:
+        return comparison
+    scope = change['before']['when']
+    fields = [name for name in base['conditions'] if name in scope]
+    fixed = {name: value for name, value in base['known'].items() if name not in scope}
+    branches = []
+    for values in product(*(base['domains'][name] for name in fields)):
+        when = dict(zip(fields, values))
+        known = {**fixed, **when}
+        branches.append({'when': when, 'within_revision_scope': when == scope,
+                         'before': _result_summary(calculate({**base, 'known': known})),
+                         'after': _result_summary(calculate({**plan, 'known': known}))})
+    comparison['scope_comparison'] = branches
+    return comparison
+
+
 def _apply_revision(args, previous, sequence, replies, guidance):
     if previous is None:
         raise ValueError('局部重算需有同一目標已保存的決策核對。')
@@ -417,7 +443,10 @@ def _apply_revision(args, previous, sequence, replies, guidance):
         raise ValueError('補充原話未使用單筆條件或優先更正格式。')
     receipt = {'base_step': base_step, 'base_sha256': digest(base),
                'citation': source['citation'], 'source_sha256': source['sha256'], 'change': change}
-    return plan, {**calculate(plan), 'revision': receipt}
+    result = calculate(plan)
+    if args.get('compare'):
+        receipt['comparison'] = _revision_comparison(base, plan, change, result)
+    return plan, {**result, 'revision': receipt}
 
 
 def _recheck_saved(steps, replies, guidance):

@@ -1,0 +1,85 @@
+[
+  {
+    "id": "explain_changed_scope_and_retained_other_shift",
+    "category": "goal_decision_revision_comparison",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "樺林批 7 管，窗口邱同仁。班別為晚，封箱為有。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "班別早或晚，封箱有或無；各組合可能。甲、乙均適用。\n甲條：交上台。\n乙條：交下台。\n關係1只在早班，甲條優先於乙條。\n關係2只在晚班，原記載甲條優先於乙條。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L5]，第 2 步用決策工具按原安排核對暫表，再問本次晚班關係是否要反轉。我的正式答覆是「核對#2｜優先｜關係編號｜優先規則編號｜被覆蓋規則編號」。定稿請對照晚班原去向與新去向，另交代早班結果及保留的資料，各自附原文或補充。",
+    "criteria": [
+      "暫定上台，只問晚班關係。",
+      "原晚班上台，新晚班下台，早班仍上台，引用各自依據。",
+      "保留 7 管、邱同仁與封箱有。"
+    ],
+    "reply": "核對#2｜優先｜2｜2｜1"
+  },
+  {
+    "id": "explain_prior_result_after_confirmed_value_changes",
+    "category": "goal_decision_revision_comparison",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "城芙批 19 瓶，窗口聶同仁。原確認區位為北，門禁為有。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "區位北或南，門禁有或無，四種組合可能。以下兩條都適用。\n甲條：交一室。\n乙條：交二室。\n北區甲優先乙，南區乙優先甲。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L4]，第 2 步按原確認條件用決策工具核對暫表，再只確認區位是否變更。正式答覆用「核對#2｜條件｜欄名｜值」。定稿請分開寫舊區位及原去向、新區位及新去向、仍保留的門禁和其他欄位，各自附來源。",
+    "criteria": [
+      "先核對北區一室，再只確認區位。",
+      "更正為南區後交二室，舊值仍列明。",
+      "保留門禁有、19 瓶、聶同仁及各自來源。"
+    ],
+    "reply": "核對#2｜條件｜區位｜南"
+  },
+  {
+    "id": "same_result_after_a_formal_condition_update",
+    "category": "goal_decision_revision_comparison",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "荷砂批 10 筒，窗口裘同仁。安全鎖有，驗收標籤原為無。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "安全鎖及驗收標籤各有或無，四種組合皆可能。\n甲條：安全鎖有時交內台。\n乙條：驗收標籤有時交外台。\n丙條：不限定條件，交核對席。\n無條件優先關係：甲優先乙、乙優先丙。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L5]，第 2 步用決策工具按原安排核對。暫表後只確認標籤是否改變，答覆用「核對#2｜條件｜欄名｜值」。定稿對照原值和新值、說明去向是否改變，保留安全鎖、數量和窗口。",
+    "criteria": [
+      "只確認標籤；原狀態無，新確認有。",
+      "前後都交內台，因甲條優先。",
+      "保留安全鎖有、10 筒與裘同仁。"
+    ],
+    "reply": "核對#2｜條件｜驗收標籤｜有"
+  },
+  {
+    "id": "concise_current_result_without_comparison_request",
+    "category": "goal_decision_revision_comparison",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "石帆批 6 盒，窗口袁同仁。時段待查。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "時段早或晚，兩條都適用。\n甲條：送南席。\n乙條：送北席。\n早班甲優先乙，晚班乙優先甲。\n"
+      }
+    ],
+    "prompt": "先一步批次查 [D1:L1]、[D2:L1-L4]，第 2 步用決策工具核對，然後只問時段。答覆用「核對#2｜條件｜欄名｜值」。最後只交本次去向、數量、窗口及來源，簡短。",
+    "criteria": [
+      "只詢問時段。",
+      "定稿僅交本次北席、6 盒、袁同仁及來源。"
+    ],
+    "reply": "核對#2｜條件｜時段｜晚"
+  }
+]

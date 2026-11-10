@@ -75,6 +75,7 @@ jobs:
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_partial_rule_precedence.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_scoped_rule_precedence.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_revision.json
+      - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_revision_comparison.json
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py
       - run: python scripts/evaluate_tool_recovery.py

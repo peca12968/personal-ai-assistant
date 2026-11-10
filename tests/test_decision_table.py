@@ -374,6 +374,71 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(revised['priority_cases'][0]['active_precedence'], [1])
         self.assertEqual(plan['precedence'][0], {'higher': 1, 'lower': 2, 'when': {'班別': '晚'}})
 
+    def test_revision_comparison_keeps_current_result_separate_from_other_scopes(self):
+        plan = {'conditions': ['班別', '區位', '封箱'],
+                'domains': {'班別': ['早', '晚'], '區位': ['內', '外'], '封箱': ['有', '無']},
+                'known': {'班別': '晚', '區位': '外', '封箱': '有'},
+                'excluded': [['早', '外', '有']],
+                'rules': [{'when': {}, 'result': '上台'}, {'when': {}, 'result': '下台'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '早'}},
+                               {'higher': 1, 'lower': 2, 'when': {'班別': '晚', '區位': '外'}}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對前後及其他範圍')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='本次正式優先關係？')))
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '核對#1｜優先｜2｜2｜1',
+                              expected_fingerprint=waiting['fingerprint'])
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[補充#2]', compare=True),
+                action('finish', report='本次改為下台 [補充#2]。')))
+            observation = result['steps'][2]['observation']
+            comparison = observation['revision']['comparison']
+            self.assertEqual(observation['possible_results'], ['下台'])
+            self.assertEqual(comparison['before'], {'status': 'resolved', 'possible_results': ['上台']})
+            self.assertEqual(comparison['after'], {'status': 'resolved', 'possible_results': ['下台']})
+            self.assertEqual(comparison['retained_known'], plan['known'])
+            early_inside, early_outside, late_inside, late_outside = comparison['scope_comparison']
+            self.assertEqual(early_inside['before'], early_inside['after'])
+            self.assertEqual(early_inside['after']['possible_results'], ['上台'])
+            self.assertEqual(early_outside['after']['status'], 'no_match')
+            self.assertEqual(late_inside['after'], {'status': 'incomplete_table', 'recorded_results': ['上台', '下台']})
+            self.assertEqual([p['within_revision_scope'] for p in comparison['scope_comparison']],
+                             [False, False, False, True])
+            self.assertEqual(late_outside['after'], comparison['after'])
+            backup = create_backup(store.path)
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), result)
+            early_inside['after']['possible_results'] = ['下台']
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+    def test_revision_comparison_preserves_prior_uncertainty_and_optional_shape(self):
+        plan = {'conditions': ['班別', '門禁'], 'domains': {'班別': ['早', '晚'], '門禁': ['有']},
+                'known': {'門禁': '有'}, 'excluded': [],
+                'rows': [{'when': ['早', '有'], 'result': '甲'}, {'when': ['晚', '有'], 'result': '乙'}]}
+        step = {'sequence': 1, 'action': json.loads(action('check_decision', **plan)),
+                'observation': decision_table.calculate(plan)}
+        source = {'citation': '[更正#1]', 'steps_seen': 1, 'sha256': 'a' * 64,
+                  'content': '核對#1｜條件｜班別｜晚'}
+        args = {'revision': '[更正#1]'}
+        old_shape = decision_table.observe(args, [step], guidance=[source])
+        self.assertNotIn('comparison', old_shape['revision'])
+        self.assertEqual(old_shape, decision_table.observe({**args, 'compare': False}, [step], guidance=[source]))
+        revised = decision_table.observe({**args, 'compare': True}, [step], guidance=[source])
+        self.assertEqual(revised['revision']['comparison'], {
+            'before': {'status': 'needs_check', 'possible_results': ['甲', '乙']},
+            'after': {'status': 'resolved', 'possible_results': ['乙']}, 'retained_known': {'門禁': '有'}})
+        with self.assertRaises(ValueError):
+            decision_table.validate_tool({**args, 'compare': 1})
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
