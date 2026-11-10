@@ -52,6 +52,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
 
+WAITING_REFERENCE_GUIDANCE = '''只有原欄名單純用來區分決策結果，且沒有其他待問資訊時，ask的question才逐字使用field_reference_question，分支放在partial_result。使用者要求一定要知道歷史欄名或另有問題時，照實寫完整問題。field_reference.waiting_recheck代表等待期間已按順序重核；原暫表是歷史。若原問已撤下，依共同結果交付且欄名仍待查。若仍有分歧且原問已有欄名答覆，用check_decision的resolve引用原問的補充；保留更正後的現行值。'''
+
+
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
             or any(char in value for char in '\0\r\n')):
@@ -455,7 +458,8 @@ def validate_tool(args):
                 or not _REVISION_SOURCE.fullmatch(args['row_confirmation'])):
             raise ValueError('自然規則確認只接受同一目標已保存的補充或更正編號。')
     elif isinstance(args, dict) and 'field_reference' in args:
-        if (args.keys() not in ({'field_reference'}, {'field_reference', 'resolve'}, {'field_reference', 'recheck'})
+        if (args.keys() not in ({'field_reference'}, {'field_reference', 'resolve'}, {'field_reference', 'recheck'},
+                               {'field_reference', 'waiting_recheck'})
                 or not isinstance(args['field_reference'], str) or not _REVISION_SOURCE.fullmatch(args['field_reference'])
                 or any(args[key] is not True for key in args.keys() - {'field_reference'})):
             raise ValueError('欄位指代核對須引用已保存的補充，確認欄名時另用resolve。')
@@ -910,8 +914,8 @@ def _pending_reference(base, proof, results):
 
 def _recheck_reference(base_step, base, source):
     pending = base.get('pending_field_reference')
-    if not pending or pending['status'] != 'agreement' or 'steps_seen' not in source:
-        raise ValueError('成果更正須有已核對的共同結果及主動更正原話。')
+    if not pending or 'steps_seen' not in source:
+        raise ValueError('重核須有已保存的欄位指代及主動更正原話。')
     clauses = [clause for clause in _natural_clauses(_source_text(source))
                if not _UNADOPTED_SENTENCE.fullmatch(clause)]
     update = _natural_condition(base, clauses[0]) if len(clauses) == 1 else None
@@ -949,6 +953,73 @@ def reference_report(steps, result):
     return None
 
 
+def reference_question(step):
+    if step['action']['tool'] != 'check_decision':
+        return None
+    proof = step['observation'].get('field_reference', {})
+    if proof.get('status') == 'needs_field':
+        fields = '、'.join(f'「{branch["field"]}」' for branch in proof['branches'])
+        return f'第一筆改值指哪個欄位？請回完整欄名{fields}。'
+    return None
+
+
+def _waiting_reference(steps):
+    if len(steps) < 2:
+        return None
+    checked, ask = steps[-2:]
+    question = reference_question(checked)
+    if (question and ask['sequence'] == checked['sequence'] + 1 and ask['action']['tool'] == 'ask'
+            and ask['action']['args'].get('question') == ask['observation'].get('question') == question):
+        return ask
+    return None
+
+
+def _apply_waiting_recheck(args, previous, sequence, steps, guidance):
+    ask = _waiting_reference(steps)
+    if not ask or ask['sequence'] != sequence - 1 or previous is None or previous[0] != sequence - 2:
+        raise ValueError('等待更正須緊接只確認原欄名的提問及分支核對。')
+    if any(source['steps_seen'] == previous[0] and not _unadopted_note(source) for source in guidance):
+        raise ValueError('提問前另有尚未核對的補充，請先確認其影響。')
+    sources = [source for source in guidance if source['steps_seen'] == ask['sequence']]
+    if not sources or sources[-1]['citation'] != args['field_reference']:
+        raise ValueError('等待更正須引用目前問題最後保存的主動更正。')
+    base_step, plan = previous
+    changes = []
+    for source in sources:
+        plan, observation = _recheck_reference(base_step, plan, source)
+        changes.append(observation['field_reference']['recheck'])
+    proof = {**observation['field_reference'],
+             'waiting_recheck': {'ask_sequence': ask['sequence'], 'changes': changes}}
+    if 'pending_field_reference' in plan:
+        plan = {**plan, 'pending_field_reference': proof}
+    return plan, {**observation, 'field_reference': proof}
+
+
+def waiting_reference_review(steps, replies, guidance):
+    ask = _waiting_reference(steps)
+    if not ask:
+        return None
+    source = next((item for item in reversed(guidance) if item['steps_seen'] == ask['sequence']), None)
+    if source is None:
+        return None
+    previous, _, _ = _recheck_saved(steps, replies, guidance)
+    args = {'field_reference': source['citation'], 'waiting_recheck': True}
+    try:
+        return _apply_waiting_recheck(args, previous, ask['sequence'] + 1, steps, guidance)[1]
+    except ValueError:
+        return None  # Mixed or unsupported notes stay on the ordinary guidance path.
+
+
+def describe_waiting_review(review):
+    proof = review['field_reference']
+    source = proof['recheck']['evidence']['citation']
+    if proof['status'] != 'needs_field':
+        return f'依 {source} 重核後，原欄名已不影響目前結果，可依該更正撤下原問題。'
+    branches = '、'.join(f"原先指{row['field']}時為{'／'.join(row.get('possible_results') or ['待查'])}"
+                        for row in proof['branches'])
+    return f'依 {source} 重核後，{branches}。原欄名仍待確認。'
+
+
 def _validate_recheck_position(args, steps, sequence, guidance):
     if (not steps or steps[-1]['sequence'] != sequence - 1
             or not reference_report(steps, steps[-1]['observation'].get('report'))
@@ -961,7 +1032,14 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     if previous is None or 'domains' not in previous[1]:
         raise ValueError('欄位指代核對須先有完整選項的原決策表。')
     base_step, base = previous
-    source = _natural_update_source(args['field_reference'], base_step, sequence, replies, guidance, what_if_sources)
+    citation = args['field_reference']
+    carried_ask = base.get('pending_field_reference', {}).get('waiting_recheck', {}).get('ask_sequence')
+    if args.get('resolve') and carried_ask is not None and citation == f'[補充#{carried_ask}]':
+        carried = next((item for item in replies if item['ask_sequence'] == carried_ask), None)
+        if carried is None or _followup_sources(base_step, sequence, replies, guidance):
+            raise ValueError('須使用重核後仍適用的原問題答覆。')
+        return _choose_reference(base, carried)
+    source = _natural_update_source(citation, base_step, sequence, replies, guidance, what_if_sources)
     if args.get('resolve'):
         return _choose_reference(base, source)
     if args.get('recheck'):
@@ -1092,7 +1170,9 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
     return rejected
 
 
-def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources):
+def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
+    if args.get('waiting_recheck'):
+        return _apply_waiting_recheck(args, previous, sequence, steps, guidance)
     if 'field_reference' in args:
         return _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources)
     if not _TRANSITION_FIELDS & args.keys():
@@ -1119,7 +1199,7 @@ def _recheck_saved(steps, replies, guidance):
         validate_tool(args)
         if args.get('recheck'):
             _validate_recheck_position(args, steps[:index], sequence, guidance)
-        plan, expected = _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources)
+        plan, expected = _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps[:index])
         actual = {key: value for key, value in step['observation'].items() if key not in _STEP_METADATA}
         if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('決策表結果與保存的可行情境不一致。')
@@ -1140,7 +1220,7 @@ def observe(args, steps, replies=(), guidance=()):
     sequence = len(steps) + 1
     if args.get('recheck'):
         _validate_recheck_position(args, steps, sequence, guidance)
-    return _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources)[1]
+    return _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps)[1]
 
 
 def validate_saved(db, *, replies_present=False, guidance_present=False):
@@ -1151,7 +1231,8 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                  for sequence, action, observation in db.execute(
                      "SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? "
                      "AND (action_json LIKE '%\"check_decision\"%' OR action_json LIKE '%\"invalid\"%' "
-                     "OR action_json LIKE '%\"finish\"%' OR action_json LIKE '%\"check_source_decision\"%') "
+                     "OR action_json LIKE '%\"finish\"%' OR action_json LIKE '%\"check_source_decision\"%' "
+                     "OR action_json LIKE '%\"ask\"%') "
                      "ORDER BY sequence", (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
                       and step['action']['args'].keys() & _TRANSITION_FIELDS for step in steps)
@@ -1161,3 +1242,21 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             count = db.execute('SELECT COUNT(*) FROM autonomous_steps WHERE goal_id=?', (gid,)).fetchone()[0]
             guidance = goal_guidance_sources.read(db, gid, notes, count)
         _recheck_saved(steps, replies, guidance)
+        for step in steps:
+            if step['action']['tool'] != 'check_decision' or not step['action']['args'].get('waiting_recheck'):
+                continue
+            proof = step['observation']['field_reference']
+            ask = proof['waiting_recheck']['ask_sequence']
+            source = next(item for item in guidance if item['citation'] == step['action']['args']['field_reference'])
+            if proof['status'] == 'needs_field':
+                reply = db.execute('SELECT notes_start FROM autonomous_reply_sources WHERE goal_id=? AND ask_sequence=?',
+                                   (gid, ask)).fetchone() if replies_present else None
+                end = source['notes_start'] + len(goal_guidance_sources.note(source['content'], ask, source['recorded_at']))
+                if reply is None or reply[0] < end:
+                    raise ValueError('原欄名答覆須保存在等待期間的更正之後。')
+            else:
+                has_table = db.execute("SELECT 1 FROM sqlite_master WHERE name='autonomous_question_withdrawals'").fetchone()
+                withdrawn = db.execute('SELECT guidance_number,guidance_sha256 FROM autonomous_question_withdrawals '
+                                       'WHERE goal_id=? AND ask_sequence=?', (gid, ask)).fetchone() if has_table else None
+                if withdrawn != (source['number'], source['sha256']):
+                    raise ValueError('等待重核缺少與更正相符的原提問撤下紀錄。')

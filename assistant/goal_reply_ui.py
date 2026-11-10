@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from . import goal_replies
+from . import decision_table, goal_replies
 from .autonomy import LABELS, MAX_STEPS
 from .ui_layout import ScrollableForm, fit_window
 
@@ -50,7 +50,10 @@ class GoalReplyWindow:
             lines = ['目標：' + goal['objective'], '狀態：' + LABELS.get(goal['status'], goal['status']),
                      '目前問題：' + (goal['question'] or '無'), '先前問題與補充：\n' + (goal['notes'] or '無')]
             if goal.get('partial_result'):
-                lines[2:2] = ['待補期間的成果（尚待定稿）', goal['partial_result']]
+                label = '更正前的暫表（歷史）' if goal.get('reference_review') else '待補期間的成果（尚待定稿）'
+                lines[2:2] = [label, goal['partial_result']]
+            if goal.get('reference_review'):
+                lines.insert(-1, decision_table.describe_waiting_review(goal['reference_review']))
             if goal.get('question_citations'):
                 refs = goal['question_citations']
                 tokens = dict.fromkeys(row['citation'] for row in refs['documents'] + refs['replies'] + refs.get('guidance', []))

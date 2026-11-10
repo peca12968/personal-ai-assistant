@@ -145,6 +145,103 @@ class GoalGuidanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '決策表結果'):
             validate_database(restored.path)
 
+    def test_waiting_reference_recheck_withdraws_only_after_the_result_agrees(self):
+        fields = ['清點班別', '收件班別', '入口']
+        shifts = ['早班', '晚班', '夜班']
+        domains = {fields[0]: shifts, fields[1]: shifts, '入口': ['北口', '南口']}
+        rows = []
+        for left, right, entry in product(*domains.values()):
+            destination = '會合台' if entry == '南口' else ('甲席' if right == '早班' else '乙席')
+            rows.append({'when': [left, right, entry], 'result': destination})
+        question = '第一筆改值指哪個欄位？請回完整欄名「清點班別」、「收件班別」。'
+
+        for next_action in ('withdraw', 'reply', 'compound', 'legacy_withdraw', 'legacy_reply'):
+            with self.subTest(next_action=next_action):
+                gid = a.create_goal(self.store, self.sid, '核對班別與入口')
+
+                def run(*actions):
+                    return a.run_goal(self.store, self.sid, gid, ScriptedEngine(*actions))
+
+                def reply(content):
+                    observed = reply_snapshot(self.store, self.sid, gid)
+                    return goal_replies.save(self.store, self.sid, gid, content, expected_fingerprint=observed['fingerprint'])
+
+                def amend(content):
+                    observed = g.snapshot(self.store, self.sid, gid)
+                    return g.save(self.store, self.sid, gid, content, expected_fingerprint=observed['fingerprint'])
+
+                run(action('check_decision', conditions=fields, domains=domains, rows=rows, excluded=[],
+                           known=dict(zip(fields, ('早班', '早班', '北口')))), action('ask', question='當次更正？'))
+                reply('正式改成晚班。')
+                asked = question if next_action != 'compound' else '第一筆指哪一欄？也請提供通知對象。'
+                before = run(action('check_decision', field_reference='[補充#2]'),
+                             action('ask', question=asked, partial_result='更正前甲席或乙席。'))
+                old = reply_snapshot(self.store, self.sid, gid)
+                if next_action in ('legacy_withdraw', 'legacy_reply'):
+                    with patch.object(g, '_apply_waiting_review', side_effect=lambda db, state: state):
+                        amend('入口正式改為南口。')
+                    observed = reply_snapshot(self.store, self.sid, gid)
+                    self.assertEqual(observed['goal']['reference_review']['possible_results'], ['會合台'])
+                    if next_action == 'legacy_reply':
+                        reply('清點班別')
+                        after = a.get_goal(self.store, self.sid, gid)
+                        self.assertEqual(after['steps'], before['steps'])
+                        self.assertEqual(after['reply_sources'][-1]['answer'], '清點班別')
+                    else:
+                        goal_replies.withdraw(self.store, self.sid, gid, 1, expected_fingerprint=observed['fingerprint'])
+                        after = a.get_goal(self.store, self.sid, gid)
+                        self.assertEqual(after['steps'][-1]['observation']['possible_results'], ['會合台'])
+                        self.assertEqual(after['withdrawn_questions'][0]['ask_sequence'], 4)
+                    validate_database(self.store.path)
+                    continue
+                if next_action == 'compound':
+                    saved = amend('入口正式改為南口。')
+                    self.assertNotIn('reference_review', saved['goal'])
+                    after = a.get_goal(self.store, self.sid, gid)
+                    self.assertEqual((after['question'], after['steps']), (asked, before['steps']))
+                    continue
+
+                saved = amend('清點班別正式改為夜班。')
+                self.assertEqual(saved['goal']['question'], question)
+                self.assertEqual(saved['step_count'], 4)
+                proof = saved['goal']['reference_review']['field_reference']
+                self.assertEqual(proof['status'], 'needs_field')
+                self.assertTrue(all(branch['known']['清點班別'] == '夜班' for branch in proof['branches']))
+                self.assertEqual(a.get_goal(self.store, self.sid, gid)['steps'], before['steps'])
+                with self.assertRaisesRegex(ValueError, '尚未保存'):
+                    goal_replies.save(self.store, self.sid, gid, '清點班別', expected_fingerprint=old['fingerprint'])
+
+                if next_action == 'withdraw':
+                    saved = amend('入口正式改為南口。')['goal']
+                    self.assertEqual((saved['status'], saved['question']), ('paused', ''))
+                    self.assertEqual([item['ask_sequence'] for item in saved['reply_sources']], [2])
+                    self.assertEqual([(item['ask_sequence'], item['guidance_citation']) for item in saved['withdrawn_questions']],
+                                     [(4, '[更正#2]')])
+                    state = a.get_goal(self.store, self.sid, gid)
+                    checked = state['steps'][-1]['observation']
+                    self.assertEqual(checked['possible_results'], ['會合台'])
+                    self.assertEqual(len(checked['field_reference']['waiting_recheck']['changes']), 2)
+                    self.assertEqual(state['steps'][:-1], before['steps'])
+                    final = run(action('finish', report='會合台。[補充#2] [更正#1] [更正#2]'))
+                else:
+                    saved = reply('清點班別')['goal']
+                    self.assertEqual(saved['reply_sources'][-1]['citation'], '[補充#4]')
+                    self.assertNotIn('withdrawn_questions', saved)
+                    final = run(action('check_decision', field_reference='[補充#4]', resolve=True),
+                                action('finish', report='甲席。[補充#2] [更正#1] [補充#4]'))
+                    checked = final['steps'][-2]['observation']
+                    self.assertEqual(checked['possible_results'], ['甲席'])
+                    self.assertEqual(checked['field_reference']['recheck']['change']['after'], '夜班')
+                archive = create_backup(self.store.path, self.root / f'{next_action}.paibackup')
+                restore_backup(archive['path'], self.root / next_action)
+                restored = Store(self.root / next_action / 'assistant.sqlite3')
+                self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+                if next_action == 'withdraw':
+                    with restored.connect() as db:
+                        db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=?', (gid,))
+                    with self.assertRaisesRegex(ValueError, '缺少與更正相符'):
+                        validate_database(restored.path)
+
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
         self.save('PRIVATE_STEERING：更正為12人，每人90元。')
         self.save('再次更正：人數13，費率仍90元。')

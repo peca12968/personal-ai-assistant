@@ -3,7 +3,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from . import goal_guidance as guidance
+from . import decision_table, goal_guidance as guidance
 from .autonomy import LABELS
 from .ui_layout import ScrollableForm, fit_window
 
@@ -43,8 +43,12 @@ class GoalGuidanceWindow:
         if self.current is None:return
         try:
             saved = guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
-            rechecked = 'reference_report' in self.current
+            rechecked = 'reference_report' in self.current or (
+                self.current['goal']['status'] == 'needs_input' and saved['goal']['status'] == 'paused')
             self.content.delete('1.0','end');self.reload();self.changed()
-            self.notice.set(saved['goal']['notice'] if rechecked else '已追加保存。可回原視窗處理待回答問題或開始／接續。')
+            if saved['goal'].get('reference_review'):
+                self.notice.set(decision_table.describe_waiting_review(saved['goal']['reference_review']))
+            else:
+                self.notice.set(saved['goal']['notice'] if rechecked else '已追加保存。可回原視窗處理待回答問題或開始／接續。')
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:
             messagebox.showerror('無法保存補充',str(exc),parent=self.window)

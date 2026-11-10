@@ -198,6 +198,10 @@ def get_goal(store, sid, gid):
             last = result['steps'][-1]
             result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
+        if waiting_step and guidance_sources and current_sources == result['sources']:
+            reference = decision_table.waiting_reference_review(result['steps'], reply_sources, guidance_sources)
+            if reference is not None:
+                result['reference_review'] = reference
         result['work_plan'] = work_plan.for_goal(result, current_sources)
     return result
 
@@ -320,6 +324,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
+        if args.get('waiting_recheck'):
+            raise ValueError('等待中的重核只由保存使用者更正或答覆時產生。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
@@ -488,6 +494,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
                 payload['reply_sources'] = reply_sources
+            reference_question = decision_table.reference_question(goal['steps'][-1]) if goal['steps'] else None
+            if reference_question:
+                payload['field_reference_question'] = reference_question
             rule_scope = goal.get('decision_rule_scope')
             if rule_scope:
                 payload['decision_rule_scope'] = rule_scope
@@ -534,8 +543,12 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE
-                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('recheck')
+                 if any(step['action']['tool'] == 'check_decision'
+                        and (step['action']['args'].get('recheck') or step['action']['args'].get('waiting_recheck'))
                         for step in payload['steps']) else '') +
+                ('\n' + decision_table.WAITING_REFERENCE_GUIDANCE
+                 if reference_question or any(step['action']['tool'] == 'check_decision'
+                     and step['action']['args'].get('waiting_recheck') for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE

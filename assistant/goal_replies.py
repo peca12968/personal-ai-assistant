@@ -2,9 +2,9 @@
 import re
 
 from .answer_runs import lease
-from .autonomy import text
-from . import goal_reply_sources
-from .goal_guidance import _snapshot, snapshot
+from .autonomy import MAX_STEPS, text
+from . import goal_question_withdrawals, goal_reply_sources
+from .goal_guidance import _snapshot, append_waiting_recheck, snapshot
 
 
 def save(store, sid, gid, answer, *, expected_fingerprint):
@@ -23,6 +23,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
+        review = goal.get('reference_review')
+        if review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
+            append_waiting_recheck(db, current, notes)
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
                    (notes, gid, sid))
         return _snapshot(db, sid, gid)
@@ -41,10 +44,13 @@ def withdraw(store, sid, gid, correction_number, *, expected_fingerprint):
         options = current.get('question_withdrawal')
         if not options or correction_number not in options['correction_numbers']:
             raise ValueError('需選擇目前提問後保存的更正，且目標仍可接續。')
-        source = next(item for item in current['goal']['guidance_sources'] if item['number'] == correction_number)
-        db.execute('INSERT INTO autonomous_question_withdrawals(goal_id,ask_sequence,guidance_number,question_sha256,guidance_sha256) '
-                   'VALUES(?,?,?,?,?)', (gid, options['ask_sequence'], correction_number,
-                                        options['question_sha256'], source['sha256']))
+        goal = current['goal']
+        source = next(item for item in goal['guidance_sources'] if item['number'] == correction_number)
+        review = goal.get('reference_review')
+        if (review and review['field_reference']['status'] != 'needs_field' and current['step_count'] + 2 <= MAX_STEPS
+                and source['citation'] == review['field_reference']['recheck']['evidence']['citation']):
+            append_waiting_recheck(db, current, goal['notes'])
+        goal_question_withdrawals.record(db, gid, options, source)
         db.execute("UPDATE autonomous_goals SET question='',status='paused',notice=?,updated_at=CURRENT_TIMESTAMP "
                    "WHERE id=? AND session_id=?", ('已依所選更正撤下問題，可開始／接續。', gid, sid))
         return _snapshot(db, sid, gid)

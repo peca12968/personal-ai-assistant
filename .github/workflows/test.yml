@@ -114,6 +114,7 @@ jobs:
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_field_reference.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_reference_recheck.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_ordered_reference.json
+      - run: python scripts/evaluate_goal_replies.py --suite evals/goal_waiting_reference_recheck.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_mixed_scope_updates.json
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py

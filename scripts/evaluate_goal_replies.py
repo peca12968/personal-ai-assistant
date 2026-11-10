@@ -112,12 +112,12 @@ def change_while_waiting(store, sid, gid, state, change):
     return result
 
 
-def report_change(case):
-    if 'report_change' not in case:
+def followup_change(case, key):
+    change = case.get(key)
+    if key not in case:
         return None
-    change = case['report_change']
     if not isinstance(change, dict) or change.keys() not in ({'correction'}, {'correction', 'reply'}):
-        raise ValueError('成果更正案例須指定正式補充，可另有一次釐清答覆。')
+        raise ValueError('接續更正案例須指定正式補充，可另有一次釐清答覆。')
     for value in change.values():
         autonomy.text(value, 4000)
     return change
@@ -135,7 +135,8 @@ def main():
             autonomy.text(case['prompt'], 4000)
             replies_for(case)
             waiting_change(case)
-            report_change(case)
+            followup_change(case, 'report_change')
+            followup_change(case, 'reference_waiting_change')
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -223,7 +224,25 @@ def main():
                     assert turn['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
                     save_report(trace_path, row)
                     state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                if change := report_change(case):
+                if change := followup_change(case, 'reference_waiting_change'):
+                    if state['status'] != 'needs_input':
+                        raise ValueError('未停在欄位問題，未提交等待期間的更正。')
+                    correction = row['reference_waiting_change'] = {'before': state, 'content': change['correction']}
+                    observed = goal_guidance.snapshot(store, sid, gid)
+                    correction['saved'] = goal_guidance.save(store, sid, gid, change['correction'],
+                                                             expected_fingerprint=observed['fingerprint'])
+                    state = autonomy.get_goal(store, sid, gid)
+                    correction['amended'] = state
+                    save_report(trace_path, row)
+                    if state['status'] == 'paused':
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                    elif state['status'] == 'needs_input' and 'reply' in change:
+                        observed = goal_replies.snapshot(store, sid, gid)
+                        correction['reply'] = goal_replies.save(store, sid, gid, change['reply'],
+                                                              expected_fingerprint=observed['fingerprint'])
+                        save_report(trace_path, row)
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                if change := followup_change(case, 'report_change'):
                     if state['status'] != 'report_ready':
                         raise ValueError('未交付前一份成果，未提交成果更正。')
                     correction = row['report_change'] = {'before': state, 'content': change['correction']}

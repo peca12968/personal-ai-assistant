@@ -352,7 +352,10 @@ class AutonomousWindow:
                 lines += [f"{item['name']} · {item['size_bytes']} bytes · {labels.get(item['recorded_status'], item['recorded_status'])} · 最近核對：{item['verified_at'] or '無'}" +
                           ('\n' + item['error'] if item['error'] else '')]
         if goal.get('partial_result'):
-            lines += ['待補期間的成果（尚待定稿）', goal['partial_result']]
+            label = '更正前的暫表（歷史）' if goal.get('reference_review') else '待補期間的成果（尚待定稿）'
+            lines += [label, goal['partial_result']]
+        if goal.get('reference_review'):
+            lines += [autonomy.decision_table.describe_waiting_review(goal['reference_review'])]
         if goal['question']:
             lines += ['需要你的補充：' + goal['question']]
         if goal.get('withdrawn_questions'):

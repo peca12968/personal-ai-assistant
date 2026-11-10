@@ -4,7 +4,7 @@ import json
 from . import goal_partials, goal_reply_sources, goal_stages
 
 
-GUIDANCE = ('withdrawn_questions列出使用者明確依主動更正撤下的舊提問步驟。'
+GUIDANCE = ('withdrawn_questions列出依使用者主動更正撤下的舊提問步驟。'
             '這些提問仍可查看，但沒有使用者答覆，不能當作目前仍待回答或已有答案。'
             '依相連的更正原話與目前工作範圍核對：保留仍適用的已確認資料，'
             '只對仍會影響成果的缺漏提出新問題。資料已足夠就完成成果。')
@@ -29,6 +29,12 @@ def options(db, gid, question, step_count, guidance):
     if action.get('tool') != 'ask' or observation.get('question') != question:
         return None
     return {**_receipt(step_count, action, observation), 'correction_numbers': numbers}
+
+
+def record(db, gid, options, source):
+    db.execute('INSERT INTO autonomous_question_withdrawals(goal_id,ask_sequence,guidance_number,question_sha256,guidance_sha256) '
+               'VALUES(?,?,?,?,?)', (gid, options['ask_sequence'], source['number'],
+                                    options['question_sha256'], source['sha256']))
 
 
 def read(db, gid, guidance, replies, *, waiting_step=None):

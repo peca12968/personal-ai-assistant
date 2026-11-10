@@ -1,0 +1,38 @@
+[
+  {
+    "id":"waiting_reference_question_withdraws_after_agreement",
+    "category":"goal_waiting_reference_recheck",
+    "documents":[
+      {"name":"facts.txt","content":"湖禾 J5 的採集班別、校對班別原為早班，入口為北口。兩個班別各為早班或晚班，入口為北口或南口，八組皆可。\n"},
+      {"name":"policy.txt","content":"兩欄早班走前台，兩欄晚班走後台。只有一欄晚班時，北口採集晚班走甲台、北口校對晚班走乙台；南口一律走會合台。\n"}
+    ],
+    "prompt":"讀兩份首行，以採集班別、校對班別、入口的順序保存完整決策表，問一次當次更正。若省略欄名的改值有不同結果，列分支並用這句提問『第一筆改值指哪個欄位？請回完整欄名「採集班別」、「校對班別」。』只要最新正式更正已使結果一致，就不再問原欄名，直接交更新結論和來源。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"入口正式改為南口。"},
+    "criteria":["北口分成甲台與乙台，只問第一筆欄名。","等待期間保存南口更正後撤下原問題，沒有把更正當成欄名答覆。","接續直接交會合台並保留第一筆欄名待查，引用兩則原話。"]
+  },
+  {
+    "id":"waiting_reference_keeps_the_original_question_after_a_split",
+    "category":"goal_waiting_reference_recheck",
+    "documents":[
+      {"name":"facts.txt","content":"池匯 L3 的清點班別、收件班別原為早班。兩欄可早班、晚班或夜班，九組皆可。\n"},
+      {"name":"policy.txt","content":"雙早班走前台，雙晚班走後台；清點晚班與收件早班走甲席，清點早班與收件晚班走乙席；清點夜班且收件早班走丙席，清點夜班且收件晚班走丁席；收件夜班一律走夜台。\n"}
+    ],
+    "prompt":"讀兩份首行，以清點班別、收件班別的順序保存九組規則，問一次當次更正。省略欄名時先列各分支；若結果分開，以『第一筆改值指哪個欄位？請回完整欄名「清點班別」、「收件班別」。』只問原欄名。等待中若再收到正式更正，按原話先後核對各分支；回欄名後用較新的值，交結果和來源。",
+    "reply":"正式改成晚班。",
+    "reference_waiting_change":{"correction":"清點班別正式改為夜班。","reply":"清點班別"},
+    "criteria":["原問題等第一筆欄名；正式更正後兩種解讀仍是丙席與丁席，問題維持原樣。","只接收一次原欄名答覆，清點仍為夜班、收件維持早班，正式交丙席。","更正與原問題答覆分別保存，定稿引用三則來源。"]
+  },
+  {
+    "id":"waiting_mixed_question_keeps_its_other_information_request",
+    "category":"goal_waiting_reference_recheck",
+    "documents":[
+      {"name":"facts.txt","content":"赤洲 K7 的送樣時段、簽收時段原為早段，入口北口。各時段可早段或晚段，入口北口或南口，八組皆可。尚未知道通知對象。\n"},
+      {"name":"policy.txt","content":"兩欄早段去前室，兩欄晚段去後室。只有一欄晚段時，北口送樣晚段去甲室，北口簽收晚段去乙室，南口一律去會合室。\n"}
+    ],
+    "prompt":"讀兩份首行，以送樣時段、簽收時段、入口的順序保存完整決策表，先問本輪更正。省略欄名且去向分開時，請用同一問題同時問第一筆更正的欄名及通知對象，兩項都列出，不要拆開。只有入口的更正不能當成通知對象或撤下整個問題。",
+    "reply":"正式改為晚段。",
+    "reference_waiting_change":{"correction":"入口正式改為南口。"},
+    "criteria":["原問題同時詢問欄名與通知對象。","新更正只保存為補充，原問題與步驟維持，沒有假定已提供通知對象。"]
+  }
+]
