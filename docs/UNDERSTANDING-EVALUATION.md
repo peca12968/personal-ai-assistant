@@ -201,6 +201,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 `python scripts/evaluate_goal_replies.py --suite evals/goal_competing_version_adoptions.json` 檢查同批有矛盾採用行時的共同結果、不同結果與缺版。逐版核對各自正式規則和採用行，確認共同結果來自各版獨立核算。另檢查正式保存的單行答覆能否選定同批原有候選版並重算。缺版時只評估仍有依據的暫表與必要追問。
 
+`python scripts/evaluate_goal_replies.py --suite evals/goal_version_clarification_order.json` 核對同分先問欄位、確認版本才能減少最壞輪數，以及缺版時照要求交付條件式成果。固定各次回答，分開評讀工具的計畫、實際提問與最後成果。缺版及不可用情境仍需來源，計算只估計確認欄位與版本的輪數。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

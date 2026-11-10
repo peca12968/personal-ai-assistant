@@ -239,3 +239,56 @@ class SourceDecisionTests(unittest.TestCase):
         restore_backup(backup['path'], self.root / 'restored')
         restored = Store(self.root / 'restored' / 'assistant.sqlite3')
         self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), result)
+
+    def test_clarification_prefers_condition_on_tie_and_can_finish_without_version(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v2｜正式｜高：乙架。',
+            '青甲批｜正式｜低：前台。', '青甲批｜採用版本｜v1。', '青甲批｜採用版本｜v2。',
+        ])
+        unresolved = self.run_actions(action('check_source_decision', **{**spec, 'known': {}}, clarify=True)
+                                     )['steps'][-1]['observation']
+        self.assertEqual(unresolved['clarification_plan'], {
+            'max_questions': 2, 'needs_evidence': False, 'next': {'kind': 'condition', 'field': '級別'},
+            'branches': [
+                {'value': '高', 'max_questions': 1, 'possible_results': ['甲架', '乙架'], 'needs_evidence': False},
+                {'value': '低', 'max_questions': 0, 'possible_results': ['前台'], 'needs_evidence': False},
+            ],
+        })
+        known = self.run_actions(action('check_source_decision', **{**spec, 'known': {'級別': '低'}}, clarify=True)
+                                 )['steps'][-1]['observation']
+        self.assertEqual(known['decision']['status'], 'shared_result')
+        self.assertNotIn('clarification_plan', known)
+
+    def test_clarification_prefers_version_when_it_reduces_worst_case(self):
+        lines = []
+        for version in ('v1', 'v2'):
+            for west in ('有', '無'):
+                for east in ('有', '無'):
+                    result = '西台' if version == 'v1' and west == '有' else '待命'
+                    if version == 'v2' and east == '有':
+                        result = '東台'
+                    lines.append(f'青甲批｜{version}｜正式｜{west}、{east}：{result}。')
+            lines.append(f'青甲批｜採用版本｜{version}。')
+        _, spec = self.version_rules(lines)
+        spec.update(conditions=['西門', '東門'], domains={'西門': ['有', '無'], '東門': ['有', '無']}, known={})
+        result = self.run_actions(action('check_source_decision', **spec, clarify=True))
+        plan = result['steps'][-1]['observation']['clarification_plan']
+        self.assertEqual(plan['next'], {'kind': 'version'})
+        self.assertEqual(plan['max_questions'], 2)
+        self.assertEqual([branch['max_questions'] for branch in plan['branches']], [1, 1])
+
+    def test_clarification_preserves_missing_candidate_without_changing_legacy_receipt(self):
+        _, spec = self.version_rules([
+            '青甲批｜v1｜正式｜高：甲架。', '青甲批｜v1｜正式｜低：甲架。',
+            '青甲批｜採用版本｜v1。', '青甲批｜採用版本｜v2。',
+        ])
+        spec['known'] = {}
+        result = self.run_actions(action('check_source_decision', **spec),
+                                  action('check_source_decision', **spec, clarify=True))
+        old, new = [step['observation'] for step in result['steps'][-2:]]
+        self.assertNotIn('clarification_plan', old)
+        plan = new['clarification_plan']
+        self.assertEqual(plan['next'], {'kind': 'version'})
+        self.assertEqual(plan['max_questions'], 1)
+        self.assertTrue(plan['branches'][1]['needs_evidence'])
+        self.assertEqual(plan['branches'][1]['possible_results'], [])

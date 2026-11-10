@@ -1,6 +1,7 @@
 """Build a finite decision table from explicit, already read scoped rule lines."""
 import json
 import re
+from itertools import product
 
 from . import decision_table, document_ranges, goal_guidance_sources, goal_reply_sources, goal_stages
 
@@ -9,7 +10,8 @@ GUIDANCE = '''check_source_decision可逐行核對固定格式的規則。若原
 若本次有明確保存的單筆更正，且原話整則符合「甲批｜更正｜高、室內：新架」，可加amendment，值為實際的補充或更正引用編號。只替換同範圍、同條件的一列或補缺列，不改其他批次。只用本次適用且已保存的正式更正，不使用引文或假設。格式或範圍不同時回到原文核對，不改寫原行冒充精確來源。
 工具回傳由原行整理的表與decision核算，以及原行來源與是否採用。區分另案、未採用、正式排除與被更正取代。保留已確認的數量、窗口等資料，按實際來源引用。決策有缺列時只問缺的正式規則，收到符合格式的答覆後帶amendment重算。此工具核對你指定的已讀區段與字面範圍，是否涵蓋全部適用規則仍依原始資料。
 原文也可有「甲批｜v2｜正式｜高：新架」和「甲批｜採用版本｜v2」。把版號規則和採用行都納入check_source_decision的已讀ranges。不以較新編號推定生效。只依同批明文採用行篩選版本，無版號的共同規則仍保留。沒有採用行時保留各版正式記載，有影響才請補必要資訊。若工具給出adopted_version，交付時把規則行與採用行各自引用。
-若同批採用記載互相矛盾，工具分別核算最多四個候選版，保留採用來源。shared_result表示各版皆已能獨立得出相同結論，可直接交付共同結果並保留矛盾採用記載，不宣稱已選定版本。version_uncertain表示各版結果不同或其中一版資料不足，先列可確認的資料與各版差異，再只問影響結果的依據。缺版不能當成另一版相同。收到同一批已保存的正式單行採用答覆，例如「甲批｜採用版本｜v2」，用amendment帶入實際補充或更正編號，重算該候選版並引用該答覆。'''
+若同批採用記載互相矛盾，工具分別核算最多四個候選版，保留採用來源。shared_result表示各版皆已能獨立得出相同結論，可直接交付共同結果並保留矛盾採用記載，不宣稱已選定版本。version_uncertain表示各版結果不同或其中一版資料不足，先列可確認的資料與各版差異，再只問影響結果的依據。缺版不能當成另一版相同。收到同一批已保存的正式單行採用答覆，例如「甲批｜採用版本｜v2」，用amendment帶入實際補充或更正編號，重算該候選版並引用該答覆。
+採用版本及欄位都待確認，且工作要求最少追問時，傳clarify:true。clarification_plan比較每個未知欄位及正式採用版本，最小化最壞追問輪數。同分先依原欄位順序，再問版本。只問計畫的下一項，保存答覆後沿用原規則重算。已知欄位只採實際確認，採用答覆用amendment連結。needs_evidence表示其中仍有缺版、缺列、相容衝突或不適用的情境，追問輪數不含之後補來源的工作。只要條件式交付時依使用者要求直接列結果與缺漏，不啟動提問。'''
 
 _AMENDMENT = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _STATES = {'正式', '未採用', '排除'}
@@ -71,7 +73,7 @@ def read_scope(db, gid, objective):
 
 def validate(args):
     fields = {'scope', 'conditions', 'domains', 'known', 'ranges'}
-    if not isinstance(args, dict) or set(args) not in (fields, fields | {'amendment'}):
+    if not isinstance(args, dict) or not fields <= args.keys() <= fields | {'amendment', 'clarify'}:
         raise ValueError('原文決策表需提供範圍、欄位、宣告選項、已知值與已讀行。')
     decision_table._label(args['scope'])
     if '｜' in args['scope']:
@@ -80,6 +82,8 @@ def validate(args):
     _validate_ranges(args['ranges'])
     if 'amendment' in args and (not isinstance(args['amendment'], str) or not _AMENDMENT.fullmatch(args['amendment'])):
         raise ValueError('須指定本目標已保存的更正或補充編號。')
+    if 'clarify' in args and type(args['clarify']) is not bool:
+        raise ValueError('clarify須為布林值。')
 
 
 def _parse(text, size, *, user=False):
@@ -201,6 +205,39 @@ def _evaluate(args, parsed, selected, amendment):
     return observation
 
 
+def _clarification(args, versions):
+    fields, domains, known = args['conditions'], args['domains'], args['known']
+    if any(value not in domains[field] for field, value in known.items()):
+        return {'max_questions': 0, 'needs_evidence': True}
+    combinations = list(product(*([known[field]] if field in known else domains[field] for field in fields)))
+    assignments, labels = [], []
+    for version in versions:
+        table = version.get('table', {})
+        excluded = {tuple(when) for when in table.get('excluded', [])}
+        recorded = {}
+        for row in table.get('rows', []):
+            recorded.setdefault(tuple(row['when']), set()).add(row['result'])
+        for when in combinations:
+            outcomes = recorded.get(when, set())
+            outcome = next(iter(outcomes)) if when not in excluded and len(outcomes) == 1 else None
+            assignments.append((*when, version['name']))
+            labels.append(outcome)
+
+    depth, first, groups = decision_table.question_order(assignments, labels, tuple(range(len(assignments))))
+    plan = {'max_questions': depth, 'needs_evidence': None in labels}
+    if first is not None:
+        branches = []
+        for value, indices, remaining in groups:
+            outcomes = list(dict.fromkeys(labels[index] for index in indices))
+            branches.append({'value': value, 'max_questions': remaining,
+                             'possible_results': [outcome for outcome in outcomes if outcome is not None],
+                             'needs_evidence': None in outcomes})
+        plan['next'] = ({'kind': 'version'} if first == len(fields)
+                        else {'kind': 'condition', 'field': fields[first]})
+        plan['branches'] = branches
+    return plan
+
+
 def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
     validate(args)
     if declared and set(_positions(declared)) != set(_positions(args['ranges'])):
@@ -257,6 +294,8 @@ def calculate(args, steps, sources, replies=(), guidance=(), *, declared=()):
             observation['decision'] = {'status': 'shared_result', 'possible_results': outcomes}
         else:
             observation['decision'] = {'status': 'version_uncertain', 'recorded_results': outcomes}
+            if args.get('clarify'):
+                observation['clarification_plan'] = _clarification(args, versions)
         observation['evidence_sha256'] = goal_stages.digest([lines, amendment])
     else:
         selected = selection['name'] if selection else next(iter(adopted), None)

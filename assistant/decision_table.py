@@ -96,6 +96,31 @@ def validate(args):
     return declared, excluded
 
 
+def question_order(assignments, labels, active):
+    def groups(indices, field):
+        result = {}
+        for index in indices:
+            result.setdefault(assignments[index][field], []).append(index)
+        return result
+
+    @cache
+    def solve(indices):
+        if len({labels[index] for index in indices}) == 1:
+            return 0, None
+        choices = []
+        for field in range(len(assignments[indices[0]])):
+            branches = groups(indices, field)
+            if len(branches) > 1:
+                depth = 1 + max(solve(tuple(branch))[0] for branch in branches.values())
+                choices.append((depth, field))
+        return min(choices)
+
+    depth, first = solve(active)
+    branches = [] if first is None else [(value, indices, solve(tuple(indices))[0])
+                                         for value, indices in groups(active, first).items()]
+    return depth, first, branches
+
+
 def calculate(args):
     declared, excluded = validate(args)
     conditions, rows, known = args['conditions'], args['rows'], args['known']
@@ -107,24 +132,6 @@ def calculate(args):
 
     def outcomes(indices):
         return list(dict.fromkeys(rows[index]['result'] for index in indices))
-
-    def groups(indices, field):
-        result = {}
-        for index in indices:
-            result.setdefault(rows[index]['when'][field], []).append(index)
-        return result
-
-    @cache
-    def solve(indices):
-        if len(outcomes(indices)) == 1:
-            return 0, None
-        choices = []
-        for field in range(len(conditions)):
-            branches = groups(indices, field)
-            if len(branches) > 1:
-                depth = 1 + max(solve(tuple(branch))[0] for branch in branches.values())
-                choices.append((depth, field))
-        return min(choices)
 
     observation = {'matching_rows': [index + 1 for index in active]}
     if declared is not None:
@@ -150,11 +157,11 @@ def calculate(args):
     observation['possible_results'] = outcomes(active)
     if not active:
         return {'status': 'no_match', **observation}
-    depth, first = solve(active)
+    depth, first, groups = question_order([row['when'] for row in rows], [row['result'] for row in rows], active)
     if first is None:
         return {'status': 'resolved', 'max_questions': depth, **observation}
-    branches = [{'value': value, 'possible_results': outcomes(indices), 'max_questions': solve(tuple(indices))[0]}
-                for value, indices in groups(active, first).items()]
+    branches = [{'value': value, 'possible_results': outcomes(indices), 'max_questions': remaining}
+                for value, indices, remaining in groups]
     return {'status': 'needs_check', 'max_questions': depth, **observation,
             'question': {'condition': conditions[first], 'branches': branches}}
 
