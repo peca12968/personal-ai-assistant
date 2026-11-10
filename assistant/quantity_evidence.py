@@ -14,6 +14,9 @@ needs_evidence時保留原數及其他已核對值。若短句含多個數字而
 GUIDANCE += '''
 多筆來源以『欄位「完整名稱」為數值』明列同一欄位時，在check_quantities的args另填field為原文完整名稱。各候選的label用版本名稱，quote包含原句欄位與數值。程式核對同欄位的各筆原話和精確值。正式採用既有版本仍用selection。若最新回覆的完整原話是『正式更正欄位「完整名稱」為數值和單位。』，可直接在算式寫{"path":"/values/1","step":2,"replacement":{"citation":"[補充#3]","quote":"正式更正欄位「完整名稱」為 7 件。"}}，不用填candidate或再次送核對。引用須對應同一欄位及最新正式補充，算式數字用更正後精確值。原候選仍留在核對步驟。明確採用正式數值後不用再問；仍未確認時只問採用哪筆，若要求條件式就保留分支。'''
 
+GUIDANCE += '''
+文件使用『版本「複核版」欄位「完整欄位名」為 8 件』及獨立一行『欄位「完整欄位名」｜採用版本｜複核版』時，可在有field的check_quantities另填adoption_ranges，例如[{"document_id":3,"start_line":1,"end_line":1}]。納入本次所有相關採用行，包括互相矛盾的記載。候選label逐字用原版名，quote最好包含版名、欄位和數值。adoption.status為adopted時，算式quantity_inputs直接帶path、step、該adoption.candidate，不另詢問或補selection。版本與採用行各自引用。若adoption為unrecorded、conflicting、incomplete或candidate_unavailable，依回傳保留版本、採用記載或缺行，日期和檔名不決定生效。資料確實不足且需要定稿才問。後續明確使用者採用或正式更正可用既有selection或replacement。'''
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -22,6 +25,7 @@ _MEASURED = re.compile(operand_evidence._NUMBER + rf'[ \t]*(?P<unit>{_UNITS}|%)'
 _BARE = re.compile(operand_evidence._LITERAL.pattern + _BOUNDARY)
 _DOCUMENT = operand_evidence._DOCUMENT
 _USER = operand_evidence._USER
+_DOCUMENT_ADOPTION = re.compile(r'欄位「(?P<field>[^「」｜\x00\r\n]{1,80})」｜採用版本｜(?P<version>[^「」｜\x00\r\n]{1,80})')
 _METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 _SENTENCE_BREAKS = '。.!?！？\r\n'
 
@@ -43,13 +47,19 @@ def _unit_evidence(value):
 
 
 def validate(args):
-    if (not isinstance(args, dict) or args.keys() not in ({'unit', 'candidates'}, {'unit', 'candidates', 'field'})
+    required = {'unit', 'candidates'}
+    if (not isinstance(args, dict) or not required <= args.keys() <= required | {'field', 'adoption_ranges'}
             or not isinstance(args['unit'], str) or args['unit'] not in _TARGETS
             or not isinstance(args['candidates'], list) or not 1 <= len(args['candidates']) <= 4):
         raise ValueError('數量核對須有可用比較單位與一至四筆來源。')
     if 'field' in args and not _short_text(args['field'], 80):
         raise ValueError('同欄位核對須提供原文明列的完整欄位名。')
+    if 'adoption_ranges' in args:
+        if 'field' not in args:
+            raise ValueError('文件採用核對須指定完整欄位名。')
+        source_decision._validate_ranges(args['adoption_ranges'])
     seen = set()
+    versions = set()
     for row in args['candidates']:
         if (not isinstance(row, dict) or row.keys() not in ({'label', 'citation', 'quote'},
                                                            {'label', 'citation', 'quote', 'unit_evidence'})
@@ -62,6 +72,12 @@ def validate(args):
         if key in seen:
             raise ValueError('候選數量不可重複引用同一則短句。')
         seen.add(key)
+        if 'adoption_ranges' in args:
+            label = row['label']
+            if (not _DOCUMENT.fullmatch(row['citation']) or label in versions
+                    or any(char in label for char in '「」｜')):
+                raise ValueError('文件採用核對須有各自具唯一完整版名的原文數值。')
+            versions.add(label)
         if 'unit_evidence' in row:
             evidence = row['unit_evidence']
             if not _unit_evidence(evidence) or evidence['citation'] == row['citation']:
@@ -161,12 +177,47 @@ def _candidate(row, source_texts, target, field=None):
             'converted_exact': str(converted)}
 
 
+def _document_adoption(field, ranges, lines, quantities, source_texts):
+    for quantity in quantities:
+        label = quantity['label']
+        text = source_texts[quantity['citation']][0]
+        version = re.search(rf'版本「({re.escape(label)})」[ \t]*欄位「\Z', text[:quantity['field_start']])
+        if version is None:
+            raise ValueError('候選版名須逐字出現在該欄位及數字前的原文。')
+        quantity.update(version_start=version.start(1), version_end=version.end(1))
+    records, missing = [], []
+    for did, line in source_decision._positions(ranges):
+        citation = f'[D{did}:L{line}]'
+        saved = lines.get((did, line))
+        if saved is None:
+            missing.append(citation)
+            continue
+        _, sha, text = saved
+        match = _DOCUMENT_ADOPTION.fullmatch(text.strip().removesuffix('。'))
+        if match and _short_text(match['field'], 80) and _short_text(match['version'], 80):
+            records.append({**match.groupdict(), 'citation': citation, 'source_sha256': sha, 'quote': text})
+    result = {'records': records}
+    if missing:
+        return {**result, 'status': 'incomplete', 'missing': missing}
+    versions = {row['version'] for row in records if row['field'] == field}
+    if not versions:
+        return {**result, 'status': 'unrecorded'}
+    if len(versions) != 1:
+        return {**result, 'status': 'conflicting'}
+    version, = versions
+    candidate = next((i for i, row in enumerate(quantities, 1) if row['label'] == version), None)
+    if candidate is None:
+        return {**result, 'status': 'candidate_unavailable', 'version': version}
+    return {**result, 'status': 'adopted', 'version': version, 'candidate': candidate}
+
+
 def observe(args, steps, sources, objective='', replies=(), guidance=()):
     validate(args)
     refs = [match for row in args['candidates'] if (match := _DOCUMENT.fullmatch(row['citation']))]
     ranges = [{'document_id': int(match[1]), 'start_line': int(match[2]), 'end_line': int(match[2])}
               for match in refs]
-    _, lines = source_decision.gather_lines(ranges, steps, sources)
+    adoption_ranges = args.get('adoption_ranges', [])
+    _, lines = source_decision.gather_lines(ranges + adoption_ranges, steps, sources)
     source_texts = {f'[D{did}:L{line}]': (text, sha, position)
                     for (did, line), (position, sha, text) in lines.items()}
     sequence = len(steps) + 1
@@ -186,6 +237,8 @@ def observe(args, steps, sources, objective='', replies=(), guidance=()):
     result = {'status': status, 'unit': args['unit'], 'quantities': quantities, 'possible_exact': values}
     if field is not None:
         result['field'] = field
+    if adoption_ranges:
+        result['adoption'] = _document_adoption(field, adoption_ranges, lines, quantities, source_texts)
     return result
 
 
@@ -273,7 +326,10 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
                 raise ValueError('候選序號不在原數量核對。')
             quantity = verified['quantities'][index]
             receipt = {'candidate': binding['candidate']}
+            adoption = verified.get('adoption')
             if 'unit_evidence' in binding:
+                if adoption is not None and adoption.get('candidate') != binding['candidate']:
+                    raise ValueError('單位補充無法替代文件版本的正式採用。')
                 confirmation = binding['unit_evidence']
                 _latest_confirmation(confirmation['citation'], number, sequence, replies, guidance)
                 if quantity['status'] != 'unit_unconfirmed':
@@ -282,11 +338,20 @@ def calculate_expression(args, steps, sources, scope, objective='', replies=(), 
                     {**original['candidates'][index], 'unit_evidence': confirmation}]}
                 if 'field' in original:
                     request['field'] = original['field']
+                if adoption is not None:
+                    request['adoption_ranges'] = original['adoption_ranges']
+                    receipt['adoption'] = adoption
                 quantity, = observe(request, steps, sources, objective, replies, guidance)['quantities']
             elif 'selection' in binding:
                 selection = binding['selection']
                 source = _latest_confirmation(selection['citation'], number, sequence, replies, guidance)
                 receipt['selection'] = _selection_proof(selection, index, original, source)
+            elif adoption and adoption['status'] == 'adopted':
+                if adoption['candidate'] != binding['candidate'] or saved['observation'].get('goal_conditions_sha256') != scope:
+                    raise ValueError('算式須連結目前條件下文件明列採用的版本。')
+                receipt['adoption'] = adoption
+            elif adoption and adoption['status'] != 'unrecorded':
+                raise ValueError('文件採用缺漏或有衝突，須有正式確認才能代入。')
             elif verified['status'] == 'different' or saved['observation'].get('goal_conditions_sha256') != scope:
                 raise ValueError('候選數量尚有差異或屬先前條件，須有目前正式補充才能沿用。')
             elif 'field' in verified and verified['status'] == 'needs_evidence' and len(verified['quantities']) > 1:

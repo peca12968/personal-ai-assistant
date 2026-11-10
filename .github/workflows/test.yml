@@ -71,6 +71,7 @@ jobs:
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_operand_source_separation.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_operand_field_identity.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_named_quantity_versions.json
+      - run: python scripts/evaluate_goal_replies.py --suite evals/goal_quantity_document_adoption.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_scoped_amendments.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_withdrawn_questions.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_decision_questions.json

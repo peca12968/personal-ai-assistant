@@ -97,6 +97,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_operand_source_separation.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_operand_field_identity.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_named_quantity_versions.json")
+    run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_quantity_document_adoption.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_scoped_amendments.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_withdrawn_questions.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_decision_questions.json")

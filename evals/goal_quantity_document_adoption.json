@@ -1,0 +1,53 @@
+[
+  {
+    "id": "explicit_document_adoption_supplies_current_operand",
+    "category": "goal_quantity_document_adoption",
+    "documents": [
+      {"name": "base.txt", "content": "岩洲本批原備 40 件。\n版本「初填版」欄位「岩洲本批退回」為 5 件。\n"},
+      {"name": "audit.txt", "content": "版本「複核版」欄位「岩洲本批退回」為 8 件。\n"},
+      {"name": "approval.txt", "content": "欄位「岩洲本批退回」｜採用版本｜複核版\n"}
+    ],
+    "prompt": "只核對岩洲本批可交件數。完整讀 [D1:L1-L2]、[D2:L1]、[D3:L1]，用 check_quantities 保留同欄兩版、版本原文及文件的採用行。已有正式採用就直接用 calculate_expression 算原備減退回並連結核對，只有採用資訊不足才問。交正式結果及各自來源。",
+    "criteria": [
+      "正式採複核8，40減8得32。保留初填5、複核8與明文採用行，無提問。另核對算式是否保存文件採用憑據。"
+    ]
+  },
+  {
+    "id": "newer_date_and_other_field_do_not_supply_adoption",
+    "category": "goal_quantity_document_adoption",
+    "documents": [
+      {"name": "review.txt", "content": "日期較早。\n版本「複核」欄位「禾川本批損耗」為 4 件。\n禾川本批原備 30 件。\n"},
+      {"name": "review-extra.txt", "content": "日期較晚。\n版本「複核增補」欄位「禾川本批損耗」為 6 件。\n"},
+      {"name": "other.txt", "content": "欄位「禾川另批損耗」｜採用版本｜複核增補\n"}
+    ],
+    "prompt": "只核對禾川本批。完整讀三份文件，使用 check_quantities 保存本批兩版本與現有的採用資訊。只有文件明列本批同欄位採用才直接定稿，否則暫列原備與兩候選，只問採哪版。收到後用 calculate_expression 算原備減正式損耗並保留確認來源。",
+    "reply": "本次採用複核。",
+    "criteria": [
+      "日期較晚、相似檔名及另批採用都不能決定本批版本。暫列本批4和6，只問一次。收到後採複核4得26件，引用該回覆。"
+    ]
+  },
+  {
+    "id": "conflicting_document_adoptions_stay_conditional",
+    "category": "goal_quantity_document_adoption",
+    "documents": [
+      {"name": "left.txt", "content": "楓井本批原備 32 盒。\n版本「初填版」欄位「楓井本批破損」為 3 盒。\n欄位「楓井本批破損」｜採用版本｜初填版\n"},
+      {"name": "right.txt", "content": "版本「複核版」欄位「楓井本批破損」為 5 盒。\n欄位「楓井本批破損」｜採用版本｜複核版\n"}
+    ],
+    "prompt": "讀兩份全部行，使用 check_quantities 核對楓井本批破損的各版本和兩筆採用原文。只交條件式報告，列各自採用的可交量及來源，保留矛盾，無需問我或選正式版。",
+    "criteria": [
+      "保存兩筆相矛盾的同欄採用。初填3得29盒，複核5得27盒，分別引用版本和採用行。無提問或擅自宣告唯一正式版。"
+    ]
+  },
+  {
+    "id": "adopted_version_absent_from_available_values",
+    "category": "goal_quantity_document_adoption",
+    "documents": [
+      {"name": "draft.txt", "content": "柳台本批原備 20 包。\n版本「甲版」欄位「柳台本批剔除」為 2 包。\n"},
+      {"name": "review.txt", "content": "版本「乙版」欄位「柳台本批剔除」為 4 包。\n欄位「柳台本批剔除」｜採用版本｜定稿版\n"}
+    ],
+    "prompt": "讀這兩份的全部行，用 check_quantities 保存柳台本批各版和明文採用記載。只有採用版的數字也核對到才給正式可交量。若採用版缺數，直接交可核對的缺口與現有數字，不追問、不自行改採。",
+    "criteria": [
+      "明文採定稿版，但現有甲2、乙4均不能當定稿數字。保留原備20與兩個來源，正式可交量待確認。沒有提問。"
+    ]
+  }
+]

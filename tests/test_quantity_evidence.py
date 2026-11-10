@@ -4,13 +4,105 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant import autonomy, goal_replies, quantity_evidence
+from assistant import autonomy, goal_guidance, goal_replies, quantity_evidence
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
 from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_document_adoption_binds_exact_version_and_rejects_stale_scope(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            field = '岩洲本批退回'
+            first = '版本「初填版」欄位「岩洲本批退回」為 5 件。'
+            second = '版本「複核版」欄位「岩洲本批退回」為 8 件。'
+            approved = '欄位「岩洲本批退回」｜採用版本｜複核版'
+            note = approved + '\n欄位「岩洲另批退回」｜採用版本｜初填版\n草稿引用欄位「岩洲本批退回」｜採用版本｜初填版'
+            ranges = []
+            for number, text in enumerate((first, second, note), 1):
+                path = root / f'adoption-{number}.txt'
+                path.write_text(text, encoding='utf-8')
+                did = store.attach_document(sid, path)
+                ranges.append({'document_id': did, 'start_line': 1, 'end_line': len(text.splitlines())})
+            gid = autonomy.create_goal(store, sid, '岩洲本批原備40件，核對可交量。')
+            candidates = [{'label': '初填版', 'citation': f'[D{ranges[0]["document_id"]}:L1]', 'quote': first},
+                          {'label': '複核版', 'citation': f'[D{ranges[1]["document_id"]}:L1]', 'quote': second}]
+            args = {'unit': '件', 'field': field, 'candidates': candidates, 'adoption_ranges': [ranges[2]]}
+            invalid = [{**candidates[0], 'label': '舊版'}, candidates[1]]
+            binding = {'path': '/values/1', 'step': 3, 'candidate': 2}
+            expr = {'operation': 'difference', 'values': ['40', '8']}
+            checked = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read_ranges', ranges=ranges), action('check_quantities', **{**args, 'candidates': invalid}),
+                action('check_quantities', **args),
+                action('calculate_expression', expression={**expr, 'values': ['40', '5']},
+                       quantity_inputs=[{**binding, 'candidate': 1}]),
+                action('calculate_expression', expression=expr, quantity_inputs=[binding])), max_steps=5)
+            self.assertIn('候選版名須逐字', checked['steps'][1]['observation']['error'])
+            adoption = checked['steps'][2]['observation']['adoption']
+            self.assertEqual((adoption['status'], adoption['version'], adoption['candidate']), ('adopted', '複核版', 2))
+            self.assertEqual([row['field'] for row in adoption['records']], [field, '岩洲另批退回'])
+            self.assertEqual(adoption['records'][0]['quote'], approved)
+            self.assertIn('文件明列採用的版本', checked['steps'][3]['observation']['error'])
+            calculated = checked['steps'][4]['observation']
+            self.assertEqual(calculated['exact'], '32')
+            proof, = calculated['quantity_inputs']
+            self.assertEqual(proof['adoption'], adoption)
+            self.assertEqual(second[proof['quantity']['version_start']:proof['quantity']['version_end']], '複核版')
+            snap = goal_guidance.snapshot(store, sid, gid)
+            later = '本次採用初填版。'
+            goal_guidance.save(store, sid, gid, later, expected_fingerprint=snap['fingerprint'])
+            override = {**binding, 'candidate': 1, 'selection': {'citation': '[更正#1]', 'quote': later}}
+            final = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('calculate_expression', expression=expr, quantity_inputs=[binding]),
+                action('calculate_expression', expression={**expr, 'values': ['40', '5']}, quantity_inputs=[override]),
+                action('finish', report='依正式補充採初填，可交35件。')))
+            self.assertIn('目前條件', final['steps'][5]['observation']['error'])
+            self.assertEqual(final['steps'][6]['observation']['exact'], '35')
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            altered = copy.deepcopy(calculated)
+            altered['quantity_inputs'][0]['adoption']['records'][0]['version'] = '初填版'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                           (json.dumps(altered, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的算式與數量核對'):
+                validate_database(restored.path)
+
+    def test_document_adoption_does_not_select_from_incomplete_conflicting_or_missing_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            path = root / 'versions.txt'
+            lines = ['版本「甲版」欄位「本批退回」為 3 件。', '版本「乙版」欄位「本批退回」為 4 件。',
+                     '欄位「本批退回」｜採用版本｜甲版', '欄位「本批退回」｜採用版本｜乙版',
+                     '欄位「本批退回」｜採用版本｜定稿版']
+            path.write_text('\n'.join(lines), encoding='utf-8')
+            did = store.attach_document(sid, path)
+            gid = autonomy.create_goal(store, sid, '核對正式版本')
+            candidates = [{'label': name, 'citation': f'[D{did}:L{line}]', 'quote': lines[line - 1]}
+                          for line, name in ((1, '甲版'), (2, '乙版'))]
+            def compare(start, end):
+                return action('check_quantities', unit='件', field='本批退回', candidates=candidates,
+                              adoption_ranges=[{'document_id': did, 'start_line': start, 'end_line': end}])
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('read', document_id=did, start_line=1, end_line=3), compare(3, 4),
+                action('read', document_id=did, start_line=4, end_line=5), compare(3, 4), compare(5, 5),
+                action('calculate_expression', expression='3', quantity_inputs=[{'path': '', 'step': 5, 'candidate': 1}]),
+                action('finish', report='明列採定稿版，但該版數值待確認。')), max_steps=7)
+            self.assertEqual(result['steps'][1]['observation']['adoption']['missing'], [f'[D{did}:L4]'])
+            self.assertEqual(result['steps'][1]['observation']['adoption']['status'], 'incomplete')
+            self.assertEqual(result['steps'][3]['observation']['adoption']['status'], 'conflicting')
+            missing = result['steps'][4]['observation']['adoption']
+            self.assertEqual((missing['status'], missing['version']), ('candidate_unavailable', '定稿版'))
+            self.assertIn('採用缺漏或有衝突', result['steps'][5]['observation']['error'])
+            validate_database(store.path)
+
     def test_named_versions_accept_only_current_same_field_replacement_and_restore(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
