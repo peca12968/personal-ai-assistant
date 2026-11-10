@@ -68,10 +68,8 @@ def _field_position(quote, number_start, field):
     return match.span('name')
 
 
-def validate(rows, expression, ranges, *, omitted_path=None):
-    leaves = dict(_leaves(expression))
-    if omitted_path is not None:
-        leaves.pop(omitted_path)
+def validate(rows, expression, ranges, *, omitted_paths=()):
+    leaves = {path: value for path, value in _leaves(expression) if path not in omitted_paths}
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
     seen = set()

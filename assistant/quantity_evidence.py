@@ -36,6 +36,16 @@ BRANCH_GUIDANCE = (
     '各版互斥，不用sum把各版的結果合成一數，不以分支數字當正式採用。'
     '唯一正式採用仍用calculate_expression與quantity_inputs。')
 
+ALIGNED_BRANCH_GUIDANCE = (
+    '若同一採用版本決定多個欄位，先用check_quantities分開核對各完整欄位，候選label逐字使用原文版名。'
+    '宣告欄位的核對自動套用完整採用範圍；其他欄位的核對也填完全相同的adoption_ranges，保留另欄採用限制。'
+    '再用calculate_quantity_branches，例如{"step":3,"expression":{"operation":"difference",'
+    '"values":["$candidate","$candidate"]},"bindings":[{"path":"/values/0","step":2},'
+    '{"path":"/values/1","step":3}],"operands":[]}。外層step是決定版本範圍的核對，須出現在bindings。'
+    '每個版本欄位各用一個$candidate，bindings用實際步驟和葉路徑。固定數字仍用operands附逐字來源。'
+    '以完整版本名配對，不按行序、數字或近似版名。分支缺同版欄位、單位或遇另欄明文採用限制時，保留原值及缺口，不借用其他版。'
+    '只有原問或來源支持各欄共用版本時才使用跨欄配對。')
+
 _TARGETS = frozenset(document_units.SCALES) | _SAME_UNIT_ONLY | {'片', '袋', 'ratio'}
 _UNITS = '|'.join(re.escape(unit) for unit in sorted(_TARGETS - {'ratio'}, key=lambda unit: (-len(unit), unit)))
 _BOUNDARY = r'(?=$|[\s,，。；;、！!？?：:（()）\[\]「」『』【】]|\.(?!\S))'
@@ -388,23 +398,48 @@ def _verified_comparison(number, steps, sources, objective, replies, guidance, d
 
 
 def validate_branches(args):
-    if (not isinstance(args, dict) or args.keys() != {'step', 'expression', 'operands'}
+    fields = {'step', 'expression', 'operands'}
+    if (not isinstance(args, dict) or args.keys() not in (fields, fields | {'bindings'})
             or type(args['step']) is not int or not 1 <= args['step'] <= 32):
         raise ValueError('分版計算須提供本目標的核對步驟、算式與其餘運算元原文。')
     expression = args['expression']
     expression_math.validate({'expression': expression}, placeholder=_BRANCH_LEAF)
     placeholders = [path for path, value in operand_evidence._leaves(expression) if value == _BRANCH_LEAF]
-    if len(placeholders) != 1:
-        raise ValueError('分版算式須用一次 "$candidate" 表示互斥版本的數量。')
-    path, = placeholders
-    operand_evidence.validate(args['operands'], expression, None, omitted_path=path)
-    return path
+    if 'bindings' not in args:
+        if len(placeholders) != 1:
+            raise ValueError('分版算式須用一次 "$candidate" 表示互斥版本的數量。')
+        bindings = {placeholders[0]: args['step']}
+    else:
+        rows = args['bindings']
+        if not isinstance(rows, list) or not 2 <= len(rows) == len(placeholders) <= 4:
+            raise ValueError('跨欄分版需有二至四個版本欄位及對應的代入位置。')
+        bindings = {}
+        for row in rows:
+            if (not isinstance(row, dict) or row.keys() != {'path', 'step'}
+                    or not isinstance(row['path'], str) or row['path'] not in placeholders or row['path'] in bindings
+                    or type(row['step']) is not int or not 1 <= row['step'] <= 32 or row['step'] in bindings.values()):
+                raise ValueError('跨欄綁定須用不同數量核對步驟和不同的候選位置。')
+            bindings[row['path']] = row['step']
+        if args['step'] not in bindings.values():
+            raise ValueError('跨欄綁定須包含決定候選版本的數量核對步驟。')
+    operand_evidence.validate(args['operands'], expression, None, omitted_paths=bindings)
+    return bindings
 
 
-def _substitute_candidate(node, exact):
+def _substitute_candidates(node, values, path=''):
     if isinstance(node, str):
-        return exact if node == _BRANCH_LEAF else node
-    return {**node, 'values': [_substitute_candidate(child, exact) for child in node['values']]}
+        return values.get(path, node)
+    return {**node, 'values': [_substitute_candidates(child, values, f'{path}/values/{index}')
+                               for index, child in enumerate(node['values'])]}
+
+
+def _calculate_branch(expression, values, cancel):
+    expression = _substitute_candidates(expression, values)
+    try:
+        calculation = expression_math.calculate({'expression': expression}, cancel)
+    except expression_math.CalculationFailure as exc:
+        return {'status': 'calculation_failed', 'expression': expression, 'calculation_failure': exc.details()}
+    return {'status': 'calculated', 'expression': expression, 'calculation': calculation}
 
 
 def _branch_operands(args, steps, sources, objective, replies, guidance):
@@ -421,31 +456,94 @@ def _branch_operands(args, steps, sources, objective, replies, guidance):
     return operand_evidence.bind(args['operands'], args['expression'], excerpts, user_sources)
 
 
-def calculate_branches(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
-                       declared=None):
-    path = validate_branches(args)
-    expression_math.check_cancel(cancel)
-    saved, verified = _verified_comparison(args['step'], steps, sources, objective, replies, guidance, declared)
+def _branch_comparison(number, steps, sources, scope, objective, replies, guidance, declared, *, anchor):
+    saved, verified = _verified_comparison(number, steps, sources, objective, replies, guidance, declared)
     adoption = verified.get('adoption')
-    if adoption is None or adoption['status'] == 'adopted':
-        raise ValueError('分版計算須有尚未能綁定單一數值的文件版本核對。')
+    if adoption is None:
+        raise ValueError('分版計算須引用有文件採用範圍的數量核對。')
+    if anchor and adoption['status'] == 'adopted':
+        raise ValueError('決定候選的文件核對已有唯一正式採用版本。')
     if saved['observation'].get('goal_conditions_sha256') != scope:
         raise ValueError('分版計算須先依目前補充或更正重新核對版本。')
     if adoption['status'] == 'incomplete':
         latest = observe(saved['action']['args'], steps, sources, objective, replies, guidance, declared=declared)
         if latest != verified:
             raise ValueError('採用範圍已補讀，請以目前讀到的原文重新核對版本。')
-    operands = _branch_operands(args, steps, sources, objective, replies, guidance)
-    field = verified['field']
+    ranges = adoption.get('declared_ranges', saved['action']['args'].get('adoption_ranges'))
+    return verified, set(source_decision._positions(ranges))
+
+
+def _version_sources(verified):
     candidates = {row['label']: (index, row) for index, row in enumerate(verified['quantities'], 1)}
     citations = {}
-    for record in adoption['records']:
-        if record['field'] == field:
+    for record in verified['adoption']['records']:
+        if record['field'] == verified['field']:
             citations.setdefault(record['version'], []).append(record['citation'])
-    if adoption['status'] in {'conflicting', 'candidate_unavailable'}:
-        versions = citations
-    else:
-        versions = candidates | citations
+    return candidates, citations
+
+
+def _explicit_adoption(verified):
+    return verified['adoption']['status'] in {'adopted', 'conflicting', 'candidate_unavailable'}
+
+
+def _aligned_input(version, comparison, candidates, citations, restricted):
+    inputs = {**comparison, 'adoption_citations': citations.get(version, [])}
+    candidate = candidates.get(version)
+    if candidate is not None:
+        index, quantity = candidate
+        inputs.update(candidate=index, quantity=quantity)
+    if restricted and version not in citations:
+        return {**inputs, 'status': 'outside_adoption'}
+    return {**inputs, 'status': candidate[1]['status'] if candidate else 'candidate_unavailable'}
+
+
+def _aligned_branches(args, versions, bindings, comparisons, cancel):
+    evidence = []
+    for path, number in bindings.items():
+        verified = comparisons[number]
+        info = {'path': path, 'step': number, 'field': verified['field'], 'unit': verified['unit'],
+                'adoption_status': verified['adoption']['status']}
+        candidates, citations = _version_sources(verified)
+        evidence.append((info, candidates, citations, _explicit_adoption(verified)))
+    branches = []
+    for version in versions:
+        expression_math.check_cancel(cancel)
+        inputs = [_aligned_input(version, *entry) for entry in evidence]
+        branch = {'version': version, 'inputs': inputs, 'status': 'needs_evidence'}
+        if all(row['status'] == 'confirmed' for row in inputs):
+            values = {row['path']: row['quantity']['converted_exact'] for row in inputs}
+            branch.update(_calculate_branch(args['expression'], values, cancel))
+        branches.append(branch)
+    return {'comparisons': [entry[0] for entry in evidence], 'branches': branches}
+
+
+def calculate_branches(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,
+                       declared=None):
+    bindings = validate_branches(args)
+    expression_math.check_cancel(cancel)
+    anchor = args['step']
+    verified, ranges = _branch_comparison(anchor, steps, sources, scope, objective, replies, guidance, declared, anchor=True)
+    operands = _branch_operands(args, steps, sources, objective, replies, guidance)
+    candidates, citations = _version_sources(verified)
+    versions = citations if _explicit_adoption(verified) else candidates | citations
+    result = {'status': 'conditional_calculations', 'step': anchor, 'adoption': verified['adoption'], 'operands': operands}
+    if 'bindings' in args:
+        comparisons = {anchor: verified}
+        fields = {verified['field']}
+        for number in bindings.values():
+            if number == anchor:
+                continue
+            other, other_ranges = _branch_comparison(number, steps, sources, scope, objective, replies, guidance,
+                                                     declared, anchor=False)
+            if other_ranges != ranges or other['field'] in fields:
+                raise ValueError('跨欄分版須核對不同欄位，且每欄使用完全相同的採用範圍。')
+            comparisons[number] = other
+            fields.add(other['field'])
+        aligned = _aligned_branches(args, versions, bindings, comparisons, cancel)
+        expression_math.check_cancel(cancel)
+        return {**result, **aligned}
+
+    path, = bindings
     branches = []
     for version in versions:
         expression_math.check_cancel(cancel)
@@ -458,18 +556,10 @@ def calculate_branches(args, steps, sources, scope, objective='', replies=(), gu
         if quantity['status'] != 'confirmed':
             branches.append({**branch, 'status': quantity['status']})
             continue
-        expression = _substitute_candidate(args['expression'], quantity['converted_exact'])
-        try:
-            calculation = expression_math.calculate({'expression': expression}, cancel)
-        except expression_math.CalculationFailure as exc:
-            branches.append({**branch, 'status': 'calculation_failed', 'expression': expression,
-                             'calculation_failure': exc.details()})
-        else:
-            branches.append({**branch, 'status': 'calculated', 'expression': expression, 'calculation': calculation})
+        branches.append({**branch, **_calculate_branch(args['expression'], {path: quantity['converted_exact']}, cancel)})
     expression_math.check_cancel(cancel)
-    return {'status': 'conditional_calculations', 'step': args['step'], 'candidate_path': path,
-            'field': field, 'comparison_unit': verified['unit'], 'adoption': adoption,
-            'operands': operands, 'branches': branches}
+    return {**result, 'candidate_path': path, 'field': verified['field'],
+            'comparison_unit': verified['unit'], 'branches': branches}
 
 
 def calculate_expression(args, steps, sources, scope, objective='', replies=(), guidance=(), cancel=None, *,

@@ -11,6 +11,70 @@ from test_autonomy import ScriptedEngine, action
 
 
 class QuantityEvidenceTests(unittest.TestCase):
+    def test_aligned_branches_match_literal_versions_and_preserve_field_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            stock, returned = '本批原備', '本批退回'
+            rows = [('丙', stock, '44'), ('甲', stock, '36'), ('乙補錄', stock, '38'),
+                    ('甲', returned, '5'), ('乙', returned, '6'), ('丙', returned, '8')]
+            values = [f'版本「{version}」欄位「{field}」為 {value} 件。' for version, field, value in rows]
+            approvals = [f'欄位「{field}」｜採用版本｜{version}' for field, version in
+                         ((returned, '甲'), (returned, '乙'), (returned, '丙'), (stock, '乙'), (stock, '丙'))]
+            paths = [root / 'counts.txt', root / 'register.txt']
+            paths[0].write_text('\n'.join(values), encoding='utf-8')
+            paths[1].write_text('\n'.join(approvals), encoding='utf-8')
+            did, rules = (store.attach_document(sid, path) for path in paths)
+            scope = {'document_id': rules, 'start_line': 1, 'end_line': 5}
+            gid = autonomy.create_goal(store, sid, f'數量採用範圍：欄位「{returned}」｜[D{rules}:L1-L5]\n逐版核算。')
+            def comparison(field, start, end, **kwargs):
+                return action('check_quantities', unit='件', field=field, candidates=[
+                    {'label': rows[i - 1][0], 'citation': f'[D{did}:L{i}]', 'quote': values[i - 1]}
+                    for i in range(start, end + 1)], **kwargs)
+            request = {'step': 2, 'expression': {'operation': 'difference', 'values': ['$candidate', '$candidate']},
+                       'operands': [], 'bindings': [{'step': 3, 'path': '/values/0'}, {'step': 2, 'path': '/values/1'}]}
+            with self.assertRaisesRegex(ValueError, '不同'):
+                quantity_evidence.validate_branches({**request, 'bindings': [
+                    {'step': 2, 'path': '/values/0'}, {'step': 2, 'path': '/values/1'}]})
+            engine = ScriptedEngine(
+                action('read_ranges', ranges=[{'document_id': did, 'start_line': 1, 'end_line': 6}, scope]),
+                comparison(returned, 4, 6), comparison(stock, 1, 3, adoption_ranges=[{**scope, 'end_line': 3}]),
+                action('calculate_quantity_branches', **request),
+                comparison(stock, 1, 3, adoption_ranges=[scope]),
+                action('calculate_quantity_branches', **{**request, 'bindings': [
+                    {'step': 5, 'path': '/values/0'}, request['bindings'][1]]}),
+                action('finish', report='甲受採用限制，乙缺同版原備，丙可交36件。'))
+            final = autonomy.run_goal(store, sid, gid, engine, max_steps=7)
+            self.assertIn('完全相同的採用範圍', final['steps'][3]['observation']['error'])
+            receipt = final['steps'][5]['observation']
+            self.assertNotIn('exact', receipt)
+            self.assertEqual([row['quote'] for row in receipt['adoption']['records']], approvals)
+            self.assertEqual([row['field'] for row in receipt['comparisons']], [stock, returned])
+            first, second, third = receipt['branches']
+            self.assertEqual([row['version'] for row in receipt['branches']], ['甲', '乙', '丙'])
+            self.assertEqual(first['inputs'][0]['status'], 'outside_adoption')
+            self.assertEqual(first['inputs'][0]['quantity']['number'], '36')
+            self.assertNotIn('calculation', first)
+            self.assertEqual(second['inputs'][0]['status'], 'candidate_unavailable')
+            self.assertEqual(second['inputs'][0]['adoption_citations'], [f'[D{rules}:L4]'])
+            self.assertNotIn('calculation', second)
+            self.assertEqual([row['candidate'] for row in third['inputs']], [1, 3])
+            self.assertEqual([row['quantity']['label'] for row in third['inputs']], ['丙', '丙'])
+            self.assertEqual(third['calculation']['exact'], '36')
+            self.assertIn('每個版本欄位各用一個', engine.prompts[0])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            tampered = copy.deepcopy(receipt)
+            tampered['branches'][2]['inputs'][0]['quantity']['label'] = '乙補錄'
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                           (json.dumps(tampered, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '保存的分版算式'):
+                validate_database(restored.path)
+
     def test_quantity_branches_keep_independent_results_and_current_source_proofs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

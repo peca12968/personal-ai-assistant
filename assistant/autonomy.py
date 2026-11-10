@@ -469,6 +469,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             quantity_scope = goal.get('quantity_adoption_scope')
             if quantity_scope:
                 payload['quantity_adoption_scope'] = quantity_scope
+            unresolved_quantity = any(step['action']['tool'] == 'check_quantities' and
+                                      step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
+                                      for step in payload['steps'])
             withdrawals = goal.get('withdrawn_questions', ())
             if withdrawals:
                 payload['withdrawn_questions'] = [
@@ -497,10 +500,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
                 ('\n' + quantity_evidence.GUIDANCE
                  if reply_sources or guidance_sources or any(step['observation'].get('excerpts') for step in payload['steps']) else '') +
-                ('\n' + quantity_evidence.BRANCH_GUIDANCE
-                 if any(step['action']['tool'] == 'check_quantities' and
-                        step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
-                        for step in payload['steps']) else '') +
+                ('\n' + quantity_evidence.BRANCH_GUIDANCE if unresolved_quantity else '') +
+                ('\n' + quantity_evidence.ALIGNED_BRANCH_GUIDANCE if quantity_scope or unresolved_quantity else '') +
                 ('\n' + goal_partials.FOLLOWUP_GUIDANCE if reply_sources or guidance_sources else '') +
                 '\n\n目標與已觀察資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
             if cancel.is_set():

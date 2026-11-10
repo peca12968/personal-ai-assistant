@@ -1,0 +1,43 @@
+[
+  {
+    "id": "same_version_quantity_operands_follow_labels_instead_of_row_order",
+    "category": "goal_aligned_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "版本「晨核」欄位「白塔本批原備」為 48 盒。\n版本「複驗」欄位「白塔本批原備」為 53 盒。\n版本「複驗」欄位「白塔本批退回」為 9 盒。\n版本「晨核」欄位「白塔本批退回」為 6 盒。\n"},
+      {"name": "register.txt", "content": "欄位「白塔本批退回」｜採用版本｜晨核\n欄位「白塔本批退回」｜採用版本｜複驗\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「白塔本批退回」｜[D2:L1-L2]\n讀 [D1:L1-L4] 及採用範圍。本批退回的採用紀錄決定整個版本，原備與退回必須使用同一完整版本名。採用衝突時逐版算原備減退回的條件可交量，保留兩欄數值來源、算式及採用記載。不合計、不選正式量、不追問。",
+    "criteria": ["晨核48減6得42盒，複驗53減9得44盒，數值和採用引用各自對應。不按行序、無合計或提問。另核對算式保存兩欄的同名版本證據。"]
+  },
+  {
+    "id": "similar_version_name_does_not_fill_missing_other_field",
+    "category": "goal_aligned_quantity_branches",
+    "documents": [
+      {"name": "stock.txt", "content": "版本「初核」欄位「竹石本批原備」為 35 件。\n版本「複驗補錄」欄位「竹石本批原備」為 39 件。\n"},
+      {"name": "returns.txt", "content": "版本「初核」欄位「竹石本批退回」為 4 件。\n版本「複驗」欄位「竹石本批退回」為 8 件。\n"},
+      {"name": "register.txt", "content": "欄位「竹石本批退回」｜採用版本｜初核\n欄位「竹石本批退回」｜採用版本｜複驗\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「竹石本批退回」｜[D3:L1-L2]\n讀 [D1:L1-L2]、[D2:L1-L2] 及採用範圍。以本批退回的採用記載列出整批候選，原備和退回按完整版本名配對，各版核算原備減退回的可交量。缺同版欄位就保留待查，列各自引用，不追問、不交正式量。",
+    "criteria": ["初核35減4得31件。複驗退回8但原備待查，複驗補錄39不能補。保留兩筆採用引用和數值來源，無正式量或提問。另核對保存的缺欄狀態。"]
+  },
+  {
+    "id": "explicit_other_field_adoption_disagrees_with_one_aligned_branch",
+    "category": "goal_aligned_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "版本「甲」欄位「平杉本批原備」為 20 包。\n版本「乙」欄位「平杉本批原備」為 25 包。\n版本「甲」欄位「平杉本批退回」為 3 包。\n版本「乙」欄位「平杉本批退回」為 6 包。\n"},
+      {"name": "register.txt", "content": "欄位「平杉本批退回」｜採用版本｜甲\n欄位「平杉本批退回」｜採用版本｜乙\n欄位「平杉本批原備」｜採用版本｜乙\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「平杉本批退回」｜[D2:L1-L3]\n讀 [D1:L1-L4] 及採用範圍。本批退回的採用記載列出整批候選，按同名版本配原備和退回，核算各版原備減退回的可交量。若另一欄明文另有採用限制，該欄未採用的分支保留並標出限制，不能把它核成可交量。交條件表、算式及採用和數值來源，不定稿或追問。",
+    "criteria": ["甲版原備有20但原備只採乙，所以甲條件受限且無可交量。乙25減6得19包。兩筆退回採用及另欄採用都有引用，無正式量或提問。另核對受限欄與結果各自保存。"]
+  },
+  {
+    "id": "single_versioned_field_with_shared_stock_still_calculates",
+    "category": "goal_aligned_quantity_branches",
+    "documents": [
+      {"name": "counts.txt", "content": "石川本批原備 22 瓶，兩個版本共用。\n版本「早」欄位「石川本批退回」為 3 瓶。\n版本「晚」欄位「石川本批退回」為 5 瓶。\n"},
+      {"name": "register.txt", "content": "欄位「石川本批退回」｜採用版本｜早\n欄位「石川本批退回」｜採用版本｜晚\n"}
+    ],
+    "prompt": "數量採用範圍：欄位「石川本批退回」｜[D2:L1-L2]\n讀 [D1:L1-L3] 及採用範圍。本批原備兩版共用，只把退回按版本分開。逐版算原備減退回的可交量，附算式及來源，保留採用衝突，不合計或提問。",
+    "criteria": ["共用22，早22減3得19瓶，晚22減5得17瓶，附兩個採用引用及數值來源。不宣告正式版本，不提問。另核對既有單欄分版證據。"]
+  }
+]
