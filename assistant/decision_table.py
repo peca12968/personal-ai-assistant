@@ -15,6 +15,7 @@ matching_rows是所送表格的1起算列號，並非原文件行號。resolved�
 原文已明定可行情境、規則優先級及同級衝突時，優先用rules取代rows，讓程式展開並核對每個相容情境，並提供conditions、domains、excluded、known。例如rules為[{"priority":0,"when":{},"result":"前台"},{"priority":2,"when":{"級別":"高"},"result":"南架"}]。最多16條，priority為0至100整數且較大優先，只按原文明定關係轉錄。when只列該規則明定的限制，空物件只用於明文通用規則。不要推定最後一條或較具體的規則優先。
 priority_cases逐一列適用的最高級規則、被覆蓋規則和仍缺依據的情境。同級有不同處置時保留各結果；沒有適用規則時保留缺口。winning_rules及overridden_rules是所送規則的1起算編號，引用仍用已讀的實際原行。若有question，先確認會區分結果或是否需要來源的欄位。max_questions只計確認欄位，不計補正式規則。沒有可區分的欄位且needs_evidence為真時，核對仍缺的依據。收到確認值後沿用同一規則重算。只要條件式暫表時按要求交付，不追問。
 原文只有成對的無條件優先記載時，同樣用rules，各條省略priority，另傳precedence，例如[[1,2]]表示第1條優先於第2條。只送原文明定的關係，連彼此矛盾的方向也照實保留；沒有記載時可用空陣列。不要將部分順序轉成數字或推成同級。若關係只在特定條件成立，不可當作通用連線。
+若優先關係只在特定條件或版本生效，用{"higher":1,"lower":2,"when":{"班別":"晚"}}替代該對編號，可與無條件編號對混用。when只填原文明定的條件與值。逐一在相容情境內核對順序，同一情境才可能構成循環。active_precedence與disputed_precedence是送入precedence的1起算序號，引用時仍用實際原文。未生效的關係不參與傳遞。
 disputed_relations列出參與矛盾循環的原連線，工具不以它們推導其他順序。不矛盾的無條件關係可以傳遞，即使中間規則未觸發。未被覆蓋的候選若有不同結果，unranked_pairs列出尚無有效優先依據的組合，cyclic_pairs列出受循環影響的組合。只問仍會影響本次的候選關係；正式補充只修改它確實確認或取代的關係，再保留原規則重算。'''
 
 
@@ -84,7 +85,7 @@ def validate(args):
         relative = 'precedence' in args
         _validate_priority_rules(args['rules'], args['domains'], relative=relative)
         if relative:
-            _validate_precedence(args['precedence'], len(args['rules']))
+            _validate_precedence(args['precedence'], len(args['rules']), args['domains'])
         return declared, excluded
     rows = args['rows']
     minimum = 1 if declared is None else 0
@@ -121,28 +122,41 @@ def _validate_priority_rules(rules, domains, *, relative):
         condition = rule['when']
         if not relative and (type(rule['priority']) is not int or not 0 <= rule['priority'] <= 100):
             raise ValueError('規則優先級須為0至100的整數。')
-        if not isinstance(condition, dict) or not condition.keys() <= domains.keys():
-            raise ValueError('規則條件須使用宣告欄名。')
-        for field, value in condition.items():
-            _label(value)
-            if value not in domains[field]:
-                raise ValueError('規則條件值須為宣告選項。')
+        _validate_rule_condition(condition, domains)
         _label(rule['result'])
 
 
-def _validate_precedence(edges, rule_count):
+def _validate_rule_condition(condition, domains):
+    if not isinstance(condition, dict) or not condition.keys() <= domains.keys():
+        raise ValueError('規則條件須使用宣告欄名。')
+    for field, value in condition.items():
+        _label(value)
+        if value not in domains[field]:
+            raise ValueError('規則條件值須為宣告選項。')
+
+
+def _validate_precedence(edges, rule_count, domains):
     if not isinstance(edges, list) or len(edges) > 64:
         raise ValueError('最多可提供64個成對優先關係。')
     seen = set()
     for edge in edges:
-        if (not isinstance(edge, list) or len(edge) != 2
-                or any(type(index) is not int or not 1 <= index <= rule_count for index in edge)
-                or edge[0] == edge[1]):
+        condition = {}
+        if isinstance(edge, dict):
+            if set(edge) != {'higher', 'lower', 'when'}:
+                raise ValueError('條件式優先關係須指定higher、lower及when。')
+            condition = edge['when']
+            _validate_rule_condition(condition, domains)
+            pair = [edge['higher'], edge['lower']]
+        else:
+            pair = edge
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(type(index) is not int or not 1 <= index <= rule_count for index in pair)
+                or pair[0] == pair[1]):
             raise ValueError('每個優先關係須指定兩個不同的已列規則。')
-        pair = tuple(edge)
-        if pair in seen:
-            raise ValueError('同方向優先關係不可重複。')
-        seen.add(pair)
+        key = tuple(pair), frozenset(condition.items())
+        if key in seen:
+            raise ValueError('同條件的同方向優先關係不可重複。')
+        seen.add(key)
 
 
 def question_order(assignments, labels, active):
@@ -215,6 +229,31 @@ def _precedence_case(assignment, conditions, rules, reachable, stated_paths):
     return _rule_case(assignment, matched, winners, unranked_pairs=unranked, cyclic_pairs=cyclic)
 
 
+def _precedence_paths(rule_count, edges):
+    stated_paths = _reachable_rules(rule_count, edges)
+    disputed = [edge for edge in edges if edge[0] in stated_paths[edge[1]]]
+    # Keep recorded contradictions visible, but do not infer through them.
+    reachable = _reachable_rules(rule_count, [edge for edge in edges if edge not in disputed]) if disputed else stated_paths
+    return reachable, stated_paths, disputed
+
+
+def _scoped_precedence_cases(assignments, conditions, rules, edges):
+    relations = [(index, (edge['higher'], edge['lower']), edge['when']) if isinstance(edge, dict)
+                 else (index, tuple(edge), {}) for index, edge in enumerate(edges, 1)]
+    cases, disputes = [], set()
+    for assignment in assignments:
+        values = dict(zip(conditions, assignment))
+        applicable = [(index, pair) for index, pair, when in relations if when.items() <= values.items()]
+        active_pairs = list(dict.fromkeys(pair for _, pair in applicable))
+        reachable, stated_paths, disputed = _precedence_paths(len(rules), active_pairs)
+        case = _precedence_case(assignment, conditions, rules, reachable, stated_paths)
+        case['active_precedence'] = [index for index, _ in applicable]
+        case['disputed_precedence'] = [index for index, pair in applicable if pair in disputed]
+        disputes.update(case['disputed_precedence'])
+        cases.append(case)
+    return cases, [edge for index, edge in enumerate(edges, 1) if index in disputes]
+
+
 def _calculate_priority(args, declared, excluded):
     conditions, known, rules = args['conditions'], args['known'], args['rules']
     fixed = [(index, known[name]) for index, name in enumerate(conditions) if name in known]
@@ -222,11 +261,11 @@ def _calculate_priority(args, declared, excluded):
     active = [row for row in compatible if row not in excluded]
     if 'precedence' in args:
         edges = args['precedence']
-        stated_paths = _reachable_rules(len(rules), edges)
-        disputed = [edge for edge in edges if edge[0] in stated_paths[edge[1]]]
-        # Keep recorded contradictions visible, but do not infer through them.
-        reachable = _reachable_rules(len(rules), [edge for edge in edges if edge not in disputed])
-        cases = [_precedence_case(row, conditions, rules, reachable, stated_paths) for row in active]
+        if any(isinstance(edge, dict) for edge in edges):
+            cases, disputed = _scoped_precedence_cases(active, conditions, rules, edges)
+        else:
+            reachable, stated_paths, disputed = _precedence_paths(len(rules), edges)
+            cases = [_precedence_case(row, conditions, rules, reachable, stated_paths) for row in active]
     else:
         cases = [_priority_case(row, conditions, rules) for row in active]
     observation = {'priority_cases': cases, 'coverage': {

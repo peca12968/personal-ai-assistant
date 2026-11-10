@@ -227,6 +227,74 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_scoped_precedence_reverses_by_shift_without_a_cycle(self):
+        plan = {'conditions': ['班別', '標籤'], 'domains': {'班別': ['早', '晚'], '標籤': ['有', '無']},
+                'known': {}, 'excluded': [],
+                'rules': [{'when': {}, 'result': '東櫃'}, {'when': {}, 'result': '西櫃'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '早'}},
+                               {'higher': 2, 'lower': 1, 'when': {'班別': '晚'}}]}
+        result = decision_table.calculate(plan)
+        self.assertEqual((result['status'], result['max_questions'], result['question']['condition']),
+                         ('needs_check', 1, '班別'))
+        self.assertEqual(result['disputed_relations'], [])
+        self.assertEqual([r['active_precedence'] for r in result['priority_cases']], [[1], [1], [2], [2]])
+        late = decision_table.calculate({**plan, 'known': {'班別': '晚'}})
+        self.assertEqual((late['status'], late['possible_results']), ('resolved', ['西櫃']))
+        self.assertNotIn('question', late)
+
+    def test_scoped_precedence_separates_overlap_and_inactive_links(self):
+        plan = {'conditions': ['班別', '區位'], 'domains': {'班別': ['早', '晚'], '區位': ['內', '外']},
+                'known': {}, 'excluded': [],
+                'rules': [{'when': {}, 'result': '暖棚'}, {'when': {}, 'result': '涼棚'},
+                          {'when': {}, 'result': '前台'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '晚'}},
+                               {'higher': 2, 'lower': 1, 'when': {'區位': '外'}},
+                               [2, 3]]}
+        result = decision_table.calculate(plan)
+        self.assertEqual(result['disputed_relations'], plan['precedence'][:2])
+        early_inside, early_outside, late_inside, late_outside = result['priority_cases']
+        self.assertEqual(early_inside['unranked_pairs'], [[1, 2]])
+        self.assertEqual(early_inside['active_precedence'], [3])
+        self.assertEqual(early_outside['winning_rules'], [2])
+        self.assertEqual(late_inside['winning_rules'], [1])
+        self.assertEqual(late_inside['overridden_rules'], [2, 3])
+        self.assertEqual(late_outside['cyclic_pairs'], [[1, 2]])
+        self.assertEqual(late_outside['disputed_precedence'], [1, 2])
+        self.assertEqual(late_outside['overridden_rules'], [3])
+        outside = {**plan, 'known': {'班別': '早', '區位': '內'},
+                   'rules': [plan['rules'][0], {'when': {'區位': '外'}, 'result': '涼棚'}, plan['rules'][2]]}
+        case = decision_table.calculate(outside)['priority_cases'][0]
+        self.assertEqual((case['winning_rules'], case['unranked_pairs']), ([1, 3], [[1, 3]]))
+
+    def test_scoped_precedence_validates_conditions_and_saved_evidence(self):
+        edge = {'higher': 1, 'lower': 2, 'when': {'版本': '二'}}
+        plan = {'conditions': ['版本'], 'domains': {'版本': ['一', '二']}, 'known': {'版本': '二'},
+                'excluded': [], 'rules': [{'when': {}, 'result': '甲'}, {'when': {}, 'result': '乙'}],
+                'precedence': [edge]}
+        for invalid in ([{**edge, 'when': {'版本': '三'}}], [{**edge, 'when': {'班別': '晚'}}],
+                        [{**edge, 'lower': True}], [edge, edge], [[1, 2], {**edge, 'when': {}}]):
+            with self.subTest(edges=invalid), self.assertRaises(ValueError):
+                decision_table.calculate({**plan, 'precedence': invalid})
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '按版本核對優先關係')
+            state = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', **plan), action('finish', report='第二版採甲。')))
+            backup = create_backup(store.path)
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), state)
+            observation = state['steps'][0]['observation']
+            self.assertEqual(observation['priority_cases'][0]['active_precedence'], [1])
+            observation['priority_cases'][0]['active_precedence'] = []
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=1',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

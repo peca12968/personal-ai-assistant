@@ -219,6 +219,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_partial_rule_precedence.json 比對成對優先關係、未觸發的中間規則、循環與不受影響的分支。逐條核對模型送入的方向與正式補充。獨立枚舉則分開驗證原連線、循環排除、可推導關係及未被覆蓋的候選；工具核算以明文關係與已知條件輸入為準。
 
+以 evals/goal_scoped_rule_precedence.json 核對相反班別順序、只問有效欄位、局部循環及不適用連線。逐條對照送入工具的原文條件、規則及補充，並另用枚舉核對每個情境的生效及爭議連線。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

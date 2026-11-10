@@ -65,6 +65,7 @@ CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_multi_
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_evidence_sufficiency.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_priority_rules.json'))
 CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_partial_rule_precedence.json'))
+CHECKS.append(('scripts/evaluate_goal_replies.py', '--suite', 'evals/goal_scoped_rule_precedence.json'))
 CHECKS.append(('scripts/evaluate_json_documents.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py',))
 CHECKS.append(('scripts/evaluate_tool_recovery.py', '--suite', 'evals/goal_source_handoffs.json'))

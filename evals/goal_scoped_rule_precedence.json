@@ -1,0 +1,80 @@
+[
+  {
+    "id": "opposite_shift_orders_are_both_valid",
+    "category": "goal_scoped_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "薄岸批 16 袋，窗口馬同仁。本次班別為晚班。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "薄岸批班別早或晚。甲、乙兩條均適用；只依明文班別決定優先。\n甲條：去上層席。\n乙條：去下層席。\n早班，甲條優先於乙條。\n晚班，乙條優先於甲條。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1] 和 [D2:L1-L5]，交薄岸批定稿。說明兩份班別規定在本次如何適用，保留數量與窗口，只交文字。",
+    "criteria": [
+      "晚班採下層席，早班相反的規則仍保留。",
+      "保留 16 袋和馬同仁，不把不同班別的順序當衝突，也不追問。"
+    ]
+  },
+  {
+    "id": "ask_shift_without_unrelated_recheck",
+    "category": "goal_scoped_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "竹潭批 14 盤，窗口潘同仁。班別和標籤是否完整尚未確認。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "班別早或晚，標籤完整或待補；這四種組合皆可能。甲、乙兩條都適用，標籤完整性不改動兩條去向。\n甲條：交東櫃。\n乙條：交西櫃。\n早班，甲條優先於乙條。\n晚班，乙條優先於甲條。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1] 和 [D2:L1-L5]，給竹潭批暫表。只問一個會改變去向的欄位，正式補充後依原規則重算，交文字定稿。",
+    "criteria": [
+      "暫表列早班東櫃與晚班西櫃，只問班別。",
+      "依正式晚班補充定稿西櫃，保留 14 盤、潘同仁與標籤尚待核對。"
+    ],
+    "reply": "正式確認竹潭批為晚班。"
+  },
+  {
+    "id": "cycle_only_where_scoped_links_overlap",
+    "category": "goal_scoped_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "橙庭批 11 箱，窗口關同仁。班別及區位都待確認。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "班別早或晚，區位內或外；全部組合可能。兩條都適用，只按明文優先關係。\n甲條：去暖棚。\n乙條：去涼棚。\n晚班，甲條優先於乙條。\n外區，乙條優先於甲條。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1] 和 [D2:L1-L5]。交橙庭批條件式暫表，列出四種組合。分清優先記載相反與沒有明定優先關係，不追問，不定稿。",
+    "criteria": [
+      "晚內採暖棚，早外採涼棚。",
+      "晚外兩方向皆適用且衝突，早內缺優先依據；兩者不得混寫。",
+      "保留 11 箱及關同仁，未追問。"
+    ]
+  },
+  {
+    "id": "inactive_scope_cannot_supply_a_transitive_link",
+    "category": "goal_scoped_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "泉藍批 5 袋，窗口廖同仁。區位為外，封條有，標籤無。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "區位內或外，封條、標籤各有或無，所有組合可能。只按原文明文、在適用情況可傳遞的優先關係。\n甲條：封條有，去青室。\n乙條：標籤有，去銀室。\n丙條：不限定條件，去灰室。\n內區時，甲條優先於乙條。\n乙條優先於丙條，不限區位。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1] 和 [D2:L1-L6]。交泉藍批可確認暫表，不追問。指出哪些優先依據本次適用、哪些不能用來確定去向。只交文字。",
+    "criteria": [
+      "外區沒有甲優先乙的依據，不能推出甲優先丙；乙條未觸發。",
+      "青室與灰室仍未決，保留 5 袋及廖同仁，不追問。"
+    ]
+  }
+]
