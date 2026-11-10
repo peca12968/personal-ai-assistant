@@ -439,6 +439,81 @@ class DecisionTableTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decision_table.validate_tool({**args, 'compare': 1})
 
+    def test_batch_revision_keeps_original_indexes_through_merging_and_restore(self):
+        plan = {'conditions': ['班別'], 'domains': {'班別': ['晚']}, 'known': {'班別': '晚'},
+                'excluded': [], 'rules': [{'when': {}, 'result': value} for value in ('甲', '乙', '丙')],
+                'precedence': [[1, 2], [2, 1], [3, 2]]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '整批核對')
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('check_decision', **plan),
+                action('ask', question='請提供整批正式優先關係。')))
+            waiting = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '核對#1｜優先｜1｜2｜1\r\n核對#1｜優先｜3｜2｜3',
+                              expected_fingerprint=waiting['fingerprint'])
+            result = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', revision='[補充#2]'), action('finish', report='交乙 [補充#2]。')))
+            observation = result['steps'][2]['observation']
+            self.assertEqual(observation['possible_results'], ['乙'])
+            changes = observation['revision']['changes']
+            self.assertEqual(changes, [
+                {'kind': 'precedence', 'relation': 1, 'before': [1, 2], 'after': [2, 1], 'retained_relation': 1},
+                {'kind': 'precedence', 'relation': 3, 'before': [3, 2], 'after': [2, 3]}])
+            self.assertEqual(result['steps'][0]['action']['args'], plan)
+            backup = create_backup(store.path)
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), result)
+            changes[1]['relation'] = 2
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
+    def test_batch_revision_invalid_item_or_combination_preserves_original_plan(self):
+        plan = {'conditions': ['區位', '門證'], 'domains': {'區位': ['北', '南'], '門證': ['有', '無']},
+                'known': {'區位': '北', '門證': '無'}, 'excluded': [['南', '有']],
+                'rules': [{'priority': 0, 'when': {}, 'result': '前台'},
+                          {'priority': 1, 'when': {'區位': '南'}, 'result': '南廳'}]}
+        saved = json.dumps(plan, ensure_ascii=False)
+        step = {'sequence': 1, 'action': {'tool': 'check_decision', 'args': plan},
+                'observation': decision_table.calculate(plan)}
+        prefix = '核對#1｜條件｜區位｜南\n'
+        for text, reason in (
+                (prefix + '核對#1｜條件｜門證｜臨時', '第 2 行'),
+                (prefix + '核對#1｜條件｜區位｜北', '第 2 行'),
+                (prefix + '核對#2｜條件｜門證｜有', '第 2 行'),
+                (prefix + '核對#1｜條件｜門證｜有', '可行情境不相容'),
+                (prefix * 5 + '核對#1｜條件｜門證｜無', '一至四行')):
+            source = {'citation': '[更正#1]', 'steps_seen': 1, 'sha256': 'a' * 64, 'content': text}
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, reason):
+                decision_table.observe({'revision': '[更正#1]'}, [step], guidance=[source])
+            self.assertEqual(json.dumps(plan, ensure_ascii=False), saved)
+            self.assertEqual(step['observation']['possible_results'], ['前台'])
+
+    def test_batch_comparison_keeps_other_conditions_per_version_of_plan(self):
+        plan = {'conditions': ['班別', '門證'], 'domains': {'班別': ['早', '晚'], '門證': ['有', '無']},
+                'known': {'班別': '晚', '門證': '無'}, 'excluded': [],
+                'rules': [{'when': {}, 'result': '甲'}, {'when': {'門證': '有'}, 'result': '乙'}],
+                'precedence': [{'higher': 1, 'lower': 2, 'when': {'班別': '晚'}}]}
+        step = {'sequence': 1, 'action': {'tool': 'check_decision', 'args': plan},
+                'observation': decision_table.calculate(plan)}
+        source = {'citation': '[更正#1]', 'steps_seen': 1, 'sha256': 'a' * 64,
+                  'content': '核對#1｜條件｜門證｜有\n核對#1｜優先｜1｜2｜1'}
+        result = decision_table.observe({'revision': '[更正#1]', 'compare': True}, [step], guidance=[source])
+        comparison = result['revision']['comparison']
+        self.assertEqual(comparison['retained_known'], {'班別': '晚'})
+        self.assertEqual(comparison['before']['possible_results'], ['甲'])
+        self.assertEqual(comparison['after']['possible_results'], ['乙'])
+        early, late = comparison['scope_comparison']
+        self.assertFalse(early['within_revision_scope'])
+        self.assertEqual(early['before']['possible_results'], ['甲'])
+        self.assertEqual(early['after'], {'status': 'incomplete_table', 'recorded_results': ['甲', '乙']})
+        self.assertEqual(late['after'], comparison['after'])
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

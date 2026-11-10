@@ -225,6 +225,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_decision_revision_comparison.json 核對定稿是否保留舊結果、正式新結果、未更動欄位及必要的其他假設範圍。另驗證條件改變但結果相同，以及只要求本次簡短交付時的原路徑。假設分支和原核對狀態獨立核對。
 
+以 evals/goal_batch_decision_revision.json 核對兩欄共同生效、條件與優先混合、第二行無效及原編號不受合併影響。核對實際送入的補充、整批前後狀態及無效工具步驟。對照假設時按前後各自的已知值重算；不在更正的優先範圍內，仍可能受同批另一個條件更正影響。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 
