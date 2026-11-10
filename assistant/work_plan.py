@@ -21,6 +21,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
 使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
 使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
+尚缺新數字而將項目標為pending、working或blocked時，可只更新items，原evidence_requirements會保留。若重列部分未變的要求，仍沿用原完整規約和舊條件。取得資料後，完成前再依目前條件確認完整的算式及來源；不要把暫表、待補註記或沿用的舊規約當成完成證據。
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
@@ -157,13 +158,16 @@ def _read_proof(step, scope, sources):
             'read_sha256': hashlib.sha256(raw).hexdigest()}
 
 
-def _merge_requirements(rows, previous, scope, sources):
+def _merge_requirements(rows, previous, scope, sources, items):
     requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
     document_ids = {source['document_id'] for source in sources}
     for row in rows:
         old = requirements.get(row['id'])
         if old:
             prior = {key: value for key, value in old.items() if key != 'defined_scope'}
+            if (items[row['id']]['state'] in ('pending', 'working', 'blocked')
+                    and row.keys() < prior.keys() and all(prior[key] == value for key, value in row.items())):
+                continue  # Retain the complete requirement and its original condition fingerprint.
             if (not prior.keys() <= row.keys()
                     or (old['defined_scope'] == scope and any(row[key] != value for key, value in prior.items()))):
                 raise ValueError(f'項目 {row["id"]} 已保存指定證據。請保留證據種類及目前條件下的原要求。')
@@ -273,7 +277,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     reused = args.get('reuse_document_steps', [])
     previous_items = {row['id']: row for row in previous['items']} if previous else {}
     previous_requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
-    requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources)
+    requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources, by_id)
     sequence = len(steps) + 1
     user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, sequence)
     reusable = _reusable_calculations(previous, scope, sequence, reply_sources, guidance_sources)

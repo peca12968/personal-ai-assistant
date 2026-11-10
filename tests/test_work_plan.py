@@ -269,6 +269,64 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_blocked_item_partial_requirements_preserve_original_scope_and_delivery_guard(self):
+        gid, tasks, requirements = self._two_document_calculations()
+        original = a.get_goal(self.store, self.sid, gid)['work_plan']['evidence_requirements'][1]
+        amendment = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '東架破損更正為 9 盒，西架仍待確認。',
+                           expected_fingerprint=amendment['fingerprint'])
+        east, west = copy.deepcopy(requirements)
+        east['expression']['values'][1] = '9'
+        east['operands'][1].update(citation='[更正#1]', quote='東架破損更正為 9 盒')
+        partial = {'id': 2, 'ranges': west['ranges']}
+        waiting_items = [{**tasks[0], 'evidence_steps': [1, 5]},
+                         item(2, tasks[1]['task'], 'blocked', [1], '等待西架正式破損數')]
+        waiting = self.run_actions(
+            action('calculate_expression', expression=east['expression']),
+            action('update_plan', items=waiting_items, reuse_document_steps=[1], evidence_requirements=[east, partial]),
+            action('write_artifact', filename='early.md', content='未定稿'),
+            action('ask', question='西架正式破損幾盒？', partial_result='東架27盒，西架待確認。'), gid=gid)
+        waiting_plan = waiting['work_plan']
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.assertEqual(waiting_plan['evidence_requirements'][1], original)
+        self.assertNotEqual(waiting_plan['goal_conditions_sha256'], original['defined_scope'])
+        self.assertEqual([row['id'] for row in waiting_plan['evidence_matches']], [1])
+        self.assertIn('未完成項目 2', waiting['steps'][6]['observation']['error'])
+        self.assertFalse(waiting['artifacts'])
+        changed = {**partial, 'ranges': east['ranges']}
+        with self.assertRaisesRegex(ValueError, '已保存指定證據'):
+            p.observe({'items': waiting_items, 'evidence_requirements': [changed]},
+                      waiting['steps'], waiting_plan['goal_conditions_sha256'], waiting['sources'])
+
+        snap = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '西架正式破損 8 盒。', expected_fingerprint=snap['fingerprint'])
+        west['expression']['values'][1] = '8'
+        west['operands'][1].update(citation='[補充#8]', quote='西架正式破損 8 盒')
+        complete = [{**task, 'evidence_steps': [1, ref]} for task, ref in zip(tasks, [9, 10], strict=True)]
+        result = self.run_actions(
+            action('calculate_expression', expression=east['expression']),
+            action('calculate_expression', expression=west['expression']),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[east, partial]),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[east]),
+            action('update_plan', items=complete, reuse_document_steps=[1], evidence_requirements=[east, west]),
+            action('write_artifact', filename='final.md', content='東27盒，西17盒。'),
+            action('deliver', report='正式結果已核對。', filenames=['final.md']), gid=gid)
+        self.assertIn('已保存指定證據', result['steps'][10]['observation']['error'])
+        self.assertIn('算式要求來自舊條件', result['steps'][11]['observation']['error'])
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 13)
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        altered = copy.deepcopy(result['steps'][5]['observation'])
+        altered['evidence_requirements'][1]['defined_scope'] = altered['goal_conditions_sha256']
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
         affirmation = '「西架可交量」的數量與算式均照舊。'
