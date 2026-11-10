@@ -384,6 +384,51 @@ class AutonomyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             a.document_ranges.lookup(documents, args)
 
+    def test_literal_lookup_keeps_source_failures_and_same_numbered_lines_separate(self):
+        first = self.attach('\n'.join(f'Key Alpha {n}' for n in range(1, 9)))
+        second = self.attach('\n'.join(f'Key Beta {n}' for n in range(1, 8)), name='beta.txt')
+        short = self.attach('Key Short', name='short.txt')
+        other = self.store.new_session()
+        foreign = self.attach('Key Foreign', sid=other, name='foreign.txt')
+        request = {'query': 'Key', 'start_line': 1}
+        sources = [
+            {'document_id': second, 'queries': [request, {'query': 'Absent', 'start_line': 1}]},
+            {'document_id': foreign, 'queries': [request]},
+            {'document_id': short, 'queries': [{**request, 'start_line': 2}]},
+            {'document_id': first, 'queries': [request]},
+        ]
+        engine = ScriptedEngine(
+            action('find_document_text', sources=sources),
+            action('finish', report=f'未讀來源 [D{foreign}:L1]'),
+            action('finish', report=f'乙與甲分別核對 [D{second}:L1] [D{first}:L1]'))
+        result = a.run_goal(self.store, self.sid, self.goal(), engine)
+        found, invalid, finished = result['steps']
+        observation = found['observation']
+        self.assertEqual([(s['document_id'], s['status']) for s in observation['sources']],
+                         [(second, 'searched'), (foreign, 'document_not_attached'),
+                          (short, 'line_out_of_bounds'), (first, 'searched')])
+        self.assertNotIn('queries', observation['sources'][1])
+        self.assertNotIn('queries', observation['sources'][2])
+        self.assertEqual(observation['sources'][2]['line_count'], 1)
+        self.assertEqual(observation['sources'][0]['queries'][1]['total_matching_lines'], 0)
+        self.assertEqual(observation['sources'][3]['queries'][0]['total_matching_lines'], 8)
+        self.assertEqual([(e['document_id'], e['start_line']) for e in observation['excerpts']],
+                         [(did, n) for did in (second, first) for n in range(1, 5)])
+        self.assertEqual([m['full_line_provided'] for m in observation['sources'][0]['queries'][0]['matches']],
+                         [True, True, True, True, False, False])
+        self.assertEqual(invalid['action']['tool'], 'invalid')
+        self.assertTrue(all(c['range_valid'] for c in finished['observation']['citation_checks']))
+
+    def test_literal_lookup_validates_cross_document_limits(self):
+        queries = [{'query': f'Key {n}', 'start_line': 1} for n in range(5)]
+        def source(did):
+            return {'document_id': did, 'queries': queries}
+        for sources in ([], [source(1), source(1)], [source(1), source(2), source(3)],
+                        [source(n) for n in range(1, 6)], [source(True)],
+                        [{'document_id': 1, 'query': 'Key', 'start_line': 1}]):
+            with self.subTest(sources=sources), self.assertRaises(ValueError):
+                a.validate_action(json.loads(action('find_document_text', sources=sources)))
+
     def test_literal_document_lookup_validation_and_cancellation(self):
         did = self.attach('批號=01')
         args = {'document_id': did, 'query': '批號', 'start_line': 1}

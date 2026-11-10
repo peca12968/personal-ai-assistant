@@ -125,6 +125,8 @@ def activity(row):
         requested['ranges'] = args['ranges']
     if tool == 'find_document_text' and 'queries' in args:
         requested['queries'] = args['queries']
+    if tool == 'find_document_text' and 'sources' in args:
+        requested['document_ids'] = [source['document_id'] for source in args['sources']]
     if tool == 'summarize_json':
         requested.update({k:args[k] for k in ('order_by','top_n','include_median') if k in args})
     fields = {'status', 'error', 'error_phase', 'calculation_failure', 'requested_ranges', 'exact', 'decimal', 'rounded',
@@ -181,7 +183,14 @@ def activity(row):
         outcome.update({k:observation[k] for k in ('total_matches','returned_count') if k in observation})
         outcome['history_details_omitted'] = True
     if tool == 'find_document_text':
-        if 'queries' in observation:
+        if 'sources' in observation:
+            outcome['lookup_sources'] = [
+                {'document_id': source['document_id'], 'status': source['status'],
+                 'query_count': len(source.get('queries', ())),
+                 'zero_hit_queries': sum(page['total_matching_lines'] == 0 for page in source.get('queries', ())),
+                 'queries_with_next_page': sum(page['next_start_line'] is not None for page in source.get('queries', ()))}
+                for source in observation['sources']]
+        elif 'queries' in observation:
             outcome['query_pages'] = [{key: page[key] for key in ('total_matching_lines', 'next_start_line')}
                                       for page in observation['queries']]
         else:

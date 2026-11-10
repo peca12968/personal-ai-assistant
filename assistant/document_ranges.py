@@ -7,6 +7,8 @@ MAX_RANGES = 8
 MAX_LINES = 200
 MATCHES_PER_PAGE = 6
 LOOKUP_CHAR_BUDGET = 8000
+LOOKUP_MAX_SOURCES = 4
+LOOKUP_MAX_QUERIES = 12
 BATCH_FIELDS = ('document_id', 'start_line', 'end_line')
 STATUS_TEXT = {
     'provided': '指定範圍已完整提供，仍須核對內容。',
@@ -118,11 +120,33 @@ def read_batch(documents, args):
 
 LOOKUP_GUIDANCE = '''find_document_text在本目標指定的一份匯入副本找精確字面。args為{"document_id":2,"query":"核准號","start_line":1}。
 同一文件需查多個欄位或別名時，先合併成一次查找，args改用{"document_id":2,"queries":[{"query":"核准號","start_line":1},{"query":"放行核准","start_line":1}]}。最多六個不同字面，保留各自命中、原文和續頁位置。共用同一行只回傳一次；共用回傳預算使部分命中可能只有位置。只替仍需更多證據的字面續頁，不必重查已核對欄位。
+需從多份已確定適用的副本取不同欄位時，用同一步的sources，例如{"sources":[{"document_id":2,"queries":[{"query":"核准號","start_line":1}]},{"document_id":3,"queries":[{"query":"交件位置","start_line":1}]}]}。最多四份副本、合計十二個查找項目。只列本次適用的來源，已知停用或另案的文件不加入。按每份結果各自核對，document_not_attached或line_out_of_bounds代表無法查讀，不能當作零命中。同字面在不同副本的角色或版本可能不同。續查時只指定仍缺的來源及字面。
 在較長的指定文件找完整欄名、批號或確切片語時優先用它，避免把舊版或另案命中帶入。逐行比對原字面，區分大小寫，每頁最多六個命中行；total_matching_lines是這份副本的全部字面命中行數。依next_start_line接續，或用較窄的字面定位現行行。完整回傳的原行才可引用；full_line_provided為false的長行用read_line從命中字元附近讀取，已取得目標欄位時，補查首頁摘要或鄰近上下文只讀所需短區段，不重讀整份。若仍缺證據，再按需要擴大查讀。
 零命中只表示這份文字副本沒有該字面。可能有同義寫法時改查具體別名或讀相關區段。命中也不代表生效，須核對上下文、批次及版本。使用者要求依文件找資料時，先核對適用來源，只問仍缺且會改變交付的資訊；不重複無效搜尋。'''
 
 
 def validate_lookup(args):
+    if not isinstance(args, dict) or set(args) != {'sources'}:
+        return _validate_lookup_group(args)
+    sources = args['sources']
+    if not isinstance(sources, list) or not 1 <= len(sources) <= LOOKUP_MAX_SOURCES:
+        raise ValueError('同一次須指定 1 至 4 份不同副本。')
+    ids = set()
+    total = 0
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {'document_id', 'queries'}:
+            raise ValueError('每份副本須指定文件編號及查找項目。')
+        total += len(_validate_lookup_group(source))
+        did = source['document_id']
+        if did in ids:
+            raise ValueError('同一批不可重複指定文件。')
+        ids.add(did)
+    if total > LOOKUP_MAX_QUERIES:
+        raise ValueError('跨文件批次最多 12 個查找項目。')
+    return sources
+
+
+def _validate_lookup_group(args):
     if not isinstance(args, dict) or set(args) not in (
             {'document_id', 'query', 'start_line'}, {'document_id', 'queries'}):
         raise ValueError('字面查找須指定一份文件，以及單筆或一批查找項目。')
@@ -179,36 +203,73 @@ def _lookup_page(lines, request, cancel):
     return {**request, 'total_matching_lines': total, 'matches': matches, 'next_start_line': next_start}
 
 
-def _lookup_excerpts(document, lines, pages):
-    groups = zip_longest(*(page['matches'] for page in pages))
-    positions = dict.fromkeys(hit['line_number'] for group in groups for hit in group if hit is not None)
+def _lookup_excerpts(scans):
+    lines_by_id, positions_by_source = {}, []
+    for document, lines, pages in scans:
+        did = document['id']
+        lines_by_id[did] = lines
+        groups = zip_longest(*(page['matches'] for page in pages))
+        positions_by_source.append(dict.fromkeys(
+            (did, hit['line_number']) for group in groups for hit in group if hit is not None))
+    groups = zip_longest(*positions_by_source)
     selected = []
     remaining = LOOKUP_CHAR_BUDGET
-    for number in positions:
-        size = len(f'L{number}: ') + len(lines[number - 1])
+    for did, number in (position for group in groups for position in group if position is not None):
+        size = len(f'L{number}: ') + len(lines_by_id[did][number - 1])
         if size <= remaining:
-            selected.append(number)
+            selected.append((did, number))
             remaining -= size
             if len(selected) == MAX_RANGES:
                 break
-    ranges = ' '.join(f"[D{document['id']}:L{number}]" for number in sorted(selected))
-    return select_ranges(ranges, [document], MAX_RANGES, LOOKUP_CHAR_BUDGET)[0]
+    order = {did: index for index, did in enumerate(lines_by_id)}
+    selected.sort(key=lambda pair: (order[pair[0]], pair[1]))
+    ranges = ' '.join(f'[D{did}:L{number}]' for did, number in selected)
+    excerpts = select_ranges(ranges, [document for document, _, _ in scans], MAX_RANGES, LOOKUP_CHAR_BUDGET)[0]
+    provided = {(row['document_id'], row['start_line']) for row in excerpts}
+    for document, _, pages in scans:
+        for page in pages:
+            for hit in page['matches']:
+                hit['full_line_provided'] = (document['id'], hit['line_number']) in provided
+    return excerpts
+
+
+def _lookup_snapshot(document, requests, cancel):
+    lines = document['content'].splitlines()
+    if any(request['start_line'] > len(lines) for request in requests):
+        return lines, None
+    return lines, [_lookup_page(lines, request, cancel) for request in requests]
+
+
+def _lookup_across_sources(documents, requests, cancel):
+    by_id = {document['id']: document for document in documents}
+    scans, results = [], []
+    for request in requests:
+        did = request['document_id']
+        document = by_id.get(did)
+        if document is None:
+            results.append({'document_id': did, 'status': 'document_not_attached'})
+            continue
+        lines, pages = _lookup_snapshot(document, request['queries'], cancel)
+        source = {'document_id': did, 'sha256': document['sha256']}
+        if pages is None:
+            results.append({**source, 'status': 'line_out_of_bounds', 'line_count': len(lines)})
+            continue
+        scans.append((document, lines, pages))
+        results.append({**source, 'status': 'searched', 'searched_line_count': len(lines), 'queries': pages})
+    return {'sources': results, 'excerpts': _lookup_excerpts(scans)}
 
 
 def lookup(documents, args, cancel=None):
     requests = validate_lookup(args)
+    if 'sources' in args:
+        return _lookup_across_sources(documents, requests, cancel)
     document = next((row for row in documents if row['id'] == args['document_id']), None)
     if document is None:
         raise ValueError('來源不在目前目標的已匯入文件中。')
-    lines = document['content'].splitlines()
-    if any(request['start_line'] > len(lines) for request in requests):
+    lines, pages = _lookup_snapshot(document, requests, cancel)
+    if pages is None:
         raise ValueError('起始行超出匯入副本的範圍。')
-    pages = [_lookup_page(lines, request, cancel) for request in requests]
-    excerpts = _lookup_excerpts(document, lines, pages)
-    provided = {row['start_line'] for row in excerpts}
-    for page in pages:
-        for hit in page['matches']:
-            hit['full_line_provided'] = hit['line_number'] in provided
+    excerpts = _lookup_excerpts([(document, lines, pages)])
     source = {'document_id': document['id'], 'sha256': document['sha256']}
     if 'queries' in args:
         return {**source, 'searched_line_count': len(lines), 'queries': pages, 'excerpts': excerpts}
