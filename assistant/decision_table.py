@@ -81,6 +81,13 @@ ANSWERED_REVISION_GUIDANCE = '''field_reference.answered_revision是等待剩餘
 _ANSWERED_CHANGE = re.compile(
     r'(?P<target>已答欄名|第一筆欄名|已答補問|通知對象|領件人|交付份數|份數)正式(?:改為|改成) *'
     r'(?P<value>[^\r\n，,；;。]+?)。?')
+_NATURAL_ANSWERED_CHANGE = (
+    r'(?:(?:剛才|剛剛|先前|之前)(?:的)? *)?'
+    r'(?P<target>已答欄名|第一筆欄名|欄名|已答補問|通知對象|領件人|交付份數|份數)'
+    r'(?:(?:我)?(?:剛才|剛剛|先前|之前)?(?:說錯了|填錯了|記錯了|寫錯了)[，,] *'
+    r'(?:應該是|正確是|正確應為|應改為|改成|改為)|(?:正式)?(?:改成|改為|更正為)) *'
+    r'(?P<value>[^\r\n，,；;。]+)')
+_ANSWERED_SEPARATORS = re.compile(r'[，,。；;\r\n ]*')
 
 
 def _label(value):
@@ -462,6 +469,9 @@ _ROW_SENTENCE = re.compile(
     r'(?:「(?P<quoted>[^「」｜\x00\r\n]{1,120})」|(?P<plain>[\u3400-\u9fffA-Za-z0-9 -]{0,23}[廳台架區位口席桌門庫站室]))')
 _UNADOPTED_SENTENCE = re.compile(
     r'(?:群聊提議|有人提議|有人建議|轉述|引述)(?:「[^「」]{1,200}」|『[^『』]{1,200}』)[，,] *(?:未採用|不採用|僅供參考)')
+_ANSWERED_NOTE_TOKEN = re.compile(
+    rf'(?P<proposal>{_UNADOPTED_SENTENCE.pattern})|(?P<deferred>{_DEFERRED_REPLY.pattern})|'
+    rf'(?P<correction>{_NATURAL_ANSWERED_CHANGE})')
 _UNCERTAIN_PLAIN = re.compile(r'不|未|非|暫|待|若|或|可能|但|假設|試算|還要|再確認')
 _FIELDLESS_CHANGE = re.compile(r'(?:這一欄|那一欄|這欄|那欄)?(?:正式)?(?:改為|改成) *(?P<value>.+)')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
@@ -1191,21 +1201,60 @@ def _answered_waiting(steps):
 
 def _answered_change(content, partial):
     match = _ANSWERED_CHANGE.fullmatch(content)
-    if not match:
+    context = []
+    complete = True
+    if match is None:
+        offset = 0
+        for token in _ANSWERED_NOTE_TOKEN.finditer(content):
+            if not _ANSWERED_SEPARATORS.fullmatch(content[offset:token.start()]):
+                complete = False
+                break
+            if token['correction'] is not None:
+                if match is not None:
+                    complete = False
+                    break
+                match = token
+            else:
+                context.append(token)
+            offset = token.end()
+        complete = complete and bool(_ANSWERED_SEPARATORS.fullmatch(content[offset:]))
+    if match is None:
         return None
     target = match['target']
     if partial['item'] == 'field':
-        return match if target in ('已答欄名', '第一筆欄名') else None
-    if target == '已答補問':
-        return match
-    if any(question.fullmatch(partial['question']) and target in aliases for question, aliases, _ in _NATURAL_REMAINING):
-        return match
+        valid = target in ('已答欄名', '第一筆欄名', '欄名')
+    else:
+        valid = target == '已答補問' or any(question.fullmatch(partial['question']) and target in aliases
+                                        for question, aliases, _ in _NATURAL_REMAINING)
+    if valid:
+        return {'match': match, 'context': context, 'complete': complete}
     return None
 
 
 def answered_revision_requested(steps, content):
     waiting = _answered_waiting(steps)
     return bool(waiting and _answered_change(content, waiting[0]['partial_reply']))
+
+
+def answered_revision_question(steps):
+    return _answered_waiting(steps)[0]['partial_reply']['question']
+
+
+def _answered_context(parsed, partial, source):
+    if not parsed['complete']:
+        raise ValueError('更正還含未核對的內容，請分開說明已答項的新值及其他補充。')
+    retained = []
+    aliases = next((aliases for question, aliases, _ in _NATURAL_REMAINING
+                    if question.fullmatch(partial['next_question'])), ())
+    for token in parsed['context']:
+        kind = 'proposal' if token['proposal'] is not None else 'deferred'
+        if kind == 'deferred':
+            item = token['item']
+            valid = item.endswith('欄名') if partial['item'] == 'remaining' else item == '補問' or item in aliases
+            if not valid:
+                raise ValueError('待查文字須對應原本尚未回答的問題。')
+        retained.append({'kind': kind, **_reply_line(source, token, kind)})
+    return retained
 
 
 def _answered_value(match, proof):
@@ -1243,15 +1292,20 @@ def _apply_answered_revision(args, previous, sequence, steps, replies, guidance)
     original = _recheck_saved(steps[:-2], replies, guidance)[0][1] if partial['item'] == 'field' else None
     changes = []
     for source in sources:
-        match = _answered_change(source['content'], partial)
-        if not match:
+        parsed = _answered_change(source['content'], partial)
+        if not parsed:
             raise ValueError('另有尚未核對的補充，請先確認其影響。')
+        retained = _answered_context(parsed, partial, source)
+        match = parsed['match']
         if partial['item'] == 'remaining' and match['target'] in previous[1]['conditions']:
             raise ValueError('這個名稱也在決策表中，請明寫「已答補問正式改為」以指定已答項。')
         new_value = _answered_value(match, proof)
         if value == new_value:
             raise ValueError('新值與目前已答值相同，無須更正。')
-        changes.append({'before': value, 'after': new_value, 'evidence': _reply_line(source, match, 'value')})
+        change = {'before': value, 'after': new_value, 'evidence': _reply_line(source, match, 'value')}
+        if retained:
+            change['retained'] = retained
+        changes.append(change)
         value = new_value
         if original is not None:
             plan, result = _apply_reference_choice(original, value)

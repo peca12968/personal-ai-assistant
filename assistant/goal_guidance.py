@@ -214,7 +214,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         if revise_answer:
             review = saved['goal'].get('answered_reference_review')
             if review is None:
-                raise ValueError('請用一個明確的新值更正已答項，並先確認其他待核對的補充。')
+                question = decision_table.answered_revision_question(_steps(db, gid))
+                raise ValueError(f'請用一個明確的新值更正已答項「{question}」，並先確認其他待核對的補充。'
+                                 '若有兩個可能新值，請先確認其中一個。原待答問題及草稿仍保留。')
             required = 3 if review['field_reference']['answered_revision']['item'] == 'remaining' else 2
             if step_count + required > MAX_STEPS:
                 raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
