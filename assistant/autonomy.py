@@ -328,7 +328,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        if args.get('waiting_recheck') or args.get('partial_reply') or args.get('answered_revision'):
+        if args.get('waiting_recheck') or args.get('partial_reply') or args.get('answered_revision') or args.get('combined_reply'):
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
@@ -559,7 +559,13 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('partial_reply')
                         for step in payload['steps']) else '') +
                 ('\n' + decision_table.ANSWERED_REVISION_GUIDANCE
-                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('answered_revision')
+                 if any(step['action']['tool'] == 'check_decision' and (
+                            step['action']['args'].get('answered_revision') or step['action']['args'].get('combined_reply'))
+                        for step in payload['steps']) else '') +
+                ('\n同則答覆的field_reference.combined_reply.remaining_reply已回答原待答問題。'
+                 'answered_revision是同則更正後的已答值，condition_changes是另外正式欄位更正。'
+                 '採用最後現行欄值與這兩項逐字來源，直接依原需求交付，不重問或重建原表。'
+                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('combined_reply')
                         for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +

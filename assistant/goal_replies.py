@@ -41,17 +41,28 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         goal = current['goal']
         if goal['status'] != 'needs_input' or not goal['question']:
             raise ValueError('此目標目前沒有等待補充的問題。')
+        steps = _steps(db, gid)
+        combined = decision_table.combined_reply_requested(steps, answer, goal.get('reply_sources', ()),
+                                                           goal.get('guidance_sources', ()))
+        if combined and (not current['sources_match'] or current['step_count'] + 2 > MAX_STEPS):
+            raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
         notes = goal['notes'] + goal_reply_sources.note(goal['question'], answer)
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
+        if combined:
+            replies = goal_reply_sources.read(db, gid, notes)
+            args = {'field_reference': replies[-1]['citation'], 'combined_reply': True}
+            observation = decision_table.observe(args, steps, replies, goal.get('guidance_sources', ()))
+            action = {'tool': 'check_decision', 'args': args, 'note': '分別保存同則已答項更正、剩餘答覆及正式欄位更正'}
+            _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
         review = goal.get('reference_review')
         if current.get('reference_partial_reply') and (kind := decision_table.partial_reply_kind(_steps(db, gid), answer)):
             _save_partial_followup(db, current, notes, kind, review)
             return _snapshot(db, sid, gid)
-        if 'answered_reference_review' in goal:
+        if not combined and 'answered_reference_review' in goal:
             append_answered_revision(db, current, notes)
-        elif review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
+        elif not combined and review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
             append_waiting_recheck(db, current, notes)
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
                    (notes, gid, sid))

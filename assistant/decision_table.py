@@ -87,6 +87,9 @@ _NATURAL_ANSWERED_CHANGE = (
     r'(?:(?:我)?(?:剛才|剛剛|先前|之前)?(?:說錯了|填錯了|記錯了|寫錯了)[，,] *'
     r'(?:應該是|正確是|正確應為|應改為|改成|改為)|(?:正式)?(?:改成|改為|更正為)) *'
     r'(?P<value>[^\r\n，,；;。]+)')
+_COMBINED_CORRECTION = re.compile(_NATURAL_ANSWERED_CHANGE)
+_COMBINED_CLAUSE = re.compile(
+    r"""(?P<clause>(?:「[^「」\r\n]*」|『[^『』\r\n]*』|"[^"\r\n]*"|'[^'\r\n]*'|[^，,。；;\r\n「『"'])+)""")
 _ANSWERED_SEPARATORS = re.compile(r'[，,。；;\r\n ]*')
 
 
@@ -498,7 +501,7 @@ def validate_tool(args):
     elif isinstance(args, dict) and 'field_reference' in args:
         if (args.keys() not in ({'field_reference'}, {'field_reference', 'resolve'}, {'field_reference', 'recheck'},
                                {'field_reference', 'waiting_recheck'}, {'field_reference', 'partial_reply'},
-                               {'field_reference', 'answered_revision'})
+                               {'field_reference', 'answered_revision'}, {'field_reference', 'combined_reply'})
                 or not isinstance(args['field_reference'], str) or not _REVISION_SOURCE.fullmatch(args['field_reference'])
                 or any(args[key] is not True for key in args.keys() - {'field_reference'})):
             raise ValueError('欄位指代核對須引用已保存的補充，確認欄名時另用resolve。')
@@ -972,6 +975,11 @@ def _recheck_reference(base_step, base, source):
     update = _natural_condition(base, clauses[0]) if len(clauses) == 1 else None
     if update is None or update[1] is None:
         raise ValueError('請用一個完整欄名及原表新值明確更正，例如「入口正式改為南口」。')
+    return _update_reference(base_step, base, update, _source_excerpt(source, clauses[0]))
+
+
+def _update_reference(base_step, base, update, evidence):
+    pending = base['pending_field_reference']
     field, value = update
     candidates = [branch['field'] for branch in pending['branches']]
     prior_overwritten = pending.get('overwritten_fields', ())
@@ -985,7 +993,7 @@ def _recheck_reference(base_step, base, source):
     if all(result['status'] == 'no_match' for result in results):
         raise ValueError('這個更正與所有原候選分支不相容，請核對原條件。')
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'change': changes[0],
-               'evidence': _source_excerpt(source, clauses[0])}
+               'evidence': evidence}
     proof = {**pending, 'branches': branches, 'recheck': receipt}
     if overwritten:
         proof['overwritten_fields'] = overwritten
@@ -1199,6 +1207,13 @@ def _answered_waiting(steps):
     return None
 
 
+def _answered_target(target, partial):
+    if partial['item'] == 'field':
+        return target in ('已答欄名', '第一筆欄名', '欄名')
+    return target == '已答補問' or any(question.fullmatch(partial['question']) and target in aliases
+                                    for question, aliases, _ in _NATURAL_REMAINING)
+
+
 def _answered_change(content, partial):
     match = _ANSWERED_CHANGE.fullmatch(content)
     context = []
@@ -1220,13 +1235,7 @@ def _answered_change(content, partial):
         complete = complete and bool(_ANSWERED_SEPARATORS.fullmatch(content[offset:]))
     if match is None:
         return None
-    target = match['target']
-    if partial['item'] == 'field':
-        valid = target in ('已答欄名', '第一筆欄名', '欄名')
-    else:
-        valid = target == '已答補問' or any(question.fullmatch(partial['question']) and target in aliases
-                                        for question, aliases, _ in _NATURAL_REMAINING)
-    if valid:
+    if _answered_target(match['target'], partial):
         return {'match': match, 'context': context, 'complete': complete}
     return None
 
@@ -1341,6 +1350,117 @@ def describe_answered_review(review):
     results = '、'.join(review.get('possible_results', ()))
     result = f'目前核對結果為{results}。' if results else ''
     return f'已依 {source} 更正已答項為「{revision["value"]}」。{result}原待答問題仍保留。'
+
+
+def _combined_answer(content, start, end, proof):
+    partial = proof['partial_reply']
+    if partial['item'] == 'remaining':
+        match = _NAMED_FIELD_REPLY.fullmatch(content, start, end)
+        fields = {branch['field'] for branch in proof['branches']}
+        return match if match and _unquote_value(match['value']) in fields else None
+    formats = next((formats for question, _, formats in _NATURAL_REMAINING
+                    if question.fullmatch(partial['next_question'])), ())
+    return next((match for pattern in formats if (match := pattern.fullmatch(content, start, end))
+                 and not _UNCERTAIN_REMAINING.search(match['value'])), None)
+
+
+def _combined_parts(content, proof, base):
+    offset = 0
+    corrections, answers, updates, retained, unknown = [], [], [], [], []
+    while offset < len(content):
+        offset = _ANSWERED_SEPARATORS.match(content, offset).end()
+        if offset == len(content):
+            break
+        proposal = _UNADOPTED_SENTENCE.match(content, offset)
+        correction = _COMBINED_CORRECTION.match(content, offset) if proposal is None else None
+        if proposal:
+            retained.append(proposal)
+            offset = proposal.end()
+        elif correction and _answered_target(correction['target'], proof['partial_reply']):
+            corrections.append(correction)
+            offset = correction.end()
+        else:
+            clause = _COMBINED_CLAUSE.match(content, offset)
+            if clause is None:
+                unknown.append(content[offset:])
+                break
+            update = _natural_condition(base, clause['clause'].strip())
+            end = clause.end() - len(clause['clause']) + len(clause['clause'].rstrip())
+            answer = _combined_answer(content, clause.start(), end, proof)
+            if update and update[1] is not None:
+                updates.append((clause, update))
+            elif answer:
+                answers.append(answer)
+            else:
+                unknown.append(clause['clause'])
+            offset = clause.end()
+    if not corrections:
+        return None
+    if len(corrections) != 1 or len(answers) != 1 or unknown:
+        partial = proof['partial_reply']
+        choices = '、'.join(branch['field'] for branch in proof['branches'])
+        hint = f'請確認一個完整候選欄名（{choices}）。' if partial['item'] == 'remaining' else '請給一個明確的補問答案。'
+        raise ValueError(f'請先回答原待答問題「{partial["next_question"]}」。{hint}'
+                         '同則只更正已答項一次，其他未核對內容請先分開確認。原問題及草稿仍保留。')
+    if len({update[0] for _, update in updates}) != len(updates):
+        raise ValueError('同則正式欄位更正不能重複指定同一欄，請先確認一個新值。')
+    return corrections[0], answers[0], updates, retained
+
+
+def combined_reply_requested(steps, answer, replies=(), guidance=()):
+    waiting = _answered_waiting(steps)
+    if not waiting:
+        return False
+    original = _recheck_saved(steps[:-2], replies, guidance)[0][1]
+    return _combined_parts(answer, waiting[0], original) is not None
+
+
+def _apply_combined_reply(args, previous, sequence, steps, replies, guidance):
+    waiting = _answered_waiting(steps)
+    if not waiting or previous is None or previous[0] != sequence - 2 or waiting[1]['sequence'] != sequence - 1:
+        raise ValueError('同則更正與答覆須緊接原分項紀錄及剩餘問題。')
+    proof, ask = waiting
+    source = next((item for item in replies if item['ask_sequence'] == ask['sequence']), None)
+    if not source or source['citation'] != args['field_reference'] or source['question'] != ask['action']['args']['question']:
+        raise ValueError('同則更正與答覆須引用原問題保存的真實答覆。')
+    base_step, plan = _recheck_saved(steps[:-2], replies, guidance)[0]
+    parts = _combined_parts(source['answer'], proof, plan)
+    if parts is None:
+        raise ValueError('此答覆沒有明確更正原先已答的項目。')
+    correction, answer, updates, retained = parts
+    partial = proof['partial_reply']
+    changes = []
+    prior = [item for item in guidance if item['steps_seen'] == ask['sequence'] and not _unadopted_note(item)]
+    value = proof['field'] if partial['item'] == 'field' else _unquote_value(partial['quote'])
+    if prior:
+        _, checked = _apply_answered_revision({'field_reference': prior[-1]['citation']}, previous, sequence, steps, replies, guidance)
+        revision = checked['field_reference']['answered_revision']
+        changes = revision['changes']
+        value = revision['value']
+    if partial['item'] == 'remaining' and correction['target'] in plan['conditions']:
+        raise ValueError('這個名稱也在決策表中，請明寫「已答補問改為」以指定已答項。')
+    new_value = _answered_value(correction, proof)
+    change = {'before': value, 'after': new_value, 'evidence': _reply_line(source, correction, 'value')}
+    if retained:
+        change['retained'] = [{'kind': 'proposal', **_reply_line(source, token, 0)} for token in retained]
+    changes = [*changes, change]
+    condition_changes = []
+    for token, update in updates:
+        plan, checked = _update_reference(base_step, plan, update, _reply_line(source, token, 'clause'))
+        pending = checked['field_reference']
+        condition_changes.append(pending['recheck'])
+        plan = {**plan, 'pending_field_reference': pending}
+    remaining = {'question': partial['next_question'], 'value': _unquote_value(answer['value']),
+                 **_reply_line(source, answer, 'value')}
+    field = new_value if partial['item'] == 'field' else remaining['value']
+    current, result = _apply_reference_choice(plan, field)
+    revision = {'ask_sequence': ask['sequence'], 'item': partial['item'], 'question': partial['question'],
+                'value': new_value, 'changes': changes}
+    combined = {'ask_sequence': ask['sequence'], 'remaining_reply': remaining, 'condition_changes': condition_changes}
+    proof = {**plan['pending_field_reference'], 'status': 'applied', 'field': field, 'partial_reply': partial,
+             'answered_revision': revision, 'combined_reply': combined,
+             'confirmation': change['evidence'] if partial['item'] == 'field' else _reply_line(source, answer, 'value')}
+    return current, {**result, 'field_reference': proof}
 
 
 def waiting_reference_review(steps, replies, guidance):
@@ -1531,6 +1651,8 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 
 
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
+    if args.get('combined_reply'):
+        return _apply_combined_reply(args, previous, sequence, steps, replies, guidance)
     if args.get('answered_revision'):
         return _apply_answered_revision(args, previous, sequence, steps, replies, guidance)
     if args.get('partial_reply'):
@@ -1641,6 +1763,11 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 proof = step['observation']['field_reference']['answered_revision']
                 source = next(item for item in guidance if item['citation'] == args['field_reference'])
                 _validate_waiting_reply(db, gid, proof['ask_sequence'], source, replies_present)
+            if args.get('combined_reply'):
+                ask = step['observation']['field_reference']['combined_reply']['ask_sequence']
+                prior = [source for source in guidance if source['steps_seen'] == ask]
+                if prior:
+                    _validate_waiting_reply(db, gid, ask, prior[-1], replies_present)
             if not args.get('waiting_recheck'):
                 continue
             proof = step['observation']['field_reference']
