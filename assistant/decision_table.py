@@ -40,6 +40,9 @@ NATURAL_UPDATE_GUIDANCE += '''
 NATURAL_UPDATE_GUIDANCE += '''
 原表用明列domains和rows，且有可行組合未公布結果或同一組有多個結果時，送本輪alternatives請同時填"track_coverage":true在alternatives內。原表的缺列仍缺，互相衝突的來源仍並列。coverage_cases逐組列已知結果、缺規則或衝突，recorded_results是各組原有記載。若使用者要本次確定結果，question可先確認能決定是否或哪一組須補規則的欄位；先交可核對部分，再只問該欄。等確定仍適用的缺口才補問規則，不能把未公布當成不可能。max_questions只計確認條件。只要條件報告或禁止追問時，各組照實交付，不問。'''
 
+NATURAL_UPDATE_GUIDANCE += '''
+本輪配對已確認唯一完整組合，仍缺原表結果或有同組衝突時，只問該組正式規則。可請使用者用整則原話「核對#6｜補規則｜週四｜6｜西廳」或「核對#6｜選規則｜側門｜有｜北桌」，核對編號用最後實際check_decision步驟，選項照原表欄序及原值，最後一格是處置。補規則用於缺列，選規則限同組原有結果。收到完整格式後只送{"revision":"[補充#7]"}或實際更正編號，不重建原表。current_row_rules列本輪採用、原列及正式補充。原表的記載與其他組的缺口仍可核對。沒有唯一生效組合或只需條件報告時，按原要求處理。'''
+
 
 def _label(value):
     if (not isinstance(value, str) or not 1 <= len(value) <= 120 or value != value.strip()
@@ -322,7 +325,7 @@ def _case_questions(conditions, cases, *, distinguish_gaps=False):
     return result
 
 
-def calculate(args, *, alternatives=None, require_all=False):
+def calculate(args, *, alternatives=None, require_all=False, row_rules=()):
     declared, excluded = validate(args)
     conditions, known = args['conditions'], args['known']
     indices = {name: index for index, name in enumerate(conditions)}
@@ -340,7 +343,8 @@ def calculate(args, *, alternatives=None, require_all=False):
         result = _calculate_priority(args, [row for row in declared if matches(row)], excluded)
     else:
         result = _calculate_rows(args, declared, excluded, matches,
-                                 track_coverage=bool(alternatives and alternatives.get('track_coverage')))
+                                 track_coverage=bool(alternatives and alternatives.get('track_coverage')),
+                                 row_rules=row_rules)
     if alternatives is None:
         return result
 
@@ -354,9 +358,13 @@ def calculate(args, *, alternatives=None, require_all=False):
     return {**result, 'current_alternatives': {**alternatives, 'remaining_cases': remaining, 'implied_known': implied}}
 
 
-def _calculate_rows(args, declared, excluded, matches, *, track_coverage=False):
+def _calculate_rows(args, declared, excluded, matches, *, track_coverage=False, row_rules=()):
     conditions, rows = args['conditions'], args['rows']
-    active = tuple(index for index, row in enumerate(rows) if matches(row['when']))
+    selected = {tuple(rule['when']): rule['row'] for rule in row_rules}
+    if row_rules:
+        rows = rows + [{'when': rule['when'], 'result': rule['result']} for rule in row_rules if not rule['original_rows']]
+    active = tuple(index for index, row in enumerate(rows)
+                   if matches(row['when']) and selected.get(tuple(row['when']), index + 1) == index + 1)
 
     def outcomes(indices):
         return list(dict.fromkeys(rows[index]['result'] for index in indices))
@@ -409,6 +417,7 @@ def _calculate_rows(args, declared, excluded, matches, *, track_coverage=False):
 _REVISION_SOURCE = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
 _SCENARIO_START = re.compile(r'^(?:假設|假如|如果|若|(?:(?:另|只|僅)(?:做|想|供)?)?試算)')
 _PAIR_LIMIT = re.compile(r'(?:只|僅)(?:有|剩|可能|限|能)|限於|二選一')
+_ROW_REVISION_KINDS = {'補規則': 'row_completion', '選規則': 'row_selection'}
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 
 
@@ -572,8 +581,12 @@ def _result_summary(result):
 def _current_result(plan, *, require_all=False):
     if 'current_alternatives' not in plan:
         return calculate(plan)
-    core = {key: value for key, value in plan.items() if key != 'current_alternatives'}
-    return calculate(core, alternatives=plan['current_alternatives'], require_all=require_all)
+    core = {key: value for key, value in plan.items() if key not in {'current_alternatives', 'current_row_rules'}}
+    rules = plan.get('current_row_rules', ())
+    result = calculate(core, alternatives=plan['current_alternatives'], require_all=require_all, row_rules=rules)
+    if rules:
+        result['current_row_rules'] = [{**rule, 'applicable': rule['row'] in result['matching_rows']} for rule in rules]
+    return result
 
 
 def _revision_comparison(base, plan, changes, result):
@@ -640,6 +653,39 @@ def _revision_plan(base_step, base, text):
     return plan, changes, _current_result(plan)
 
 
+def _row_revision_plan(base_step, base, text, source):
+    parts = text.split('｜')
+    if (parts[0] != f'核對#{base_step}' or len(parts) != len(base['conditions']) + 3
+            or 'rows' not in base or 'domains' not in base or 'current_alternatives' not in base):
+        raise ValueError('本輪規則補充須以最後決策編號及原表欄序明列唯一生效組合。')
+    when = _assignment(parts[2:-1], len(base['conditions']))
+    result = parts[-1]
+    _label(result)
+    observed = _current_result(base)
+    rules = base.get('current_row_rules', [])
+    matched = set(observed['matching_rows'])
+    covered = {tuple(row['when']) for index, row in enumerate(base['rows'], 1) if index in matched}
+    covered.update(tuple(rule['when']) for rule in rules if rule['row'] in matched)
+    missing = {tuple(row) for row in observed['coverage']['missing_rows']}
+    if observed['status'] != 'incomplete_table' or covered | missing != {when}:
+        raise ValueError('只可補充目前唯一生效且仍有規則缺口的完整組合。')
+    kind = _ROW_REVISION_KINDS[parts[1]]
+    original_rows = [index for index, row in enumerate(base['rows'], 1) if tuple(row['when']) == when]
+    if kind == 'row_completion':
+        if when not in missing:
+            raise ValueError('補規則只適用原表未記載的結果。')
+        row = len(base['rows']) + sum(not rule['original_rows'] for rule in rules) + 1
+    else:
+        chosen = [index for index in original_rows if base['rows'][index - 1]['result'] == result]
+        if len(original_rows) < 2 or len(chosen) != 1:
+            raise ValueError('選規則須指定同組原有衝突結果之一。')
+        row, = chosen
+    change = {'kind': kind, 'when': list(when), 'result': result, 'row': row, 'original_rows': original_rows}
+    proof = {**change, 'citation': source['citation'], 'source_sha256': source['sha256'], 'quote': text}
+    plan = {**base, 'current_row_rules': [*rules, proof]}
+    return plan, [change], _current_result(plan)
+
+
 def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_if_sources):
     if previous is None:
         raise ValueError('局部重算需有同一目標已保存的決策核對。')
@@ -647,7 +693,13 @@ def _apply_revision(args, previous, sequence, replies, guidance, rejected, what_
     source, text, replaces, citations = _revision_source(args['revision'], base_step, sequence, replies, guidance,
                                                          rejected, what_if_sources)
     try:
-        plan, changes, result = _revision_plan(base_step, base, text)
+        parts = text.split('｜', 2)
+        if len(parts) > 1 and parts[1] in _ROW_REVISION_KINDS:
+            if replaces is not None or len(text.splitlines()) != 1:
+                raise ValueError('本輪規則補充須為一則完整單行原話。')
+            plan, changes, result = _row_revision_plan(base_step, base, text, source)
+        else:
+            plan, changes, result = _revision_plan(base_step, base, text)
         if (replaces is not None or len(changes) > 1) and result['status'] == 'no_match':
             raise ValueError('新條件與宣告的可行情境不相容，整批未套用。')
         if 'current_alternatives' in base and result['status'] == 'no_match':
@@ -710,6 +762,7 @@ def _apply_known_update(args, previous, sequence, replies, guidance):
     plan, changes = _updated_plan(base, args['known_update'])
     if 'alternatives' in args:
         plan['current_alternatives'] = _bind_alternatives(args['alternatives'], plan, source)
+        plan.pop('current_row_rules', None)
     result = _current_result(plan, require_all='alternatives' in args)
     receipt = {'base_step': base_step, 'base_sha256': digest(base), 'citation': args['source'],
                'source_sha256': source['sha256'], 'changes': changes}

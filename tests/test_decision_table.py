@@ -832,6 +832,82 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(result['coverage_cases'][0]['recorded_results'], ['北廳', '南廳'])
         self.assertTrue(all(branch['needs_evidence'] for branch in result['question']['branches']))
 
+    def test_formal_row_revision_is_bound_to_one_current_assignment_and_rechecked(self):
+        plan = {'conditions': ['日期', '件數'], 'known': {'日期': '週二', '件數': '6'},
+                'domains': {'日期': ['週二', '週四'], '件數': ['6', '9']}, 'excluded': [],
+                'rows': [{'when': ['週二', '6'], 'result': '東廳'}, {'when': ['週二', '9'], 'result': '北廳'},
+                         {'when': ['週二', '9'], 'result': '南廳'}, {'when': ['週四', '9'], 'result': '中廳'}]}
+        cases = [{'日期': '週二', '件數': '9'}, {'日期': '週四', '件數': '6'}]
+        quote = '本輪只有週二9件或週四6件'
+        pairs = {'cases': cases, 'quote': quote, 'track_coverage': True}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '只補本輪確定分支的規則')
+
+            def run(*actions):
+                return autonomy.run_goal(store, sid, gid, ScriptedEngine(*actions))
+
+            def reply(text):
+                waiting = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, text, expected_fingerprint=waiting['fingerprint'])
+
+            def verify_rejected(goal, text, error):
+                replies = goal['reply_sources']
+                with self.assertRaisesRegex(ValueError, error):
+                    decision_table.observe({'revision': replies[-1]['citation']}, goal['steps'],
+                                           [*replies[:-1], {**replies[-1], 'answer': text}])
+
+            run(action('check_decision', **plan), action('ask', question='本輪配對？'))
+            reply('撤回原日期和件數。' + quote + '。')
+            run(action('check_decision', known_update={'日期': None, '件數': None}, source='[補充#2]',
+                       alternatives=pairs), action('ask', question='正式日期？'))
+            reply('正式確認週四。')
+            ambiguous = autonomy.get_goal(store, sid, gid)
+            verify_rejected(ambiguous, '核對#3｜補規則｜週四｜6｜西廳', '唯一生效')
+            run(action('check_decision', known_update={'日期': '週四'}, source='[補充#4]'),
+                action('ask', question='週四6件用哪個廳？'))
+            reply('核對#5｜補規則｜週四｜6｜西廳')
+            pending = autonomy.get_goal(store, sid, gid)
+            verify_rejected(pending, '核對#3｜補規則｜週四｜6｜西廳', '最後決策')
+            verify_rejected(pending, '核對#5｜補規則｜週二｜9｜西廳', '唯一生效')
+            filled = run(action('check_decision', revision='[補充#6]'), action('ask', question='日期有變嗎？'))
+            receipt = filled['steps'][6]['observation']
+            self.assertEqual(receipt['possible_results'], ['西廳'])
+            self.assertEqual(receipt['matching_rows'], [5])
+            self.assertEqual(receipt['current_row_rules'][0]['original_rows'], [])
+            self.assertTrue(receipt['current_row_rules'][0]['applicable'])
+            reply('本輪改為週二，配對照舊。')
+            moved = run(action('check_decision', known_update={'日期': '週二'}, source='[補充#8]'),
+                        action('ask', question='週二9件採北廳或南廳？'))
+            self.assertFalse(moved['steps'][8]['observation']['current_row_rules'][0]['applicable'])
+            reply('核對#9｜選規則｜週二｜9｜南廳')
+            pending = autonomy.get_goal(store, sid, gid)
+            verify_rejected(pending, '核對#9｜選規則｜週二｜9｜西廳', '原有衝突結果')
+            chosen = run(action('check_decision', revision='[補充#10]'), action('ask', question='有新一輪嗎？'))
+            choice = chosen['steps'][10]['observation']
+            self.assertEqual(choice['possible_results'], ['南廳'])
+            self.assertEqual(choice['matching_rows'], [3])
+            self.assertEqual(choice['revision']['change']['original_rows'], [2, 3])
+            reply('撤回原日期。新' + quote + '。')
+            final = run(action('check_decision', known_update={'日期': None}, source='[補充#12]', alternatives=pairs),
+                        action('finish', report='新一輪各組仍待確認。'))
+            self.assertNotIn('current_row_rules', final['steps'][12]['observation'])
+            self.assertEqual(final['steps'][12]['observation']['coverage']['missing_rows'], [['週四', '6']])
+            saved, _, _ = decision_table._recheck_saved(final['steps'], final['reply_sources'], ())
+            self.assertEqual(saved[1]['rows'], plan['rows'])
+            archive = create_backup(store.path)
+            restore_backup(archive['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), final)
+            choice['current_row_rules'][1]['original_rows'] = [3]
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=11',
+                           (json.dumps(choice, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_natural_update_binds_two_saved_excerpts_and_rechecks_restored_offsets(self):
         plan = {'conditions': ['入口'], 'domains': {'入口': ['開', '關']}, 'known': {'入口': '關'},
                 'excluded': [], 'rows': [{'when': ['開'], 'result': '內廊'}, {'when': ['關'], 'result': '等待'}]}
