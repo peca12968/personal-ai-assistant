@@ -19,7 +19,7 @@ class GoalGuidanceWindow:
         self.context=tk.Text(body,height=12,wrap='word',state='disabled');self.context.pack(fill='x',padx=12)
         self.layout.wrapped_label(body,text='新的補充（最多4000字，全部補充累計最多12000字）：',padding=12).pack(fill='x')
         self.content=tk.Text(body,height=5,wrap='word');self.content.pack(fill='x',padx=12)
-        self.layout.wrapped_label(body,text='若正在工作，先停止並等候結束。此處不增加工具權限、不改參考文件、不覆寫已存文件，也不清除尚待回答的問題；需要回答問題時，仍使用原視窗的「回答目前問題」。已有成果請建立下一階段。',padding=12).pack(fill='x')
+        self.layout.wrapped_label(body,text='若正在工作，先停止並等候結束。需要回答問題時，使用原視窗的「回答目前問題」。若已交付共同決策結果且欄名仍待查，可更正一個獨立欄位；其他已交付的成果請建立下一階段。',padding=12).pack(fill='x')
         controls=ttk.Frame(body,padding=12);controls.pack(fill='x')
         self.save_button=ttk.Button(controls,text='追加補充到此目標',command=self.save,state='disabled');self.save_button.pack(side='left')
         self.reload_button=ttk.Button(controls,text='重新載入目標',command=self.reload);self.reload_button.pack(side='left',padx=8)
@@ -42,8 +42,9 @@ class GoalGuidanceWindow:
     def save(self):
         if self.current is None:return
         try:
-            guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
+            saved = guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
+            rechecked = 'reference_report' in self.current
             self.content.delete('1.0','end');self.reload();self.changed()
-            self.notice.set('已追加保存；尚未執行。可回原視窗處理待回答問題或開始／接續。')
+            self.notice.set(saved['goal']['notice'] if rechecked else '已追加保存。可回原視窗處理待回答問題或開始／接續。')
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:
             messagebox.showerror('無法保存補充',str(exc),parent=self.window)

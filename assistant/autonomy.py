@@ -533,6 +533,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.NATURAL_UPDATE_GUIDANCE
                  if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
+                ('\n' + decision_table.RECHECK_GUIDANCE
+                 if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('recheck')
+                        for step in payload['steps']) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE

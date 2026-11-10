@@ -306,7 +306,10 @@ class AutonomousWindow:
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
         self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
-        self.guidance.configure(state='normal' if not self.busy and goal['status'] in ('pending','paused','failed','needs_input') else 'disabled')
+        reference_report = (goal['status'] == 'report_ready' and not goal['file_delivery']
+                            and autonomy.decision_table.reference_report(goal['steps'], goal['result']))
+        self.guidance.configure(state='normal' if not self.busy and (
+            reference_report or goal['status'] in ('pending','paused','failed','needs_input')) else 'disabled')
         self.follow.configure(state='normal' if not self.busy and autonomy.goal_stages.eligible(goal['status'], len(goal['steps'])) else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
         self.discuss.configure(state='normal' if self.discuss_report and not self.busy and goal['status'] == 'report_ready' else 'disabled')
@@ -316,7 +319,9 @@ class AutonomousWindow:
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if goal['result']:
-            lines += ['成果（待你確認）：', goal['result'], '此目標已交付成果；後續工作請保存新目標。']
+            lines += ['成果（待你確認）：', goal['result'],
+                      '如有獨立欄位更正，可按「補充／更正此目標」重核原候選分支。' if reference_report
+                      else '此目標已交付成果；後續工作請保存新目標。']
         if goal['work_plan']:
             lines += [work_plan.describe(goal['work_plan'])]
         if scope := goal.get('decision_rule_scope'):

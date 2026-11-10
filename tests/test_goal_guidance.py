@@ -5,10 +5,11 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant import autonomy as a, goal_guidance as g, goal_review
+from assistant import autonomy as a, goal_guidance as g, goal_replies, goal_review
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant
@@ -35,6 +36,60 @@ class GoalGuidanceTests(unittest.TestCase):
         self.assertEqual(result['step_count'],1)
         self.assertFalse(after['file_delivery']);self.assertIsNone(after['csv_source'])
         self.assertEqual(self.store.messages(self.sid),[])
+
+    def test_report_correction_rechecks_the_unresolved_branches_atomically(self):
+        fields = ['配送班別', '複核班別', '入口']
+        domains = {fields[0]: ['早班', '晚班'], fields[1]: ['早班', '晚班'], '入口': ['北口', '南口']}
+        rows = [{'when': list(values), 'result': result} for values, result in zip(
+            product(*domains.values()), ('前台', '前台', '覆核席', '丙台', '覆核席', '乙台', '後台', '後台'))]
+        gid = a.create_goal(self.store, self.sid, '核對班別與入口')
+
+        def run(*actions):
+            return a.run_goal(self.store, self.sid, gid, ScriptedEngine(*actions))
+
+        def reply(content):
+            snapshot = reply_snapshot(self.store, self.sid, gid)
+            return goal_replies.save(self.store, self.sid, gid, content, expected_fingerprint=snapshot['fingerprint'])
+
+        run(action('check_decision', conditions=fields, domains=domains, rows=rows, excluded=[],
+                   known=dict(zip(fields, ('早班', '早班', '北口')))), action('ask', question='本輪更正？'))
+        reply('正式改成晚班。')
+        first = run(action('check_decision', field_reference='[補充#2]'),
+                    action('finish', report='覆核席，欄位待查。[補充#2]'))
+        observed = g.snapshot(self.store, self.sid, gid)
+
+        def amend(content):
+            return g.save(self.store, self.sid, gid, content, expected_fingerprint=observed['fingerprint'])
+
+        self.assertEqual(observed['reference_report']['status'], 'agreement')
+        with self.assertRaisesRegex(ValueError, '待確認的候選'):
+            amend('配送班別正式改為晚班。')
+        with self.assertRaisesRegex(ValueError, '完整欄名'):
+            amend('有人提議「入口正式改為南口」，未採用。')
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), first)
+        amend('入口正式改為南口。')
+        with self.assertRaisesRegex(ValueError, '重新載入'):
+            amend('入口正式改為南口。')
+        state = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual((state['status'], state['result'], state['steps'][:-1]), ('paused', '', first['steps']))
+        checked = state['steps'][-1]['observation']['field_reference']
+        self.assertEqual(checked['status'], 'needs_field')
+        self.assertEqual([branch['possible_results'] for branch in checked['branches']], [['乙台'], ['丙台']])
+        self.assertEqual(checked['recheck']['change'], {'field': '入口', 'before': '北口', 'after': '南口'})
+        self.assertEqual(checked['recheck']['evidence']['quote'], '入口正式改為南口')
+        run(action('ask', question='改成晚班的是配送或複核班別？', partial_result='乙台或丙台。[更正#1]'))
+        reply('複核班別')
+        final = run(action('check_decision', field_reference='[補充#6]', resolve=True),
+                    action('finish', report='丙台。[補充#2] [更正#1] [補充#6]'))
+        self.assertEqual(final['steps'][-2]['observation']['possible_results'], ['丙台'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored')
+        restored = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), final)
+        with restored.connect() as db:
+            db.execute('DELETE FROM autonomous_steps WHERE goal_id=? AND sequence=4', (gid,))
+        with self.assertRaisesRegex(ValueError, '成果更正須緊接'):
+            validate_database(restored.path)
 
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
         self.save('PRIVATE_STEERING：更正為12人，每人90元。')

@@ -112,6 +112,17 @@ def change_while_waiting(store, sid, gid, state, change):
     return result
 
 
+def report_change(case):
+    if 'report_change' not in case:
+        return None
+    change = case['report_change']
+    if not isinstance(change, dict) or change.keys() not in ({'correction'}, {'correction', 'reply'}):
+        raise ValueError('成果更正案例須指定正式補充，可另有一次釐清答覆。')
+    for value in change.values():
+        autonomy.text(value, 4000)
+    return change
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -124,6 +135,7 @@ def main():
             autonomy.text(case['prompt'], 4000)
             replies_for(case)
             waiting_change(case)
+            report_change(case)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -211,6 +223,30 @@ def main():
                     assert turn['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
                     save_report(trace_path, row)
                     state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                if change := report_change(case):
+                    if state['status'] != 'report_ready':
+                        raise ValueError('未交付前一份成果，未提交成果更正。')
+                    correction = row['report_change'] = {'before': state, 'content': change['correction']}
+                    observed = goal_guidance.snapshot(store, sid, gid)
+                    try:
+                        correction['saved'] = goal_guidance.save(store, sid, gid, change['correction'],
+                                                                 expected_fingerprint=observed['fingerprint'])
+                    except ValueError as exc:
+                        correction['rejected'] = str(exc)
+                        assert autonomy.get_goal(store, sid, gid) == state
+                    else:
+                        assert correction['saved']['goal']['status'] == 'paused'
+                        save_report(trace_path, row)
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                        if 'reply' in change:
+                            correction['asked'] = state
+                            if state['status'] != 'needs_input':
+                                raise ValueError('更正後未停下釐清，未提交預設欄名。')
+                            observed = goal_replies.snapshot(store, sid, gid)
+                            correction['reply'] = goal_replies.save(store, sid, gid, change['reply'],
+                                                                  expected_fingerprint=observed['fingerprint'])
+                            save_report(trace_path, row)
+                            state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
                 row['final'] = state
                 row['answer'] = row['final']['result'] or row['final']['question'] or row['final']['notice']
             except (ValueError, EngineError) as exc:
