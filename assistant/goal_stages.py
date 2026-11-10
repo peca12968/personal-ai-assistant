@@ -170,6 +170,8 @@ def activity(row):
         if 'priority_cases' in decision:
             outcome.update(status=decision['status'], priority_case_count=len(decision['priority_cases']),
                            needs_evidence=decision.get('needs_evidence', False), decision_rows_omitted=True)
+            if 'disputed_relations' in decision:
+                outcome['disputed_relation_count'] = len(decision['disputed_relations'])
         else:
             outcome.update(status=decision['status'], matching_row_count=len(decision.get('matching_rows', [])),
                            decision_rows_omitted=True)

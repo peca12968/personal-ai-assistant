@@ -217,6 +217,8 @@ python scripts/review_understanding.py --report data/evaluations/goal-drafts-new
 
 以 evals/goal_priority_rules.json 核對高級覆蓋、重疊規則的先問欄位、同級衝突與低分類直接交付。逐條比對模型傳入的優先級、原文條件與已確認值。另以獨立枚舉驗證相容情境、規則採用及最少追問。程式核算輪數只含欄位，補正式來源另計。
 
+以 evals/goal_partial_rule_precedence.json 比對成對優先關係、未觸發的中間規則、循環與不受影響的分支。逐條核對模型送入的方向與正式補充。獨立枚舉則分開驗證原連線、循環排除、可推導關係及未被覆蓋的候選；工具核算以明文關係與已知條件輸入為準。
+
 
 ## 公曆月份規則與實際日期目標（v0.50）
 

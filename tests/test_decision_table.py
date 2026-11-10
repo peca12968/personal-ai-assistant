@@ -162,6 +162,71 @@ class DecisionTableTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '決策表結果'):
                 validate_database(restored.path)
 
+    def test_partial_precedence_transmits_only_undisputed_links(self):
+        plan = {'conditions': ['標籤', '門證'], 'domains': {'標籤': ['有', '無'], '門證': ['有', '無']},
+                'known': {'標籤': '有', '門證': '無'}, 'excluded': [],
+                'rules': [{'when': {'標籤': '有'}, 'result': '藍席'},
+                          {'when': {'門證': '有'}, 'result': '銀席'},
+                          {'when': {}, 'result': '灰席'}],
+                'precedence': [[1, 2], [2, 3]]}
+        resolved = decision_table.calculate(plan)
+        self.assertEqual((resolved['status'], resolved['possible_results']), ('resolved', ['藍席']))
+        self.assertEqual(resolved['priority_cases'][0]['overridden_rules'], [3])
+        disputed = decision_table.calculate({**plan, 'precedence': [[1, 2], [2, 3], [2, 1]]})
+        self.assertEqual(disputed['disputed_relations'], [[1, 2], [2, 1]])
+        self.assertEqual(disputed['status'], 'incomplete_table')
+        case = disputed['priority_cases'][0]
+        self.assertEqual((case['winning_rules'], case['unranked_pairs'], case['cyclic_pairs']),
+                         ([1, 3], [[1, 3]], []))
+        self.assertNotIn('question', disputed)
+
+    def test_partial_precedence_cycle_only_affects_competing_assignments(self):
+        plan = {'conditions': ['級別'], 'domains': {'級別': ['高', '低']}, 'known': {}, 'excluded': [],
+                'rules': [{'when': {'級別': '高'}, 'result': '東廳'},
+                          {'when': {'級別': '高'}, 'result': '西廳'},
+                          {'when': {'級別': '低'}, 'result': '前台'}],
+                'precedence': [[1, 2], [2, 1]]}
+        report = decision_table.calculate(plan)
+        self.assertEqual(report['priority_cases'][0]['cyclic_pairs'], [[1, 2]])
+        self.assertEqual(report['priority_cases'][0]['unranked_pairs'], [])
+        self.assertEqual(report['question']['branches'], [
+            {'value': '高', 'max_questions': 0, 'possible_results': [], 'needs_evidence': True},
+            {'value': '低', 'max_questions': 0, 'possible_results': ['前台'], 'needs_evidence': False}])
+        low = decision_table.calculate({**plan, 'known': {'級別': '低'}})
+        self.assertEqual((low['status'], low['possible_results']), ('resolved', ['前台']))
+        self.assertEqual(low['disputed_relations'], [[1, 2], [2, 1]])
+        same = {**plan, 'known': {'級別': '高'}, 'rules': [plan['rules'][0],
+                {**plan['rules'][1], 'result': '東廳'}, plan['rules'][2]]}
+        self.assertEqual(decision_table.calculate(same)['possible_results'], ['東廳'])
+
+    def test_partial_precedence_validation_and_backup_recheck(self):
+        plan = {'conditions': ['級別'], 'domains': {'級別': ['高']}, 'known': {}, 'excluded': [],
+                'rules': [{'when': {}, 'result': '甲'}, {'when': {}, 'result': '乙'}],
+                'precedence': [[1, 2], [2, 1]]}
+        for edges in ([[1, 1]], [[True, 2]], [[1, 3]], [[1, 2], [1, 2]], [[1]], {'1': 2}):
+            with self.subTest(edges=edges), self.assertRaises(ValueError):
+                decision_table.calculate({**plan, 'precedence': edges})
+        with self.assertRaises(ValueError):
+            decision_table.calculate({**plan, 'rules': [{**rule, 'priority': 0} for rule in plan['rules']]})
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '核對優先依據')
+            state = autonomy.run_goal(store, sid, gid, ScriptedEngine(
+                action('check_decision', **plan), action('finish', report='甲、乙仍待核對。')))
+            backup = create_backup(store.path)
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), state)
+            observation = state['steps'][0]['observation']
+            observation['disputed_relations'] = []
+            with restored.connect() as db:
+                db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=1',
+                           (json.dumps(observation, ensure_ascii=False), gid))
+            with self.assertRaisesRegex(ValueError, '決策表結果'):
+                validate_database(restored.path)
+
     def test_autonomous_recheck_and_restore_preserve_rows_and_receipts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

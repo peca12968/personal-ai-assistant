@@ -1,0 +1,88 @@
+[
+  {
+    "id": "ask_only_between_remaining_rule_candidates",
+    "category": "goal_partial_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "櫻鐵批 18 件，窗口余同仁。\n封簽、東門許可、雙盒均已核對為有。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "封簽、東門許可、雙盒各有或無，各組合都可能。只採明文優先關係。\n甲條：封簽有時送甲台。\n乙條：東門許可有時送乙台。\n丙條：雙盒有時送丙台。\n已明定甲條優先於乙條。沒有其他已確定的優先關係。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1-L2] 及 [D2:L1-L5]。交櫻鐵批的去向和暫表。只詢問會影響這次去向的優先關係，收到正式補充後按同一組原規則定稿。只交文字。",
+    "criteria": [
+      "暫表保留甲台及丙台，乙條依甲優先而被覆蓋。",
+      "只問甲與丙誰優先，未把未明定當作同級或推定順序。",
+      "按正式補充採甲台，保留 18 件、余同仁及來源。"
+    ],
+    "reply": "正式確認本次甲條優先於丙條。"
+  },
+  {
+    "id": "uncontested_chain_through_inactive_rule",
+    "category": "goal_partial_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "芒河批 9 盒，窗口洪同仁。標籤有，門證無，當班為晚班。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "標籤與門證各有或無，當班為早班或晚班；各組合皆可。以下優先關係對規則無條件成立並可傳遞。\n甲條：有標籤時去藍席。\n乙條：有門證時去銀席。\n丙條：晚班去灰席。\n明定甲條優先於乙條，乙條優先於丙條。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1]、[D2:L1-L5]，依正式優先關係給芒河批定稿。說明未生效的條件與仍可沿用的優先依據。只交文字。",
+    "criteria": [
+      "採藍席，明列乙條條件未成立，無條件明文排序仍能傳遞。",
+      "保留 9 盒、洪同仁和原行，不追問。"
+    ]
+  },
+  {
+    "id": "conditional_cycle_does_not_block_unaffected_branch",
+    "category": "goal_partial_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "槐塘批 8 盤，窗口曾同仁。級別尚未核定。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "槐塘批級別高或低。只採原文中的明文優先關係。\n甲條：高級去東廳。\n乙條：高級去西廳。\n丙條：低級去前台。\n"
+      },
+      {
+        "name": "edits.txt",
+        "content": "正式記載一：甲條優先於乙條。\n正式記載二：乙條優先於甲條。兩筆未釐清。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1]、[D2:L1-L4]、[D3:L1-L2]，交槐塘批的條件式暫表，不追問。分開列出級別結論及仍有矛盾的依據。只交文字。",
+    "criteria": [
+      "高級東廳、西廳未決，明列兩筆方向相反的優先記載。",
+      "低級前台可交付，保留 8 盤、曾同仁，不追問。"
+    ]
+  },
+  {
+    "id": "disputed_link_cannot_extend_priority_to_other_rule",
+    "category": "goal_partial_rule_precedence",
+    "documents": [
+      {
+        "name": "facts.txt",
+        "content": "溪桂批 12 桶，窗口蘇同仁。貼標有，車證無，區別為外。\n"
+      },
+      {
+        "name": "rules.txt",
+        "content": "貼標、車證各有或無，區別為內或外，各組合可。只採不矛盾的無條件優先依據。\n甲條：貼標有，去甲棚。\n乙條：車證有，去乙棚。\n丙條：外區去丙棚。\n"
+      },
+      {
+        "name": "orders.txt",
+        "content": "文件一明定甲條優先於乙條，乙條優先於丙條。\n文件二明定乙條優先於甲條。兩份未確認何者有效。\n"
+      }
+    ],
+    "prompt": "查 [D1:L1]、[D2:L1-L4]、[D3:L1-L2]。只交溪桂批核對暫表，不提問。保留可確認的欄位及待核對的去向。不得用互相矛盾的優先記載推定新關係。",
+    "criteria": [
+      "乙條因車證無而不適用；甲與丙處置均適用，去向仍未決。",
+      "指出甲乙的優先記載相反，不能據此補出甲優先於丙；保留數量窗口，不追問。"
+    ]
+  }
+]
