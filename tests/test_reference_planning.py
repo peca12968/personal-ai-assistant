@@ -7,7 +7,7 @@ from unittest.mock import patch
 from assistant import autonomy as a, decision_table as d, goal_guidance, goal_replies
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
-from scripts.evaluate_goal_replies import prepare, prepare_planning
+from scripts.evaluate_goal_replies import matches_followup, prepare, prepare_planning
 from test_autonomy import ScriptedEngine, action
 
 
@@ -42,6 +42,8 @@ class ReferencePlanningTests(unittest.TestCase):
                                    reference_remaining=remaining)),max_steps=1)
                 ask = fixed['steps'][-1]
                 self.assertEqual(ask['action']['args']['question'],setup['question'])
+                self.assertTrue(matches_followup(fixed, {'reference_remaining': ['本次由誰領件？', remaining]}))
+                self.assertFalse(matches_followup(fixed, {'reference_remaining': '本次由誰領件？'}))
                 receipt = ask['observation']['reference_repair']
                 self.assertEqual(receipt['base_step'],4)
                 self.assertEqual(receipt['base_sha256'],d.digest(before['steps'][3]))
@@ -109,6 +111,7 @@ class ReferencePlanningTests(unittest.TestCase):
         self.assertEqual(original['status'],'needs_input')
         self.assertNotIn('reference_remaining',original['steps'][-1]['action']['args'])
         self.assertNotIn('reference_partial_reply',goal_replies.snapshot(store,sid,gid))
+        self.assertFalse(matches_followup(original, {'reference_remaining': setup['question'].split('\n')[1]}))
         pending=setup['before_ask']['steps']
         for question in ('請完整說明欄名與通知安排？',setup['question'].rsplit('\n',1)[0]):
             with self.subTest(question=question):

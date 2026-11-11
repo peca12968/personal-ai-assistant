@@ -112,6 +112,15 @@ def change_while_waiting(store, sid, gid, state, change):
     return result
 
 
+def question_choices(value):
+    choices = value if isinstance(value, list) else [value]
+    if not 1 <= len(choices) <= 12:
+        raise ValueError('測試答覆需指定一至十二個可接受的完整問句。')
+    for question in choices:
+        autonomy.text(question, 800)
+    return choices
+
+
 def followup_change(case, key):
     change = case.get(key)
     if key not in case:
@@ -121,8 +130,11 @@ def followup_change(case, key):
         shapes += ({'correction', 'reply', 'reply_question'},)
     if not isinstance(change, dict) or change.keys() not in shapes:
         raise ValueError('接續更正案例須指定正式補充，可另有一次釐清答覆。')
-    for value in change.values():
-        autonomy.text(value, 4000)
+    for name, value in change.items():
+        if name == 'reply_question':
+            question_choices(value)
+        else:
+            autonomy.text(value, 4000)
     return change
 
 
@@ -131,11 +143,24 @@ def partial_followups(case):
     if not isinstance(entries, list) or len(entries) > 4:
         raise ValueError('分項答覆及更正案例最多四則。')
     for entry in entries:
-        if not isinstance(entry, dict) or entry.keys() not in ({'reply'}, {'reply', 'question'}, {'correction', 'question'}):
+        if not isinstance(entry, dict) or entry.keys() not in (
+                {'reply'}, {'reply', 'question'}, {'correction', 'question'}, {'reply', 'reference_remaining'}):
             raise ValueError('分項案例須有答覆或更正。更正須指定當時的完整問句。')
-        for value in entry.values():
-            autonomy.text(value, 4000)
+        for name, value in entry.items():
+            if name in ('question', 'reference_remaining'):
+                question_choices(value)
+            else:
+                autonomy.text(value, 4000)
     return entries
+
+
+def matches_followup(state, entry):
+    if state['status'] != 'needs_input':
+        return False
+    if 'reference_remaining' in entry:
+        ask = autonomy.decision_table.compound_reference_ask(state['steps'])
+        return bool(ask and ask['action']['args']['reference_remaining'] in question_choices(entry['reference_remaining']))
+    return 'question' not in entry or state['question'] in question_choices(entry['question'])
 
 
 def planning_setup(case):
@@ -309,7 +334,7 @@ def main():
                     if state['status'] == 'paused':
                         state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
                     elif (state['status'] == 'needs_input' and 'reply' in change
-                          and state['question'] == change.get('reply_question', state['question'])):
+                          and state['question'] in question_choices(change.get('reply_question', state['question']))):
                         observed = goal_replies.snapshot(store, sid, gid)
                         correction['reply'] = goal_replies.save(store, sid, gid, change['reply'],
                                                               expected_fingerprint=observed['fingerprint'])
@@ -320,7 +345,7 @@ def main():
                     for entry in partial:
                         turn = {'before': state, 'input': entry}
                         row['partial_followup'].append(turn)
-                        if state['status'] != 'needs_input' or state['question'] != entry.get('question', state['question']):
+                        if not matches_followup(state, entry):
                             turn['skipped'] = True
                             break
                         observed = goal_replies.snapshot(store, sid, gid)

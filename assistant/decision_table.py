@@ -52,7 +52,13 @@ NATURAL_UPDATE_GUIDANCE += '''
 RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
 
-WAITING_REFERENCE_GUIDANCE = '''原欄名只用來區分決策結果時，ask的question可逐字使用field_reference_question，分支放在partial_result。另有一項與欄名、分支均無關的必要補問，且使用者允許分項時，將完整獨立問句填reference_remaining，question依序接上field_reference_question、換行、該獨立問句、換行、「請分兩行回答，先回完整欄名，再答補問。」。精確分項問句必須有reference_remaining。漏標記被拒時，保持原question補上該欄即可直接重試，程式會核對原核對及失敗紀錄的連結；條件或問句改變時先重新核對。若要求確定歷史欄名、補問相依或要求維持整題，使用一般ask。field_reference.waiting_recheck是等待期間的重核，原暫表是歷史。若欄名已無必要，原題撤下；有remaining_question時，其後新題及其回答只對應獨立補問，不能用來resolve。若仍有分歧且原問已有欄名答覆，用resolve引用原問補充；分兩行的回覆只採第一行判定欄名，第二行回答補問。'''
+WAITING_REFERENCE_GUIDANCE = '''
+先依交付需求判斷原欄名是否只用來區分決策結果。沿用尚未被撤回或更正的已知條件，查讀來源已確認的份數或人名無須重問。
+如果成果本身需要欄名，或其他交付項由欄名決定（例如改值欄位決定該通知哪位負責人），用一般ask自然地詢問原欄名並說明用途。若來源可由欄名推得負責人，只問缺的欄名。原欄名仍有上述用途或使用者要求維持整題時，使用一般問句。
+原欄名只用來區分處置時，ask的question可逐字使用field_reference_question，分支放在partial_result。另有一項必要且未確認的資料，若兩種欄名和去向下都問同一件事，可同一步分項詢問。依交付要求及來源判斷獨立性，使用者無須指定分項格式。
+reference_remaining只填一個短而完整的獨立問句。份數用「本次要交付幾份？」、通知對象用「本次要通知誰？」、領件人用「本次由誰領件？」。來源、待回報說明與可先答一項的提示放在partial_result。question依序接上field_reference_question、換行、reference_remaining的原句、換行、「請分兩行回答，先回完整欄名，再答補問。」。
+精確分項問句必須有reference_remaining。漏標記被拒時，保持原question補上該欄即可直接重試，程式會核對原核對及失敗紀錄的連結。條件或問句改變時先重新核對。
+field_reference.waiting_recheck是等待期間的重核，原暫表是歷史。若欄名已無必要，原題撤下。有remaining_question時，其後新題及其回答只對應獨立補問。若仍有分歧且原問已有欄名答覆，用resolve引用原問補充。分兩行的回覆只採第一行判定欄名，第二行回答補問。'''
 
 _REFERENCE_REPLY_HINT = '請分兩行回答，先回完整欄名，再答補問。'
 _MISSING_REFERENCE_MARKER = ('分項問句缺少reference_remaining。請保持原question，將第二行的完整獨立問句填入reference_remaining後重試。'
