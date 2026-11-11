@@ -506,7 +506,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 payload['initial_field_reference'] = initial_reference
             post_reply_reference = decision_table.post_reply_reference_candidate(goal['steps'], reply_sources, guidance_sources)
             if post_reply_reference:
-                payload['reference_reply_with_later_guidance'] = post_reply_reference
+                payload['reference_reply_with_guidance'] = post_reply_reference
             reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question

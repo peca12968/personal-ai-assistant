@@ -6,7 +6,7 @@ from itertools import product
 from itertools import combinations
 from math import prod
 
-from . import goal_guidance_sources, goal_reply_sources
+from . import field_questions, goal_guidance_sources, goal_reply_sources
 from .goal_stages import digest
 
 
@@ -53,7 +53,7 @@ RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重�
 
 INITIAL_REFERENCE_GUIDANCE = '''若 initial_field_reference 存在，已保存的省略欄名更正可以和首次完整原表一起核對。讀完必要來源後，用 check_decision 的 {"field_reference":"實際補充編號","initial_table":{完整原表}}。initial_table 放原始已知值、完整欄名選項、排除及各列或規則。不要先另存一張完整原表，也不要把補充的值先填入原表。程式按來源順序套用已保存的原話和具名新值。引用輸出的欄位分支及原話。若還需欄名，沿用通常的欄名問題及 resolve；後續明確值保留優先。'''
 
-POST_REPLY_REFERENCE_GUIDANCE = '''有 reference_reply_with_later_guidance 時，原欄名已回答。用 check_decision 的 {"field_reference":"該欄名答覆的實際編號","resolve":true}，程式先確認欄名，再依原話順序採用答覆後保存的具名更正。post_reply_recheck.known 是最後欄值，changes 是各筆正式新值及來源。原 confirmation 仍是欄名來源，remaining_reply 若存在則是另一項已答補問。依最後核對及各自原話交付。'''
+POST_REPLY_REFERENCE_GUIDANCE = '''有 reference_reply_with_guidance 時，已保存原欄名問題的答覆。答覆明確指出候選欄名時，用 check_decision 的 {"field_reference":"該欄名答覆的實際編號","resolve":true}。確認欄名是指原先那筆改值，具名更正按保存順序採用。post_reply_recheck.known 是最後欄值，changes 是各筆正式新值及來源。原 confirmation 仍是欄名來源，remaining_reply 若存在則是另一項已答補問。若欄名決定收件人，按已確認欄名核對原值班表。依最後核對及各自原話交付。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -1734,12 +1734,23 @@ def _post_reply_reference_inputs(steps, sequence, replies, guidance):
             or not any(source['steps_seen'] >= number and not _unadopted_note(source) for source in guidance)):
         return None
     waiting = _answered_waiting(prefix)
+    natural = None
     if _waiting_reference(prefix):
         checked = _reference_anchor(prefix[:-1])[0]
     elif waiting and waiting[0]['partial_reply']['item'] == 'remaining':
         checked = prefix[-2]
     else:
-        return None
+        checked = prefix[-2]
+        if (not reference_question(checked) or checked['sequence'] != number - 1
+                or ask['action']['args'].keys() - {'question', 'partial_result'}
+                or ask['action']['args'].get('question') != reply['question']):
+            return None
+        proof = checked['observation']['field_reference']
+        fields = field_questions.choices(reply['question'], [branch['field'] for branch in proof['branches']],
+                                         proof['value'], proof['quote'], proof['citation'])
+        if fields is None:
+            return None
+        natural = {'question_sha256': digest(reply['question']), 'candidate_fields': fields}
     later_checks = [s for s in steps[index + 1:] if s['action']['tool'] == 'check_decision']
     if later_checks:
         latest = later_checks[0]
@@ -1757,31 +1768,35 @@ def _post_reply_reference_inputs(steps, sequence, replies, guidance):
     if len(sources) < 2 or any(s != reply and s.get('steps_seen') != max(number, base_step) for s in sources):
         return None
     ordered = _ordered_note_sources(sources)
-    if not ordered or ordered[0] != reply:
+    if reply not in ordered or (natural is None and ordered[0] != reply):
         return None
-    return base_step, ordered
+    return base_step, reply, ordered, natural
 
 
 def post_reply_reference_candidate(steps, replies, guidance):
     inputs = _post_reply_reference_inputs(steps, len(steps) + 1, replies, guidance)
-    return inputs[1][0]['citation'] if inputs else None
+    return inputs[1]['citation'] if inputs else None
 
 
-def _resolve_with_later_guidance(base_step, base, sources):
-    plan, observation = _choose_reference(base, sources[0])
+def _resolve_with_reference_guidance(base_step, base, reply, sources, natural):
+    plan, observation = _choose_reference(base, reply)
     changes = []
-    for source in sources[1:]:
+    for source in sources:
+        if source == reply:
+            continue
         named = _named_reference_change(plan, source)
         if named is None:
-            raise ValueError('欄名答覆後的補充須各以一個原表完整欄名及明確新值更正。')
+            raise ValueError('欄名確認時的補充須各以一個原表完整欄名及明確新值更正。')
         (field, value), evidence = named
         plan, updated = _updated_plan(plan, {field: value})
         changes.append({**updated[0], 'evidence': evidence})
     result = _current_result(plan)
     if result['status'] == 'no_match':
         raise ValueError('欄名答覆後的新條件與原表可行情境不相容。')
-    receipt = {'ask_sequence': sources[0]['ask_sequence'], 'base_step': base_step, 'base_sha256': digest(base),
+    receipt = {'ask_sequence': reply['ask_sequence'], 'base_step': base_step, 'base_sha256': digest(base),
                'source_order': _source_order(sources), 'changes': changes, 'known': plan['known']}
+    if natural is not None:
+        receipt['natural_question'] = natural
     proof = {**observation['field_reference'], 'post_reply_recheck': receipt}
     return plan, {**result, 'field_reference': proof}
 
@@ -1798,10 +1813,10 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     if args.get('resolve') and pending:
         inputs = _post_reply_reference_inputs(steps, sequence, replies, guidance)
         if inputs and inputs[0] == base_step:
-            ordered = inputs[1]
-            if citation != ordered[0]['citation']:
-                raise ValueError('請引用原欄名答覆，接著依保存順序核對較新的具名更正。')
-            return _resolve_with_later_guidance(base_step, base, ordered)
+            _, reply, ordered, natural = inputs
+            if citation != reply['citation']:
+                raise ValueError('請引用原欄名答覆，接著依保存順序核對具名更正。')
+            return _resolve_with_reference_guidance(base_step, base, reply, ordered, natural)
     if args.get('resolve') and partial.get('item') == 'remaining' and citation == partial['citation']:
         raise ValueError('這筆答覆只對應獨立補問。')
     if args.get('resolve') and carried_ask is not None and citation == f'[補充#{carried_ask}]':

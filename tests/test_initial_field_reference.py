@@ -5,6 +5,7 @@ import unittest
 
 from assistant import autonomy, decision_table, goal_guidance, goal_replies
 from assistant.backup import create_backup, restore_backup, validate_database
+from assistant.goal_stages import digest
 from assistant.store import Store
 from scripts.evaluate_goal_replies import prepare
 from test_autonomy import ScriptedEngine, action
@@ -59,6 +60,72 @@ class InitialFieldReferenceTests(unittest.TestCase):
         source = self.reply('正式改成晚班。')
         checked = self.run_actions(action('check_decision', field_reference=f'[補充#{source}]'))
         return decision_table.reference_question(checked['steps'][-1])
+
+    def test_natural_field_confirmation_keeps_the_later_named_change(self):
+        self.check_reference_after_table()
+        question = '這次改成晚班的是收樣班別還是驗入班別？'
+        self.run_actions(action('ask', question=question))
+        source = f'[補充#{self.reply("收樣班別")}]'
+        self.guide('收樣班別正式改為夜班。')
+        resolved = self.run_actions(action('check_decision', field_reference=source, resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['丙桌'])
+        proof = observation['field_reference']
+        self.assertEqual(proof['confirmation']['quote'], '收樣班別')
+        receipt = proof['post_reply_recheck']
+        self.assertEqual(receipt['natural_question'], {'question_sha256': digest(question),
+                                                      'candidate_fields': ['收樣班別', '驗入班別']})
+        self.assertEqual(receipt['known'], {'收樣班別': '夜班', '驗入班別': '早班'})
+        self.assertEqual([s['citation'] for s in receipt['source_order']], [source, '[更正#1]'])
+
+    def test_natural_recipient_question_stays_waiting_and_preserves_sources_on_restore(self):
+        self.check_reference_after_table()
+        question = '為了確認收件人，請問「正式改成晚班」指的是「收樣班別」還是「驗入班別」？'
+        self.run_actions(action('ask', question=question))
+        self.guide('驗入班別正式改為夜班。')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.assertEqual(waiting['question'], question)
+        self.assertEqual(waiting['steps'][-1]['action']['tool'], 'ask')
+        source = f'[補充#{self.reply("驗入班別")}]'
+        self.guide('收樣班別正式改為夜班。')
+        resolved = self.run_actions(action('check_decision', field_reference=source, resolve=True))
+        step = resolved['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['夜桌'])
+        proof = step['observation']['field_reference']
+        self.assertEqual(proof['confirmation']['quote'], '驗入班別')
+        receipt = proof['post_reply_recheck']
+        self.assertEqual(receipt['known'], {'收樣班別': '夜班', '驗入班別': '夜班'})
+        self.assertEqual([s['citation'] for s in receipt['source_order']], ['[更正#1]', source, '[更正#2]'])
+        saved = create_backup(self.store.path, self.root / 'natural-field.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        receipt['natural_question']['question_sha256'] = digest('另一個問題？')
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_natural_field_route_requires_original_change_and_complete_candidates(self):
+        for question in ('通知對象是收樣班別還是驗入班別？',
+                         '文件原話是「這次改成晚班的是收樣班別還是驗入班別？」',
+                         '這次改成夜班的是收樣班別還是驗入班別？',
+                         '這次改成晚班的是收樣班別還是覆核班別？',
+                         '這次改成晚班的是收樣班別還是收樣班別？'):
+            with self.subTest(question=question):
+                self.gid = autonomy.create_goal(self.store, self.sid, '核對最新班別及去向')
+                self.check_reference_after_table()
+                self.run_actions(action('ask', question=question))
+                source = f'[補充#{self.reply("收樣班別")}]'
+                self.guide('收樣班別正式改為夜班。')
+                goal = autonomy.get_goal(self.store, self.sid, self.gid, include_reply_positions=True)
+                self.assertIsNone(decision_table.post_reply_reference_candidate(
+                    goal['steps'], goal['reply_sources'], goal['guidance_sources']))
+                rejected = self.run_actions(action('check_decision', field_reference=source, resolve=True))
+                self.assertEqual(rejected['steps'][-1]['action']['tool'], 'invalid')
 
     def test_full_reply_preserves_count_and_applies_later_named_changes_in_order(self):
         field_question = self.check_reference_after_table()
