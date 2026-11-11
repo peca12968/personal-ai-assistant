@@ -1,0 +1,42 @@
+[
+  {
+    "id": "late_named_update_overrides_the_resolved_field",
+    "category": "goal_post_reply_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "桐原 K6 的收樣班別及驗入班別原為早班。各欄可早班、晚班或夜班，九組皆可。\n"},
+      {"name": "routing.txt", "content": "驗入夜班一律去夜桌。驗入早班時，收樣早班去前桌、晚班去甲桌、夜班去丙桌。驗入晚班時，收樣早班去乙桌、晚班去後桌、夜班去丁桌。\n"}
+    ],
+    "prompt": "看完兩份附件，按九組規則核對桐原原安排，再問我現場改了什麼。確定原改值的欄名及所有最新條件後，交兩欄現值、去向及來源。若只有欄名未知，請用欄名核對給出的原問句。",
+    "reply": "正式改成晚班。",
+    "partial_followup": [
+      {"question": ["第一筆改值指哪個欄位？請回完整欄名「收樣班別」、「驗入班別」。", "第一筆改值指哪個欄位？請回完整欄名「驗入班別」、「收樣班別」。"], "reply": "收樣班別", "after_reply_guidance": ["收樣班別正式改為夜班。"]}
+    ],
+    "criteria": ["用原答覆確認欄名，保存較新的夜班及兩則原話。", "交收樣夜班、驗入早班及丙桌，無須重問欄名。"]
+  },
+  {
+    "id": "late_named_updates_preserve_the_independent_count_in_a_full_reply",
+    "category": "goal_post_reply_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "杉洲 F7 的封件班別及點交班別原為早班。兩欄可早班、晚班或夜班，九組皆可。文書窗口獨立回報交付份數，目前未提供。\n"},
+      {"name": "routing.txt", "content": "點交夜班一律去夜席。點交早班時，封件早班去前席、晚班去甲席、夜班去丙席。點交晚班時，封件早班去乙席、晚班去後席、夜班去丁席。\n"}
+    ],
+    "prompt": "查讀兩份附件，先核對杉洲九種原安排並問現場變動。原改值的欄名若影響去向，可連同窗口獨立回報的交付份數一起分項問。定稿列最新班別、去向、份數和各自的原文依據。",
+    "reply": "正式改成晚班。",
+    "partial_followup": [
+      {"reference_remaining": ["本次要交付幾份？", "本輪要交付幾份？", "要交付幾份？"], "reply": "封件班別\n6 份", "after_reply_guidance": ["封件班別正式改為夜班。", "點交班別正式改為晚班。"]}
+    ],
+    "criteria": ["分別綁定原欄名及六份，依序採用同一步中較新的兩則具名更正。", "交封件夜班、點交晚班、丁席及六份，保留各項來源。"]
+  },
+  {
+    "id": "guidance_before_the_reply_uses_the_existing_waiting_check",
+    "category": "goal_post_reply_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "簷湖 M2 的簽收班別及入冊班別原為早班。各欄可早班、晚班或夜班，九組皆可。\n"},
+      {"name": "routing.txt", "content": "入冊夜班一律去夜室。入冊早班時，簽收早班去前室、晚班去甲室、夜班去丙室。入冊晚班時，簽收早班去乙室、晚班去後室、夜班去丁室。\n"}
+    ],
+    "prompt": "先讀附件核對簷湖九組規則，再問本次更動。需要確認原欄名時，用欄名核對給出的原問句。依最新資料交兩欄、去向和原話來源。",
+    "reply": "正式改成晚班。",
+    "reference_waiting_change": {"correction": "簽收班別正式改為夜班。", "reply_question": ["第一筆改值指哪個欄位？請回完整欄名「簽收班別」、「入冊班別」。", "第一筆改值指哪個欄位？請回完整欄名「入冊班別」、「簽收班別」。"], "reply": "簽收班別"},
+    "criteria": ["具名更正在原欄名答覆之前，保存既有等待重核及真實答覆。", "交簽收夜班、入冊早班及丙室。"]
+  }
+]

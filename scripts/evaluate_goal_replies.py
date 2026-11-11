@@ -177,11 +177,17 @@ def partial_followups(case):
         raise ValueError('分項答覆及更正案例最多四則。')
     for entry in entries:
         if not isinstance(entry, dict) or entry.keys() not in (
-                {'reply'}, {'reply', 'question'}, {'correction', 'question'}, {'reply', 'reference_remaining'}):
+                {'reply'}, {'reply', 'question'}, {'correction', 'question'}, {'reply', 'reference_remaining'},
+                {'reply', 'question', 'after_reply_guidance'}, {'reply', 'reference_remaining', 'after_reply_guidance'}):
             raise ValueError('分項案例須有答覆或更正。更正須指定當時的完整問句。')
         for name, value in entry.items():
             if name in ('question', 'reference_remaining'):
                 question_choices(value)
+            elif name == 'after_reply_guidance':
+                if not isinstance(value, list) or not 1 <= len(value) <= 4:
+                    raise ValueError('答覆後可接續保存一至四則更正。')
+                for content in value:
+                    autonomy.text(content, 4000)
             else:
                 autonomy.text(value, 4000)
     return entries
@@ -400,6 +406,15 @@ def main():
                             save_report(trace_path, row)
                             break
                         assert len(row['calls']) == before_calls
+                        if amendments := entry.get('after_reply_guidance'):
+                            if turn['saved']['goal']['status'] != 'paused' or turn['saved']['step_count'] != len(state['steps']):
+                                raise ValueError('答覆後尚未停在同一步，未提交預設更正。')
+                            turn['after_reply_guidance'] = []
+                            for content in amendments:
+                                observed = goal_guidance.snapshot(store, sid, gid)
+                                saved = goal_guidance.save(store, sid, gid, content, expected_fingerprint=observed['fingerprint'])
+                                assert saved['step_count'] == len(state['steps'])
+                                turn['after_reply_guidance'].append(saved)
                         state = autonomy.get_goal(store, sid, gid)
                         turn['after_save'] = state
                         save_report(trace_path, row)

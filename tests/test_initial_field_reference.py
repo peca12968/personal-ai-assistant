@@ -54,6 +54,89 @@ class InitialFieldReferenceTests(unittest.TestCase):
         if not guidance_first:
             self.guide('收樣班別正式改為夜班。')
 
+    def check_reference_after_table(self):
+        self.run_actions(action('check_decision', **self.table), action('ask', question='現場有什麼變動？'))
+        source = self.reply('正式改成晚班。')
+        checked = self.run_actions(action('check_decision', field_reference=f'[補充#{source}]'))
+        return decision_table.reference_question(checked['steps'][-1])
+
+    def test_full_reply_preserves_count_and_applies_later_named_changes_in_order(self):
+        field_question = self.check_reference_after_table()
+        remaining = '本次要交付幾份？'
+        self.run_actions(action('ask', question=f'{field_question}\n{remaining}\n請分兩行回答，先回完整欄名，再答補問。',
+                                reference_remaining=remaining))
+        answer = self.reply('收樣班別\n6 份')
+        self.assertEqual(self.guide('收樣班別正式改為夜班。')['step_count'], answer)
+        self.assertEqual(self.guide('驗入班別正式改為晚班。')['step_count'], answer)
+        source = f'[補充#{answer}]'
+        resolved = self.run_actions(action('check_decision', field_reference=source, resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['丁桌'])
+        proof = observation['field_reference']
+        self.assertEqual(proof['confirmation']['quote'], '收樣班別')
+        self.assertEqual(proof['remaining_reply']['quote'], '6 份')
+        self.assertEqual(proof['remaining_reply']['citation'], source)
+        receipt = proof['post_reply_recheck']
+        self.assertEqual(receipt['known'], {'收樣班別': '夜班', '驗入班別': '晚班'})
+        self.assertEqual([item['citation'] for item in receipt['source_order']], [source, '[更正#1]', '[更正#2]'])
+        self.assertEqual([(c['field'], c['before'], c['after']) for c in receipt['changes']],
+                         [('收樣班別', '晚班', '夜班'), ('驗入班別', '早班', '晚班')])
+
+    def test_later_guidance_after_a_waiting_recheck_preserves_the_original_reply_on_restore(self):
+        self.run_actions(action('ask', question=self.check_reference_after_table()))
+        self.guide('驗入班別正式改為晚班。')
+        answer = self.reply('收樣班別')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)['steps'][-1]
+        self.assertTrue(waiting['action']['args']['waiting_recheck'])
+        self.assertEqual(self.guide('收樣班別正式改為夜班。')['step_count'], answer + 1)
+        resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        step = resolved['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['丁桌'])
+        proof = step['observation']['field_reference']
+        self.assertEqual(proof['post_reply_recheck']['base_step'], waiting['sequence'])
+        self.assertEqual([s['citation'] for s in proof['post_reply_recheck']['source_order']], [f'[補充#{answer}]', '[更正#2]'])
+        self.assertEqual(proof['waiting_recheck']['changes'][0]['evidence']['citation'], '[更正#1]')
+        saved = create_backup(self.store.path, self.root / 'later-guidance.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        proof['post_reply_recheck']['source_order'].reverse()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_later_guidance_rejects_the_wrong_citation_and_unsupported_mixed_note(self):
+        self.run_actions(action('ask', question=self.check_reference_after_table()))
+        answer = self.reply('收樣班別')
+        self.guide('收樣班別正式改為夜班。驗入班別可能要調整。')
+        wrong = self.run_actions(action('check_decision', field_reference='[更正#1]', resolve=True))
+        self.assertIn('原欄名答覆', wrong['steps'][-1]['observation']['error'])
+        rejected = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        self.assertEqual(rejected['steps'][-1]['action']['tool'], 'invalid')
+        self.assertIn('完整欄名及明確新值', rejected['steps'][-1]['observation']['error'])
+        self.assertEqual(rejected['reply_sources'][-1]['answer'], '收樣班別')
+
+    def test_later_guidance_can_use_the_remaining_field_answer_after_a_partial_reply(self):
+        field_question = self.check_reference_after_table()
+        remaining = '本次要交付幾份？'
+        self.run_actions(action('ask', question=f'{field_question}\n{remaining}\n請分兩行回答，先回完整欄名，再答補問。',
+                                reference_remaining=remaining))
+        count_source = self.reply('補問：6 份')
+        pending = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(pending['question'], field_question)
+        field_source = self.reply('收樣班別')
+        self.guide('收樣班別正式改為夜班。')
+        resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{field_source}]', resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['丙桌'])
+        proof = observation['field_reference']
+        self.assertEqual(proof['confirmation']['citation'], f'[補充#{field_source}]')
+        self.assertEqual(proof['partial_reply']['citation'], f'[補充#{count_source}]')
+        self.assertEqual(proof['partial_reply']['quote'], '6 份')
+
     def test_same_step_reply_and_guidance_follow_real_note_order(self):
         for guidance_first, expected in [(True, '甲桌'), (False, '丙桌')]:
             with self.subTest(guidance_first=guidance_first):

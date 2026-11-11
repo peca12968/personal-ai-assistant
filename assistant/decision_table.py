@@ -53,6 +53,8 @@ RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重�
 
 INITIAL_REFERENCE_GUIDANCE = '''若 initial_field_reference 存在，已保存的省略欄名更正可以和首次完整原表一起核對。讀完必要來源後，用 check_decision 的 {"field_reference":"實際補充編號","initial_table":{完整原表}}。initial_table 放原始已知值、完整欄名選項、排除及各列或規則。不要先另存一張完整原表，也不要把補充的值先填入原表。程式按來源順序套用已保存的原話和具名新值。引用輸出的欄位分支及原話。若還需欄名，沿用通常的欄名問題及 resolve；後續明確值保留優先。'''
 
+POST_REPLY_REFERENCE_GUIDANCE = '''有 reference_reply_with_later_guidance 時，原欄名已回答。用 check_decision 的 {"field_reference":"該欄名答覆的實際編號","resolve":true}，程式先確認欄名，再依原話順序採用答覆後保存的具名更正。post_reply_recheck.known 是最後欄值，changes 是各筆正式新值及來源。原 confirmation 仍是欄名來源，remaining_reply 若存在則是另一項已答補問。依最後核對及各自原話交付。'''
+
 
 WAITING_REFERENCE_GUIDANCE = '''
 先依交付需求判斷原欄名是否只用來區分決策結果。沿用尚未被撤回或更正的已知條件，查讀來源已確認的份數或人名無須重問。
@@ -925,32 +927,41 @@ def _reference_value(source):
     return value, _source_excerpt(source, clauses[0])
 
 
+def _source_step(source):
+    return source.get('steps_seen', source.get('ask_sequence'))
+
+
+def _ordered_note_sources(sources):
+    if any(type(s.get('notes_start')) is not int for s in sources):
+        return []
+    ordered = sorted(sources, key=lambda source: source['notes_start'])
+    end, previous_step = 0, 0
+    for source in ordered:
+        start, number = source['notes_start'], _source_step(source)
+        if start < end or number < previous_step:
+            return []
+        part = (goal_reply_sources.note(source['question'], source['answer']) if 'ask_sequence' in source else
+                goal_guidance_sources.note(source['content'], number, source['recorded_at']))
+        end, previous_step = start + len(part), number
+    return ordered
+
+
+def _source_order(sources):
+    # Both source digests already cover their verified offsets and step numbers.
+    return [{'citation': s['citation'], 'source_sha256': s['sha256']} for s in sources]
+
+
 def _initial_reference_sources(steps, sequence, replies, guidance):
     if any(step['action']['tool'] == 'check_decision'
            and {'domains', 'initial_table'} & step['action']['args'].keys() for step in steps):
         return [], None
     sources = [source for source in _followup_sources(0, sequence, replies, guidance).values()
                if not _unadopted_note(source)]
-    def step(source):
-        return source.get('steps_seen', source.get('ask_sequence'))
-
-    tied = {step(s) for s in sources if 'ask_sequence' in s} & {step(s) for s in sources if 'steps_seen' in s}
+    tied = {s['ask_sequence'] for s in sources if 'ask_sequence' in s} & {s['steps_seen'] for s in sources if 'steps_seen' in s}
     if not tied:
-        return sorted(sources, key=lambda source: (step(source), source.get('notes_start', -1))), None
-    if any(type(s.get('notes_start')) is not int for s in sources):
-        return [], None
-    ordered = sorted(sources, key=lambda source: source['notes_start'])
-    end, previous_step = 0, 0
-    for source in ordered:
-        start, number = source['notes_start'], step(source)
-        if start < end or number < previous_step:
-            return [], None
-        part = (goal_reply_sources.note(source['question'], source['answer']) if 'ask_sequence' in source else
-                goal_guidance_sources.note(source['content'], number, source['recorded_at']))
-        end, previous_step = start + len(part), number
-    # Both source digests already cover their verified offsets and step numbers.
-    order = [{'citation': s['citation'], 'source_sha256': s['sha256']} for s in ordered]
-    return ordered, order
+        return sorted(sources, key=lambda source: (_source_step(source), source.get('notes_start', -1))), None
+    ordered = _ordered_note_sources(sources)
+    return ordered, _source_order(ordered) if ordered else None
 
 
 def _initial_reference_citation(sources):
@@ -1030,12 +1041,17 @@ def _recheck_reference(base_step, base, source):
     pending = base.get('pending_field_reference')
     if not pending or 'steps_seen' not in source:
         raise ValueError('重核須有已保存的欄位指代及主動更正原話。')
+    change = _named_reference_change(base, source)
+    if change is None:
+        raise ValueError('請用一個完整欄名及原表新值明確更正，例如「入口正式改為南口」。')
+    return _update_reference(base_step, base, *change)
+
+
+def _named_reference_change(base, source):
     clauses = [clause for clause in _natural_clauses(_source_text(source))
                if not _UNADOPTED_SENTENCE.fullmatch(clause)]
     update = _natural_condition(base, clauses[0]) if len(clauses) == 1 else None
-    if update is None or update[1] is None:
-        raise ValueError('請用一個完整欄名及原表新值明確更正，例如「入口正式改為南口」。')
-    return _update_reference(base_step, base, update, _source_excerpt(source, clauses[0]))
+    return (update, _source_excerpt(source, clauses[0])) if update is not None and update[1] is not None else None
 
 
 def _update_reference(base_step, base, update, evidence):
@@ -1706,7 +1722,71 @@ def _validate_recheck_position(args, steps, sequence, guidance):
         raise ValueError('成果更正須緊接已交付的共同結果，並引用當時保存的主動更正。')
 
 
-def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources):
+def _post_reply_reference_inputs(steps, sequence, replies, guidance):
+    index = next((i for i in range(len(steps) - 1, -1, -1) if steps[i]['action']['tool'] == 'ask'), -1)
+    if index < 1:
+        return None
+    prefix = steps[:index + 1]
+    ask = prefix[-1]
+    number = ask['sequence']
+    reply = next((row for row in replies if row['ask_sequence'] == number), None)
+    if (reply is None or reply['question'] != ask['observation'].get('question')
+            or not any(source['steps_seen'] >= number and not _unadopted_note(source) for source in guidance)):
+        return None
+    waiting = _answered_waiting(prefix)
+    if _waiting_reference(prefix):
+        checked = _reference_anchor(prefix[:-1])[0]
+    elif waiting and waiting[0]['partial_reply']['item'] == 'remaining':
+        checked = prefix[-2]
+    else:
+        return None
+    later_checks = [s for s in steps[index + 1:] if s['action']['tool'] == 'check_decision']
+    if later_checks:
+        latest = later_checks[0]
+        proof = latest['observation'].get('field_reference', {})
+        if (len(later_checks) != 1 or latest['sequence'] != number + 1
+                or proof.get('status') != 'needs_field'
+                or not any(latest['action']['args'].get(key) and proof.get(key, {}).get('ask_sequence') == number
+                           for key in ('waiting_recheck', 'answered_revision'))):
+            return None
+        checked = latest
+    base_step = checked['sequence']
+    sources = [s for s in _followup_sources(base_step, sequence, replies, guidance).values() if not _unadopted_note(s)]
+    if base_step > number:
+        sources.append(reply)
+    if len(sources) < 2 or any(s != reply and s.get('steps_seen') != max(number, base_step) for s in sources):
+        return None
+    ordered = _ordered_note_sources(sources)
+    if not ordered or ordered[0] != reply:
+        return None
+    return base_step, ordered
+
+
+def post_reply_reference_candidate(steps, replies, guidance):
+    inputs = _post_reply_reference_inputs(steps, len(steps) + 1, replies, guidance)
+    return inputs[1][0]['citation'] if inputs else None
+
+
+def _resolve_with_later_guidance(base_step, base, sources):
+    plan, observation = _choose_reference(base, sources[0])
+    changes = []
+    for source in sources[1:]:
+        named = _named_reference_change(plan, source)
+        if named is None:
+            raise ValueError('欄名答覆後的補充須各以一個原表完整欄名及明確新值更正。')
+        (field, value), evidence = named
+        plan, updated = _updated_plan(plan, {field: value})
+        changes.append({**updated[0], 'evidence': evidence})
+    result = _current_result(plan)
+    if result['status'] == 'no_match':
+        raise ValueError('欄名答覆後的新條件與原表可行情境不相容。')
+    receipt = {'ask_sequence': sources[0]['ask_sequence'], 'base_step': base_step, 'base_sha256': digest(base),
+               'source_order': _source_order(sources), 'changes': changes, 'known': plan['known']}
+    proof = {**observation['field_reference'], 'post_reply_recheck': receipt}
+    return plan, {**result, 'field_reference': proof}
+
+
+def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources, steps):
     if previous is None or 'domains' not in previous[1]:
         raise ValueError('欄位指代核對須先有完整選項的原決策表。')
     base_step, base = previous
@@ -1715,6 +1795,13 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     waiting = pending.get('waiting_recheck', {})
     partial = pending.get('partial_reply', {})
     carried_ask = pending.get('answered_revision', {}).get('ask_sequence', waiting.get('ask_sequence'))
+    if args.get('resolve') and pending:
+        inputs = _post_reply_reference_inputs(steps, sequence, replies, guidance)
+        if inputs and inputs[0] == base_step:
+            ordered = inputs[1]
+            if citation != ordered[0]['citation']:
+                raise ValueError('請引用原欄名答覆，接著依保存順序核對較新的具名更正。')
+            return _resolve_with_later_guidance(base_step, base, ordered)
     if args.get('resolve') and partial.get('item') == 'remaining' and citation == partial['citation']:
         raise ValueError('這筆答覆只對應獨立補問。')
     if args.get('resolve') and carried_ask is not None and citation == f'[補充#{carried_ask}]':
@@ -1765,14 +1852,12 @@ def _apply_initial_reference(args, sequence, replies, guidance, steps):
         if source['citation'] == citation:
             plan, observation = _build_reference(sequence, plan, source)
             continue
-        clauses = [clause for clause in _natural_clauses(_source_text(source))
-                   if not _UNADOPTED_SENTENCE.fullmatch(clause)]
-        update = _natural_condition(plan, clauses[0]) if len(clauses) == 1 else None
-        if update is None or update[1] is None:
+        named = _named_reference_change(plan, source)
+        if named is None:
             raise ValueError('建立原表前另有尚未核對的補充，請先確認一個完整欄名及正式新值。')
+        update, evidence = named
         field, value = update
         before = plan['known'].get(field)
-        evidence = _source_excerpt(source, clauses[0])
         changes.append({'field': field, 'before': before, 'after': value, 'evidence': evidence})
         if 'pending_field_reference' in plan:
             plan, observation = _update_reference(sequence, plan, update, evidence)
@@ -1914,7 +1999,7 @@ def _apply_transition(args, previous, sequence, replies, guidance, rejected, wha
     if args.get('waiting_recheck'):
         return _apply_waiting_recheck(args, previous, sequence, steps, guidance)
     if 'field_reference' in args:
-        return _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources)
+        return _apply_field_reference(args, previous, sequence, replies, guidance, what_if_sources, steps)
     if not _TRANSITION_FIELDS & args.keys():
         return args, calculate(args)
     if previous is not None and 'pending_field_reference' in previous[1]:
