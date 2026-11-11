@@ -340,7 +340,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        if args.get('waiting_recheck') or args.get('partial_reply') or args.get('answered_revision') or args.get('combined_reply'):
+        if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('partial_reply')
+                or args.get('answered_revision') or args.get('combined_reply')):
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         if decision_table.DOCUMENT_RULE_FIELDS & args.keys() and args != pending_document_rule:
             raise ValueError('文件更正須使用目前提示的本輪來源與範圍。')

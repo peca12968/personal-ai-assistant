@@ -62,7 +62,8 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             return _snapshot(db, sid, gid)
         if not combined and 'answered_reference_review' in goal:
             append_answered_revision(db, current, notes)
-        elif not combined and review and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS:
+        elif (not combined and review and 'waiting_recheck' in review['field_reference']
+              and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS):
             append_waiting_recheck(db, current, notes)
         db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
                    (notes, gid, sid))
@@ -85,7 +86,12 @@ def withdraw(store, sid, gid, correction_number, *, expected_fingerprint):
         goal = current['goal']
         source = next(item for item in goal['guidance_sources'] if item['number'] == correction_number)
         review = goal.get('reference_review')
-        if (review and review['field_reference']['status'] != 'needs_field' and current['step_count'] + 2 <= MAX_STEPS
+        version = review['field_reference'].get('waiting_version_recheck') if review else None
+        if (version and version['withdraws_question']
+                and source['citation'] == version['changes'][-1]['evidence']['citation']):
+            return apply_waiting_review(db, current)
+        if (review and 'waiting_recheck' in review['field_reference']
+                and review['field_reference']['status'] != 'needs_field' and current['step_count'] + 2 <= MAX_STEPS
                 and source['citation'] == review['field_reference']['recheck']['evidence']['citation']):
             return apply_waiting_review(db, current)
         goal_question_withdrawals.record(db, gid, options, source)

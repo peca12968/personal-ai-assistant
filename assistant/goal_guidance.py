@@ -6,6 +6,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
+from .documents import check_citations
 from . import (conversation_history, decision_table, goal_guidance_sources, goal_partials, goal_question_withdrawals,
                goal_reply_sources, goal_review, work_plan)
 
@@ -150,7 +151,7 @@ def append_answered_revision(db, current, notes):
     _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
 
 
-def append_followup_question(db, goal, notes, sequence, question, note):
+def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None):
     excerpts = [row for step in _steps(db, goal['id']) for row in step['observation'].get('excerpts', [])]
     citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
                                                   goal.get('guidance_sources', ()))
@@ -158,6 +159,19 @@ def append_followup_question(db, goal, notes, sequence, question, note):
     if citations:
         observation['question_citations'] = citations
     action = {'tool': 'ask', 'args': {'question': question}, 'note': note}
+    if partial_result is not None:
+        goal_partials.validate(partial_result)
+        checks = check_citations(partial_result, excerpts)
+        if any(not item['range_valid'] for item in checks):
+            raise ValueError('更正後暫表引用的文件行尚未查讀。')
+        action['args']['partial_result'] = partial_result
+        observation.update(partial_result=partial_result, citation_checks=checks)
+        replies = goal_reply_sources.citations(partial_result, goal.get('reply_sources', ()))
+        guidance = goal_guidance_sources.citations(partial_result, goal.get('guidance_sources', ()))
+        if replies:
+            observation['reply_citations'] = replies
+        if guidance:
+            observation['guidance_citations'] = guidance
     _append_step(db, goal, notes, sequence, action, observation)
 
 
@@ -176,6 +190,25 @@ def apply_waiting_review(db, current):
     if review is None:
         return current
     proof = review['field_reference']
+    if version := proof.get('waiting_version_recheck'):
+        if not version['withdraws_question']:
+            return current
+        successor = version.get('next_question', '')
+        if current['step_count'] + (4 if successor else 2) > MAX_STEPS:
+            raise ValueError('剩餘步數不足以重核版本及更新成果，請帶入目前進度建立下一階段。')
+        citation = version['changes'][-1]['evidence']['citation']
+        source = next(item for item in goal['guidance_sources'] if item['citation'] == citation)
+        args = {'waiting_version_recheck': citation}
+        _append_reference_recheck(db, goal, goal['notes'], current['step_count'] + 1, args, review)
+        goal_question_withdrawals.record(db, goal['id'], current['question_withdrawal'], source)
+        status = 'needs_input' if successor else 'paused'
+        notice = decision_table.describe_waiting_review(review)
+        if successor:
+            append_followup_question(db, goal, goal['notes'], current['step_count'] + 2, successor,
+                                     '依最新去向只保留欄名追問', partial_result=notice)
+        db.execute('UPDATE autonomous_goals SET status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                   (status, successor, notice, goal['id']))
+        return _snapshot(db, goal['session_id'], goal['id'])
     still_waiting = proof['status'] == 'needs_field'
     remaining = proof['waiting_recheck'].get('remaining_question', '')
     if current['step_count'] + (3 if still_waiting or remaining else 2) > MAX_STEPS:
