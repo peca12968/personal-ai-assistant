@@ -391,9 +391,10 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return date_tools.calculate(args)
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
     if name == 'ask':
-        if 'reference_remaining' in args:
-            decision_table.validate_reference_ask(args, steps)
+        repair = decision_table.planned_reference_ask(args, steps, reply_sources, guidance_sources)
         question = {'question': args['question']}
+        if repair is not None:
+            question['reference_repair'] = repair
         sources = goal_partials.question_citations(args['question'], excerpts, reply_sources, guidance_sources)
         if sources is not None:
             question['question_citations'] = sources
@@ -500,7 +501,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
                 payload['reply_sources'] = reply_sources
-            reference_question = decision_table.reference_question(goal['steps'][-1]) if goal['steps'] else None
+            reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question
             rule_scope = goal.get('decision_rule_scope')

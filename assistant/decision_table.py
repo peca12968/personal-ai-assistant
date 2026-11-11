@@ -52,9 +52,11 @@ NATURAL_UPDATE_GUIDANCE += '''
 RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
 
-WAITING_REFERENCE_GUIDANCE = '''原欄名只用來區分決策結果時，ask的question可逐字使用field_reference_question，分支放在partial_result。另有一項與欄名、分支均無關的必要補問，且使用者允許分項時，將完整獨立問句填reference_remaining，question依序接上field_reference_question、換行、該獨立問句、換行、「請分兩行回答，先回完整欄名，再答補問。」。若要求確定歷史欄名、補問相依或要求維持整題，使用一般ask。field_reference.waiting_recheck是等待期間的重核，原暫表是歷史。若欄名已無必要，原題撤下；有remaining_question時，其後新題及其回答只對應獨立補問，不能用來resolve。若仍有分歧且原問已有欄名答覆，用resolve引用原問補充；分兩行的回覆只採第一行判定欄名，第二行回答補問。'''
+WAITING_REFERENCE_GUIDANCE = '''原欄名只用來區分決策結果時，ask的question可逐字使用field_reference_question，分支放在partial_result。另有一項與欄名、分支均無關的必要補問，且使用者允許分項時，將完整獨立問句填reference_remaining，question依序接上field_reference_question、換行、該獨立問句、換行、「請分兩行回答，先回完整欄名，再答補問。」。精確分項問句必須有reference_remaining。漏標記被拒時，保持原question補上該欄即可直接重試，程式會核對原核對及失敗紀錄的連結；條件或問句改變時先重新核對。若要求確定歷史欄名、補問相依或要求維持整題，使用一般ask。field_reference.waiting_recheck是等待期間的重核，原暫表是歷史。若欄名已無必要，原題撤下；有remaining_question時，其後新題及其回答只對應獨立補問，不能用來resolve。若仍有分歧且原問已有欄名答覆，用resolve引用原問補充；分兩行的回覆只採第一行判定欄名，第二行回答補問。'''
 
 _REFERENCE_REPLY_HINT = '請分兩行回答，先回完整欄名，再答補問。'
+_MISSING_REFERENCE_MARKER = ('分項問句缺少reference_remaining。請保持原question，將第二行的完整獨立問句填入reference_remaining後重試。'
+                             '原表與欄名分支仍有效；這次規劃尚未成為待答問題。')
 _PARTIAL_REFERENCE_REPLY = re.compile(r'(?P<label>欄名|補問)[：:] *(?P<value>[^\r\n]*)')
 _PARTIAL_REPLY_CLAUSES = re.compile(r'[^,，。；;\r\n]+[,，。；;][^,，。；;\r\n]+。?')
 _DEFERRED_REPLY = re.compile(
@@ -1030,12 +1032,72 @@ def _valid_remaining(question):
             and bool(re.fullmatch(r'[^？?\r\n\x00]+[？?]', question)))
 
 
-def validate_reference_ask(args, steps):
+def _unmarked_reference_ask(args, checked):
+    question = args.get('question', '')
+    lines = question.split('\n') if isinstance(question, str) else []
+    return (not args.keys() - {'question', 'partial_result'} and len(lines) == 3
+            and lines[0] == reference_question(checked) and _valid_remaining(lines[1])
+            and lines[2] == _REFERENCE_REPLY_HINT)
+
+
+def _reference_anchor(steps):
+    index = len(steps) - 1
+    rejected = []
+    while index >= 0 and steps[index]['action']['tool'] == 'invalid':
+        step = steps[index]
+        observation = step['observation']
+        failed = observation.get('failed_action', {})
+        if (observation.get('error_phase') != 'execution' or observation.get('error') != _MISSING_REFERENCE_MARKER
+                or failed.get('tool') != 'ask' or not isinstance(failed.get('args'), dict)):
+            return None
+        rejected.append(step)
+        index -= 1
+    if index < 0 or reference_question(steps[index]) is None:
+        return None
+    checked = steps[index]
+    rejected.reverse()
+    if any(step['sequence'] != checked['sequence'] + offset
+           or not _unmarked_reference_ask(step['observation']['failed_action']['args'], checked)
+           for offset, step in enumerate(rejected, 1)):
+        return None
+    return checked, rejected
+
+
+def reference_question_for_steps(steps):
+    anchor = _reference_anchor(steps)
+    return reference_question(anchor[0]) if anchor else None
+
+
+def validate_reference_ask(args, steps, replies=(), guidance=()):
     remaining = args['reference_remaining']
-    original = reference_question(steps[-1]) if steps else None
+    anchor = _reference_anchor(steps)
+    original = reference_question(anchor[0]) if anchor else None
     if (not original or not _valid_remaining(remaining) or args.keys() - {'question', 'partial_result', 'reference_remaining'}
             or args.get('question') != '\n'.join((original, remaining, _REFERENCE_REPLY_HINT))):
         raise ValueError('分項提問須緊接欄名核對，並依指定格式另列一個完整的獨立問句。')
+    checked, rejected = anchor
+    if rejected:
+        if (args['question'] != rejected[-1]['observation']['failed_action']['args']['question']
+                or _followup_sources(checked['sequence'], steps[-1]['sequence'] + 1, replies, guidance)):
+            raise ValueError('原問句或條件已有改動，請重新核對後再建立分項提問。')
+        return {'base_step': checked['sequence'], 'base_sha256': digest(checked),
+                'failed_steps': [{'sequence': step['sequence'], 'sha256': digest(step)} for step in rejected],
+                'question_sha256': digest(args['question'])}
+    return None
+
+
+def planned_reference_ask(args, steps, replies=(), guidance=()):
+    if 'reference_remaining' in args:
+        return validate_reference_ask(args, steps, replies, guidance)
+    anchor = _reference_anchor(steps)
+    if anchor and anchor[1] and not _unmarked_reference_ask(args, anchor[0]):
+        raise ValueError('分項規劃修正須保持原問句並補齊標記，改問時請先重新核對。')
+    if anchor and _unmarked_reference_ask(args, anchor[0]):
+        raise ValueError(_MISSING_REFERENCE_MARKER)
+    checked = next((step for step in reversed(steps) if step['action']['tool'] != 'invalid'), None)
+    if checked and _unmarked_reference_ask(args, checked):
+        raise ValueError(_MISSING_REFERENCE_MARKER)
+    return None
 
 
 def _compound_reply(proof, source):
@@ -1062,23 +1124,27 @@ def _reply_line(source, lines, name):
 def _waiting_reference(steps):
     if len(steps) < 2:
         return None
-    checked, ask = steps[-2:]
-    question = reference_question(checked)
+    ask = steps[-1]
+    anchor = _reference_anchor(steps[:-1])
+    question = reference_question(anchor[0]) if anchor else None
     args = ask['action'].get('args', {})
-    if (not question or ask['sequence'] != checked['sequence'] + 1 or ask['action']['tool'] != 'ask'
+    if (not question or ask['sequence'] != steps[-2]['sequence'] + 1 or ask['action']['tool'] != 'ask'
             or not isinstance(args, dict) or args.get('question') != ask['observation'].get('question')):
         return None
     if 'reference_remaining' in args:
-        validate_reference_ask(args, steps[:-1])
+        expected = validate_reference_ask(args, steps[:-1])
+        if ask['observation'].get('reference_repair') != expected:
+            raise ValueError('分項規劃修正與原核對或失敗紀錄不一致。')
         return ask
-    return ask if args.get('question') == question else None
+    return ask if not anchor[1] and args.get('question') == question else None
 
 
 def _apply_waiting_recheck(args, previous, sequence, steps, guidance):
     ask = _waiting_reference(steps)
-    if not ask or ask['sequence'] != sequence - 1 or previous is None or previous[0] != sequence - 2:
+    anchor = _reference_anchor(steps[:-1]) if ask else None
+    if not ask or ask['sequence'] != sequence - 1 or previous is None or previous[0] != anchor[0]['sequence']:
         raise ValueError('等待更正須緊接只確認原欄名的提問及分支核對。')
-    if any(source['steps_seen'] == previous[0] and not _unadopted_note(source) for source in guidance):
+    if any(previous[0] <= source['steps_seen'] < ask['sequence'] and not _unadopted_note(source) for source in guidance):
         raise ValueError('提問前另有尚未核對的補充，請先確認其影響。')
     sources = [source for source in guidance if source['steps_seen'] == ask['sequence']]
     if not sources or sources[-1]['citation'] != args['field_reference']:
@@ -1145,7 +1211,7 @@ def partial_reply_kind(steps, answer):
     ask = compound_reference_ask(steps)
     if not ask:
         return None
-    proof = steps[-2]['observation']['field_reference']
+    proof = _reference_anchor(steps[:-1])[0]['observation']['field_reference']
     span = _partial_reply_span(answer, ask['action']['args']['reference_remaining'],
                                {branch['field'] for branch in proof['branches']})
     return span[0] if span else None
@@ -1159,10 +1225,11 @@ def _apply_partial_reply(args, previous, sequence, steps, replies, guidance):
     last = steps[-1]
     rechecked = last['action']['tool'] == 'check_decision' and last['action']['args'].get('waiting_recheck')
     ask = compound_reference_ask(steps[:-1] if rechecked else steps)
+    anchor = _reference_anchor((steps[:-1] if rechecked else steps)[:-1]) if ask else None
     if (not ask or not pending or pending['status'] != 'needs_field'
-            or base_step != (last['sequence'] if rechecked else ask['sequence'] - 1)):
+            or base_step != (last['sequence'] if rechecked else anchor[0]['sequence'])):
         raise ValueError('分項回答須引用仍需要兩項答覆的原提問。')
-    if not rechecked and any(ask['sequence'] - 1 <= item['steps_seen'] <= ask['sequence']
+    if not rechecked and any(base_step <= item['steps_seen'] <= ask['sequence']
                              and not _unadopted_note(item) for item in guidance):
         raise ValueError('原提問另有尚未核對的更正，請先確認其影響。')
     source = next((item for item in replies if item['ask_sequence'] == ask['sequence']), None)
@@ -1765,7 +1832,9 @@ def _recheck_saved(steps, replies, guidance):
             if (not index or steps[index-1]['sequence'] != step['sequence'] - 1
                     or ask_args.get('question') != step['observation'].get('question')):
                 raise ValueError('保存的分項提問與原欄名核對不一致。')
-            validate_reference_ask(ask_args, steps[:index])
+            expected = validate_reference_ask(ask_args, steps[:index], replies, guidance)
+            if step['observation'].get('reference_repair') != expected:
+                raise ValueError('保存的分項規劃修正與原核對或失敗紀錄不一致。')
         if action.get('tool') == 'invalid':
             rejected = _verified_rejection(step, previous, replies, guidance, rejected, what_if_sources)
         if action.get('tool') != 'check_decision':

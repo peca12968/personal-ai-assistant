@@ -138,6 +138,51 @@ def partial_followups(case):
     return entries
 
 
+def planning_setup(case):
+    value = case.get('reference_planning_setup')
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or value.keys() != {'table', 'remaining', 'attempts'}
+            or type(value['attempts']) is not int or not 1 <= value['attempts'] <= 2
+            or not autonomy.decision_table._valid_remaining(value['remaining'])
+            or not isinstance(value['table'], dict)):
+        raise ValueError('規劃修正案例須有原表、獨立問句及一至兩次合成漏標記動作。')
+    autonomy.decision_table.calculate(value['table'])
+    return value
+
+
+def prepare_planning(store, sid, gid, case):
+    spec = planning_setup(case)
+    if spec is None:
+        return None
+    calls = []
+
+    def run(actions):
+        queue = iter(actions)
+        def answer(prompt, cancel=None):
+            raw = json.dumps(next(queue), ensure_ascii=False)
+            calls.append({'status': 'scripted', 'prompt': prompt, 'raw': raw})
+            return raw
+        return autonomy.run_goal(store, sid, gid, SimpleNamespace(answer=answer), max_steps=len(actions))
+
+    def action(tool, **args):
+        return {'tool': tool, 'args': args, 'note': '合成規劃前置，非模型作答'}
+
+    documents = store.documents(sid)
+    run([action('read_ranges', ranges=[{'document_id': row['id'], 'start_line': 1, 'end_line': 1} for row in documents]),
+         action('check_decision', **spec['table']), action('ask', question='本輪要更正哪項條件？')])
+    observed = goal_replies.snapshot(store, sid, gid)
+    goal_replies.save(store, sid, gid, case['reply'], expected_fingerprint=observed['fingerprint'])
+    pending = run([action('check_decision', field_reference='[補充#3]')])
+    question = autonomy.decision_table.reference_question(pending['steps'][-1])
+    if question is None:
+        raise ValueError('合成規劃前置未產生需確認欄名的分支。')
+    question = '\n'.join((question, spec['remaining'], autonomy.decision_table._REFERENCE_REPLY_HINT))
+    state = run([action('ask', question=question)] * spec['attempts'])
+    return {'kind': 'synthetic_missing_reference_marker', 'model_calls': 0, 'scripted_calls': calls,
+            'before_ask': pending, 'after_ask': state, 'question': question}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=ROOT/'evals/goal_replies.json')
@@ -153,6 +198,7 @@ def main():
             followup_change(case, 'report_change')
             followup_change(case, 'reference_waiting_change')
             partial_followups(case)
+            planning_setup(case)
         if not args.live:
             if args.report: raise ValueError('--report需搭配--live。')
             with tempfile.TemporaryDirectory() as temp:
@@ -160,6 +206,7 @@ def main():
                     store, sid, gid = prepare(Path(temp)/f'{index}.sqlite3', case)
                     assert goal_replies.snapshot(store, sid, gid)['goal']['status'] == 'pending'
                     apply_amendments(store, sid, gid, case)
+                    prepare_planning(store, sid, gid, case)
                     change = waiting_change(case)
                     if change is not None:
                         action = {'tool': 'ask', 'args': {'question': '初始等待補充？'}, 'note': '合成等待狀態'}
@@ -206,8 +253,17 @@ def main():
                     unchanged()
                     return raw
             try:
-                state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
-                replies = replies_for(case)
+                planned = prepare_planning(store, sid, gid, case)
+                if planned is None:
+                    state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                    replies = replies_for(case)
+                else:
+                    row['reference_planning_setup'] = planned
+                    state = planned['after_ask']
+                    save_report(trace_path, row)
+                    if state['status'] == 'paused':
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
+                    replies = []
                 change = waiting_change(case)
                 if change is not None:
                     calls_before = len(row['calls'])
