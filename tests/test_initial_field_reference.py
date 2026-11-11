@@ -103,6 +103,131 @@ class InitialFieldReferenceTests(unittest.TestCase):
         self.run_actions(action('check_decision', version_confirmation=f'[補充#{self.reply("v1")}]'))
         return self.run_actions(action('finish', report='依 v1 交西桌。'))
 
+    def deliver_missing_version(self):
+        self.deliver_document_version(missing=True)
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        return self.run_actions(action('finish', report='採用 v2，缺少規則，去向待查。'))
+
+    def attach_supplement(self, name, *lines):
+        path = self.root / name
+        path.write_text('\n'.join(lines), encoding='utf-8')
+        return self.store.attach_document(self.sid, path)
+
+    def supplementary_rule(self, *, second=False, partial=False, scope='甲批', version='v2', result='南桌', old=None):
+        values = '「收樣班別」為「早班」、「驗入班別」為「晚班」' if second else '「收樣班別」為「晚班」、「驗入班別」為「早班」'
+        prior = old or ('乙桌' if second else '甲桌')
+        ending = '其他配對待補。' if partial else '其他配對沿用原表。'
+        return f'本輪「{scope}」的「{version}」版規則。若{values}，原「{prior}」改為「{result}」。{ending}'
+
+    def test_late_supplement_admits_only_explicit_sources_and_replays_scope_on_restore(self):
+        prior = self.deliver_missing_version()
+        first = self.supplementary_rule()
+        second = self.supplementary_rule(second=True)
+        did = self.attach_supplement('supplement.txt', first, second)
+        other = self.attach_supplement('unselected.txt', self.supplementary_rule(scope='另批'))
+        content = f'補件 [D{did}:L1-L2]'
+        saved = self.guide(content)
+        self.assertTrue(saved['sources_match'])
+        self.assertEqual(saved['goal']['status'], 'paused')
+        reopened = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(reopened['steps'][:-1], prior['steps'])
+        self.assertEqual(reopened['sources'][:-1], prior['sources'])
+        self.assertEqual(reopened['sources'][-1]['document_id'], did)
+        checked = reopened['steps'][-1]
+        self.assertEqual(checked['observation']['possible_results'], ['南桌'])
+        receipt = checked['observation']['field_reference']['report_supplement']
+        self.assertEqual(receipt['evidence']['quote'], content)
+        self.assertEqual(receipt['report_sha256'], digest(prior['steps'][-1]))
+        engine = ScriptedEngine(action('finish', report=f'依 v2 交南桌。[D{did}:L1-L2]'))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=1)
+        payload = json.loads(engine.prompts[0].split('\n\n目標與已觀察資料：\n', 1)[1])
+        self.assertNotIn(other, {source['document_id'] for source in payload['documents']})
+        self.assertEqual(result['status'], 'report_ready')
+
+        saved = create_backup(self.store.path, self.root / 'supplement.paibackup')
+        restored = self.root / 'restored-supplement'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), result)
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_goals SET sources_json=? WHERE id=?',
+                       (json.dumps(prior['sources'], ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '文件範圍缺少'):
+            validate_database(backup.path)
+
+    def test_second_late_supplement_fills_missing_pair_without_replacing_prior_report(self):
+        prior = self.deliver_missing_version()
+        first = self.attach_supplement('partial-first.txt', self.supplementary_rule(partial=True))
+        self.guide(f'補件 [D{first}:L1]')
+        pending = autonomy.get_goal(self.store, self.sid, self.gid)
+        observation = pending['steps'][-1]['observation']
+        self.assertNotIn('possible_results', observation)
+        branches = [branch['version_results'][0] for branch in observation['field_reference']['branches']]
+        self.assertEqual(branches[0]['possible_results'], ['南桌'])
+        self.assertEqual(branches[1]['coverage']['missing_rows'], [['早班', '晚班']])
+        self.assertIsNone(decision_table.reference_question_for_steps(pending['steps']))
+        first_report = self.run_actions(action('finish', report='採樣去南桌，核驗班別的 v2 去向待查。'))
+        second = self.attach_supplement('partial-second.txt', self.supplementary_rule(second=True, partial=True))
+        self.guide(f'補件 [D{second}:L1]')
+        completed = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(completed['steps'][:len(prior['steps'])], prior['steps'])
+        self.assertEqual(completed['steps'][:-1], first_report['steps'])
+        check = completed['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        records = check['field_reference']['version_rules']['records']
+        self.assertEqual([item['evidence']['citation'] for item in records], [f'[D{first}:L1]', f'[D{second}:L1]'])
+        validate_database(self.store.path)
+
+    def test_wrong_batch_version_original_pair_and_stale_supplement_save_are_atomic(self):
+        prior = self.deliver_missing_version()
+        stale = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        doc = self.attach_supplement('mismatches.txt', self.supplementary_rule(scope='另批'),
+                                     self.supplementary_rule(version='v1'), self.supplementary_rule(old='錯桌'))
+        with self.assertRaisesRegex(ValueError, '已有變更'):
+            goal_guidance.save(self.store, self.sid, self.gid, f'補件 [D{doc}:L1]',
+                               expected_fingerprint=stale['fingerprint'])
+        for suffix, reason in [('L1', '本批'), ('L2', '本批'), ('L3', '原結果'), ('L3-L1', '不得早於'),
+                               ('L1-L999999999999', '八條')]:
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.guide(f'補件 [D{doc}:{suffix}]')
+                self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+        self.attach_supplement('notice-0.txt', '原文件更新。')
+        with self.assertRaisesRegex(ValueError, '原目標已有文件版本變更'):
+            self.guide(f'補件 [D{doc}:L1]')
+        self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
+    def test_late_supplement_retains_conflicting_row_without_losing_other_branch(self):
+        self.deliver_missing_version()
+        doc = self.attach_supplement('conflicting.txt', self.supplementary_rule(),
+                                     self.supplementary_rule(result='北桌'), self.supplementary_rule(second=True))
+        self.guide(f'補件 [D{doc}:L1-L3]')
+        updated = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = updated['steps'][-1]['observation']
+        self.assertEqual(check['status'], 'version_uncertain')
+        self.assertIsNone(decision_table.reference_question_for_steps(updated['steps']))
+        branches = [branch['version_results'][0] for branch in check['field_reference']['branches']]
+        self.assertEqual(branches[0]['coverage']['conflicting_rows'][0]['results'], ['南桌', '北桌'])
+        self.assertEqual(branches[1]['possible_results'], ['南桌'])
+        self.attach_supplement('conflicting.txt', self.supplementary_rule())
+        engine = ScriptedEngine(action('finish', report='更新成果。'))
+        stopped = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=1)
+        self.assertEqual(stopped['steps'], updated['steps'])
+        self.assertEqual(engine.prompts, [])
+
+    def test_supplemented_report_only_asks_the_original_field_for_two_resolved_branches(self):
+        self.deliver_missing_version()
+        doc = self.attach_supplement('branches.txt', self.supplementary_rule(),
+                                     self.supplementary_rule(second=True, result='北桌'))
+        self.guide(f'補件 [D{doc}:L1-L2]')
+        updated = autonomy.get_goal(self.store, self.sid, self.gid)
+        field = decision_table.reference_question_for_steps(updated['steps'])
+        self.assertIn('「收樣班別」、「驗入班別」', field)
+        self.run_actions(action('ask', question=field))
+        source = f'[補充#{self.reply("驗入班別")}]'
+        completed = self.run_actions(action('check_decision', field_reference=source, resolve=True))
+        self.assertEqual(completed['steps'][-1]['observation']['possible_results'], ['北桌'])
+
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
         self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))

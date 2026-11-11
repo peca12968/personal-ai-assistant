@@ -6,7 +6,7 @@ from itertools import product
 from itertools import combinations
 from math import prod
 
-from . import document_rule_update, field_questions, goal_guidance_sources, goal_reply_sources
+from . import document_rule_update, field_questions, goal_guidance_sources, goal_reply_sources, goal_sources
 from .goal_stages import digest
 
 
@@ -65,6 +65,7 @@ DOCUMENT_QUESTION_PLAN_GUIDANCE = '''document_question_plan 比較先問欄名�
 DOCUMENT_VERSION_RULE_GUIDANCE = '''有 document_version_rules 時，先用 check_decision 的 args 原樣使用它，把後讀到的規則接回已保存的版本答覆。版本不必再問。version_rules 紀錄補讀證據；依最新去向交付，版本答覆及補讀的規則分開引用。'''
 WAITING_FIELD_VERSION_GUIDANCE = '''field_reference.waiting_field_version 記錄等待欄名時收到的正式採用更正。以其中最後一筆採用原話及最新分支為準。先前版本答覆保留在紀錄。若原欄名問題已撤下，無須等待該答覆；若已回答仍有用的原欄名問題，使用 field_reference 和 resolve 核對實際答覆。所選版本缺少規則時保留待查。'''
 REPORT_VERSION_GUIDANCE = '''field_reference.report_version_recheck 是使用者在前一份成果交付後保存的正式採用更正。前一份 finish 和舊版本答覆是歷史。以最新核對的現行版本及分支更新成果，引用正式更正原話。已有確定去向時直接更新；若有 field_reference_question，只問該欄名，用 field_reference 和 resolve 核對實際答覆。已知版本無須再問。若所選版本規則尚缺，先找本次匯入文件內完整的該版規則；找不到時列明所缺規則及去向待查。'''
+REPORT_SUPPLEMENT_GUIDANCE = '''field_reference.report_supplement 是已交付待查報告後，使用者指定並核對的補件。沿用已確認的採用版本與欄名。以最新分支及已讀原行更新報告，引用補件與原版本確認。coverage.missing_rows 是仍缺的配對，coverage.conflicting_rows 保留所有相衝突的結果。缺規則及衝突須列出對應配對，已核得的分支一併交付。只有 field_reference_question 存在時才需補問欄名。較早的報告是歷史紀錄。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -505,7 +506,7 @@ _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha2
 DOCUMENT_RULE_FIELDS = {'document_rule', 'document_rules'}
 _TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference',
                       'version_confirmation', 'version_rules', 'waiting_version_recheck', 'waiting_field_version',
-                      'report_version_recheck'} | DOCUMENT_RULE_FIELDS
+                      'report_version_recheck', 'report_supplement'} | DOCUMENT_RULE_FIELDS
 
 
 class _RejectedRevision(ValueError):
@@ -525,6 +526,13 @@ def validate_tool(args):
     elif isinstance(args, dict) and 'version_rules' in args:
         if args.keys() != {'version_rules'} or not document_rule_update.valid_citations(args['version_rules']):
             raise ValueError('版本補讀須列出已選定版本的完整文件行。')
+    elif isinstance(args, dict) and 'report_supplement' in args:
+        if (args.keys() != {'report_supplement', 'original_sources', 'added_sources'}
+                or not isinstance(args['report_supplement'], str)
+                or not re.fullmatch(r'\[更正#[1-9][0-9]{0,3}\]', args['report_supplement'])
+                or not goal_sources.valid_source_list(args['original_sources'])
+                or not goal_sources.valid_source_list(args['added_sources'])):
+            raise ValueError('補件核對須有保存的補件指定及完整文件範圍。')
     elif isinstance(args, dict) and args.keys() & {'waiting_version_recheck', 'waiting_field_version', 'report_version_recheck'}:
         if (len(args) != 1 or not isinstance(source := next(iter(args.values())), str)
                 or not re.fullmatch(r'\[更正#[1-9][0-9]{0,3}\]', source)):
@@ -701,8 +709,10 @@ def _current_result(plan, *, require_all=False):
         versions = []
         for candidate in plan['document_version_plans']:
             if 'rows' in candidate:
-                outcome = _result_summary(_current_result({**core, 'document_rule_rows': candidate['rows']},
-                                                          require_all=require_all))
+                result = _current_result({**core, 'document_rule_rows': candidate['rows']}, require_all=require_all)
+                outcome = _result_summary(result)
+                if candidate.get('supplemented') and 'coverage' in result:
+                    outcome['coverage'] = result['coverage']
             else:
                 outcome = {'status': 'missing_rules'}
             versions.append({'version': candidate['version'], **outcome})
@@ -1082,7 +1092,7 @@ def _pending_reference(base, proof, results):
     observation = {'status': 'resolved' if agreed else 'needs_check', 'max_questions': 0 if agreed else 1,
                    'field_reference': proof}
     document_rules = proof.get('document_rules', {})
-    if 'version_review' in document_rules or 'report_version_recheck' in proof:
+    if 'version_review' in document_rules or proof.keys() & {'report_version_recheck', 'report_supplement'}:
         outcomes = {tuple((version['status'], frozenset(version.get('possible_results', version.get('recorded_results', ()))))
                           for version in result['version_results']) for result in results}
         field_changes = len(outcomes) > 1
@@ -1093,6 +1103,9 @@ def _pending_reference(base, proof, results):
             observation['max_questions'] = 0
     if agreed:
         observation['possible_results'] = results[0]['possible_results']
+    elif any(candidate.get('supplemented') for candidate in base.get('document_version_plans', ())):
+        if any(result['status'] == 'version_uncertain' for result in results):
+            observation.update(status='version_uncertain', max_questions=0, needs_evidence=True)
     return {**base, 'pending_field_reference': proof}, observation
 
 
@@ -1164,6 +1177,24 @@ def document_version_report(steps, result):
     return None
 
 
+def document_supplement_report(steps, result):
+    latest = _reported_decision(steps, result)
+    if latest is None or latest['action']['tool'] != 'check_decision' or latest['action']['args'].get('what_if'):
+        return None
+    observation = latest['observation']
+    proof = observation.get('field_reference', {})
+    if 'document_rules' not in proof:
+        return None
+    outcomes = proof['branches'] if proof.get('status') == 'needs_field' else [observation]
+    missing = {version['version'] for outcome in outcomes for version in outcome.get('version_results', ())
+               if version['status'] == 'missing_rules' or version.get('coverage', {}).get('missing_rows')}
+    for key in ('waiting_field_version', 'report_supplement', 'report_version_recheck', 'version_confirmation'):
+        selection = proof.get(key)
+        if selection and selection['version'] in missing:
+            return latest, selection
+    return None
+
+
 def _reference_question(proof):
     fields = '、'.join(f'「{branch["field"]}」' for branch in proof['branches'])
     return f'第一筆改值指哪個欄位？請回完整欄名{fields}。'
@@ -1174,7 +1205,8 @@ def reference_question(step):
         proof = step['observation'].get('field_reference', {})
         review = proof.get('document_rules', {}).get('version_review', {})
         if (proof.get('status') == 'needs_field' and review.get('field_changes_result', True)
-                and ('report_version_recheck' not in proof or step['observation'].get('max_questions', 0) > 0)):
+                and (not proof.keys() & {'report_version_recheck', 'report_supplement'}
+                     or step['observation'].get('max_questions', 0) > 0)):
             return _reference_question(proof)
     return None
 
@@ -1849,7 +1881,8 @@ def _document_rule_anchor(steps):
         if tool == 'check_decision' and not step['action']['args'].get('what_if'):
             proof = step['observation'].get('field_reference', {})
             if proof.get('status') in {'needs_field', 'agreement'} and not (
-                    proof.keys() & {'partial_reply', 'answered_revision', 'waiting_recheck', 'report_version_recheck'}):
+                    proof.keys() & {'partial_reply', 'answered_revision', 'waiting_recheck', 'report_version_recheck',
+                                    'report_supplement'}):
                 return step['sequence']
             break
     return None
@@ -2010,7 +2043,7 @@ def document_rule_candidate(steps, replies, guidance, objective, sources):
 def document_question_plan(step):
     proof = step['observation'].get('field_reference', {})
     review = proof.get('document_rules', {}).get('version_review', {})
-    if (proof.get('status') != 'needs_field' or proof.keys() & {'version_confirmation', 'report_version_recheck'}
+    if (proof.get('status') != 'needs_field' or proof.keys() & {'version_confirmation', 'report_version_recheck', 'report_supplement'}
             or review.get('status') != 'conflicting_adoption' or not review['field_changes_result']):
         return None
     matrix = [branch['version_results'] for branch in proof['branches']]
@@ -2039,7 +2072,7 @@ def _document_version_question(steps):
     proof = checked['observation'].get('field_reference', {})
     rules = proof.get('document_rules', {})
     review = rules.get('version_review', {})
-    if (proof.keys() & {'version_confirmation', 'waiting_field_version', 'report_version_recheck'}
+    if (proof.keys() & {'version_confirmation', 'waiting_field_version', 'report_version_recheck', 'report_supplement'}
             or review.get('status') != 'conflicting_adoption'
             or all(version.get('status') == 'missing_rules' for version in review['versions'])):
         return None
@@ -2250,8 +2283,18 @@ def _selected_document_version(version, records, steps, replies, guidance, root_
     if rules:
         original, candidates = _original_document_candidates(steps, replies, guidance, root_step)
         common = [record for record in records if 'when' in record and 'version' not in record]
-        selected['rows'], _ = _document_rule_rows(original, [*common, *rules], candidates)
+        selected['rows'], _ = _selected_document_rows(original, [*common, *rules], candidates)
+        if any(rule.get('partial') for rule in rules):
+            selected['supplemented'] = True
     return selected
+
+
+def _selected_document_rows(original, records, candidates):
+    rows, changes = _document_rule_rows(original, records, candidates)
+    if any(rule.get('partial') for rule in records):
+        covered = {tuple(change['when']) for change in changes}
+        rows = [row for row in rows if tuple(row['when']) in covered]
+    return rows, changes
 
 
 def _waiting_field_version(previous, steps, sequence, replies, guidance):
@@ -2332,12 +2375,65 @@ def _recheck_report_version(args, previous, steps, sequence, replies, guidance):
                'base_sha256': digest(base), 'scope': scope, 'version': version,
                'status': 'confirmed' if has_rules else 'missing_rules',
                'evidence': _source_excerpt(source, source['content'])}
-    plan, observation, results = _document_version_result(plan, {**proof, 'report_version_recheck': receipt}, pending)
+    current_proof = {key: value for key, value in proof.items() if key != 'report_supplement'}
+    plan, observation, results = _document_version_result(plan, {**current_proof, 'report_version_recheck': receipt}, pending)
     if all(result['status'] == 'no_match' for result in results):
         raise ValueError('所選版本與原成果的可行情境不相容。')
     if not has_rules and pending:
         observation.update(status='version_uncertain', max_questions=0, needs_evidence=True)
     return plan, observation
+
+
+def _recheck_report_supplement(args, previous, steps, sequence, replies, guidance, excerpts):
+    report = steps[-1] if steps else None
+    anchor = document_supplement_report(steps, report['observation'].get('report') if report else None)
+    if (anchor is None or previous is None or anchor[0]['sequence'] != previous[0]
+            or report['sequence'] != sequence - 1):
+        raise ValueError('補件須接續同一目標已交付且明確缺少所選版本規則的報告。')
+    checked, selection = anchor
+    citation = args['report_supplement']
+    sources = _followup_sources(checked['sequence'], sequence, replies, guidance)
+    source = sources.get(citation, {})
+    if sources.keys() != {citation} or source.get('steps_seen') != report['sequence']:
+        raise ValueError('補件須引用交付後保存的指定範圍。')
+    ranges = goal_sources.supplement_ranges(source['content'])
+    original, added = args['original_sources'], args['added_sources']
+    merged = goal_sources.merge_sources(original, added)
+    selected_ids = {row['document_id'] for row in ranges}
+    original_ids = {row['document_id'] for row in original}
+    if {row['document_id'] for row in added} != selected_ids - original_ids:
+        raise ValueError('只有使用者指定的補件可加入原目標。')
+    goal_sources.verify_excerpts(excerpts, merged, ranges)
+    scope, version = selection['scope'], selection['version']
+    read = {'sequence': sequence, 'action': {'tool': 'read_ranges'}, 'observation': {'excerpts': excerpts}}
+    matched = document_rule_update.read_rules([read], sequence - 1, scope, include_versions=True, allow_partial=True)
+    if (len(matched) != sum(row['end_line'] - row['start_line'] + 1 for row in ranges)
+            or any(rule.get('version') != version for rule in matched.values())):
+        raise ValueError(f'補件每一行須是本批「{scope}」所採「{version}」的完整配對規則。')
+    proof = checked['observation']['field_reference']
+    document_rules = proof['document_rules']
+    prior_receipt = proof.get('version_rules', {})
+    earlier = prior_receipt.get('records', ()) if prior_receipt.get('version') == version else ()
+    if set(matched) & {rule['evidence']['citation'] for rule in earlier}:
+        raise ValueError('有已核對的補件行，請只選尚未核對的範圍。')
+    records = [*earlier, *matched.values()]
+    if not document_rule_update.valid_citations([rule['evidence']['citation'] for rule in records]):
+        raise ValueError('同一版本最多保留八條已核對的補讀規則。')
+    core, candidates = _original_document_candidates(steps, replies, guidance, document_rules['base_step'])
+    common = [rule for rule in document_rules['records'] if 'when' in rule and 'version' not in rule]
+    rows, changes = _selected_document_rows(core, [*common, *records], candidates)
+    base = previous[1]
+    pending = base.get('pending_field_reference')
+    plan = {key: value for key, value in base.items() if key not in {'pending_field_reference', 'document_rule_rows'}}
+    plan['document_version_plans'] = [{'version': version, 'rows': rows, 'supplemented': True}]
+    receipt = {'report_step': report['sequence'], 'report_sha256': digest(report),
+               'decision_step': checked['sequence'], 'decision_sha256': digest(checked), 'scope': scope,
+               'version': version, 'evidence': _source_excerpt(source, source['content']),
+               'citations': list(matched)}
+    rules = {'confirmation_step': checked['sequence'], 'confirmation_sha256': digest(checked),
+             'version': version, 'records': records, 'rows': changes}
+    plan, observation, _ = _document_version_result(plan, {**proof, 'report_supplement': receipt, 'version_rules': rules}, pending)
+    return plan, {**observation, 'excerpts': excerpts}
 
 
 def _version_rules_inputs(steps, sequence, replies, guidance):
@@ -2505,7 +2601,7 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     base_step, base = previous
     citation = args['field_reference']
     pending = base.get('pending_field_reference', {})
-    report_version = pending.get('report_version_recheck')
+    report_version = pending.get('report_supplement') or pending.get('report_version_recheck')
     if args.get('resolve') and report_version:
         reply = next((item for item in replies if item['citation'] == citation), None)
         if (reply is None or reply['ask_sequence'] <= report_version['report_step']
@@ -2707,7 +2803,9 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
     return rejected
 
 
-def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
+def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps, *, excerpts=None):
+    if 'report_supplement' in args:
+        return _recheck_report_supplement(args, previous, steps, sequence, replies, guidance, excerpts)
     if 'report_version_recheck' in args:
         return _recheck_report_version(args, previous, steps, sequence, replies, guidance)
     if 'waiting_field_version' in args:
@@ -2796,7 +2894,8 @@ def _recheck_saved(steps, replies, guidance):
         validate_tool(args)
         if args.get('recheck'):
             _validate_recheck_position(args, steps[:index], sequence, guidance)
-        plan, expected = _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps[:index])
+        plan, expected = _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps[:index],
+                                           excerpts=step['observation'].get('excerpts'))
         actual = {key: value for key, value in step['observation'].items() if key not in _STEP_METADATA}
         if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('決策表結果與保存的可行情境不一致。')
@@ -2809,7 +2908,7 @@ def _recheck_saved(steps, replies, guidance):
     return previous, rejected, what_if_sources
 
 
-def observe(args, steps, replies=(), guidance=()):
+def observe(args, steps, replies=(), guidance=(), *, excerpts=None):
     if not _TRANSITION_FIELDS & args.keys():
         return calculate(args)
     validate_tool(args)
@@ -2817,7 +2916,7 @@ def observe(args, steps, replies=(), guidance=()):
     sequence = len(steps) + 1
     if args.get('recheck'):
         _validate_recheck_position(args, steps, sequence, guidance)
-    return _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps)[1]
+    return _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps, excerpts=excerpts)[1]
 
 
 def _validate_followup_question(by_sequence, step, question, status, current, count, partial_result=None):
@@ -2858,8 +2957,16 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             guidance = goal_guidance_sources.read(db, gid, notes, count)
         _recheck_saved(steps, replies, guidance)
         by_sequence = {step['sequence']: step for step in steps}
+        final_sources = json.loads(sources)
+        history = {}
+        if goal_sources.has_supplement(steps):
+            documents = {row[0]: dict(zip(('id', 'name', 'sha256', 'content'), row)) for row in db.execute(
+                'SELECT id,name,sha256,content FROM documents WHERE session_id=(SELECT session_id FROM autonomous_goals WHERE id=?)',
+                (gid,))}
+            history = goal_sources.verify_history(steps, final_sources, documents)
         for step in steps:
             args = step['action']['args']
+            step_sources = history.get(step['sequence'], final_sources)
             if step['action']['tool'] == 'check_decision' and 'waiting_version_recheck' in args:
                 review = step['observation']
                 receipt = review['field_reference']['waiting_version_recheck']
@@ -2876,10 +2983,10 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 proof = step['observation']['field_reference']
                 records = [proof['document_rule']] if 'document_rule' in args else proof['document_rules']['records']
                 for record in records:
-                    document_rule_update.verify_context(record, objective, json.loads(sources))
-            if step['action']['tool'] == 'check_decision' and 'version_rules' in args:
+                    document_rule_update.verify_context(record, objective, step_sources)
+            if step['action']['tool'] == 'check_decision' and args.keys() & {'version_rules', 'report_supplement'}:
                 for record in step['observation']['field_reference']['version_rules']['records']:
-                    document_rule_update.verify_context(record, objective, json.loads(sources))
+                    document_rule_update.verify_context(record, objective, step_sources)
         for step in steps:
             if step['action']['tool'] != 'check_decision':
                 continue

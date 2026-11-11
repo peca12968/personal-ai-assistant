@@ -6,6 +6,7 @@ from .autonomy import MAX_STEPS, signature
 from .artifacts import inventory
 from . import autonomy_csv
 from . import conversation_history
+from . import goal_sources
 
 
 def next_action(status, sources_match, step_count):
@@ -57,7 +58,10 @@ def _rows(db, gid=None):
             evidence['continuous_run'] = dict(latest)
         fingerprint = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
-        sources_match = json.loads(row['sources_json']) == current_sources[sid]
+        stored = json.loads(row['sources_json'])
+        sources_match = stored == current_sources[sid] or (
+            goal_sources.saved_supplement(db, row['id'])
+            and goal_sources.matching_scope(stored, current_sources[sid], scoped=True))
         action, explanation = next_action(row['status'], sources_match, row['step_count'])
         yield {'goal_id': row['id'], 'session_id': sid,
                'session_title': row['session_title'][:100], 'objective': row['objective'][:600],

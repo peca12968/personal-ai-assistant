@@ -20,6 +20,7 @@ from . import goal_partials
 from . import goal_guidance_sources
 from . import goal_question_withdrawals
 from . import goal_reply_sources
+from . import goal_sources
 from . import artifacts
 from . import autonomy_csv
 from . import date_tools
@@ -100,6 +101,13 @@ def text(value, limit):
 
 def signature(documents):
     return [{'document_id': d['id'], 'name': d['name'], 'sha256': d['sha256']} for d in documents]
+
+
+def _goal_documents(store, sid, goal, *, include_content=False):
+    if goal_sources.has_supplement(goal['steps']):
+        return store.documents(sid, include_content=include_content,
+                               document_ids=[source['document_id'] for source in goal['sources']])
+    return store.documents(sid, include_content=include_content) if include_content else store.documents(sid)
 
 
 def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, csv_document_id=None, from_chat=False, goal_draft=None, history_search=False):
@@ -198,6 +206,8 @@ def get_goal(store, sid, gid, *, include_reply_positions=False):
             last = result['steps'][-1]
             result.update(goal_partials.waiting(result['question'], last['action'], last['observation']))
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
+        current_sources = goal_sources.current_scope(
+            result['sources'], current_sources, scoped=goal_sources.has_supplement(result['steps']))
         if waiting_step and guidance_sources and current_sources == result['sources']:
             answered = decision_table.answered_reference_review(result['steps'], reply_sources, guidance_sources)
             if answered is not None:
@@ -338,7 +348,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name in {'ask', 'finish', 'deliver'}:
         latest_check = next((step for step in reversed(steps)
                              if step['action']['tool'] in {'check_decision', 'check_source_decision'}), None)
-        if latest_check and 'report_version_recheck' in latest_check['observation'].get('field_reference', {}):
+        if latest_check and latest_check['observation'].get('field_reference', {}).keys() & {
+                'report_version_recheck', 'report_supplement'}:
             question = decision_table.reference_question(latest_check)
             if question and (name != 'ask' or args['question'] != question
                              or args.keys() - {'question', 'partial_result'}):
@@ -349,7 +360,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
         if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('waiting_field_version') or args.get('partial_reply')
-                or args.get('answered_revision') or args.get('combined_reply') or args.get('report_version_recheck')):
+                or args.get('answered_revision') or args.get('combined_reply') or args.get('report_version_recheck')
+                or args.get('report_supplement')):
             raise ValueError('版本重核、等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         if decision_table.DOCUMENT_RULE_FIELDS & args.keys() and args != pending_document_rule:
             raise ValueError('文件更正須使用目前提示的本輪來源與範圍。')
@@ -488,7 +500,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
     goal = get_goal(store, sid, gid)
     if goal['status'] in ('report_ready', 'needs_input'):
         return goal, goal['status']
-    documents = store.documents(sid, include_content=True)
+    documents = _goal_documents(store, sid, goal, include_content=True)
     if signature(documents) != goal['sources']:
         update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
         return get_goal(store, sid, gid), 'sources_changed'
@@ -509,7 +521,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 reason = 'goal_limit'
                 update(store, gid, 'paused', notice='已達32步，請依目前成果建立下一階段目標。')
                 break
-            if signature(store.documents(sid)) != goal['sources']:
+            if signature(_goal_documents(store, sid, goal)) != goal['sources']:
                 reason = 'sources_changed'
                 update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
                 break
@@ -546,6 +558,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             version_confirmed = field_proof.get('version_confirmation')
             waiting_field_version = field_proof.get('waiting_field_version')
             report_version = field_proof.get('report_version_recheck')
+            report_supplement = field_proof.get('report_supplement')
             if report_version and (waiting_field_version or {}).get('ask_sequence', 0) <= report_version['report_step']:
                 waiting_field_version = None
             version_rules_applied = field_proof.get('version_rules')
@@ -613,14 +626,16 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
                 ('\n' + decision_table.DOCUMENT_RULE_GUIDANCE if pending_document_rule else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_GUIDANCE
-                 if document_version_review and not (version_confirmed or waiting_field_version or report_version) else '') +
+                 if document_version_review and not (version_confirmed or waiting_field_version or report_version or report_supplement) else '') +
                 ('\n' + decision_table.DOCUMENT_QUESTION_PLAN_GUIDANCE if document_question_plan else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_QUESTION_GUIDANCE if document_version_question else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_REPLY_GUIDANCE
-                 if document_version_reply or version_confirmed and not (version_rules_applied or waiting_field_version or report_version) else '') +
+                 if document_version_reply or version_confirmed and not (
+                     version_rules_applied or waiting_field_version or report_version or report_supplement) else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_RULE_GUIDANCE
-                 if document_version_rules or version_rules_applied and not (waiting_field_version or report_version) else '') +
-                ('\n' + decision_table.REPORT_VERSION_GUIDANCE if report_version and not waiting_field_version else '') +
+                 if document_version_rules or version_rules_applied and not (waiting_field_version or report_version or report_supplement) else '') +
+                ('\n' + decision_table.REPORT_VERSION_GUIDANCE if report_version and not (waiting_field_version or report_supplement) else '') +
+                ('\n' + decision_table.REPORT_SUPPLEMENT_GUIDANCE if report_supplement else '') +
                 ('\n' + decision_table.WAITING_FIELD_VERSION_GUIDANCE if waiting_field_version else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +
@@ -663,7 +678,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 reason = 'cancelled'
                 update(store, gid, 'paused', notice='已停止，未執行此次傳回的動作。')
                 break
-            if signature(store.documents(sid)) != goal['sources']:
+            if signature(_goal_documents(store, sid, goal)) != goal['sources']:
                 reason = 'sources_changed'
                 update(store, gid, 'paused', notice='參考文件已改變，未執行此次動作；請另建目標。')
                 break

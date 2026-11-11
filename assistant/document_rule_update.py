@@ -6,10 +6,12 @@ _LABEL = r'[^「」\r\n\x00]{1,120}'
 _SCOPE = re.compile(rf'^本次為「(?P<scope>{_LABEL})」。')
 _CITATION = re.compile(r'\[D([1-9][0-9]{0,11}):L([1-9][0-9]{0,11})\]')
 _PAIR = re.compile(rf'「({_LABEL})」為「({_LABEL})」')
-_ROW = (rf'若(?P<when>{_PAIR.pattern}(?:、{_PAIR.pattern}){{0,4}})，'
-        rf'原「(?P<before>{_LABEL})」改為「(?P<after>{_LABEL})」。其他配對沿用原表。')
+_CHANGE = (rf'若(?P<when>{_PAIR.pattern}(?:、{_PAIR.pattern}){{0,4}})，'
+           rf'原「(?P<before>{_LABEL})」改為「(?P<after>{_LABEL})」。')
+_ROW = _CHANGE + '其他配對沿用原表。'
 _RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式生效。{_ROW}')
 _VERSIONED_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_ROW}')
+_PARTIAL_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_CHANGE}其他配對待補。')
 _ADOPTION = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式採用版本「(?P<version>{_LABEL})」。')
 MAX_RECORDS = 8
 
@@ -51,14 +53,18 @@ def validate(args):
         raise ValueError('文件規則更正須指定一至八個不同且已完整查讀的文件行。')
 
 
-def _parse(text, scope, include_versions):
+def _parse(text, scope, include_versions, allow_partial):
     match = _RULE.fullmatch(text)
     version = None
+    partial = False
     if not match and include_versions:
         adoption = _ADOPTION.fullmatch(text)
         if adoption and adoption['scope'] == scope:
             return {'adopts': adoption['version']}
         match = _VERSIONED_RULE.fullmatch(text)
+        if match is None and allow_partial:
+            match = _PARTIAL_RULE.fullmatch(text)
+            partial = match is not None
         if match:
             version = match['version']
     if not match or match['scope'] != scope or match['before'] == match['after']:
@@ -67,10 +73,12 @@ def _parse(text, scope, include_versions):
     if len(dict(pairs)) != len(pairs):
         return None
     rule = {'when': dict(pairs), 'before': match['before'], 'after': match['after']}
+    if partial:
+        rule['partial'] = True
     return {**rule, 'version': version} if version is not None else rule
 
 
-def read_rules(steps, base_step, scope, *, include_versions=False):
+def read_rules(steps, base_step, scope, *, include_versions=False, allow_partial=False):
     found = {}
     for step in steps:
         if step['sequence'] <= base_step or step['action']['tool'] not in {'read', 'read_ranges'}:
@@ -87,7 +95,7 @@ def read_rules(steps, base_step, scope, *, include_versions=False):
                 if not rendered.startswith(prefix):
                     raise ValueError('已讀文件規則的行號與查讀範圍不一致。')
                 quote = rendered[len(prefix):]
-                rule = _parse(quote, scope, include_versions)
+                rule = _parse(quote, scope, include_versions, allow_partial)
                 if rule is None:
                     continue
                 citation = f'[D{excerpt["document_id"]}:L{line}]'

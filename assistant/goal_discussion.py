@@ -1,7 +1,7 @@
 """Explicit saved-report transfer to a local, unsent same-session chat draft."""
 import json
 
-from . import chat_drafts
+from . import chat_drafts, goal_sources
 from .autonomy import signature
 from .engine import MAX_QUESTION_CHARS
 
@@ -48,5 +48,7 @@ def stage(store, sid, gid, *, expected_revision):
             raise ValueError('請選取本對話已保存成果的自主目標；未完成的工作不能帶入成果正文。')
         sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id',
                                        (sid,)).fetchall())
-        content = compose(row, json.loads(row['sources_json']) == sources, draft['content'])
+        matches = goal_sources.matching_scope(json.loads(row['sources_json']), sources,
+                                             scoped=goal_sources.saved_supplement(db, gid))
+        content = compose(row, matches, draft['content'])
         return chat_drafts.write(db, sid, content, expected_revision)

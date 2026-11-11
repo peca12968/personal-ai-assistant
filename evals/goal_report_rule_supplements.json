@@ -1,0 +1,71 @@
+[
+  {
+    "id": "complete_supplement_updates_original_report",
+    "files": [
+      {
+        "name": "new-1.txt",
+        "content": "本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「早班」、「核驗班別」為「晚班」，原「乙桌」改為「南桌」。其他配對沿用原表。\n"
+      },
+      {
+        "name": "new-2.txt",
+        "content": "本輪「沐潭 H6」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n"
+      }
+    ],
+    "selected": [
+      0
+    ],
+    "expected": "resolved"
+  },
+  {
+    "id": "partial_supplement_preserves_unverified_pair",
+    "files": [
+      {
+        "name": "new-1.txt",
+        "content": "本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對待補。\n"
+      }
+    ],
+    "selected": [
+      0
+    ],
+    "expected": "partial"
+  },
+  {
+    "id": "other_batch_does_not_reopen_report",
+    "files": [
+      {
+        "name": "new-1.txt",
+        "content": "本輪「沐潭 H6」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n"
+      }
+    ],
+    "selected": [
+      0
+    ],
+    "expected": "rejected"
+  },
+  {
+    "id": "old_version_does_not_reopen_report",
+    "files": [
+      {
+        "name": "new-1.txt",
+        "content": "本輪「沐潭 H5」的「v1」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n"
+      }
+    ],
+    "selected": [
+      0
+    ],
+    "expected": "rejected"
+  },
+  {
+    "id": "conflicting_supplement_preserves_two_supported_destinations",
+    "files": [
+      {
+        "name": "new-1.txt",
+        "content": "本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「北桌」。其他配對沿用原表。\n本輪「沐潭 H5」的「v2」版規則。若「採樣班別」為「早班」、「核驗班別」為「晚班」，原「乙桌」改為「南桌」。其他配對沿用原表。\n"
+      }
+    ],
+    "selected": [
+      0
+    ],
+    "expected": "conflict"
+  }
+]

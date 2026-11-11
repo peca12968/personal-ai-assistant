@@ -5,10 +5,10 @@ import json
 import re
 
 from .answer_runs import lease
-from .autonomy import MAX_STEPS, text
+from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
-from . import (conversation_history, decision_table, document_rule_update, goal_guidance_sources, goal_partials,
-               goal_question_withdrawals, goal_reply_sources, goal_review, work_plan)
+from . import (conversation_history, decision_table, document_ranges, document_rule_update, goal_guidance_sources,
+               goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan)
 
 
 def _steps(db, gid):
@@ -71,13 +71,21 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
         steps = _steps(db, gid)
         reference = decision_table.reference_report(steps, goal['result'])
         version = decision_table.document_version_report(steps, goal['result'])
-        if reference or version:
+        supplement = decision_table.document_supplement_report(steps, goal['result'])
+        if reference or version or supplement:
             decision_table._recheck_saved(steps, sources, guidance)
             if reference:
                 result['reference_report'] = reference['observation']['field_reference']
             if version:
                 result['document_version_report'] = version['observation']['field_reference']
-            receipt = json.dumps(reference or version, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            if supplement:
+                _, selection = supplement
+                result['document_supplement'] = {key: selection[key] for key in ('scope', 'version')}
+                result['supplement_documents'] = signature(db.execute(
+                    'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
+                result['supplement_sources_match'] = goal_sources.matching_scope(
+                    json.loads(goal['sources_json']), result['supplement_documents'], scoped=True)
+            receipt = json.dumps(reference or version or supplement[0], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             result['fingerprint'] = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
     return result
 
@@ -90,6 +98,14 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
+    if status == 'report_ready' and 'document_supplement' in value:
+        if not value['supplement_sources_match']:
+            return False, '原目標已有文件版本變更或移除，請先恢復原匯入版本。'
+        if value['step_count'] + 2 > MAX_STEPS:
+            return False, '剩餘步數不足以核對補件及更新成果，請帶入原成果建立下一階段。'
+        scope = value['document_supplement']
+        return True, (f'可補齊「{scope["scope"]}」的「{scope["version"]}」版規則。先匯入文件，再指定完整原行，'
+                      '例如 補件 [D5:L1-L2]。')
     reference_report = status == 'report_ready' and bool(value.keys() & {'reference_report', 'document_version_report'})
     if status == 'report_ready' and not reference_report:
         return False, '此目標已有成果；請帶入所選成果建立下一階段。'
@@ -146,6 +162,37 @@ def _save_reference_recheck(db, current, notes):
     _append_reference_recheck(db, goal, notes, step_count + 1, args, observation)
     db.execute("UPDATE autonomous_goals SET notes=?,status='paused',result='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                (notes, '已重核原分支；先前成果保留在步驟紀錄，請接續更新成果。', gid))
+
+
+def _save_report_supplement(db, current, notes, content):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    if 'document_supplement' not in current:
+        raise ValueError('此目標目前沒有已交付且缺所選版本規則的報告。')
+    ranges = goal_sources.supplement_ranges(content)
+    original = json.loads(goal['sources_json'])
+    wanted = {row['document_id'] for row in ranges}
+    placeholders = ','.join('?' for _ in wanted)
+    documents = [dict(row) for row in db.execute(
+        f'SELECT id,name,sha256,content FROM documents WHERE session_id=? AND id IN ({placeholders}) ORDER BY id',
+        (goal['session_id'], *wanted))]
+    read = document_ranges.read_batch(documents, {'ranges': ranges})
+    if any(row['status'] != 'provided' for row in read['requested_ranges']):
+        raise ValueError('無法完整查讀指定補件，請核對目前對話的文件與行號。')
+    existing = {row['document_id'] for row in original}
+    added = [source for source in signature(documents) if source['document_id'] not in existing]
+    merged = goal_sources.merge_sources(original, added)
+    guidance = goal_guidance_sources.read(db, gid, notes, count)
+    args = {'report_supplement': guidance[-1]['citation'], 'original_sources': original, 'added_sources': added}
+    observation = decision_table.observe(args, _steps(db, gid), goal.get('reply_sources', ()), guidance,
+                                         excerpts=read['excerpts'])
+    if count + (4 if observation.get('max_questions', 0) else 2) > MAX_STEPS:
+        raise ValueError('剩餘步數不足以核對補件及更新成果，請帶入原成果建立下一階段。')
+    sources_json = json.dumps(merged, ensure_ascii=False)
+    _append_reference_recheck(db, {**goal, 'sources_json': sources_json}, notes, count + 1, args, observation)
+    db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,status='paused',result='',notice=?,
+                  updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+               (sources_json, notes, '已核對指定補件，先前成果保留在步驟紀錄，請接續更新成果。', gid))
 
 
 def append_waiting_recheck(db, current, notes):
@@ -275,6 +322,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
+        supplement = 'document_supplement' in current
+        if supplement and not re.match(r'^補件(?:[ \t]|$)', content):
+            raise ValueError(reason)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         goal = current['goal']
         step_count = current['step_count']
@@ -287,7 +337,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
-        if current.keys() & {'reference_report', 'document_version_report'}:
+        if supplement:
+            _save_report_supplement(db, current, notes, content)
+        elif current.keys() & {'reference_report', 'document_version_report'}:
             _save_reference_recheck(db, current, notes)
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))

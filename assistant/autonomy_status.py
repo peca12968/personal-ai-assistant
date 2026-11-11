@@ -1,5 +1,6 @@
 """Bounded historical status for chat, without replaying tool data or old sources."""
 import json
+from . import goal_sources
 
 
 def goal_context(store, sid):
@@ -19,9 +20,10 @@ def goal_context(store, sid):
             FROM autonomous_goals g WHERE g.session_id=? ORDER BY g.rowid DESC LIMIT 4''', (sid,)).fetchall()
         sources = signature(db.execute(
             'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
+        scoped = {row['id'] for row in rows if goal_sources.saved_supplement(db, row['id'])}
     goals = []
     for row in rows[:3]:
-        sources_match = json.loads(row['sources_json']) == sources
+        sources_match = goal_sources.matching_scope(json.loads(row['sources_json']), sources, scoped=row['id'] in scoped)
         action, explanation = next_action(row['status'], sources_match, row['step_count'])
         # A saved question is model output, not proof it remains unanswered.
         # Explicit replies clear it; newer guidance/current chat may already answer it.

@@ -94,7 +94,7 @@ class GoalReviewWindow:
             lines = ['對話：' + row['session_title'], '目標：' + row['objective'] + ('…（已省略，可開啟完整目標）' if row['objective_truncated'] else ''),
                 '紀錄狀態：' + LABELS.get(row['recorded_status'], row['recorded_status']),
                 '下一步：' + row['explanation'], f"已保存 {row['step_count']} 步",
-                '文件來源：' + ('與建立目標時相同' if row['sources_match'] else '已變更；既有成果仍屬於原版本'),
+                '文件來源：' + ('與目標保存的來源版本一致' if row['sources_match'] else '已變更；既有成果仍屬於原版本'),
                 '交付形式：' + ('本機文件' if row['file_delivery'] else '視窗文字成果')]
             if row['question']:
                 lines += ['當時等待的補充：' + row['question']]
