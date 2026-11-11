@@ -55,7 +55,7 @@ INITIAL_REFERENCE_GUIDANCE = '''若 initial_field_reference 存在，已保存�
 
 POST_REPLY_REFERENCE_GUIDANCE = '''有 reference_reply_with_guidance 時，已保存原欄名問題的答覆。答覆明確指出候選欄名時，用 check_decision 的 {"field_reference":"該欄名答覆的實際編號","resolve":true}。確認欄名是指原先那筆改值，具名更正按保存順序採用。post_reply_recheck.known 是最後欄值，changes 是各筆正式新值及來源。原 confirmation 仍是欄名來源，remaining_reply 若存在則是另一項已答補問。若欄名決定收件人，按已確認欄名核對原值班表。依最後核對及各自原話交付。'''
 
-DOCUMENT_RULE_GUIDANCE = '''有 pending_document_rule 時，已完整查讀一則符合本次範圍、原配對及舊結果的正式文件更正。先用 check_decision，args 原樣使用 pending_document_rule，程式只更新文件指定的原配對，重算原欄名分支。依更新後分支判斷要不要問，去向一致且欄名無其他用途時直接交付並保留欄名待查。若需欄名，回覆後用 field_reference 和 resolve，並引用原改值、實際欄名答覆及文件更正。'''
+DOCUMENT_RULE_GUIDANCE = '''有 pending_document_rule 時，先用 check_decision，args 原樣使用 pending_document_rule。程式依已完整查讀的本批文件更新指定配對。請先讀完使用者明列的相關區段。document_rules 的 rows 列各配對的結果及來源，conflicting 保留多個結果，已確定的其他配對仍有效。adopted_version 只按明示採用行決定，規則與採用行各自引用。依重算分支決定是否提問。去向一致且欄名無其他用途時直接交付並保留欄名待查；只需條件式報告時，保留每組結果及衝突的各份原文。若需欄名，實際回覆後用 field_reference 和 resolve。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -388,7 +388,7 @@ def _case_questions(conditions, cases, *, distinguish_gaps=False):
     return result
 
 
-def calculate(args, *, alternatives=None, require_all=False, row_rules=()):
+def calculate(args, *, alternatives=None, require_all=False, row_rules=(), document_rows=None):
     declared, excluded = validate(args)
     conditions, known = args['conditions'], args['known']
     indices = {name: index for index, name in enumerate(conditions)}
@@ -405,7 +405,8 @@ def calculate(args, *, alternatives=None, require_all=False, row_rules=()):
     if 'rules' in args:
         result = _calculate_priority(args, [row for row in declared if matches(row)], excluded)
     else:
-        result = _calculate_rows(args, declared, excluded, matches,
+        effective = args if document_rows is None else {**args, 'rows': document_rows}
+        result = _calculate_rows(effective, declared, excluded, matches,
                                  track_coverage=bool(alternatives and alternatives.get('track_coverage')),
                                  row_rules=row_rules)
     if alternatives is None:
@@ -492,7 +493,8 @@ _ANSWERED_NOTE_TOKEN = re.compile(
 _UNCERTAIN_PLAIN = re.compile(r'不|未|非|暫|待|若|或|可能|但|假設|試算|還要|再確認')
 _FIELDLESS_CHANGE = re.compile(r'(?:這一欄|那一欄|這欄|那欄)?(?:正式)?(?:改為|改成) *(?P<value>.+)')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
-_TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference', 'document_rule'}
+DOCUMENT_RULE_FIELDS = {'document_rule', 'document_rules'}
+_TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference'} | DOCUMENT_RULE_FIELDS
 
 
 class _RejectedRevision(ValueError):
@@ -503,7 +505,7 @@ class _RejectedRevision(ValueError):
 
 
 def validate_tool(args):
-    if isinstance(args, dict) and 'document_rule' in args:
+    if isinstance(args, dict) and DOCUMENT_RULE_FIELDS & args.keys():
         document_rule_update.validate(args)
     elif isinstance(args, dict) and 'revision' in args:
         if (set(args) not in ({'revision'}, {'revision', 'compare'}) or not isinstance(args['revision'], str)
@@ -672,11 +674,15 @@ def _result_summary(result):
 
 
 def _current_result(plan, *, require_all=False):
+    document_rows = plan.get('document_rule_rows')
+    if document_rows is not None:
+        plan = {key: value for key, value in plan.items() if key != 'document_rule_rows'}
     if 'current_alternatives' not in plan:
-        return calculate(plan)
+        return calculate(plan, document_rows=document_rows)
     core = {key: value for key, value in plan.items() if key not in {'current_alternatives', 'current_row_rules'}}
     rules = plan.get('current_row_rules', ())
-    result = calculate(core, alternatives=plan['current_alternatives'], require_all=require_all, row_rules=rules)
+    result = calculate(core, alternatives=plan['current_alternatives'], require_all=require_all, row_rules=rules,
+                       document_rows=document_rows)
     if rules:
         result['current_row_rules'] = [{**rule, 'applicable': rule['row'] in result['matching_rows']} for rule in rules]
     return result
@@ -1740,9 +1746,7 @@ def _document_rule_anchor(steps):
     return None
 
 
-def _apply_document_rule(previous, rule):
-    base_step, base = previous
-    pending = base['pending_field_reference']
+def _document_rule_row(base, rule, plans):
     fields = base['conditions']
     if 'rows' not in base or 'current_alternatives' in base or set(rule['when']) != set(fields):
         raise ValueError('文件更正須明列原表一組完整配對。')
@@ -1750,13 +1754,19 @@ def _apply_document_rule(previous, rule):
     matches = [index for index, row in enumerate(base['rows']) if row['when'] == when]
     if len(matches) != 1 or when in base['excluded'] or base['rows'][matches[0]]['result'] != rule['before']:
         raise ValueError('文件更正的配對或原結果與原表不一致。')
+    if not any(plan['known'].items() <= rule['when'].items() for plan in plans):
+        raise ValueError('文件更正的配對不在目前候選分支。')
+    return matches[0]
+
+
+def _apply_document_rule(previous, rule):
+    base_step, base = previous
+    pending = base['pending_field_reference']
     core = {key: value for key, value in base.items() if key != 'pending_field_reference'}
     candidates = [branch['field'] for branch in pending['branches']]
     overwritten = pending.get('overwritten_fields', ())
     plans, _, _ = _reference_results(core, candidates, pending['value'], overwritten)
-    if not any(plan['known'].items() <= rule['when'].items() for plan in plans):
-        raise ValueError('文件更正的配對不在目前候選分支。')
-    row = matches[0]
+    row = _document_rule_row(core, rule, plans)
     rows = list(core['rows'])
     rows[row] = {**rows[row], 'result': rule['after']}
     plan = {**core, 'rows': rows}
@@ -1765,22 +1775,101 @@ def _apply_document_rule(previous, rule):
     return _pending_reference(plan, {**pending, 'branches': branches, 'document_rule': receipt}, results)
 
 
+def _document_rule_basis(previous, steps):
+    anchor, base = previous
+    by_sequence = {step['sequence']: step for step in steps}
+    step = by_sequence[anchor]
+    core = {key: value for key, value in base.items() if key not in {'pending_field_reference', 'document_rule_rows'}}
+    if 'document_rule_rows' in base and 'document_rules' not in step['action']['args']:
+        raise ValueError('現行條件已有後續核對，請重新確認文件更正的適用範圍。')
+    if 'document_rules' in step['action']['args']:
+        step = by_sequence[base['pending_field_reference']['document_rules']['base_step']]
+    elif 'document_rule' in step['action']['args']:
+        rows = list(core['rows'])
+        while 'document_rule' in step['action']['args']:
+            rule = step['observation']['field_reference']['document_rule']
+            row = rule['row'] - 1
+            rows[row] = {**rows[row], 'result': rule['before']}
+            step = by_sequence[rule['base_step']]
+        core = {**core, 'rows': rows}
+    return step['sequence'], core, step['observation']['field_reference']
+
+
+def _apply_document_rules(basis, records):
+    base_step, core, pending = basis
+    adoptions = [record for record in records.values() if 'adopts' in record]
+    versions = {record['adopts'] for record in adoptions}
+    versioned = [record for record in records.values() if 'version' in record]
+    if versioned and (len(versions) != 1 or not any(record['version'] in versions for record in versioned)):
+        raise ValueError('版本規則須有同批唯一正式採用版本，並已完整讀到該版規則。')
+    active = [record for record in records.values() if 'when' in record
+              and ('version' not in record or record['version'] in versions)]
+    if not active:
+        raise ValueError('沒有符合本輪的已採用配對規則。')
+    candidates = [branch['field'] for branch in pending['branches']]
+    overwritten = pending.get('overwritten_fields', ())
+    plans = [_reference_plan(core, field, pending['value'], overwritten) for field in candidates]
+    by_row = {}
+    for rule in active:
+        index = _document_rule_row(core, rule, plans)
+        _label(rule['after'])
+        by_row.setdefault(index, {}).setdefault(rule['after'], []).append(rule['evidence']['citation'])
+    rows, extra_rows, changes = list(core['rows']), [], []
+    for index, alternatives in sorted(by_row.items()):
+        original = rows[index]
+        first, *others = alternatives
+        rows[index] = {**original, 'result': first}
+        extra_rows.extend({**original, 'result': outcome} for outcome in others)
+        changes.append({'row': index + 1, 'when': original['when'], 'before': original['result'],
+                        'status': 'conflicting' if others else 'resolved',
+                        'results': [{'result': result, 'citations': citations} for result, citations in alternatives.items()]})
+    plan = {**core, 'document_rule_rows': rows + extra_rows}
+    _, results, branches = _reference_results(plan, candidates, pending['value'], overwritten)
+    receipt = {'base_step': base_step, 'base_sha256': digest(core), 'records': list(records.values()), 'rows': changes}
+    if versioned:
+        receipt['adopted_version'] = {'version': next(iter(versions)),
+                                      'citations': [record['evidence']['citation'] for record in adoptions]}
+    return _pending_reference(plan, {**pending, 'branches': branches, 'document_rules': receipt}, results)
+
+
+def _document_rule_arguments(steps, previous, sequence, scope, replies, guidance):
+    basis = _document_rule_basis(previous, steps)
+    if _followup_sources(basis[0], sequence, replies, guidance):
+        raise ValueError('文件更正須接續目前的欄名分支，並先核對其他補充。')
+    records = document_rule_update.read_rules(steps, basis[0], scope, include_versions=True)
+    if not 1 <= len(records) <= document_rule_update.MAX_RECORDS:
+        raise ValueError('須完整查讀一至八條本批文件規則或採用記載。')
+    latest = next(step for step in reversed(steps) if step['sequence'] == previous[0])['action']['args']
+    if ('document_rules' in latest and list(records) == latest['document_rules']) or (
+            'document_rule' in latest and list(records) == [latest['document_rule']]):
+        raise ValueError('這些文件規則已核對。')
+    if basis[0] == previous[0] and len(records) == 1 and all(
+            'when' in record and 'version' not in record for record in records.values()):
+        args = {'document_rule': next(iter(records)), 'scope': scope}
+    else:
+        args = {'document_rules': list(records), 'scope': scope}
+    return args, basis, records
+
+
 def document_rule_candidate(steps, replies, guidance, objective, sources):
     scope = document_rule_update.objective_scope(objective)
     anchor = _document_rule_anchor(steps) if scope else None
     if anchor is None or _followup_sources(anchor, len(steps) + 1, replies, guidance):
         return None
     try:
-        rules = document_rule_update.read_rules(steps, anchor, scope)
-        if len(rules) != 1:
+        if not document_rule_update.read_rules(steps, anchor, scope, include_versions=True):
             return None
-        citation, = rules
         previous, _, _ = _recheck_saved(steps, replies, guidance)
-        document_rule_update.verify_context(rules[citation], objective, sources)
-        _apply_document_rule(previous, rules[citation])
+        args, basis, records = _document_rule_arguments(steps, previous, len(steps) + 1, scope, replies, guidance)
+        for record in records.values():
+            document_rule_update.verify_context(record, objective, sources)
+        if 'document_rule' in args:
+            _apply_document_rule(previous, records[args['document_rule']])
+        else:
+            _apply_document_rules(basis, records)
     except ValueError:
         return None
-    return {'document_rule': citation, 'scope': scope}
+    return args
 
 
 def _natural_question_reference(steps, question):
@@ -2087,10 +2176,17 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 
 
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
-    if 'document_rule' in args:
+    if DOCUMENT_RULE_FIELDS & args.keys():
         anchor = _document_rule_anchor(steps)
         if anchor is None or previous is None or previous[0] != anchor or _followup_sources(anchor, sequence, replies, guidance):
             raise ValueError('文件更正須接續目前的欄名分支，並先核對其他補充。')
+        if 'document_rules' in args:
+            expected, basis, records = _document_rule_arguments(steps, previous, sequence, args['scope'], replies, guidance)
+            if args != expected:
+                raise ValueError('須引用本批所有已完整查讀的規則及採用記載。')
+            return _apply_document_rules(basis, records)
+        if 'document_rule_rows' in previous[1]:
+            raise ValueError('本輪已有多則文件規則，須一併核對。')
         rules = document_rule_update.read_rules(steps, anchor, args['scope'])
         if list(rules) != [args['document_rule']]:
             raise ValueError('須引用唯一符合本次範圍且完整查讀的正式文件更正。')
@@ -2197,9 +2293,12 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             guidance = goal_guidance_sources.read(db, gid, notes, count)
         _recheck_saved(steps, replies, guidance)
         for step in steps:
-            if step['action']['tool'] == 'check_decision' and 'document_rule' in step['action']['args']:
-                rule = step['observation']['field_reference']['document_rule']
-                document_rule_update.verify_context(rule, objective, json.loads(sources))
+            args = step['action']['args']
+            if step['action']['tool'] == 'check_decision' and DOCUMENT_RULE_FIELDS & args.keys():
+                proof = step['observation']['field_reference']
+                records = [proof['document_rule']] if 'document_rule' in args else proof['document_rules']['records']
+                for record in records:
+                    document_rule_update.verify_context(record, objective, json.loads(sources))
         by_sequence = {step['sequence']: step for step in steps}
         for step in steps:
             if step['action']['tool'] != 'check_decision':

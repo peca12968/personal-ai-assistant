@@ -1,4 +1,4 @@
-"""Read a complete, scoped replacement for one row of an existing decision table."""
+"""Read complete, scoped replacements and explicit version adoption lines."""
 import re
 
 
@@ -6,8 +6,12 @@ _LABEL = r'[^「」\r\n\x00]{1,120}'
 _SCOPE = re.compile(rf'^本次為「(?P<scope>{_LABEL})」。')
 _CITATION = re.compile(r'\[D([1-9][0-9]{0,11}):L([1-9][0-9]{0,11})\]')
 _PAIR = re.compile(rf'「({_LABEL})」為「({_LABEL})」')
-_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式生效。若(?P<when>{_PAIR.pattern}(?:、{_PAIR.pattern}){{0,4}})，'
-                   rf'原「(?P<before>{_LABEL})」改為「(?P<after>{_LABEL})」。其他配對沿用原表。')
+_ROW = (rf'若(?P<when>{_PAIR.pattern}(?:、{_PAIR.pattern}){{0,4}})，'
+        rf'原「(?P<before>{_LABEL})」改為「(?P<after>{_LABEL})」。其他配對沿用原表。')
+_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式生效。{_ROW}')
+_VERSIONED_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_ROW}')
+_ADOPTION = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式採用版本「(?P<version>{_LABEL})」。')
+MAX_RECORDS = 8
 
 
 def objective_scope(objective):
@@ -16,23 +20,40 @@ def objective_scope(objective):
 
 
 def validate(args):
-    if (args.keys() != {'document_rule', 'scope'} or not isinstance(args['scope'], str)
-            or not re.fullmatch(_LABEL, args['scope']) or not isinstance(args['document_rule'], str)
-            or not _CITATION.fullmatch(args['document_rule'])):
-        raise ValueError('文件規則更正須指定本次完整範圍與一個已完整查讀的文件行。')
+    if not isinstance(args.get('scope'), str) or not re.fullmatch(_LABEL, args['scope']):
+        raise ValueError('文件規則更正須指定本次完整範圍。')
+    if args.keys() == {'document_rule', 'scope'}:
+        citations = [args['document_rule']]
+    elif args.keys() == {'document_rules', 'scope'} and isinstance(args['document_rules'], list):
+        citations = args['document_rules']
+    else:
+        citations = []
+    if (not 1 <= len(citations) <= MAX_RECORDS
+            or any(not isinstance(citation, str) or not _CITATION.fullmatch(citation) for citation in citations)
+            or len(set(citations)) != len(citations)):
+        raise ValueError('文件規則更正須指定一至八個不同且已完整查讀的文件行。')
 
 
-def _parse(text, scope):
+def _parse(text, scope, include_versions):
     match = _RULE.fullmatch(text)
+    version = None
+    if not match and include_versions:
+        adoption = _ADOPTION.fullmatch(text)
+        if adoption and adoption['scope'] == scope:
+            return {'adopts': adoption['version']}
+        match = _VERSIONED_RULE.fullmatch(text)
+        if match:
+            version = match['version']
     if not match or match['scope'] != scope or match['before'] == match['after']:
         return None
     pairs = _PAIR.findall(match['when'])
     if len(dict(pairs)) != len(pairs):
         return None
-    return {'when': dict(pairs), 'before': match['before'], 'after': match['after']}
+    rule = {'when': dict(pairs), 'before': match['before'], 'after': match['after']}
+    return {**rule, 'version': version} if version is not None else rule
 
 
-def read_rules(steps, base_step, scope):
+def read_rules(steps, base_step, scope, *, include_versions=False):
     found = {}
     for step in steps:
         if step['sequence'] <= base_step or step['action']['tool'] not in {'read', 'read_ranges'}:
@@ -49,7 +70,7 @@ def read_rules(steps, base_step, scope):
                 if not rendered.startswith(prefix):
                     raise ValueError('已讀文件規則的行號與查讀範圍不一致。')
                 quote = rendered[len(prefix):]
-                rule = _parse(quote, scope)
+                rule = _parse(quote, scope, include_versions)
                 if rule is None:
                     continue
                 citation = f'[D{excerpt["document_id"]}:L{line}]'

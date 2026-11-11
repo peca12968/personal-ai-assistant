@@ -61,14 +61,93 @@ class InitialFieldReferenceTests(unittest.TestCase):
         checked = self.run_actions(action('check_decision', field_reference=f'[補充#{source}]'))
         return decision_table.reference_question(checked['steps'][-1])
 
-    def read_document_rule(self, text):
-        path = self.root / 'notice.txt'
-        path.write_text(text, encoding='utf-8')
-        document_id = self.store.attach_document(self.sid, path)
+    def prepare_document_rules(self, *texts):
+        documents = []
+        for number, text in enumerate(texts):
+            path = self.root / f'notice-{number}.txt'
+            path.write_text(text, encoding='utf-8')
+            documents.append(self.store.attach_document(self.sid, path))
         self.gid = autonomy.create_goal(self.store, self.sid, '本次為「甲批」。核對班別及去向。')
         self.check_reference_after_table()
+        return documents
+
+    def read_document_rule(self, text):
+        document_id, = self.prepare_document_rules(text)
         self.run_actions(action('read', document_id=document_id, start_line=1, end_line=1))
         return {'document_rule': f'[D{document_id}:L1]', 'scope': '甲批'}
+
+    def test_later_document_reads_rebuild_original_rows_and_preserve_conflicting_results(self):
+        docs = self.prepare_document_rules(
+            '本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「聯絡席」。其他配對沿用原表。',
+            '本輪「甲批」正式生效。若「收樣班別」為「早班」、「驗入班別」為「晚班」，原「乙桌」改為「聯絡席」。其他配對沿用原表。',
+            '本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「西桌」。其他配對沿用原表。')
+        citations = [f'[D{document}:L1]' for document in docs]
+        self.run_actions(action('read', document_id=docs[0], start_line=1, end_line=1),
+                         action('check_decision', document_rule=citations[0], scope='甲批'))
+        common = self.run_actions(action('read', document_id=docs[1], start_line=1, end_line=1),
+                                  action('check_decision', document_rules=citations[:2], scope='甲批'))
+        self.assertEqual(common['steps'][-1]['observation']['possible_results'], ['聯絡席'])
+        disputed = self.run_actions(action('read', document_id=docs[2], start_line=1, end_line=1),
+                                    action('check_decision', document_rules=citations, scope='甲批'))
+        step = disputed['steps'][-1]
+        proof = step['observation']['field_reference']
+        self.assertEqual(proof['status'], 'needs_field')
+        branches = {branch['field']: branch for branch in proof['branches']}
+        self.assertEqual(branches['收樣班別']['recorded_results'], ['聯絡席', '西桌'])
+        self.assertEqual(branches['驗入班別']['possible_results'], ['聯絡席'])
+        receipt = proof['document_rules']
+        self.assertEqual(receipt['base_step'], 3)
+        conflict, = [row for row in receipt['rows'] if row['status'] == 'conflicting']
+        self.assertEqual(conflict['before'], '甲桌')
+        self.assertEqual(conflict['results'], [{'result': '聯絡席', 'citations': citations[:1]},
+                                               {'result': '西桌', 'citations': citations[2:]}])
+        self.run_actions(action('ask', question='這次改成晚班的是收樣班別還是驗入班別？'))
+        answer = self.reply('收樣班別')
+        checked = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        self.assertEqual(checked['steps'][-1]['observation']['status'], 'incomplete_table')
+        saved = create_backup(self.store.path, self.root / 'multiple-document-rules.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), checked)
+        conflict['results'].pop()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_duplicate_document_results_preserve_both_citations_without_creating_a_conflict(self):
+        line = '本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「乙桌」。其他配對沿用原表。'
+        docs = self.prepare_document_rules(line, line)
+        citations = [f'[D{document}:L1]' for document in docs]
+        checked = self.run_actions(action('read_ranges', ranges=[{'document_id': document, 'start_line': 1, 'end_line': 1}
+                                                                for document in docs]),
+                                   action('check_decision', document_rules=citations, scope='甲批'))
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['乙桌'])
+        row, = observation['field_reference']['document_rules']['rows']
+        self.assertEqual(row['results'], [{'result': '乙桌', 'citations': citations}])
+
+    def test_document_version_requires_explicit_same_scope_adoption(self):
+        line = '本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「西桌」。其他配對沿用原表。'
+        docs = self.prepare_document_rules(line, line.replace('v1', 'v2').replace('西桌', '乙桌'),
+                                           '本輪「乙批」正式採用版本「v1」。\n本輪「甲批」正式採用版本「v2」。')
+        citations = [f'[D{document}:L1]' for document in docs[:2]]
+        self.run_actions(action('read_ranges', ranges=[{'document_id': document, 'start_line': 1, 'end_line': 1}
+                                                       for document in docs]))
+        offered = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertIsNone(decision_table.document_rule_candidate(
+            offered['steps'], offered['reply_sources'], (), offered['objective'], offered['sources']))
+        adoption = f'[D{docs[2]}:L2]'
+        checked = self.run_actions(action('read', document_id=docs[2], start_line=2, end_line=2),
+                                   action('check_decision', document_rules=[*citations, adoption], scope='甲批'))
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['乙桌'])
+        receipt = observation['field_reference']['document_rules']
+        self.assertEqual(receipt['adopted_version'], {'version': 'v2', 'citations': [adoption]})
+        self.assertEqual([record['evidence']['citation'] for record in receipt['records']], [*citations, adoption])
+        self.assertEqual(receipt['rows'][0]['results'], [{'result': '乙桌', 'citations': citations[1:]}])
 
     def test_effective_document_rule_requires_recheck_and_merges_branches_on_restore(self):
         args = self.read_document_rule('本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
