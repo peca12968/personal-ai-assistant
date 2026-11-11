@@ -1722,6 +1722,36 @@ def _validate_recheck_position(args, steps, sequence, guidance):
         raise ValueError('成果更正須緊接已交付的共同結果，並引用當時保存的主動更正。')
 
 
+def _natural_question_reference(steps, question):
+    ask = steps[-1]
+    args = ask['action']['args']
+    if args.keys() - {'question', 'partial_result'} or args.get('question') != question:
+        return None
+    index = len(steps) - 2
+    while index >= 0 and steps[index]['action']['tool'] in {'read', 'read_ranges', 'read_line', 'search', 'find_document_text'}:
+        index -= 1
+    if index < 0 or not reference_question(steps[index]):
+        return None
+    checked = steps[index]
+    following = steps[index + 1:]
+    if any(step['sequence'] != checked['sequence'] + offset for offset, step in enumerate(following, 1)):
+        return None
+    lookups = following[:-1]
+    if lookups:
+        conditions = checked['observation'].get('goal_conditions_sha256')
+        if not conditions or any(step['observation'].get('goal_conditions_sha256') != conditions for step in following):
+            return None
+    proof = checked['observation']['field_reference']
+    fields = field_questions.choices(question, [branch['field'] for branch in proof['branches']],
+                                     proof['value'], proof['quote'], proof['citation'])
+    if fields is None:
+        return None
+    receipt = {'question_sha256': digest(question), 'candidate_fields': fields}
+    if lookups:
+        receipt['lookup_steps'] = [{'sequence': step['sequence'], 'sha256': digest(step)} for step in lookups]
+    return checked, receipt
+
+
 def _post_reply_reference_inputs(steps, sequence, replies, guidance):
     index = next((i for i in range(len(steps) - 1, -1, -1) if steps[i]['action']['tool'] == 'ask'), -1)
     if index < 1:
@@ -1740,17 +1770,10 @@ def _post_reply_reference_inputs(steps, sequence, replies, guidance):
     elif waiting and waiting[0]['partial_reply']['item'] == 'remaining':
         checked = prefix[-2]
     else:
-        checked = prefix[-2]
-        if (not reference_question(checked) or checked['sequence'] != number - 1
-                or ask['action']['args'].keys() - {'question', 'partial_result'}
-                or ask['action']['args'].get('question') != reply['question']):
+        reference = _natural_question_reference(prefix, reply['question'])
+        if reference is None:
             return None
-        proof = checked['observation']['field_reference']
-        fields = field_questions.choices(reply['question'], [branch['field'] for branch in proof['branches']],
-                                         proof['value'], proof['quote'], proof['citation'])
-        if fields is None:
-            return None
-        natural = {'question_sha256': digest(reply['question']), 'candidate_fields': fields}
+        checked, natural = reference
     later_checks = [s for s in steps[index + 1:] if s['action']['tool'] == 'check_decision']
     if later_checks:
         latest = later_checks[0]
@@ -2094,11 +2117,8 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             "WHERE s.action_json LIKE '%\"check_decision\"%'"):
         steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for sequence, action, observation in db.execute(
-                     "SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? "
-                     "AND (action_json LIKE '%\"check_decision\"%' OR action_json LIKE '%\"invalid\"%' "
-                     "OR action_json LIKE '%\"finish\"%' OR action_json LIKE '%\"check_source_decision\"%' "
-                     "OR action_json LIKE '%\"ask\"%') "
-                     "ORDER BY sequence", (gid,))]
+                     'SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? ORDER BY sequence',
+                     (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
                       and step['action']['args'].keys() & _TRANSITION_FIELDS for step in steps)
         replies = goal_reply_sources.read(db, gid, notes, include_positions=True) if revised and replies_present else []

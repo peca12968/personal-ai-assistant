@@ -78,6 +78,55 @@ class InitialFieldReferenceTests(unittest.TestCase):
         self.assertEqual(receipt['known'], {'收樣班別': '夜班', '驗入班別': '早班'})
         self.assertEqual([s['citation'] for s in receipt['source_order']], [source, '[更正#1]'])
 
+    def test_natural_field_confirmation_binds_intervening_document_steps_on_restore(self):
+        self.check_reference_after_table()
+        self.read_documents()
+        self.run_actions(action('search', query='收樣班別'),
+                         action('ask', question='這次改成晚班的是收樣班別還是驗入班別？'))
+        answer = self.reply('收樣班別')
+        self.guide('收樣班別正式改為夜班。')
+        resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        step = resolved['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['丙桌'])
+        receipt = step['observation']['field_reference']['post_reply_recheck']
+        self.assertEqual(receipt['base_step'], 3)
+        lookups = resolved['steps'][3:5]
+        self.assertEqual([read['action']['tool'] for read in lookups], ['read_ranges', 'search'])
+        self.assertEqual(receipt['natural_question']['lookup_steps'], [
+            {'sequence': read['sequence'], 'sha256': digest(read)} for read in lookups])
+        saved = create_backup(self.store.path, self.root / 'field-after-lookup.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        read = lookups[0]
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps({**read['observation'], 'excerpts': []}, ensure_ascii=False), self.gid, read['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_document_steps_do_not_bridge_a_change_of_scope_or_question(self):
+        for scenario in ('changed conditions', 'new table', 'other tool', 'independent question'):
+            with self.subTest(scenario=scenario):
+                self.gid = autonomy.create_goal(self.store, self.sid, '核對最新班別及去向')
+                self.check_reference_after_table()
+                if scenario == 'changed conditions':
+                    self.guide('驗入班別正式改為晚班。')
+                if scenario == 'new table':
+                    self.run_actions(action('check_decision', **{**self.table, 'known': {'收樣班別': '早班', '驗入班別': '晚班'}}))
+                if scenario == 'other tool':
+                    self.run_actions(action('calculate', operation='sum', values=['2', '3']))
+                self.read_documents()
+                question = ('通知對象是收樣班別還是驗入班別？' if scenario == 'independent question'
+                            else '這次改成晚班的是收樣班別還是驗入班別？')
+                self.run_actions(action('ask', question=question))
+                self.reply('收樣班別')
+                self.guide('收樣班別正式改為夜班。')
+                goal = autonomy.get_goal(self.store, self.sid, self.gid, include_reply_positions=True)
+                self.assertIsNone(decision_table.post_reply_reference_candidate(
+                    goal['steps'], goal['reply_sources'], goal['guidance_sources']))
+
     def test_natural_recipient_question_stays_waiting_and_preserves_sources_on_restore(self):
         self.check_reference_after_table()
         question = '為了確認收件人，請問「正式改成晚班」指的是「收樣班別」還是「驗入班別」？'
