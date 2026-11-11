@@ -228,6 +228,131 @@ class InitialFieldReferenceTests(unittest.TestCase):
         completed = self.run_actions(action('check_decision', field_reference=source, resolve=True))
         self.assertEqual(completed['steps'][-1]['observation']['possible_results'], ['北桌'])
 
+    def deliver_conflicting_supplement(self, *, partial=False, two=False, known_field=False):
+        if known_field:
+            ask = self.check_document_versions(missing=True, targets=(('西桌', '北桌'), ('南桌', '南桌')))
+            self.run_actions(action('ask', **ask))
+            check = self.run_actions(action('check_decision', version_confirmation=f'[補充#{self.reply("v1")}]'))
+            self.run_actions(action('ask', question=decision_table.reference_question_for_steps(check['steps'])))
+            self.run_actions(action('check_decision', field_reference=f'[補充#{self.reply("收樣班別")}]', resolve=True),
+                             action('finish', report='v1 依已確認欄名交西桌。'))
+            self.guide('本輪「甲批」正式採用版本「v2」。')
+            self.run_actions(action('finish', report='採用 v2，去向待查。'))
+        else:
+            self.deliver_missing_version()
+        lines = [self.supplementary_rule(partial=partial), self.supplementary_rule(partial=partial, result='北桌')]
+        if not partial:
+            lines.append(self.supplementary_rule(second=True))
+        if two:
+            lines.append(self.supplementary_rule(second=True, result='東桌'))
+        did = self.attach_supplement('choices.txt', *lines)
+        self.guide(f'補件 [D{did}:L1-L{len(lines)}]')
+        prior = self.run_actions(action('finish', report=f'採 v2，同配對有南桌與北桌，去向待查。[D{did}:L1-L2]'))
+        return did, prior
+
+    def test_reported_conflict_choice_binds_original_report_and_retains_all_rule_evidence(self):
+        did, prior = self.deliver_conflicting_supplement()
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        self.assertEqual([item['citation'] for item in snapshot['document_conflict_report']['options']],
+                         [f'[D{did}:L1]', f'[D{did}:L2]'])
+        content = f'正式採用 [D{did}:L1]。'
+        self.guide(content)
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(current['steps'][:-1], prior['steps'])
+        self.assertEqual(current['sources'], prior['sources'])
+        step = current['steps'][-1]
+        proof = step['observation']['field_reference']
+        receipt, = proof['report_conflict_choices']
+        self.assertEqual(receipt['report_sha256'], digest(prior['steps'][-1]))
+        self.assertEqual(receipt['evidence']['quote'], content)
+        self.assertEqual(receipt['selected']['evidence']['citation'], f'[D{did}:L1]')
+        self.assertEqual([alternative['result'] for alternative in receipt['alternatives']], ['南桌', '北桌'])
+        self.assertEqual(proof['version_rules'], prior['steps'][-2]['observation']['field_reference']['version_rules'])
+        self.assertEqual(step['observation']['possible_results'], ['南桌'])
+
+        backup_file = create_backup(self.store.path, self.root / 'choice.paibackup')
+        restored = self.root / 'restored-choice'
+        restore_backup(backup_file['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), current)
+        receipt['selected']['evidence']['citation'] = f'[D{did}:L2]'
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_reported_conflict_choice_asks_original_field_and_reuses_verified_field(self):
+        for known in (False, True):
+            with self.subTest(known_field=known):
+                did, prior = self.deliver_conflicting_supplement(known_field=known)
+                content = (f'本輪「甲批」的「v2」版，收樣班別為晚班且驗入班別為早班，'
+                           f'正式採用 [D{did}:L2] 的北桌。')
+                self.guide(content)
+                current = autonomy.get_goal(self.store, self.sid, self.gid)
+                question = decision_table.reference_question_for_steps(current['steps'])
+                if known:
+                    self.assertIsNone(question)
+                    final = current
+                    prior_confirmation = prior['steps'][-2]['observation']['field_reference']['confirmation']
+                    self.assertEqual(final['steps'][-1]['observation']['field_reference']['confirmation'], prior_confirmation)
+                else:
+                    self.assertIn('「收樣班別」、「驗入班別」', question)
+                    self.run_actions(action('ask', question=question))
+                    reply = f'[補充#{self.reply("收樣班別")}]'
+                    final = self.run_actions(action('check_decision', field_reference=reply, resolve=True))
+                    self.assertEqual(final['steps'][-1]['observation']['field_reference']['confirmation']['citation'], reply)
+                self.assertEqual(final['steps'][-1]['observation']['possible_results'], ['北桌'])
+
+    def test_reported_choice_leaves_other_conflict_and_can_resolve_it_later(self):
+        did, prior = self.deliver_conflicting_supplement(two=True)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        next_report = self.run_actions(action('finish', report='採樣去南桌，核驗去向待查。'))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        self.assertEqual([item['citation'] for item in snapshot['document_conflict_report']['options']],
+                         [f'[D{did}:L3]', f'[D{did}:L4]'])
+        self.guide(f'本組正式採用 [D{did}:L3] 的「南桌」。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(current['steps'][:len(prior['steps'])], prior['steps'])
+        self.assertEqual(current['steps'][:-1], next_report['steps'])
+        observation = current['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['南桌'])
+        self.assertEqual([item['selected']['evidence']['citation'] for item in observation['field_reference']['report_conflict_choices']],
+                         [f'[D{did}:L1]', f'[D{did}:L3]'])
+        validate_database(self.store.path)
+
+    def test_later_supplement_keeps_formal_choice_and_fills_only_missing_pair(self):
+        did, _ = self.deliver_conflicting_supplement(partial=True)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = current['steps'][-1]['observation']
+        branches = [item['version_results'][0] for item in check['field_reference']['branches']]
+        self.assertEqual(branches[0]['possible_results'], ['南桌'])
+        self.assertEqual(branches[1]['coverage']['missing_rows'], [['早班', '晚班']])
+        self.assertIsNone(decision_table.reference_question_for_steps(current['steps']))
+        self.run_actions(action('finish', report='採樣南桌，核驗去向待查。'))
+        second = self.attach_supplement('last-pair.txt', self.supplementary_rule(second=True, partial=True))
+        self.guide(f'補件 [D{second}:L1]')
+        final = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = final['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        self.assertEqual(check['field_reference']['report_conflict_choices'][0]['selected']['evidence']['citation'],
+                         f'[D{did}:L1]')
+        validate_database(self.store.path)
+
+    def test_reported_choice_rejects_mismatched_pair_scope_version_and_uncertain_text(self):
+        did, prior = self.deliver_conflicting_supplement()
+        cite = f'[D{did}:L1]'
+        for content in (f'正式採用 [D{did}:L3]。', f'正式採用 {cite} 的北桌。',
+                        f'本輪「另批」的「v2」版正式採用 {cite}。',
+                        f'本輪「甲批」的「v1」版正式採用 {cite}。',
+                        f'本輪「甲批」的「v2」版，驗入班別為晚班，正式採用 {cite}。',
+                        f'正式採用 {cite} 或 [D{did}:L2]。', f'提議正式採用 {cite}。'):
+            with self.subTest(content=content):
+                with self.assertRaises(ValueError):
+                    self.guide(content)
+                self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
         self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))

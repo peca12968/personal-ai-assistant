@@ -13,6 +13,12 @@ _RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式生效。{_ROW}')
 _VERSIONED_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_ROW}')
 _PARTIAL_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_CHANGE}其他配對待補。')
 _ADOPTION = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式採用版本「(?P<version>{_LABEL})」。')
+_CONFLICT_CHOICE = re.compile(
+    rf'(?P<prefix>.*?)正式採用[ \t]*(?P<citation>{_CITATION.pattern})'
+    r'(?:[ \t]*的(?P<result>「[^「」\r\n]{1,120}」|[^\[\]「」，。；？！\r\n]{1,120}))?。')
+_CHOICE_SCOPE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版(?:，(?P<pair>.+)，|，)?')
+_CHOICE_CONDITION = re.compile(r'(?P<field>「[^「」]{1,120}」|[^「」為]{1,120}?)為(?P<value>「[^「」]{1,120}」|[^「」]{1,120})')
+_QUOTED_CHOICE_PAIR = re.compile(rf'{_PAIR.pattern}(?:[、且]{_PAIR.pattern}){{0,4}}')
 MAX_RECORDS = 8
 
 
@@ -23,6 +29,41 @@ def objective_scope(objective):
 
 def is_adoption_notice(text):
     return _ADOPTION.fullmatch(text) is not None
+
+
+def conflict_choice(text):
+    match = _CONFLICT_CHOICE.fullmatch(text)
+    if match is None:
+        return None
+    choice = {'citation': match['citation']}
+    if match['result'] is not None:
+        choice['result'] = match['result'].strip().removeprefix('「').removesuffix('」')
+    prefix = match['prefix']
+    if prefix in ('', '這一組', '本組'):
+        return choice
+    declared = _CHOICE_SCOPE.fullmatch(prefix)
+    if declared is None:
+        return None
+    choice.update(scope=declared['scope'], version=declared['version'])
+    pair = declared['pair']
+    if pair is not None:
+        when = {}
+        if _QUOTED_CHOICE_PAIR.fullmatch(pair):
+            parts = _PAIR.findall(pair)
+            when = dict(parts)
+            if len(when) != len(parts):
+                return None
+        else:
+            for clause in re.split(r'[、且]', pair):
+                item = _CHOICE_CONDITION.fullmatch(clause.strip())
+                if item is None:
+                    return None
+                field, value = (item[key].strip().removeprefix('「').removesuffix('」') for key in ('field', 'value'))
+                if field in when:
+                    return None
+                when[field] = value
+        choice['when'] = when
+    return choice
 
 
 def adoption_answer(text, scope, versions, *, direct=False):

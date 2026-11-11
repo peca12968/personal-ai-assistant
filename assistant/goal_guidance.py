@@ -72,7 +72,8 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
         reference = decision_table.reference_report(steps, goal['result'])
         version = decision_table.document_version_report(steps, goal['result'])
         supplement = decision_table.document_supplement_report(steps, goal['result'])
-        if reference or version or supplement:
+        conflict = decision_table.document_conflict_report(steps, goal['result'])
+        if reference or version or supplement or conflict:
             decision_table._recheck_saved(steps, sources, guidance)
             if reference:
                 result['reference_report'] = reference['observation']['field_reference']
@@ -85,7 +86,10 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
                     'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
                 result['supplement_sources_match'] = goal_sources.matching_scope(
                     json.loads(goal['sources_json']), result['supplement_documents'], scoped=True)
-            receipt = json.dumps(reference or version or supplement[0], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            if conflict:
+                result['document_conflict_report'] = conflict[1]
+            checked = reference or version or (supplement or conflict)[0]
+            receipt = json.dumps(checked, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             result['fingerprint'] = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
     return result
 
@@ -98,6 +102,8 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
+    conflict = value.get('document_conflict_report')
+    choice_hint = f'可指定正式採用的一筆原行，例如 正式採用 {conflict["options"][0]["citation"]}。' if conflict else ''
     if status == 'report_ready' and 'document_supplement' in value:
         if not value['supplement_sources_match']:
             return False, '原目標已有文件版本變更或移除，請先恢復原匯入版本。'
@@ -105,8 +111,9 @@ def eligibility(value):
             return False, '剩餘步數不足以核對補件及更新成果，請帶入原成果建立下一階段。'
         scope = value['document_supplement']
         return True, (f'可補齊「{scope["scope"]}」的「{scope["version"]}」版規則。先匯入文件，再指定完整原行，'
-                      '例如 補件 [D5:L1-L2]。')
-    reference_report = status == 'report_ready' and bool(value.keys() & {'reference_report', 'document_version_report'})
+                      f'例如 補件 [D5:L1-L2]。{choice_hint}')
+    reference_report = status == 'report_ready' and bool(
+        value.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'})
     if status == 'report_ready' and not reference_report:
         return False, '此目標已有成果；請帶入所選成果建立下一階段。'
     if status not in ('pending','paused','failed','needs_input','report_ready'):
@@ -118,6 +125,8 @@ def eligibility(value):
     if reference_report:
         if value['step_count'] + 2 > MAX_STEPS:
             return False, '剩餘步數不足以重核及更新成果，請帶入原成果建立下一階段。'
+        if conflict:
+            return True, choice_hint
         if 'document_version_report' in value:
             scope = value['document_version_report']['document_rules']['records'][0]['scope']
             example = f'本輪「{scope}」正式採用版本「版號」。'
@@ -149,19 +158,22 @@ def _save_reference_recheck(db, current, notes):
     steps = _steps(db, gid)
     sources = goal_guidance_sources.read(db, gid, notes, step_count)
     latest = sources[-1]
-    if 'document_version_report' in current and (
+    if 'document_conflict_report' in current:
+        args = {'report_conflict_choice': latest['citation']}
+    elif 'document_version_report' in current and (
             'reference_report' not in current or document_rule_update.is_adoption_notice(latest['content'])):
         args = {'report_version_recheck': latest['citation']}
     else:
         args = {'field_reference': latest['citation'], 'recheck': True}
     observation = decision_table.observe(args, steps, goal.get('reply_sources', ()), sources)
-    needs_field = (observation.get('max_questions', 0) > 0 if 'report_version_recheck' in args
+    needs_field = (observation.get('max_questions', 0) > 0 if args.keys() & {'report_version_recheck', 'report_conflict_choice'}
                    else observation['field_reference']['status'] == 'needs_field')
     if step_count + (4 if needs_field else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核及完成新成果，請帶入原成果建立下一階段。')
     _append_reference_recheck(db, goal, notes, step_count + 1, args, observation)
+    notice = ('已核對正式採用的原行' if 'report_conflict_choice' in args else '已重核原分支')
     db.execute("UPDATE autonomous_goals SET notes=?,status='paused',result='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-               (notes, '已重核原分支；先前成果保留在步驟紀錄，請接續更新成果。', gid))
+               (notes, notice + '；先前成果保留在步驟紀錄，請接續更新成果。', gid))
 
 
 def _save_report_supplement(db, current, notes, content):
@@ -322,8 +334,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
-        supplement = 'document_supplement' in current
-        if supplement and not re.match(r'^補件(?:[ \t]|$)', content):
+        supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
+        if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):
             raise ValueError(reason)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         goal = current['goal']
@@ -339,7 +351,7 @@ def save(store, sid, gid, content, *, expected_fingerprint):
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
         if supplement:
             _save_report_supplement(db, current, notes, content)
-        elif current.keys() & {'reference_report', 'document_version_report'}:
+        elif current.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'}:
             _save_reference_recheck(db, current, notes)
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))

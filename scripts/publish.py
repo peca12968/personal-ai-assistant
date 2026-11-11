@@ -166,6 +166,7 @@ def main():
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_waiting_field_document_version.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_reported_document_version.json")
     run(sys.executable, "scripts/evaluate_goal_rule_supplements.py", "--suite", "evals/goal_report_rule_supplements.json")
+    run(sys.executable, "scripts/evaluate_report_conflicts.py", "--suite", "evals/goal_report_conflict_choices.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_mixed_scope_updates.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")

@@ -1,0 +1,51 @@
+[
+  {
+    "id": "chosen_line_makes_destination_certain",
+    "seed": "conflict",
+    "correction": "正式採用 [D5:L1]。",
+    "expected": "resolved"
+  },
+  {
+    "id": "chosen_line_leaves_only_the_original_field_question",
+    "seed": "conflict",
+    "correction": "本輪「沐潭 H5」的「v2」版，採樣班別為晚班且核驗班別為早班，正式採用 [D5:L2] 的北桌。",
+    "expected": "field",
+    "reply": "採樣班別"
+  },
+  {
+    "id": "chosen_line_does_not_fill_a_missing_pair",
+    "seed": "partial",
+    "correction": "這一組正式採用 [D5:L1] 的南桌。",
+    "expected": "partial"
+  },
+  {
+    "id": "choosing_one_row_keeps_the_other_conflict",
+    "seed": "two",
+    "correction": "本輪「沐潭 H5」的「v2」版正式採用 [D5:L1]。",
+    "expected": "conflict"
+  },
+  {
+    "id": "different_batch_cannot_choose_a_current_rule",
+    "seed": "conflict",
+    "correction": "本輪「沐潭 H6」的「v2」版正式採用 [D5:L1]。",
+    "expected": "rejected"
+  },
+  {
+    "id": "citation_for_another_row_is_not_a_choice",
+    "seed": "conflict",
+    "correction": "正式採用 [D5:L3]。",
+    "expected": "rejected"
+  },
+  {
+    "id": "contradicting_the_cited_destination_is_rejected",
+    "seed": "conflict",
+    "correction": "正式採用 [D5:L1] 的北桌。",
+    "expected": "rejected"
+  },
+  {
+    "id": "more_than_one_citation_is_not_an_adoption",
+    "seed": "conflict",
+    "correction": "正式採用 [D5:L1] 或 [D5:L2]。",
+    "expected": "rejected"
+  }
+]

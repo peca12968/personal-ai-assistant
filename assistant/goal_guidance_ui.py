@@ -37,6 +37,9 @@ class GoalGuidanceWindow:
             if 'supplement_documents' in self.current:
                 files = self.current['supplement_documents']
                 lines.append('目前已匯入文件\n' + '\n'.join(f'D{row["document_id"]} · {row["name"]}' for row in files))
+            if conflict := self.current.get('document_conflict_report'):
+                lines.append('待確認的相衝突原行\n' + '\n'.join(
+                    f'{option["citation"]} · {option["rule"]["evidence"]["quote"]}' for option in conflict['options']))
             self.context.configure(state='normal');self.context.delete('1.0','end');self.context.insert('1.0','\n\n'.join(lines));self.context.configure(state='disabled')
             self.save_button.configure(state='normal' if allowed else 'disabled');self.notice.set(reason)
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:
@@ -46,7 +49,8 @@ class GoalGuidanceWindow:
         if self.current is None:return
         try:
             saved = guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
-            rechecked = self.current.keys() & {'reference_report', 'document_version_report', 'document_supplement'} or (
+            rechecked = self.current.keys() & {
+                'reference_report', 'document_version_report', 'document_supplement', 'document_conflict_report'} or (
                 self.current['goal']['status'] == 'needs_input'
                 and self.current['goal']['question'] != saved['goal']['question'])
             self.content.delete('1.0','end');self.reload();self.changed()
