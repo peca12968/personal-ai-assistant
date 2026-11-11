@@ -77,7 +77,7 @@ _NATURAL_REMAINING = (
      (re.compile(r'由 *' + _PERSON_REPLY + r' *領件'), re.compile(r'領件人(?:是|為) *' + _PERSON_REPLY))),
 )
 PARTIAL_REFERENCE_GUIDANCE = '''field_reference.partial_reply表示使用者明確只答原分項提問的一項。依receipt的question、quote與citation採用已答項；next_question是唯一待答項。若後續已有該問的答覆，合用兩項證據交付，不重問。補問答覆即使與候選欄名同字也不能用來resolve。'''
-ANSWERED_REVISION_GUIDANCE = '''field_reference.answered_revision是等待剩餘問句時對已答項的正式更正。依其value及最後一筆changes的evidence採用並引用最新值。原partial_reply和較早更正是歷史。ask_sequence指維持原樣的剩餘問句；若已收到回覆，依該回覆完成剩餘項目。若剩餘項是欄名，用resolve引用該題的補充。'''
+ANSWERED_REVISION_GUIDANCE = '''field_reference.answered_revision是等待剩餘問句時對已答項的正式更正。依其value及最後一筆changes的evidence採用並引用最新值。原partial_reply和較早更正是歷史。condition_changes是同時核對的原表正式新值，現行分支已採用這些新值。withdraws_question為true時，原欄名已不影響結果且已撤下，依共同結果或現行完整條件交付，原歷史欄名待查。其他情況ask_sequence指維持原樣的剩餘問句；若已收到回覆，依該回覆完成剩餘項目。若剩餘項是欄名，用resolve引用該題的補充。'''
 _ANSWERED_CHANGE = re.compile(
     r'(?P<target>已答欄名|第一筆欄名|已答補問|通知對象|領件人|交付份數|份數)正式(?:改為|改成) *'
     r'(?P<value>[^\r\n，,；;。]+?)。?')
@@ -1240,28 +1240,35 @@ def _answered_change(content, partial):
     return None
 
 
-def answered_revision_requested(steps, content):
+def answered_revision_requested(steps, content, replies=(), guidance=()):
     waiting = _answered_waiting(steps)
-    return bool(waiting and _answered_change(content, waiting[0]['partial_reply']))
+    if not waiting:
+        return False
+    if _answered_change(content, waiting[0]['partial_reply']):
+        return True
+    original = _recheck_saved(steps[:-2], replies, guidance)[0][1]
+    parts = _combined_parts(content, waiting[0], original, waiting=True)
+    return bool(parts and parts[0] is not None)
 
 
 def answered_revision_question(steps):
     return _answered_waiting(steps)[0]['partial_reply']['question']
 
 
+def _deferred_target(item, partial):
+    aliases = next((aliases for question, aliases, _ in _NATURAL_REMAINING
+                    if question.fullmatch(partial['next_question'])), ())
+    return item.endswith('欄名') if partial['item'] == 'remaining' else item == '補問' or item in aliases
+
+
 def _answered_context(parsed, partial, source):
     if not parsed['complete']:
         raise ValueError('更正還含未核對的內容，請分開說明已答項的新值及其他補充。')
     retained = []
-    aliases = next((aliases for question, aliases, _ in _NATURAL_REMAINING
-                    if question.fullmatch(partial['next_question'])), ())
     for token in parsed['context']:
         kind = 'proposal' if token['proposal'] is not None else 'deferred'
-        if kind == 'deferred':
-            item = token['item']
-            valid = item.endswith('欄名') if partial['item'] == 'remaining' else item == '補問' or item in aliases
-            if not valid:
-                raise ValueError('待查文字須對應原本尚未回答的問題。')
+        if kind == 'deferred' and not _deferred_target(token['item'], partial):
+            raise ValueError('待查文字須對應原本尚未回答的問題。')
         retained.append({'kind': kind, **_reply_line(source, token, kind)})
     return retained
 
@@ -1297,6 +1304,10 @@ def _apply_answered_revision(args, previous, sequence, steps, replies, guidance)
     sources = [item for item in guidance if item['steps_seen'] == ask['sequence'] and not _unadopted_note(item)]
     if not sources or sources[-1]['citation'] != args['field_reference']:
         raise ValueError('已答項更正須引用目前問題最後保存的正式更正。')
+    base_step, original_plan = _recheck_saved(steps[:-2], replies, guidance)[0]
+    parts = [_combined_parts(source['content'], proof, original_plan, waiting=True) for source in sources]
+    if any(part and part[2] for part in parts) and any(part and part[0] is not None for part in parts):
+        return _apply_answered_conditions(proof, ask, base_step, original_plan, sources, parts)
     value = proof['field'] if partial['item'] == 'field' else _unquote_value(partial['quote'])
     original = _recheck_saved(steps[:-2], replies, guidance)[0][1] if partial['item'] == 'field' else None
     changes = []
@@ -1327,13 +1338,64 @@ def _apply_answered_revision(args, previous, sequence, steps, replies, guidance)
         'status': 'needs_check', 'max_questions': 1, 'field_reference': proof}
 
 
+def _apply_answered_conditions(proof, ask, base_step, plan, sources, parts):
+    partial = proof['partial_reply']
+    value = proof['field'] if partial['item'] == 'field' else _unquote_value(partial['quote'])
+    changes, condition_changes, retained_notes = [], [], []
+    for source, parsed in zip(sources, parts, strict=True):
+        if parsed is None:
+            raise ValueError('另有尚未核對的補充，請先確認其影響。')
+        correction, _, updates, retained = parsed
+        kept = []
+        for kind, token in retained:
+            if kind == 'deferred' and not _deferred_target(token['item'], partial):
+                raise ValueError('待查文字須對應原本尚未回答的問題。')
+            kept.append({'kind': kind, **_reply_line(source, token, 0)})
+        if correction is not None:
+            if partial['item'] == 'remaining' and correction['target'] in plan['conditions']:
+                raise ValueError('這個名稱也在決策表中，請明寫已答補問的新值。')
+            new_value = _answered_value(correction, proof)
+            if value == new_value:
+                raise ValueError('新值與目前已答值相同，無須更正。')
+            change = {'before': value, 'after': new_value, 'evidence': _reply_line(source, correction, 'value')}
+            if kept:
+                change['retained'] = kept
+            changes.append(change)
+            value = new_value
+        else:
+            retained_notes.extend(kept)
+        for token, update in updates:
+            plan, checked = _update_reference(base_step, plan, update, _reply_line(source, token, 'clause'))
+            pending = checked['field_reference']
+            condition_changes.append(pending['recheck'])
+            plan = {**plan, 'pending_field_reference': pending}
+    revision = {'ask_sequence': ask['sequence'], 'item': partial['item'], 'question': partial['question'],
+                'value': value, 'changes': changes, 'condition_changes': condition_changes,
+                'source': sources[-1]['citation']}
+    if retained_notes:
+        revision['retained_notes'] = retained_notes
+    pending = {**plan['pending_field_reference'], 'partial_reply': partial, 'answered_revision': revision}
+    if partial['item'] == 'field':
+        current, result = _apply_reference_choice(plan, value)
+        return current, {**result, 'field_reference': {**pending, 'status': 'applied', 'field': value}}
+    if pending['status'] in ('agreement', 'superseded'):
+        revision['withdraws_question'] = True
+    if pending['status'] == 'superseded':
+        current = {key: item for key, item in plan.items() if key != 'pending_field_reference'}
+        return current, {**_current_result(current), 'field_reference': pending}
+    current = {key: item for key, item in plan.items() if key != 'pending_field_reference'}
+    _, results, _ = _reference_results(current, [branch['field'] for branch in pending['branches']],
+                                       pending['value'], pending.get('overwritten_fields', ()))
+    return _pending_reference(current, pending, results)
+
+
 def answered_reference_review(steps, replies, guidance):
     waiting = _answered_waiting(steps)
     if not waiting:
         return None
     proof, ask = waiting
     source = next((item for item in reversed(guidance) if item['steps_seen'] == ask['sequence']
-                   and _answered_change(item['content'], proof['partial_reply'])), None)
+                   and not _unadopted_note(item)), None)
     if source is None:
         return None
     previous, _, _ = _recheck_saved(steps, replies, guidance)
@@ -1349,6 +1411,11 @@ def describe_answered_review(review):
     source = revision['changes'][-1]['evidence']['citation']
     results = '、'.join(review.get('possible_results', ()))
     result = f'目前核對結果為{results}。' if results else ''
+    if revision.get('condition_changes') and review['field_reference']['status'] == 'needs_field':
+        result = '、'.join(f"原先指{row['field']}時為{'／'.join(row.get('possible_results') or ['待查'])}"
+                          for row in review['field_reference']['branches']) + '。'
+    if revision.get('withdraws_question'):
+        return f'已依 {source} 更正已答項為「{revision["value"]}」。{result}原欄名已不影響結果，可接續交付。'
     return f'已依 {source} 更正已答項為「{revision["value"]}」。{result}原待答問題仍保留。'
 
 
@@ -1364,7 +1431,7 @@ def _combined_answer(content, start, end, proof):
                  and not _UNCERTAIN_REMAINING.search(match['value'])), None)
 
 
-def _combined_parts(content, proof, base):
+def _combined_parts(content, proof, base, *, waiting=False):
     offset = 0
     corrections, answers, updates, retained, unknown = [], [], [], [], []
     while offset < len(content):
@@ -1373,12 +1440,16 @@ def _combined_parts(content, proof, base):
             break
         proposal = _UNADOPTED_SENTENCE.match(content, offset)
         correction = _COMBINED_CORRECTION.match(content, offset) if proposal is None else None
+        deferred = _DEFERRED_REPLY.match(content, offset) if waiting and proposal is None else None
         if proposal:
-            retained.append(proposal)
+            retained.append(('proposal', proposal))
             offset = proposal.end()
         elif correction and _answered_target(correction['target'], proof['partial_reply']):
             corrections.append(correction)
             offset = correction.end()
+        elif deferred:
+            retained.append(('deferred', deferred))
+            offset = deferred.end()
         else:
             clause = _COMBINED_CLAUSE.match(content, offset)
             if clause is None:
@@ -1394,9 +1465,15 @@ def _combined_parts(content, proof, base):
             else:
                 unknown.append(clause['clause'])
             offset = clause.end()
-    if not corrections:
+    if waiting:
+        if not corrections and not updates:
+            return None
+        if len(corrections) > 1 or answers or unknown:
+            raise ValueError('請明確更正已答項及原表完整欄位，待查文字只對應原待答問題。'
+                             '已知道剩餘答案時請使用回答目前問題，其他內容先分開確認。')
+    elif not corrections:
         return None
-    if len(corrections) != 1 or len(answers) != 1 or unknown:
+    elif len(corrections) != 1 or len(answers) != 1 or unknown:
         partial = proof['partial_reply']
         choices = '、'.join(branch['field'] for branch in proof['branches'])
         hint = f'請確認一個完整候選欄名（{choices}）。' if partial['item'] == 'remaining' else '請給一個明確的補問答案。'
@@ -1404,7 +1481,7 @@ def _combined_parts(content, proof, base):
                          '同則只更正已答項一次，其他未核對內容請先分開確認。原問題及草稿仍保留。')
     if len({update[0] for _, update in updates}) != len(updates):
         raise ValueError('同則正式欄位更正不能重複指定同一欄，請先確認一個新值。')
-    return corrections[0], answers[0], updates, retained
+    return (corrections[0] if corrections else None), (answers[0] if answers else None), updates, retained
 
 
 def combined_reply_requested(steps, answer, replies=(), guidance=()):
@@ -1430,6 +1507,7 @@ def _apply_combined_reply(args, previous, sequence, steps, replies, guidance):
     correction, answer, updates, retained = parts
     partial = proof['partial_reply']
     changes = []
+    condition_changes = []
     prior = [item for item in guidance if item['steps_seen'] == ask['sequence'] and not _unadopted_note(item)]
     value = proof['field'] if partial['item'] == 'field' else _unquote_value(partial['quote'])
     if prior:
@@ -1437,14 +1515,19 @@ def _apply_combined_reply(args, previous, sequence, steps, replies, guidance):
         revision = checked['field_reference']['answered_revision']
         changes = revision['changes']
         value = revision['value']
+        for update in revision.get('condition_changes', ()):
+            plan, checked = _update_reference(base_step, plan, (update['change']['field'], update['change']['after']),
+                                               update['evidence'])
+            pending = checked['field_reference']
+            condition_changes.append(pending['recheck'])
+            plan = {**plan, 'pending_field_reference': pending}
     if partial['item'] == 'remaining' and correction['target'] in plan['conditions']:
         raise ValueError('這個名稱也在決策表中，請明寫「已答補問改為」以指定已答項。')
     new_value = _answered_value(correction, proof)
     change = {'before': value, 'after': new_value, 'evidence': _reply_line(source, correction, 'value')}
     if retained:
-        change['retained'] = [{'kind': 'proposal', **_reply_line(source, token, 0)} for token in retained]
+        change['retained'] = [{'kind': kind, **_reply_line(source, token, 0)} for kind, token in retained]
     changes = [*changes, change]
-    condition_changes = []
     for token, update in updates:
         plan, checked = _update_reference(base_step, plan, update, _reply_line(source, token, 'clause'))
         pending = checked['field_reference']
@@ -1762,7 +1845,13 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             if args.get('answered_revision'):
                 proof = step['observation']['field_reference']['answered_revision']
                 source = next(item for item in guidance if item['citation'] == args['field_reference'])
-                _validate_waiting_reply(db, gid, proof['ask_sequence'], source, replies_present)
+                if proof.get('withdraws_question'):
+                    row = db.execute('SELECT guidance_number,guidance_sha256 FROM autonomous_question_withdrawals '
+                                     'WHERE goal_id=? AND ask_sequence=?', (gid, proof['ask_sequence'])).fetchone()
+                    if row != (source['number'], source['sha256']):
+                        raise ValueError('已答項與條件重核缺少相符的原問題撤下紀錄。')
+                else:
+                    _validate_waiting_reply(db, gid, proof['ask_sequence'], source, replies_present)
             if args.get('combined_reply'):
                 ask = step['observation']['field_reference']['combined_reply']['ask_sequence']
                 prior = [source for source in guidance if source['steps_seen'] == ask]

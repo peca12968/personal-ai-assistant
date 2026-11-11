@@ -698,6 +698,113 @@ class GoalGuidanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '決策表結果'):
                     validate_database(restored.path)
 
+    def test_pending_answer_and_conditions_recheck_question_without_inventing_a_reply(self):
+        fields = ['收件班別', '覆件班別', '入口']
+        domains = {'收件班別':['早班','晚班','夜班'], '覆件班別':['早班','晚班','夜班'], '入口':['北口','南口']}
+        rows = [{'when':list(pair), 'result':'聯絡台' if pair[2]=='南口' else f'{pair[0]}-{pair[1]}'}
+                for pair in product(*domains.values())]
+        field_question = '第一筆改值指哪個欄位？請回完整欄名「收件班別」、「覆件班別」。'
+        fixtures = (
+            ('agreement', '本輪要交付幾份？', '補問：4 份',
+             '份數改為七份。入口正式改為南口。欄名還沒確認。'),
+            ('divergent', '本輪要交付幾份？', '補問：5 份',
+             '份數改為八份。覆件班別正式改為夜班。欄名還沒確認。'),
+            ('combined', '本輪要交付幾份？', '補問：5 份',
+             '份數改為八份。覆件班別正式改為夜班。欄名還沒確認。'),
+            ('field', '本次要通知誰？', '欄名：收件班別',
+             '入口正式改為南口。欄名改為覆件班別。通知對象還沒確認。'),
+            ('superseded', '本次要通知誰？', '補問：范同仁',
+             '通知對象改成陸值班員。收件班別正式改為夜班。覆件班別正式改為夜班。欄名還沒確認。'),
+        )
+        for kind, remaining, original_answer, correction in fixtures:
+            with self.subTest(kind=kind):
+                gid = a.create_goal(self.store, self.sid, '核對合成分項更正與正式條件')
+
+                def run(*actions):
+                    return a.run_goal(self.store, self.sid, gid, ScriptedEngine(*actions), max_steps=len(actions))
+
+                def reply(answer):
+                    current = reply_snapshot(self.store, self.sid, gid)
+                    return goal_replies.save(self.store, self.sid, gid, answer, expected_fingerprint=current['fingerprint'])
+
+                def amend(text):
+                    current = g.snapshot(self.store, self.sid, gid)
+                    return g.save(self.store, self.sid, gid, text, expected_fingerprint=current['fingerprint'])
+
+                run(action('check_decision', conditions=fields, domains=domains, rows=rows, excluded=[],
+                           known={'收件班別':'早班','覆件班別':'早班','入口':'北口'}), action('ask', question='當次更正？'))
+                reply('正式改成晚班。')
+                run(action('check_decision', field_reference='[補充#2]'), action('ask',
+                    question=f'{field_question}\n{remaining}\n請分兩行回答，先回完整欄名，再答補問。',
+                    reference_remaining=remaining))
+                reply(original_answer)
+                before = a.get_goal(self.store, self.sid, gid)
+                ask = before['steps'][-1]['sequence']
+                closed = kind in ('agreement','superseded')
+                with patch.object(g, 'MAX_STEPS', ask+1):
+                    with self.assertRaisesRegex(ValueError, '剩餘步數不足'):
+                        amend(correction)
+                self.assertEqual(a.get_goal(self.store,self.sid,gid), before)
+                if kind == 'divergent':
+                    for invalid in ('份數改為八份。入口正式改為未定。欄名還沒確認。',
+                                    '份數改為八份。覆件班別正式改為夜班。份數還沒確認。',
+                                    '份數改為八份。入口正式改為南口。欄名是收件班別。'):
+                        with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                            amend(invalid)
+                        self.assertEqual(a.get_goal(self.store,self.sid,gid), before)
+                amend(correction)
+                pending = a.get_goal(self.store,self.sid,gid)
+                self.assertEqual(pending['reply_sources'],before['reply_sources'])
+                if closed:
+                    self.assertEqual(pending['status'],'paused')
+                    self.assertFalse(pending['question'])
+                    self.assertEqual(pending['steps'][:-1],before['steps'])
+                    self.assertEqual(pending['withdrawn_questions'][0]['ask_sequence'],ask)
+                    proof = pending['steps'][-1]['observation']['field_reference']['answered_revision']
+                    self.assertTrue(proof['withdraws_question'])
+                else:
+                    self.assertEqual((pending['status'],pending['question'],pending['steps']),
+                                     ('needs_input',before['question'],before['steps']))
+                    proof = pending['answered_reference_review']['field_reference']['answered_revision']
+                    self.assertNotIn('withdraws_question',proof)
+                    reply('通知葉值班員。' if kind=='field' else
+                          '份數改為九份。欄名是覆件班別。' if kind=='combined' else '收件班別')
+                    if kind=='divergent':
+                        run(action('check_decision',field_reference=f'[補充#{ask}]',resolve=True))
+                checked = a.get_goal(self.store,self.sid,gid)
+                plan,_,_ = a.decision_table._recheck_saved(checked['steps'],checked['reply_sources'],checked['guidance_sources'])
+                if kind=='agreement':
+                    self.assertEqual(plan[1]['known']['入口'],'南口')
+                    self.assertIn('pending_field_reference',plan[1])
+                elif kind=='superseded':
+                    self.assertEqual((plan[1]['known']['收件班別'],plan[1]['known']['覆件班別']),('夜班','夜班'))
+                    self.assertNotIn('pending_field_reference',plan[1])
+                elif kind=='field':
+                    self.assertEqual(plan[1]['known'],{'收件班別':'早班','覆件班別':'晚班','入口':'南口'})
+                else:
+                    self.assertEqual(plan[1]['known']['覆件班別'],'夜班')
+                    self.assertEqual(plan[1]['known']['收件班別'],'早班' if kind=='combined' else '晚班')
+                for change in proof['condition_changes']:
+                    part=change['evidence']
+                    self.assertEqual(correction[part['start']:part['end']],part['quote'])
+                final = run(action('finish',report='已核對目前結果。[更正#1]'))
+                archive=create_backup(self.store.path,self.root/f'pending-conditions-{kind}.paibackup')
+                target=self.root/f'pending-conditions-{kind}'
+                restore_backup(archive['path'],target)
+                restored=Store(target/'assistant.sqlite3')
+                self.assertEqual(a.get_goal(restored,self.sid,gid),final)
+                with restored.connect() as db:
+                    if closed:
+                        db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=?',(gid,))
+                    else:
+                        step=checked['steps'][-1]
+                        observation=step['observation']
+                        observation['field_reference']['answered_revision']['changes'][-1]['evidence']['end']=0
+                        db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                                   (json.dumps(observation,ensure_ascii=False),gid,step['sequence']))
+                with self.assertRaises(ValueError):
+                    validate_database(restored.path)
+
     def test_latest_notes_reach_next_model_call_but_not_other_goals_or_ordinary_chat(self):
         self.save('PRIVATE_STEERING：更正為12人，每人90元。')
         self.save('再次更正：人數13，費率仍90元。')

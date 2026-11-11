@@ -140,10 +140,11 @@ def append_waiting_recheck(db, current, notes):
 def append_answered_revision(db, current, notes):
     goal = current['goal']
     observation = goal['answered_reference_review']
-    required = 3 if observation['field_reference']['answered_revision']['item'] == 'remaining' else 2
+    revision = observation['field_reference']['answered_revision']
+    required = 3 if revision['item'] == 'remaining' and not revision.get('withdraws_question') else 2
     if current['step_count'] + required > MAX_STEPS:
         raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
-    source = observation['field_reference']['answered_revision']['changes'][-1]['evidence']['citation']
+    source = revision.get('source', revision['changes'][-1]['evidence']['citation'])
     action = {'tool': 'check_decision', 'args': {'field_reference': source, 'answered_revision': True},
               'note': '保存等待期間已答項的正式更正'}
     _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
@@ -162,6 +163,15 @@ def append_followup_question(db, goal, notes, sequence, question, note):
 
 def apply_waiting_review(db, current):
     goal = current['goal']
+    answered = goal.get('answered_reference_review')
+    if answered and answered['field_reference']['answered_revision'].get('withdraws_question'):
+        revision = answered['field_reference']['answered_revision']
+        source = next(item for item in goal['guidance_sources'] if item['citation'] == revision['source'])
+        append_answered_revision(db, current, goal['notes'])
+        goal_question_withdrawals.record(db, goal['id'], current['question_withdrawal'], source)
+        db.execute("UPDATE autonomous_goals SET status='paused',question='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   ('已核對已答項及正式條件，撤下已不影響結果的欄名問題。請接續交付。', goal['id']))
+        return _snapshot(db, goal['session_id'], goal['id'])
     review = goal.get('reference_review')
     if review is None:
         return current
@@ -199,7 +209,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         goal = current['goal']
         step_count = current['step_count']
         revise_answer = (goal['status'] == 'needs_input'
-                         and decision_table.answered_revision_requested(_steps(db, gid), content))
+                         and decision_table.answered_revision_requested(_steps(db, gid), content,
+                             goal.get('reply_sources', ()), goal.get('guidance_sources', ())))
         notes = goal['notes'] + goal_guidance_sources.note(content, step_count, stamp)
         if len(notes) > 12000:
             raise ValueError('累計補充超過12000字，請整理目前紀錄另建目標。')
@@ -217,7 +228,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
                 question = decision_table.answered_revision_question(_steps(db, gid))
                 raise ValueError(f'請用一個明確的新值更正已答項「{question}」，並先確認其他待核對的補充。'
                                  '若有兩個可能新值，請先確認其中一個。原待答問題及草稿仍保留。')
-            required = 3 if review['field_reference']['answered_revision']['item'] == 'remaining' else 2
+            revision = review['field_reference']['answered_revision']
+            required = 3 if revision['item'] == 'remaining' and not revision.get('withdraws_question') else 2
             if step_count + required > MAX_STEPS:
                 raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
         return apply_waiting_review(db, saved)
