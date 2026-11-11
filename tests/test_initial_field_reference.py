@@ -61,6 +61,68 @@ class InitialFieldReferenceTests(unittest.TestCase):
         checked = self.run_actions(action('check_decision', field_reference=f'[補充#{source}]'))
         return decision_table.reference_question(checked['steps'][-1])
 
+    def read_document_rule(self, text):
+        path = self.root / 'notice.txt'
+        path.write_text(text, encoding='utf-8')
+        document_id = self.store.attach_document(self.sid, path)
+        self.gid = autonomy.create_goal(self.store, self.sid, '本次為「甲批」。核對班別及去向。')
+        self.check_reference_after_table()
+        self.run_actions(action('read', document_id=document_id, start_line=1, end_line=1))
+        return {'document_rule': f'[D{document_id}:L1]', 'scope': '甲批'}
+
+    def test_effective_document_rule_requires_recheck_and_merges_branches_on_restore(self):
+        args = self.read_document_rule('本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                                       '原「甲桌」改為「乙桌」。其他配對沿用原表。')
+        resolved = self.run_actions(action('ask', question='這次改成晚班的是收樣班別還是驗入班別？'),
+                                    action('finish', report='沿用舊去向。'), action('check_decision', **args))
+        self.assertEqual([s['action']['tool'] for s in resolved['steps'][-3:]], ['invalid', 'invalid', 'check_decision'])
+        step = resolved['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['乙桌'])
+        proof = step['observation']['field_reference']
+        self.assertEqual(proof['status'], 'agreement')
+        receipt = proof['document_rule']
+        self.assertEqual(receipt['evidence']['citation'], args['document_rule'])
+        self.assertEqual((receipt['before'], receipt['after']), ('甲桌', '乙桌'))
+        current, _, _ = decision_table._recheck_saved(resolved['steps'], resolved['reply_sources'], ())
+        self.assertEqual(current[1]['known'], self.table['known'])
+        self.assertEqual([row for n, row in enumerate(current[1]['rows'], 1) if n != receipt['row']],
+                         [row for n, row in enumerate(self.table['rows'], 1) if n != receipt['row']])
+        saved = create_backup(self.store.path, self.root / 'document-rule.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_goals SET objective=? WHERE id=?', ('本次為「乙批」。核對班別及去向。', self.gid))
+        with self.assertRaisesRegex(ValueError, '目前目標明示範圍'):
+            validate_database(backup.path)
+
+    def test_effective_document_rule_keeps_the_other_branch_and_binds_real_reply(self):
+        args = self.read_document_rule('本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                                       '原「甲桌」改為「西桌」。其他配對沿用原表。')
+        checked = self.run_actions(action('check_decision', **args))
+        proof = checked['steps'][-1]['observation']['field_reference']
+        self.assertEqual({b['field']: b['possible_results'] for b in proof['branches']},
+                         {'收樣班別': ['西桌'], '驗入班別': ['乙桌']})
+        self.run_actions(action('ask', question='這次改成晚班的是收樣班別還是驗入班別？'))
+        answer = self.reply('收樣班別')
+        resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['西桌'])
+        self.assertEqual(observation['field_reference']['confirmation']['citation'], f'[補充#{answer}]')
+        self.assertEqual(observation['field_reference']['document_rule'], proof['document_rule'])
+
+    def test_document_rule_rejects_other_scope_unadopted_and_unverified_rows(self):
+        line = '本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「乙桌」。其他配對沿用原表。'
+        for text in (line.replace('甲批', '乙批'), line.replace('正式生效', '未採用'), line.replace('甲桌', '後桌'),
+                     line.replace('、「驗入班別」為「早班」', ''), '附件引述：' + line):
+            with self.subTest(text=text):
+                args = self.read_document_rule(text)
+                rejected = self.run_actions(action('check_decision', **args))
+                self.assertEqual(rejected['steps'][-1]['action']['tool'], 'invalid')
+                state = self.run_actions(action('ask', question='這次改成晚班的是收樣班別還是驗入班別？'))
+                self.assertEqual(state['status'], 'needs_input')
+
     def test_natural_field_confirmation_keeps_the_later_named_change(self):
         self.check_reference_after_table()
         question = '這次改成晚班的是收樣班別還是驗入班別？'

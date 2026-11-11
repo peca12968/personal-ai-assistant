@@ -321,8 +321,11 @@ def validate_action(value):
 
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
-            declared_rule_ranges=()):
+            declared_rule_ranges=(), pending_document_rule=None):
     name, args = action['tool'], action['args']
+    if pending_document_rule and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
+            name == 'check_decision' and args == pending_document_rule):
+        raise ValueError('請先用 pending_document_rule 核對已查讀的本輪正式文件更正。')
     if name == 'month_schedule':
         return month_schedule.calculate(args, cancel)
     if name == 'round_number':
@@ -330,6 +333,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'check_decision':
         if args.get('waiting_recheck') or args.get('partial_reply') or args.get('answered_revision') or args.get('combined_reply'):
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
+        if 'document_rule' in args and args != pending_document_rule:
+            raise ValueError('文件更正須使用目前提示的本輪來源與範圍。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
@@ -507,6 +512,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             post_reply_reference = decision_table.post_reply_reference_candidate(goal['steps'], reply_sources, guidance_sources)
             if post_reply_reference:
                 payload['reference_reply_with_guidance'] = post_reply_reference
+            pending_document_rule = decision_table.document_rule_candidate(
+                goal['steps'], reply_sources, guidance_sources, goal['objective'], goal['sources'])
+            if pending_document_rule:
+                payload['pending_document_rule'] = pending_document_rule
             reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question
@@ -556,6 +565,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
+                ('\n' + decision_table.DOCUMENT_RULE_GUIDANCE if pending_document_rule else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE
@@ -620,7 +630,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                             raise ValueError('交付前請按目前條件核對全部宣告的原文規則區段。')
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
                                       reply_sources=reply_sources, guidance_sources=guidance_sources,
-                                      declared_rule_ranges=declared)
+                                      declared_rule_ranges=declared, pending_document_rule=pending_document_rule)
                 if check is not None:
                     observation['source_check_step'] = check
                 if plan_check is not None:
