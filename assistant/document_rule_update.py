@@ -19,6 +19,15 @@ def objective_scope(objective):
     return match['scope'] if match else None
 
 
+def adoption_answer(text, scope, versions, *, direct=False):
+    match = _ADOPTION.fullmatch(text)
+    if match and match['scope'] == scope and match['version'] in versions:
+        return match['version']
+    if direct:
+        return next((version for version in versions if text in (version, f'「{version}」')), None)
+    return None
+
+
 def validate(args):
     if not isinstance(args.get('scope'), str) or not re.fullmatch(_LABEL, args['scope']):
         raise ValueError('文件規則更正須指定本次完整範圍。')

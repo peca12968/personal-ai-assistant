@@ -76,6 +76,69 @@ class InitialFieldReferenceTests(unittest.TestCase):
         self.run_actions(action('read', document_id=document_id, start_line=1, end_line=1))
         return {'document_rule': f'[D{document_id}:L1]', 'scope': '甲批'}
 
+    def check_document_versions(self, *, missing=False):
+        first = ('本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                 '原「甲桌」改為「西桌」。其他配對沿用原表。\n'
+                 '本輪「甲批」的「v1」版規則。若「收樣班別」為「早班」、「驗入班別」為「晚班」，'
+                 '原「乙桌」改為「西桌」。其他配對沿用原表。')
+        variants = (first,) if missing else (first, first.replace('v1', 'v2').replace('西桌', '南桌'))
+        docs = self.prepare_document_rules(*variants, '本輪「甲批」正式採用版本「v1」。\n本輪「甲批」正式採用版本「v2」。')
+        ranges = [{'document_id': doc, 'start_line': 1, 'end_line': 2} for doc in docs]
+        self.run_actions(action('read_ranges', ranges=ranges),
+                         action('check_decision', document_rules=[f'[D{doc}:L{line}]' for doc in docs for line in (1, 2)], scope='甲批'))
+        return {'question': '本次「甲批」正式採用哪個版本？請回覆「v1」或「v2」。', 'document_version': True}
+
+    def test_document_version_confirmation_preserves_actual_reply_and_later_correction_on_restore(self):
+        question = self.check_document_versions()
+        partial = 'v1 去西桌，v2 去南桌。版本待確認。'
+        asked = self.run_actions(action('ask', **question, partial_result=partial))
+        self.assertEqual(asked['status'], 'needs_input')
+        self.assertEqual(asked['partial_result'], partial)
+        number = self.reply('v2')
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        citation = f'[補充#{number}]'
+        resolved = self.run_actions(action('check_decision', version_confirmation=citation))
+        step = resolved['steps'][-1]
+        observation = step['observation']
+        self.assertEqual(observation['possible_results'], ['西桌'])
+        receipt = observation['field_reference']['version_confirmation']
+        self.assertEqual((receipt['version'], receipt['reply_citation']), ('v1', citation))
+        self.assertEqual(receipt['question_sha256'], digest(question['question']))
+        self.assertEqual([(row['citation'], row['version']) for row in receipt['sources']], [(citation, 'v2'), ('[更正#1]', 'v1')])
+        saved = create_backup(self.store.path, self.root / 'document-version-confirmation.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        receipt['sources'].reverse()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_document_version_confirmation_rejects_same_version_answer_to_an_independent_question(self):
+        self.check_document_versions()
+        self.run_actions(action('ask', question='本次回報表單採用哪個版號？'))
+        number = self.reply('v2')
+        rejected = self.run_actions(action('check_decision', version_confirmation=f'[補充#{number}]'))
+        self.assertEqual(rejected['steps'][-1]['action']['tool'], 'invalid')
+        self.assertIn('正式採用問題的實際答覆', rejected['steps'][-1]['observation']['error'])
+
+    def test_selected_document_version_without_read_rules_keeps_destination_unresolved(self):
+        question = self.check_document_versions(missing=True)
+        self.run_actions(action('ask', **question))
+        number = self.reply('本輪「甲批」正式採用版本「v2」。')
+        resolved = self.run_actions(action('check_decision', version_confirmation=f'[補充#{number}]'))
+        observation = resolved['steps'][-1]['observation']
+        self.assertNotIn('possible_results', observation)
+        self.assertEqual(observation['max_questions'], 0)
+        proof = observation['field_reference']
+        self.assertEqual(proof['version_confirmation']['status'], 'missing_rules')
+        self.assertEqual(proof['version_confirmation']['version'], 'v2')
+        self.assertEqual(proof['branches'][0]['version_results'], [{'version': 'v2', 'status': 'missing_rules'}])
+        self.assertIsNone(decision_table.document_version_question(resolved['steps'], resolved['reply_sources'], ()))
+
     def test_later_document_reads_rebuild_original_rows_and_preserve_conflicting_results(self):
         docs = self.prepare_document_rules(
             '本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，原「甲桌」改為「聯絡席」。其他配對沿用原表。',

@@ -45,7 +45,8 @@ def saved(action, observation):
     partial = observation.get('partial_result')
     validate(partial)
     question = args.get('question')
-    if (action.get('tool') != 'ask' or args.keys() - {'question', 'partial_result', 'reference_remaining'}
+    if (action.get('tool') != 'ask' or args.keys() - {'question', 'partial_result', 'reference_remaining', 'document_version'}
+            or ('document_version' in args and (args['document_version'] is not True or 'reference_remaining' in args))
             or args.get('partial_result') != partial or not isinstance(question, str)
             or not question.strip() or observation.get('question') != question):
         raise ValueError('待補期間的成果與保存問題不一致。')
