@@ -324,7 +324,7 @@ def validate_action(value):
 
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
-            declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None):
+            declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None, document_version_rules=None):
     name, args = action['tool'], action['args']
     if pending_document_rule and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
             name == 'check_decision' and args == pending_document_rule):
@@ -332,6 +332,9 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if document_version_reply and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
             name == 'check_decision' and args == document_version_reply):
         raise ValueError('請先用 document_version_reply 核對已保存的正式版本答覆。')
+    if document_version_rules and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
+            name == 'check_decision' and args == document_version_rules):
+        raise ValueError('請先用 document_version_rules 核對所選版本後讀到的規則。')
     if name == 'month_schedule':
         return month_schedule.calculate(args, cancel)
     if name == 'round_number':
@@ -341,6 +344,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         if decision_table.DOCUMENT_RULE_FIELDS & args.keys() and args != pending_document_rule:
             raise ValueError('文件更正須使用目前提示的本輪來源與範圍。')
+        if 'version_rules' in args and args != document_version_rules:
+            raise ValueError('版本補讀須使用目前提示的完整規則來源。')
         return decision_table.observe(args, steps, reply_sources, guidance_sources)
     if name == 'check_source_decision':
         return source_decision.calculate(args, steps, signature(documents), reply_sources, guidance_sources,
@@ -525,17 +530,25 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 goal['steps'], reply_sources, guidance_sources, goal['objective'], goal['sources'])
             if pending_document_rule:
                 payload['pending_document_rule'] = pending_document_rule
-            latest_decision = next((step['observation'] for step in reversed(goal['steps'])
-                                    if step['action']['tool'] == 'check_decision' and not step['action']['args'].get('what_if')), {})
-            field_proof = latest_decision.get('field_reference', {})
+            latest_decision = next((step for step in reversed(goal['steps'])
+                                    if step['action']['tool'] == 'check_decision' and not step['action']['args'].get('what_if')), None)
+            field_proof = latest_decision['observation'].get('field_reference', {}) if latest_decision else {}
             document_version_review = field_proof.get('document_rules', {}).get('version_review')
             version_confirmed = field_proof.get('version_confirmation')
+            version_rules_applied = field_proof.get('version_rules')
+            document_question_plan = decision_table.document_question_plan(latest_decision) if latest_decision else None
+            if document_question_plan:
+                payload['document_question_plan'] = document_question_plan
             document_version_question = decision_table.document_version_question(goal['steps'], reply_sources, guidance_sources)
             if document_version_question:
                 payload['document_version_question'] = document_version_question
             document_version_reply = decision_table.document_version_reply_candidate(goal['steps'], reply_sources, guidance_sources)
             if document_version_reply:
                 payload['document_version_reply'] = document_version_reply
+            document_version_rules = decision_table.document_version_rule_candidate(
+                goal['steps'], reply_sources, guidance_sources, goal['objective'], goal['sources'])
+            if document_version_rules:
+                payload['document_version_rules'] = document_version_rules
             reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question
@@ -587,8 +600,11 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
                 ('\n' + decision_table.DOCUMENT_RULE_GUIDANCE if pending_document_rule else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_GUIDANCE if document_version_review and not version_confirmed else '') +
+                ('\n' + decision_table.DOCUMENT_QUESTION_PLAN_GUIDANCE if document_question_plan else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_QUESTION_GUIDANCE if document_version_question else '') +
-                ('\n' + decision_table.DOCUMENT_VERSION_REPLY_GUIDANCE if document_version_reply or version_confirmed else '') +
+                ('\n' + decision_table.DOCUMENT_VERSION_REPLY_GUIDANCE
+                 if document_version_reply or version_confirmed and not version_rules_applied else '') +
+                ('\n' + decision_table.DOCUMENT_VERSION_RULE_GUIDANCE if document_version_rules or version_rules_applied else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE
@@ -654,7 +670,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
                                       reply_sources=reply_sources, guidance_sources=guidance_sources,
                                       declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
-                                      document_version_reply=document_version_reply)
+                                      document_version_reply=document_version_reply, document_version_rules=document_version_rules)
                 if check is not None:
                     observation['source_check_step'] = check
                 if plan_check is not None:

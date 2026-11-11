@@ -59,8 +59,10 @@ DOCUMENT_RULE_GUIDANCE = '''有 pending_document_rule 時，先用 check_decisio
 
 DOCUMENT_VERSION_GUIDANCE = '''field_reference.document_rules.version_review 是本輪最新的版本核對。採用記載衝突時仍保留各版。各欄名的 version_results 是分開核算的結果；missing_rules 表示該候選版尚無已讀規則。僅在所有相容版本都有相同的確定結果時交付共同去向，採用版本仍待查。若只有個別分支相同，列出該分支的共同結果，其他分支各自列版本及缺漏。不要把缺版視為沿用另一版或沿用原表。使用者允許提問且確需定案時，field_changes_result 為真才為了去向追問欄名，否則只確認缺少的採用依據或規則。只交條件式報告時直接按已知情況交付。規則、採用和原欄名來源分開引用。'''
 
-DOCUMENT_VERSION_QUESTION_GUIDANCE = '''只有採用版本仍影響去向時，若使用者需要定案且允許確認規則版本，用 ask 的 args 原樣使用 document_version_question，暫表另放 partial_result。獨立的回報表單或其他版本問題使用一般 ask。'''
+DOCUMENT_VERSION_QUESTION_GUIDANCE = '''需要定案且使用者允許時，用 ask 的 args 原樣使用 document_version_question，暫表另放 partial_result。獨立的回報表單或其他版本問題使用一般 ask。'''
 DOCUMENT_VERSION_REPLY_GUIDANCE = '''有 document_version_reply 時，用 check_decision 的 args 原樣使用它，核對已保存的正式版本答覆與同一步的正式更正。version_confirmation 是本輪採用依據，引用實際答覆及生效的較新更正。若 status 為 missing_rules，所選版本已確認，去向仍待查。版本已確認後，按最新分支交付，欄名只有仍有用途時才問。'''
+DOCUMENT_QUESTION_PLAN_GUIDANCE = '''document_question_plan 比較先問欄名與先問採用版本的追問次數。若需定案且可追問，依 first 只問第一項，使用相應的 document_version_question 或 field_reference_question。收到答覆後先核對結果，已確定去向時不必再問另一項，保留另一項待查。'''
+DOCUMENT_VERSION_RULE_GUIDANCE = '''有 document_version_rules 時，先用 check_decision 的 args 原樣使用它，把後讀到的規則接回已保存的版本答覆。版本不必再問。version_rules 紀錄補讀證據；依最新去向交付，版本答覆及補讀的規則分開引用。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -499,7 +501,8 @@ _UNCERTAIN_PLAIN = re.compile(r'不|未|非|暫|待|若|或|可能|但|假設|�
 _FIELDLESS_CHANGE = re.compile(r'(?:這一欄|那一欄|這欄|那欄)?(?:正式)?(?:改為|改成) *(?P<value>.+)')
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 DOCUMENT_RULE_FIELDS = {'document_rule', 'document_rules'}
-_TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference', 'version_confirmation'} | DOCUMENT_RULE_FIELDS
+_TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference',
+                      'version_confirmation', 'version_rules'} | DOCUMENT_RULE_FIELDS
 
 
 class _RejectedRevision(ValueError):
@@ -516,6 +519,9 @@ def validate_tool(args):
         if args.keys() != {'version_confirmation'} or not isinstance(args['version_confirmation'], str) or not re.fullmatch(
                 r'\[補充#[1-9][0-9]{0,3}\]', args['version_confirmation']):
             raise ValueError('版本確認須引用一筆實際保存的版本問題答覆。')
+    elif isinstance(args, dict) and 'version_rules' in args:
+        if args.keys() != {'version_rules'} or not document_rule_update.valid_citations(args['version_rules']):
+            raise ValueError('版本補讀須列出已選定版本的完整文件行。')
     elif isinstance(args, dict) and 'revision' in args:
         if (set(args) not in ({'revision'}, {'revision', 'compare'}) or not isinstance(args['revision'], str)
                 or not _REVISION_SOURCE.fullmatch(args['revision'])
@@ -1185,7 +1191,9 @@ def _reference_anchor(steps):
 
 def reference_question_for_steps(steps):
     anchor = _reference_anchor(steps)
-    return reference_question(anchor[0]) if anchor else None
+    if not anchor or (document_question_plan(anchor[0]) or {}).get('first') == 'version':
+        return None
+    return reference_question(anchor[0])
 
 
 def validate_reference_ask(args, steps, replies=(), guidance=()):
@@ -1934,6 +1942,28 @@ def document_rule_candidate(steps, replies, guidance, objective, sources):
     return args
 
 
+def document_question_plan(step):
+    proof = step['observation'].get('field_reference', {})
+    review = proof.get('document_rules', {}).get('version_review', {})
+    if (proof.get('status') != 'needs_field' or 'version_confirmation' in proof
+            or review.get('status') != 'conflicting_adoption' or not review['field_changes_result']):
+        return None
+    matrix = [branch['version_results'] for branch in proof['branches']]
+    if any(result['status'] != 'resolved' for branch in matrix for result in branch):
+        return None
+    fields = [[result['possible_results'][0] for result in branch] for branch in matrix]
+    if all(len(set(branch)) == 1 for branch in fields):
+        return None  # The version is irrelevant to each field's destination.
+    versions = list(zip(*fields, strict=True))
+    cases = len(fields) * len(versions)
+    costs = {}
+    for name, groups in [('field', fields), ('version', versions)]:
+        extra = sum(len(group) for group in groups if len(set(group)) > 1)
+        costs[name] = {'worst_case': 1 + int(extra > 0), 'total_questions': cases + extra}
+    first = min(costs, key=lambda name: (costs[name]['worst_case'], costs[name]['total_questions']))
+    return {'first': first, 'cases': cases, 'costs': costs}
+
+
 def _document_version_question(steps):
     if not steps or steps[-1]['action']['tool'] != 'check_decision':
         return None
@@ -1941,9 +1971,13 @@ def _document_version_question(steps):
     proof = checked['observation'].get('field_reference', {})
     rules = proof.get('document_rules', {})
     review = rules.get('version_review', {})
-    if (proof.get('status') != 'needs_field' or 'version_confirmation' in proof
-            or review.get('status') != 'conflicting_adoption' or review.get('field_changes_result') is not False
+    if ('version_confirmation' in proof or review.get('status') != 'conflicting_adoption'
             or all(version.get('status') == 'missing_rules' for version in review['versions'])):
+        return None
+    field_settled = proof.get('status') == 'applied' and checked['observation'].get('status') == 'version_uncertain'
+    version_first = (proof.get('status') == 'needs_field' and (review.get('field_changes_result') is False
+                     or (document_question_plan(checked) or {}).get('first') == 'version'))
+    if not (field_settled or version_first):
         return None
     versions = [version['version'] for version in review['versions']]
     scope = rules['records'][0]['scope']
@@ -2018,16 +2052,78 @@ def _confirm_document_version(args, previous, sequence, replies, guidance, steps
         raise ValueError('版本確認須引用目前正式採用問題的實際答覆及同一步已核對的更正。')
     anchor, reply, evidence = inputs
     base = previous[1]
-    pending = base['pending_field_reference']
     version = evidence[-1]['version']
     chosen, = (plan for plan in base['document_version_plans'] if plan['version'] == version)
     plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
     plan['document_version_plans'] = [chosen]
-    fields = [branch['field'] for branch in pending['branches']]
-    _, results, branches = _reference_results(plan, fields, pending['value'], pending.get('overwritten_fields', ()))
     receipt = {**anchor, 'ask_sequence': reply['ask_sequence'], 'reply_citation': reply['citation'],
                'version': version, 'sources': evidence, 'status': 'confirmed' if 'rows' in chosen else 'missing_rules'}
+    pending = base.get('pending_field_reference')
+    if pending is None:
+        proof = next(step['observation']['field_reference'] for step in steps if step['sequence'] == anchor['base_step'])
+        return plan, {**_current_result(plan), 'field_reference': {**proof, 'version_confirmation': receipt}}
+    fields = [branch['field'] for branch in pending['branches']]
+    _, results, branches = _reference_results(plan, fields, pending['value'], pending.get('overwritten_fields', ()))
     return _pending_reference(plan, {**pending, 'branches': branches, 'version_confirmation': receipt}, results)
+
+
+def _version_rules_inputs(steps, sequence, replies, guidance):
+    for step in reversed(steps):
+        if step['action']['tool'] not in {'read', 'read_ranges', 'read_line', 'find_document_text', 'search', 'invalid'}:
+            break
+    else:
+        return None
+    if step['action']['tool'] != 'check_decision' or 'version_confirmation' not in step['action']['args']:
+        return None
+    proof = step['observation']['field_reference']
+    confirmation = proof['version_confirmation']
+    if confirmation['status'] != 'missing_rules' or _followup_sources(step['sequence'], sequence, replies, guidance):
+        return None
+    records = document_rule_update.read_rules(steps, step['sequence'], confirmation['scope'], include_versions=True)
+    selected = {citation: rule for citation, rule in records.items() if rule.get('version') == confirmation['version']}
+    if not document_rule_update.valid_citations(list(selected)):
+        return None
+    return step, selected
+
+
+def _complete_document_version(previous, steps, replies, guidance, confirmed, selected):
+    base = previous[1]
+    proof = confirmed['observation']['field_reference']
+    confirmation = proof['version_confirmation']
+    document_rules = proof['document_rules']
+    root_step = document_rules['base_step']
+    original = _recheck_saved(steps[:root_step], replies, guidance)[0][1]
+    original_pending = original['pending_field_reference']
+    core = {key: value for key, value in original.items() if key != 'pending_field_reference'}
+    plans = [_reference_plan(core, branch['field'], original_pending['value'], original_pending.get('overwritten_fields', ()))
+             for branch in original_pending['branches']]
+    common = [rule for rule in document_rules['records'] if 'when' in rule and 'version' not in rule]
+    rows, changes = _document_rule_rows(core, [*common, *selected.values()], plans)
+    plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
+    plan['document_version_plans'] = [{'version': confirmation['version'], 'rows': rows}]
+    receipt = {'confirmation_step': confirmed['sequence'], 'confirmation_sha256': digest(confirmed),
+               'version': confirmation['version'], 'records': list(selected.values()), 'rows': changes}
+    proof = {**proof, 'version_rules': receipt}
+    if 'pending_field_reference' not in base:
+        return plan, {**_current_result(plan), 'field_reference': proof}
+    fields = [branch['field'] for branch in proof['branches']]
+    _, results, branches = _reference_results(plan, fields, proof['value'], proof.get('overwritten_fields', ()))
+    return _pending_reference(plan, {**proof, 'branches': branches}, results)
+
+
+def document_version_rule_candidate(steps, replies, guidance, objective, sources):
+    try:
+        inputs = _version_rules_inputs(steps, len(steps) + 1, replies, guidance)
+        if inputs is None:
+            return None
+        confirmed, selected = inputs
+        for record in selected.values():
+            document_rule_update.verify_context(record, objective, sources)
+        previous = _recheck_saved(steps, replies, guidance)[0]
+        _complete_document_version(previous, steps, replies, guidance, confirmed, selected)
+    except ValueError:
+        return None
+    return {'version_rules': list(selected)}
 
 
 def _natural_question_reference(steps, question):
@@ -2336,6 +2432,11 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
     if 'version_confirmation' in args:
         return _confirm_document_version(args, previous, sequence, replies, guidance, steps)
+    if 'version_rules' in args:
+        inputs = _version_rules_inputs(steps, sequence, replies, guidance)
+        if not inputs or previous is None or inputs[0]['sequence'] != previous[0] or args['version_rules'] != list(inputs[1]):
+            raise ValueError('版本補讀須連到已保存的採用答覆及該版後讀規則。')
+        return _complete_document_version(previous, steps, replies, guidance, *inputs)
     if DOCUMENT_RULE_FIELDS & args.keys():
         anchor = _document_rule_anchor(steps)
         if anchor is None or previous is None or previous[0] != anchor or _followup_sources(anchor, sequence, replies, guidance):
@@ -2465,6 +2566,9 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 proof = step['observation']['field_reference']
                 records = [proof['document_rule']] if 'document_rule' in args else proof['document_rules']['records']
                 for record in records:
+                    document_rule_update.verify_context(record, objective, json.loads(sources))
+            if step['action']['tool'] == 'check_decision' and 'version_rules' in args:
+                for record in step['observation']['field_reference']['version_rules']['records']:
                     document_rule_update.verify_context(record, objective, json.loads(sources))
         by_sequence = {step['sequence']: step for step in steps}
         for step in steps:

@@ -28,6 +28,12 @@ def adoption_answer(text, scope, versions, *, direct=False):
     return None
 
 
+def valid_citations(citations):
+    return (isinstance(citations, list) and 1 <= len(citations) <= MAX_RECORDS
+            and all(isinstance(citation, str) and _CITATION.fullmatch(citation) for citation in citations)
+            and len(set(citations)) == len(citations))
+
+
 def validate(args):
     if not isinstance(args.get('scope'), str) or not re.fullmatch(_LABEL, args['scope']):
         raise ValueError('文件規則更正須指定本次完整範圍。')
@@ -37,9 +43,7 @@ def validate(args):
         citations = args['document_rules']
     else:
         citations = []
-    if (not 1 <= len(citations) <= MAX_RECORDS
-            or any(not isinstance(citation, str) or not _CITATION.fullmatch(citation) for citation in citations)
-            or len(set(citations)) != len(citations)):
+    if not valid_citations(citations):
         raise ValueError('文件規則更正須指定一至八個不同且已完整查讀的文件行。')
 
 

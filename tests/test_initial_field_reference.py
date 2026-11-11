@@ -76,17 +76,98 @@ class InitialFieldReferenceTests(unittest.TestCase):
         self.run_actions(action('read', document_id=document_id, start_line=1, end_line=1))
         return {'document_rule': f'[D{document_id}:L1]', 'scope': '甲批'}
 
-    def check_document_versions(self, *, missing=False):
-        first = ('本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
-                 '原「甲桌」改為「西桌」。其他配對沿用原表。\n'
-                 '本輪「甲批」的「v1」版規則。若「收樣班別」為「早班」、「驗入班別」為「晚班」，'
-                 '原「乙桌」改為「西桌」。其他配對沿用原表。')
-        variants = (first,) if missing else (first, first.replace('v1', 'v2').replace('西桌', '南桌'))
+    def check_document_versions(self, *, missing=False, read_second=True, targets=(('西桌', '西桌'), ('南桌', '南桌'))):
+        variants = tuple(
+            f'本輪「甲批」的「v{number}」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+            f'原「甲桌」改為「{left}」。其他配對沿用原表。\n'
+            f'本輪「甲批」的「v{number}」版規則。若「收樣班別」為「早班」、「驗入班別」為「晚班」，'
+            f'原「乙桌」改為「{right}」。其他配對沿用原表。'
+            for number, (left, right) in enumerate(targets, 1))
+        if missing:
+            variants = variants[:1]
         docs = self.prepare_document_rules(*variants, '本輪「甲批」正式採用版本「v1」。\n本輪「甲批」正式採用版本「v2」。')
+        if not read_second:
+            docs = [docs[0], docs[-1]]
         ranges = [{'document_id': doc, 'start_line': 1, 'end_line': 2} for doc in docs]
         self.run_actions(action('read_ranges', ranges=ranges),
                          action('check_decision', document_rules=[f'[D{doc}:L{line}]' for doc in docs for line in (1, 2)], scope='甲批'))
         return {'question': '本次「甲批」正式採用哪個版本？請回覆「v1」或「v2」。', 'document_version': True}
+
+    def test_version_first_then_field_preserves_both_actual_answers(self):
+        question = self.check_document_versions(targets=(('西桌', '西桌'), ('北桌', '南桌')))
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        plan = decision_table.document_question_plan(current['steps'][-1])
+        self.assertEqual(plan, {'first': 'version', 'cases': 4, 'costs': {
+            'field': {'worst_case': 2, 'total_questions': 8}, 'version': {'worst_case': 2, 'total_questions': 6}}})
+        self.assertIsNone(decision_table.reference_question_for_steps(current['steps']))
+        self.run_actions(action('ask', **question))
+        version = f'[補充#{self.reply("v2")}]'
+        checked = self.run_actions(action('check_decision', version_confirmation=version))
+        self.assertEqual(checked['steps'][-1]['observation']['field_reference']['status'], 'needs_field')
+        field_question = decision_table.reference_question_for_steps(checked['steps'])
+        self.run_actions(action('ask', question=field_question))
+        field = f'[補充#{self.reply("收樣班別")}]'
+        resolved = self.run_actions(action('check_decision', field_reference=field, resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['北桌'])
+        proof = observation['field_reference']
+        self.assertEqual(proof['version_confirmation']['reply_citation'], version)
+        self.assertEqual(proof['confirmation']['citation'], field)
+
+    def test_field_first_asks_version_only_if_the_answer_leaves_different_results(self):
+        for field_name, expected in [('收樣班別', '西桌'), ('驗入班別', '南桌')]:
+            with self.subTest(field_name=field_name):
+                version_question = self.check_document_versions(targets=(('西桌', '北桌'), ('西桌', '南桌')))
+                current = autonomy.get_goal(self.store, self.sid, self.gid)
+                plan = decision_table.document_question_plan(current['steps'][-1])
+                self.assertEqual(plan['first'], 'field')
+                self.assertEqual(plan['costs']['field']['total_questions'], 6)
+                self.assertIsNone(decision_table.document_version_question(current['steps'], current['reply_sources'], ()))
+                self.run_actions(action('ask', question=decision_table.reference_question_for_steps(current['steps'])))
+                field = f'[補充#{self.reply(field_name)}]'
+                resolved = self.run_actions(action('check_decision', field_reference=field, resolve=True))
+                question = decision_table.document_version_question(resolved['steps'], resolved['reply_sources'], ())
+                if field_name == '收樣班別':
+                    self.assertIsNone(question)
+                else:
+                    self.assertEqual(question, version_question)
+                    self.run_actions(action('ask', **question))
+                    version = f'[補充#{self.reply("v2")}]'
+                    resolved = self.run_actions(action('check_decision', version_confirmation=version))
+                    self.assertEqual(resolved['steps'][-1]['observation']['field_reference']['version_confirmation']['reply_citation'], version)
+                observation = resolved['steps'][-1]['observation']
+                self.assertEqual(observation['possible_results'], [expected])
+                self.assertEqual(observation['field_reference']['confirmation']['citation'], field)
+
+    def test_later_version_rules_bind_original_selection_and_restore(self):
+        question = self.check_document_versions(read_second=False)
+        self.run_actions(action('ask', **question))
+        reply = f'[補充#{self.reply("v2")}]'
+        selected = self.run_actions(action('check_decision', version_confirmation=reply))
+        selection = selected['steps'][-1]
+        self.assertNotIn('possible_results', selection['observation'])
+        document = next(row['id'] for row in self.store.documents(self.sid) if row['name'] == 'notice-1.txt')
+        citations = [f'[D{document}:L1]', f'[D{document}:L2]']
+        finished = self.run_actions(action('read', document_id=document, start_line=1, end_line=2),
+                                    action('check_decision', version_rules=citations))
+        step = finished['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['南桌'])
+        proof = step['observation']['field_reference']
+        self.assertEqual(proof['version_confirmation'], selection['observation']['field_reference']['version_confirmation'])
+        receipt = proof['version_rules']
+        self.assertEqual(receipt['confirmation_sha256'], digest(selection))
+        self.assertEqual([record['evidence']['citation'] for record in receipt['records']], citations)
+        saved = create_backup(self.store.path, self.root / 'later-version-rules.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), finished)
+        receipt['records'].pop()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
 
     def test_document_version_confirmation_preserves_actual_reply_and_later_correction_on_restore(self):
         question = self.check_document_versions()
