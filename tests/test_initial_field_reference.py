@@ -93,6 +93,112 @@ class InitialFieldReferenceTests(unittest.TestCase):
                          action('check_decision', document_rules=[f'[D{doc}:L{line}]' for doc in docs for line in (1, 2)], scope='甲批'))
         return {'question': '本次「甲批」正式採用哪個版本？請回覆「v1」或「v2」。', 'document_version': True}
 
+    def deliver_document_version(self, *, field=None, **options):
+        question = self.check_document_versions(**options)
+        if field:
+            current = autonomy.get_goal(self.store, self.sid, self.gid)
+            self.run_actions(action('ask', question=decision_table.reference_question_for_steps(current['steps'])))
+            self.run_actions(action('check_decision', field_reference=f'[補充#{self.reply(field)}]', resolve=True))
+        self.run_actions(action('ask', **question))
+        self.run_actions(action('check_decision', version_confirmation=f'[補充#{self.reply("v1")}]'))
+        return self.run_actions(action('finish', report='依 v1 交西桌。'))
+
+    def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
+        prior = self.deliver_document_version()
+        self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))
+        for unrelated in ('本輪「另批」正式採用版本「v2」。', '本輪「甲批」正式採用版本「v9」。'):
+            with self.assertRaisesRegex(ValueError, '本批「甲批」已列'):
+                self.guide(unrelated)
+            self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
+        saved = self.guide('本輪「甲批」正式採用版本「v2」。')
+        self.assertEqual(saved['goal']['status'], 'paused')
+        reopened = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(reopened['steps'][:-1], prior['steps'])
+        check = reopened['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        proof = check['field_reference']
+        receipt = proof['report_version_recheck']
+        self.assertEqual(receipt['report_sha256'], digest(prior['steps'][-1]))
+        self.assertEqual(receipt['evidence']['quote'], '本輪「甲批」正式採用版本「v2」。')
+        self.assertEqual(proof['version_confirmation'], prior['steps'][-2]['observation']['field_reference']['version_confirmation'])
+        self.assertIsNone(decision_table.reference_question_for_steps(reopened['steps']))
+
+        revised = self.run_actions(action('finish', report='依 v2 交南桌。'))
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        reopened_again = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(reopened_again['steps'][:-1], revised['steps'])
+        checked = reopened_again['steps'][-1]['observation']
+        self.assertEqual(checked['possible_results'], ['西桌'])
+        self.assertEqual(checked['field_reference']['report_version_recheck']['report_sha256'], digest(revised['steps'][-1]))
+
+        saved = create_backup(self.store.path, self.root / 'reported-version.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), reopened_again)
+        historical_report = prior['steps'][-1]
+        historical_report['action']['args']['report'] = historical_report['observation']['report'] = '改寫原報告。'
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET action_json=?,observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(historical_report['action'], ensure_ascii=False),
+                        json.dumps(historical_report['observation'], ensure_ascii=False), self.gid, historical_report['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_reopened_report_asks_only_the_field_that_changes_the_result(self):
+        prior = self.deliver_document_version(targets=(('西桌', '西桌'), ('北桌', '南桌')))
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        reopened = autonomy.get_goal(self.store, self.sid, self.gid)
+        field_question = decision_table.reference_question_for_steps(reopened['steps'])
+        self.assertIn('「收樣班別」、「驗入班別」', field_question)
+        self.assertIsNone(decision_table.document_version_question(reopened['steps'], reopened['reply_sources'], ()))
+        rejected = self.run_actions(action('finish', report='沿用西桌。'))
+        self.assertEqual(rejected['steps'][-1]['action']['tool'], 'invalid')
+        self.assertIn(field_question, rejected['steps'][-1]['observation']['error'])
+        self.run_actions(action('ask', question=field_question))
+        field = f'[補充#{self.reply("驗入班別")}]'
+        result = self.run_actions(action('check_decision', field_reference=field, resolve=True),
+                                  action('finish', report=f'依 v2 交南桌。{field} [更正#1]'))
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][:len(prior['steps'])], prior['steps'])
+        checked = result['steps'][-2]['observation']
+        self.assertEqual(checked['possible_results'], ['南桌'])
+        self.assertEqual(checked['field_reference']['confirmation']['citation'], field)
+
+    def test_reopened_report_reuses_the_previously_confirmed_field(self):
+        prior = self.deliver_document_version(field='驗入班別', targets=(('北桌', '西桌'), ('東桌', '南桌')))
+        original_field = prior['steps'][-2]['observation']['field_reference']['confirmation']
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        self.assertNotIn('reference_report', snapshot)
+        self.assertIn('document_version_report', snapshot)
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        reopened = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = reopened['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        self.assertEqual(check['field_reference']['confirmation'], original_field)
+        self.assertIsNone(decision_table.reference_question_for_steps(reopened['steps']))
+
+    def test_reopened_report_has_no_current_destination_until_selected_rules_are_read(self):
+        prior = self.deliver_document_version(read_second=False)
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        reopened = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = reopened['steps'][-1]['observation']
+        self.assertEqual(check['status'], 'version_uncertain')
+        self.assertNotIn('possible_results', check)
+        self.assertEqual(check['field_reference']['report_version_recheck']['status'], 'missing_rules')
+        self.assertIsNone(decision_table.reference_question_for_steps(reopened['steps']))
+        document = next(row['id'] for row in self.store.documents(self.sid) if row['name'] == 'notice-1.txt')
+        citations = [f'[D{document}:L1]', f'[D{document}:L2]']
+        resolved = self.run_actions(action('read', document_id=document, start_line=1, end_line=2),
+                                    action('check_decision', version_rules=citations),
+                                    action('finish', report='查到 v2 規則，交南桌。'))
+        self.assertEqual(resolved['steps'][:len(prior['steps'])], prior['steps'])
+        check = resolved['steps'][-2]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        self.assertEqual(check['field_reference']['version_rules']['confirmation_sha256'], digest(reopened['steps'][-1]))
+        validate_database(self.store.path)
+
     def test_version_first_then_field_preserves_both_actual_answers(self):
         question = self.check_document_versions(targets=(('西桌', '西桌'), ('北桌', '南桌')))
         current = autonomy.get_goal(self.store, self.sid, self.gid)

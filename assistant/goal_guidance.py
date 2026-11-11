@@ -7,8 +7,8 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
 from .documents import check_citations
-from . import (conversation_history, decision_table, goal_guidance_sources, goal_partials, goal_question_withdrawals,
-               goal_reply_sources, goal_review, work_plan)
+from . import (conversation_history, decision_table, document_rule_update, goal_guidance_sources, goal_partials,
+               goal_question_withdrawals, goal_reply_sources, goal_review, work_plan)
 
 
 def _steps(db, gid):
@@ -69,10 +69,15 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
         result['reference_partial_reply'] = True
     if goal['status'] == 'report_ready' and not review['file_delivery']:
         steps = _steps(db, gid)
-        if reference := decision_table.reference_report(steps, goal['result']):
+        reference = decision_table.reference_report(steps, goal['result'])
+        version = decision_table.document_version_report(steps, goal['result'])
+        if reference or version:
             decision_table._recheck_saved(steps, sources, guidance)
-            result['reference_report'] = reference['observation']['field_reference']
-            receipt = json.dumps(reference, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            if reference:
+                result['reference_report'] = reference['observation']['field_reference']
+            if version:
+                result['document_version_report'] = version['observation']['field_reference']
+            receipt = json.dumps(reference or version, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             result['fingerprint'] = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
     return result
 
@@ -85,7 +90,7 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
-    reference_report = status == 'report_ready' and 'reference_report' in value
+    reference_report = status == 'report_ready' and bool(value.keys() & {'reference_report', 'document_version_report'})
     if status == 'report_ready' and not reference_report:
         return False, '此目標已有成果；請帶入所選成果建立下一階段。'
     if status not in ('pending','paused','failed','needs_input','report_ready'):
@@ -97,6 +102,11 @@ def eligibility(value):
     if reference_report:
         if value['step_count'] + 2 > MAX_STEPS:
             return False, '剩餘步數不足以重核及更新成果，請帶入原成果建立下一階段。'
+        if 'document_version_report' in value:
+            scope = value['document_version_report']['document_rules']['records'][0]['scope']
+            example = f'本輪「{scope}」正式採用版本「版號」。'
+            field = '也可用完整欄名更正一欄。' if 'reference_report' in value else ''
+            return True, f'可保存本批正式版本更正，例如 {example}{field}保存後保留先前成果並等待你接續。'
         return True, '可用完整欄名更正一欄。保存時會按原話先後重核各分支，保留先前成果，等待你接續。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
@@ -117,13 +127,20 @@ def _append_reference_recheck(db, goal, notes, sequence, args, observation):
     _append_step(db, goal, notes, sequence, action, observation)
 
 
-def _save_reference_recheck(db, goal, notes, step_count):
+def _save_reference_recheck(db, current, notes):
+    goal, step_count = current['goal'], current['step_count']
     gid = goal['id']
     steps = _steps(db, gid)
     sources = goal_guidance_sources.read(db, gid, notes, step_count)
-    args = {'field_reference': sources[-1]['citation'], 'recheck': True}
+    latest = sources[-1]
+    if 'document_version_report' in current and (
+            'reference_report' not in current or document_rule_update.is_adoption_notice(latest['content'])):
+        args = {'report_version_recheck': latest['citation']}
+    else:
+        args = {'field_reference': latest['citation'], 'recheck': True}
     observation = decision_table.observe(args, steps, goal.get('reply_sources', ()), sources)
-    needs_field = observation['field_reference']['status'] == 'needs_field'
+    needs_field = (observation.get('max_questions', 0) > 0 if 'report_version_recheck' in args
+                   else observation['field_reference']['status'] == 'needs_field')
     if step_count + (4 if needs_field else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核及完成新成果，請帶入原成果建立下一階段。')
     _append_reference_recheck(db, goal, notes, step_count + 1, args, observation)
@@ -270,8 +287,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
-        if 'reference_report' in current:
-            _save_reference_recheck(db, goal, notes, step_count)
+        if current.keys() & {'reference_report', 'document_version_report'}:
+            _save_reference_recheck(db, current, notes)
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))
         saved = _snapshot(db, sid, gid)

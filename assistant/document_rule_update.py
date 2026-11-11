@@ -19,6 +19,10 @@ def objective_scope(objective):
     return match['scope'] if match else None
 
 
+def is_adoption_notice(text):
+    return _ADOPTION.fullmatch(text) is not None
+
+
 def adoption_answer(text, scope, versions, *, direct=False):
     match = _ADOPTION.fullmatch(text)
     if match and match['scope'] == scope and match['version'] in versions:

@@ -43,7 +43,7 @@ class GoalGuidanceWindow:
         if self.current is None:return
         try:
             saved = guidance.save(self.store,self.sid,self.gid,self.content.get('1.0','end'),expected_fingerprint=self.current['fingerprint'])
-            rechecked = 'reference_report' in self.current or (
+            rechecked = self.current.keys() & {'reference_report', 'document_version_report'} or (
                 self.current['goal']['status'] == 'needs_input'
                 and self.current['goal']['question'] != saved['goal']['question'])
             self.content.delete('1.0','end');self.reload();self.changed()
