@@ -51,6 +51,8 @@ NATURAL_UPDATE_GUIDANCE += '''
 
 RECHECK_GUIDANCE = '''欄位指代的field_reference.recheck是保存時已重核的正式欄位更正；其evidence是新原話。較早的finish是更正前的歷史成果。若有overwritten_fields，該欄一律用最新明確值；branches的known是先套第一筆候選改值、再套新更正後的各欄值。即使後續確認原欄名，也保留被覆蓋欄位的最新值。各候選結果仍一致時直接交更新的結果，原欄位待查；結果分開且要定稿時，交分支並只問第一筆是哪一欄。欄名答覆用resolve，不重建決策表。superseded表示所有原候選已被後續明確值覆蓋，不問歷史欄名，依現行欄值核對。定稿引用原改值、相關正式更正及實際欄名確認。'''
 
+INITIAL_REFERENCE_GUIDANCE = '''若 initial_field_reference 存在，已保存的省略欄名更正可以和首次完整原表一起核對。讀完必要來源後，用 check_decision 的 {"field_reference":"實際補充編號","initial_table":{完整原表}}。initial_table 放原始已知值、完整欄名選項、排除及各列或規則。不要先另存一張完整原表，也不要把補充的值先填入原表。程式按來源順序套用已保存的原話和具名新值。引用輸出的欄位分支及原話。若還需欄名，沿用通常的欄名問題及 resolve；後續明確值保留優先。'''
+
 
 WAITING_REFERENCE_GUIDANCE = '''
 先依交付需求判斷原欄名是否只用來區分決策結果。沿用尚未被撤回或更正的已知條件，查讀來源已確認的份數或人名無須重問。
@@ -509,10 +511,16 @@ def validate_tool(args):
     elif isinstance(args, dict) and 'field_reference' in args:
         if (args.keys() not in ({'field_reference'}, {'field_reference', 'resolve'}, {'field_reference', 'recheck'},
                                {'field_reference', 'waiting_recheck'}, {'field_reference', 'partial_reply'},
-                               {'field_reference', 'answered_revision'}, {'field_reference', 'combined_reply'})
+                               {'field_reference', 'answered_revision'}, {'field_reference', 'combined_reply'},
+                               {'field_reference', 'initial_table'})
                 or not isinstance(args['field_reference'], str) or not _REVISION_SOURCE.fullmatch(args['field_reference'])
-                or any(args[key] is not True for key in args.keys() - {'field_reference'})):
+                or any(args[key] is not True for key in args.keys() - {'field_reference', 'initial_table'})):
             raise ValueError('欄位指代核對須引用已保存的補充，確認欄名時另用resolve。')
+        if 'initial_table' in args:
+            table = args['initial_table']
+            if not isinstance(table, dict) or 'domains' not in table:
+                raise ValueError('首次欄位指代核對需提供完整原表及宣告選項。')
+            validate(table)
     elif isinstance(args, dict) and 'known_update' in args:
         if (args.keys() - {'known_update', 'source', 'what_if', 'evidence', 'scenario', 'alternatives'}
                 or not isinstance(args.get('source'), str) or not _REVISION_SOURCE.fullmatch(args['source'])
@@ -915,6 +923,33 @@ def _reference_value(source):
     value = _unquote_value(match['value'])
     _label(value)
     return value, _source_excerpt(source, clauses[0])
+
+
+def _initial_reference_sources(steps, sequence, replies, guidance):
+    if any(step['action']['tool'] == 'check_decision'
+           and {'domains', 'initial_table'} & step['action']['args'].keys() for step in steps):
+        return []
+    sources = [source for source in _followup_sources(0, sequence, replies, guidance).values()
+               if not _unadopted_note(source)]
+    # Reply order within its ask is not exposed alongside the guidance offsets.
+    if {s['ask_sequence'] for s in sources if 'ask_sequence' in s} & {s['steps_seen'] for s in sources if 'steps_seen' in s}:
+        return []
+    return sorted(sources, key=lambda source: (source.get('steps_seen', source.get('ask_sequence')), source.get('notes_start', -1)))
+
+
+def _initial_reference_citation(sources):
+    citations = []
+    for source in sources:
+        try:
+            _reference_value(source)
+        except ValueError:
+            continue
+        citations.append(source['citation'])
+    return citations[0] if len(citations) == 1 else None
+
+
+def initial_reference_candidate(steps, replies, guidance):
+    return _initial_reference_citation(_initial_reference_sources(steps, len(steps) + 1, replies, guidance))
 
 
 def _choose_reference(base, source):
@@ -1682,6 +1717,10 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
         return _recheck_reference(base_step, base, source)
     if 'pending_field_reference' in base:
         raise ValueError('先確認已保存的候選欄位。')
+    return _build_reference(base_step, base, source)
+
+
+def _build_reference(base_step, base, source):
     value, evidence = _reference_value(source)
     candidates = [field for field in base['conditions']
                   if value in base['domains'][field] and base['known'].get(field) != value]
@@ -1695,6 +1734,44 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
             raise ValueError('更正值與目前可行情境不相容。')
         return plans[0], {**results[0], 'field_reference': {**proof, 'status': 'applied', 'field': candidates[0]}}
     return _pending_reference(base, proof, results)
+
+
+def _apply_initial_reference(args, sequence, replies, guidance, steps):
+    sources = _initial_reference_sources(steps, sequence, replies, guidance)
+    citation = args['field_reference']
+    if _initial_reference_citation(sources) != citation:
+        raise ValueError('首次欄位指代核對須引用唯一可辨認的原表前省略欄名更正，並先核對其他補充的順序。')
+    table = plan = args['initial_table']
+    observation = None
+    changes = []
+    for source in sources:
+        if source['citation'] == citation:
+            plan, observation = _build_reference(sequence, plan, source)
+            continue
+        clauses = [clause for clause in _natural_clauses(_source_text(source))
+                   if not _UNADOPTED_SENTENCE.fullmatch(clause)]
+        update = _natural_condition(plan, clauses[0]) if len(clauses) == 1 else None
+        if update is None or update[1] is None:
+            raise ValueError('建立原表前另有尚未核對的補充，請先確認一個完整欄名及正式新值。')
+        field, value = update
+        before = plan['known'].get(field)
+        evidence = _source_excerpt(source, clauses[0])
+        changes.append({'field': field, 'before': before, 'after': value, 'evidence': evidence})
+        if 'pending_field_reference' in plan:
+            plan, observation = _update_reference(sequence, plan, update, evidence)
+        else:
+            plan, _ = _updated_plan(plan, {field: value})
+            result = _current_result(plan)
+            if result['status'] == 'no_match':
+                raise ValueError('原表前的具名更正與可行情境不相容。')
+            if observation is not None:
+                observation = {**result, 'field_reference': observation['field_reference']}
+    proof = {**observation['field_reference'], 'initial_table_sha256': digest(table)}
+    if changes:
+        proof['initial_condition_updates'] = changes
+    if 'pending_field_reference' in plan:
+        plan = {**plan, 'pending_field_reference': proof}
+    return plan, {**observation, 'field_reference': proof}
 
 
 def _bind_alternatives(alternatives, plan, source):
@@ -1807,6 +1884,8 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 
 
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
+    if 'initial_table' in args:
+        return _apply_initial_reference(args, sequence, replies, guidance, steps)
     if args.get('combined_reply'):
         return _apply_combined_reply(args, previous, sequence, steps, replies, guidance)
     if args.get('answered_revision'):

@@ -1,0 +1,55 @@
+[
+  {
+    "id": "early_reply_survives_building_the_table_and_later_route_change",
+    "category": "goal_initial_field_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "晴原 C8 原收簿班別、點收班別皆早班，入口北口。兩欄各早班或晚班，入口可北口或南口，八組皆可。\n"},
+      {"name": "routing.txt", "content": "北口雙早班去前台、雙晚班去後台，收簿晚班且點收早班去東台，收簿早班且點收晚班去西台。南口四種班別都去合流台。\n"}
+    ],
+    "prompt": "先問我晴原這批現場有什麼變動，等我回答再看兩份附件。請按文件核對原安排和所有選項，最後交代要送去哪裡及所用依據。哪個班別有改只有影響去向時才要查清楚。",
+    "reply": "正式改成晚班。",
+    "reference_waiting_change": {"correction": "入口正式改為南口。"},
+    "criteria": [
+      "現場答覆保存在完整原表之前，核對以原安排為起點，引用該答覆建立兩個欄名分支。",
+      "南口更正令去向一致時撤下欄名問題，沒有製造欄名答案。",
+      "交合流台及原話來源，欄名保留待查。"
+    ]
+  },
+  {
+    "id": "new_named_shift_wins_when_user_identifies_the_early_change",
+    "category": "goal_initial_field_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "芙溪 R5 的收樣班別、驗入班別原為早班。各欄可早班、晚班或夜班，九組皆可。\n"},
+      {"name": "routing.txt", "content": "驗入夜班一律去夜桌。驗入早班時，收樣早班去前桌、晚班去甲桌、夜班去丙桌。驗入晚班時，收樣早班去乙桌、晚班去後桌、夜班去丁桌。\n"}
+    ],
+    "prompt": "先問我芙溪這批現場改了什麼，我答了再讀附件。先按兩份原始資料核對九種安排，再判斷這批送哪一桌。原來的更動欄名影響去向時請問我。定稿要寫最新兩個班別及去向，並附原話和規則。",
+    "reply": "正式改成晚班。",
+    "reference_waiting_change": {
+      "correction": "收樣班別正式改為夜班。",
+      "reply_question": ["第一筆改值指哪個欄位？請回完整欄名「收樣班別」、「驗入班別」。", "第一筆改值指哪個欄位？請回完整欄名「驗入班別」、「收樣班別」。"],
+      "reply": "收樣班別"
+    },
+    "criteria": [
+      "在原表之後採用先前已保存的晚班原話，原核對及各候選欄位可查。",
+      "等待時的夜班更正令兩種分支仍有不同去向，維持原欄名問句。",
+      "收到收樣欄名後，以較新的收樣夜班及驗入早班交丙桌，保留三則使用者來源。"
+    ]
+  },
+  {
+    "id": "ordinary_after_table_correction_keeps_its_existing_route",
+    "category": "goal_initial_field_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "蘆津 B3 原入架班別、覆點班別皆早班。兩欄可早班或晚班，四組皆可。\n"},
+      {"name": "routing.txt", "content": "兩欄都是早班去前室，都是晚班去後室。僅入架晚班去甲室，僅覆點晚班去乙室。\n"}
+    ],
+    "prompt": "先閱讀兩份附件並核對蘆津這批四組原表及原安排，之後問我現場改了什麼。最後確認要送去哪一室，並列出有用到的原話及規則。",
+    "reply": "正式改成晚班。",
+    "partial_followup": [
+      {"question": ["第一筆改值指哪個欄位？請回完整欄名「入架班別」、「覆點班別」。", "第一筆改值指哪個欄位？請回完整欄名「覆點班別」、「入架班別」。"], "reply": "覆點班別"}
+    ],
+    "criteria": [
+      "先建立原表，再保存現場更正，沿既有欄名指代步驟核對。",
+      "確認覆點後交乙室，附原始更正、欄名及規則來源。"
+    ]
+  }
+]

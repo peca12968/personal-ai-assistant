@@ -1,0 +1,18 @@
+[
+  {
+    "id": "named_updates_before_the_table_supersede_both_possible_earlier_fields",
+    "category": "goal_initial_field_reference",
+    "documents": [
+      {"name": "shift.txt", "content": "梨岸 W6 的核件班別、入庫班別原為早班。兩欄各可早班、晚班或夜班，九組皆可。\n"},
+      {"name": "routing.txt", "content": "入庫夜班一律去夜簿台。入庫早班時，核件早班去前台、晚班去甲台、夜班去丙台。入庫晚班時，核件早班去乙台、晚班去後台、夜班去丁台。\n"}
+    ],
+    "prompt": "按兩份附件核對梨岸這批的九種原安排及原始欄值，再採用已保存的現場更正。交一張短交接單，寫現行的兩欄值及去向，附原表和採用的原話。原來的更動欄位若已無關本輪去向，可留待查。",
+    "prior_read_ranges": [{"document_id": 1, "start_line": 1, "end_line": 1}, {"document_id": 2, "start_line": 1, "end_line": 1}],
+    "amendments": ["正式改成晚班。", "核件班別正式改為夜班。", "入庫班別正式改為夜班。"],
+    "criteria": [
+      "完整原表及建表前的三則來源均可核對，兩則較新的具名更新依保存順序覆蓋舊候選。",
+      "現行兩欄皆夜班並交夜簿台，原欄名保持待查且無須再問。",
+      "兩個最新值各引用相應的正式更正及規則。"
+    ]
+  }
+]

@@ -501,6 +501,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
                 payload['reply_sources'] = reply_sources
+            initial_reference = decision_table.initial_reference_candidate(goal['steps'], reply_sources, guidance_sources)
+            if initial_reference:
+                payload['initial_field_reference'] = initial_reference
             reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question
@@ -549,6 +552,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.NATURAL_UPDATE_GUIDANCE
                  if (reply_sources or guidance_sources)
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
+                ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE
                  if any(step['action']['tool'] == 'check_decision'
                         and (step['action']['args'].get('recheck') or step['action']['args'].get('waiting_recheck'))
