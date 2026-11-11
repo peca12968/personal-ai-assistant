@@ -150,7 +150,7 @@ def goals(store, sid):
         return [dict(r) for r in db.execute('SELECT id,objective,status,updated_at FROM autonomous_goals WHERE session_id=? ORDER BY rowid DESC', (sid,))]
 
 
-def get_goal(store, sid, gid):
+def get_goal(store, sid, gid, *, include_reply_positions=False):
     with store.connect() as db:
         db.execute('BEGIN')
         row = db.execute('SELECT * FROM autonomous_goals WHERE session_id=? AND id=?', (sid, gid)).fetchone()
@@ -184,9 +184,9 @@ def get_goal(store, sid, gid):
         if quantity_scope:
             result['quantity_adoption_scope'] = {**quantity_scope, 'missing_ranges': source_decision.missing_ranges(
                 quantity_scope['ranges'], result['steps'], result['sources'])}
-        reply_sources = goal_reply_sources.read(db, gid, result['notes'])
+        reply_sources = goal_reply_sources.read(db, gid, result['notes'], include_positions=True)
         if reply_sources:
-            result['reply_sources'] = reply_sources
+            result['reply_sources'] = reply_sources if include_reply_positions else goal_reply_sources.without_positions(reply_sources)
         guidance_sources = goal_guidance_sources.read(db, gid, result['notes'], len(result['steps']))
         if guidance_sources:
             result['guidance_sources'] = guidance_sources
@@ -472,7 +472,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
     failures = 0
     try:
         for _ in range(max_steps):
-            goal = get_goal(store, sid, gid)
+            goal = get_goal(store, sid, gid, include_reply_positions=True)
             if cancel.is_set():
                 reason = 'cancelled'
                 update(store, gid, 'paused', notice='已停止本機自主流程。')
@@ -500,7 +500,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
             reply_sources = goal.get('reply_sources', ())
             if reply_sources:
-                payload['reply_sources'] = reply_sources
+                payload['reply_sources'] = goal_reply_sources.without_positions(reply_sources)
             initial_reference = decision_table.initial_reference_candidate(goal['steps'], reply_sources, guidance_sources)
             if initial_reference:
                 payload['initial_field_reference'] = initial_reference

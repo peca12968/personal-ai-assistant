@@ -17,7 +17,7 @@ def _save_partial_followup(db, current, notes, kind, review):
     if rechecked:
         append_waiting_recheck(db, current, notes)
     steps = _steps(db, gid)
-    replies = goal_reply_sources.read(db, gid, notes)
+    replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
     args = {'field_reference': replies[-1]['citation'], 'partial_reply': True}
     result = decision_table.observe(args, steps, replies, goal.get('guidance_sources', ()))
     action = {'tool': 'check_decision', 'args': args, 'note': '保存原分項提問已回答的項目'}
@@ -35,7 +35,7 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         raise ValueError('請先讀取目前問題與目標指紋，再保存回答。')
     with lease(store, gid), store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        current = _snapshot(db, sid, gid)
+        current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
             raise ValueError('問題、目標進度或來源已變更；回答尚未保存。請重新載入並核對，草稿仍保留。')
         goal = current['goal']
@@ -51,7 +51,7 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
         if combined:
-            replies = goal_reply_sources.read(db, gid, notes)
+            replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
             args = {'field_reference': replies[-1]['citation'], 'combined_reply': True}
             observation = decision_table.observe(args, steps, replies, goal.get('guidance_sources', ()))
             action = {'tool': 'check_decision', 'args': args, 'note': '分別保存同則已答項更正、剩餘答覆及正式欄位更正'}

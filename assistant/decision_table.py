@@ -928,13 +928,29 @@ def _reference_value(source):
 def _initial_reference_sources(steps, sequence, replies, guidance):
     if any(step['action']['tool'] == 'check_decision'
            and {'domains', 'initial_table'} & step['action']['args'].keys() for step in steps):
-        return []
+        return [], None
     sources = [source for source in _followup_sources(0, sequence, replies, guidance).values()
                if not _unadopted_note(source)]
-    # Reply order within its ask is not exposed alongside the guidance offsets.
-    if {s['ask_sequence'] for s in sources if 'ask_sequence' in s} & {s['steps_seen'] for s in sources if 'steps_seen' in s}:
-        return []
-    return sorted(sources, key=lambda source: (source.get('steps_seen', source.get('ask_sequence')), source.get('notes_start', -1)))
+    def step(source):
+        return source.get('steps_seen', source.get('ask_sequence'))
+
+    tied = {step(s) for s in sources if 'ask_sequence' in s} & {step(s) for s in sources if 'steps_seen' in s}
+    if not tied:
+        return sorted(sources, key=lambda source: (step(source), source.get('notes_start', -1))), None
+    if any(type(s.get('notes_start')) is not int for s in sources):
+        return [], None
+    ordered = sorted(sources, key=lambda source: source['notes_start'])
+    end, previous_step = 0, 0
+    for source in ordered:
+        start, number = source['notes_start'], step(source)
+        if start < end or number < previous_step:
+            return [], None
+        part = (goal_reply_sources.note(source['question'], source['answer']) if 'ask_sequence' in source else
+                goal_guidance_sources.note(source['content'], number, source['recorded_at']))
+        end, previous_step = start + len(part), number
+    # Both source digests already cover their verified offsets and step numbers.
+    order = [{'citation': s['citation'], 'source_sha256': s['sha256']} for s in ordered]
+    return ordered, order
 
 
 def _initial_reference_citation(sources):
@@ -949,7 +965,8 @@ def _initial_reference_citation(sources):
 
 
 def initial_reference_candidate(steps, replies, guidance):
-    return _initial_reference_citation(_initial_reference_sources(steps, len(steps) + 1, replies, guidance))
+    sources, _ = _initial_reference_sources(steps, len(steps) + 1, replies, guidance)
+    return _initial_reference_citation(sources)
 
 
 def _choose_reference(base, source):
@@ -1737,7 +1754,7 @@ def _build_reference(base_step, base, source):
 
 
 def _apply_initial_reference(args, sequence, replies, guidance, steps):
-    sources = _initial_reference_sources(steps, sequence, replies, guidance)
+    sources, order = _initial_reference_sources(steps, sequence, replies, guidance)
     citation = args['field_reference']
     if _initial_reference_citation(sources) != citation:
         raise ValueError('首次欄位指代核對須引用唯一可辨認的原表前省略欄名更正，並先核對其他補充的順序。')
@@ -1767,6 +1784,8 @@ def _apply_initial_reference(args, sequence, replies, guidance, steps):
             if observation is not None:
                 observation = {**result, 'field_reference': observation['field_reference']}
     proof = {**observation['field_reference'], 'initial_table_sha256': digest(table)}
+    if order is not None:
+        proof['initial_source_order'] = order
     if changes:
         proof['initial_condition_updates'] = changes
     if 'pending_field_reference' in plan:
@@ -1982,7 +2001,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                      "ORDER BY sequence", (gid,))]
         revised = any(step['action'].get('tool') == 'check_decision'
                       and step['action']['args'].keys() & _TRANSITION_FIELDS for step in steps)
-        replies = goal_reply_sources.read(db, gid, notes) if revised and replies_present else []
+        replies = goal_reply_sources.read(db, gid, notes, include_positions=True) if revised and replies_present else []
         count = db.execute('SELECT COUNT(*) FROM autonomous_steps WHERE goal_id=?', (gid,)).fetchone()[0] if revised else 0
         guidance = []
         if revised and guidance_present:

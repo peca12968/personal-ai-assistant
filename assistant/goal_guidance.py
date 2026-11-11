@@ -16,16 +16,16 @@ def _steps(db, gid):
                 'SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
 
 
-def _snapshot(db, sid, gid):
+def _snapshot(db, sid, gid, *, include_reply_positions=False):
     goal = db.execute('SELECT * FROM autonomous_goals WHERE id=? AND session_id=?',(gid,sid)).fetchone()
     if goal is None:
         raise ValueError('找不到此對話的自主目標。')
     review = next(goal_review._rows(db,gid))
     goal = dict(goal)
     fingerprint = review['fingerprint']
-    sources = goal_reply_sources.read(db, gid, goal['notes'])
+    sources = goal_reply_sources.read(db, gid, goal['notes'], include_positions=True)
     if sources:
-        goal['reply_sources'] = sources
+        goal['reply_sources'] = sources if include_reply_positions else goal_reply_sources.without_positions(sources)
         fingerprint = hashlib.sha256((fingerprint + ''.join(item['sha256'] for item in sources)).encode('utf-8')).hexdigest()
     guidance = goal_guidance_sources.read(db, gid, goal['notes'], review['step_count'])
     if guidance:
@@ -199,7 +199,7 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         raise ValueError('需要讀取目標時的指紋，請重新載入。')
     with lease(store,gid), store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        current = _snapshot(db,sid,gid)
+        current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
             raise ValueError('目標或來源已有變更，請重新載入並核對；未保存補充。')
         allowed, reason = eligibility(current)

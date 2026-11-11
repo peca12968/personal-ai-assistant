@@ -51,7 +51,7 @@ def record(db, gid, question, answer, notes_start):
                (gid, step[0], notes_start, answer))
 
 
-def read(db, gid, notes):
+def read(db, gid, notes, *, include_positions=False):
     sources = []
     previous_end = 0
     for sequence, start, answer, action, observation in db.execute('''
@@ -69,10 +69,16 @@ def read(db, gid, notes):
         if notes[start:previous_end] != part:
             raise ValueError('保存的回覆來源與使用者補充原文不一致。')
         evidence = json.dumps([gid, sequence, start, question, answer], ensure_ascii=False, separators=(',', ':'))
-        sources.append({'citation': f'[補充#{sequence}]', 'ask_sequence': sequence,
-                        'question': question, 'answer': answer,
-                        'sha256': hashlib.sha256(evidence.encode('utf-8')).hexdigest()})
+        source = {'citation': f'[補充#{sequence}]', 'ask_sequence': sequence, 'question': question, 'answer': answer,
+                  'sha256': hashlib.sha256(evidence.encode('utf-8')).hexdigest()}
+        if include_positions:
+            source['notes_start'] = start
+        sources.append(source)
     return sources
+
+
+def without_positions(sources):
+    return [{key: value for key, value in source.items() if key != 'notes_start'} for source in sources]
 
 
 def citations(report, sources, *, label='成果'):

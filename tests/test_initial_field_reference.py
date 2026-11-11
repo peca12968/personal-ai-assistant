@@ -46,6 +46,64 @@ class InitialFieldReferenceTests(unittest.TestCase):
     def initial(self, source='[補充#1]'):
         return self.run_actions(action('check_decision', field_reference=source, initial_table=self.table))
 
+    def save_same_step_sources(self, *, guidance_first):
+        self.run_actions(action('ask', question='本次現場有什麼變動？'))
+        if guidance_first:
+            self.guide('收樣班別正式改為夜班。')
+        self.reply('正式改成晚班。')
+        if not guidance_first:
+            self.guide('收樣班別正式改為夜班。')
+
+    def test_same_step_reply_and_guidance_follow_real_note_order(self):
+        for guidance_first, expected in [(True, '甲桌'), (False, '丙桌')]:
+            with self.subTest(guidance_first=guidance_first):
+                self.gid = autonomy.create_goal(self.store, self.sid, '核對最新班別及去向')
+                self.save_same_step_sources(guidance_first=guidance_first)
+                source_goal = autonomy.get_goal(self.store, self.sid, self.gid, include_reply_positions=True)
+                reply, = source_goal['reply_sources']
+                guide, = source_goal['guidance_sources']
+                self.assertEqual(reply['ask_sequence'], guide['steps_seen'])
+                self.assertEqual(guide['notes_start'] < reply['notes_start'], guidance_first)
+                # A forged overlap must not be used to choose an order.
+                overlap = {**guide, 'notes_start': reply['notes_start']}
+                self.assertIsNone(decision_table.initial_reference_candidate(source_goal['steps'], [reply], [overlap]))
+                checked = self.initial()
+                self.assertNotIn('notes_start', checked['reply_sources'][0])
+                step = checked['steps'][-1]
+                proof = step['observation']['field_reference']
+                sources = (guide, reply) if guidance_first else (reply, guide)
+                self.assertEqual(proof['initial_source_order'], [
+                    {'citation': item['citation'], 'source_sha256': item['sha256']} for item in sources])
+                self.assertEqual({b['field']: b['possible_results'] for b in proof['branches']},
+                                 {'收樣班別': [expected], '驗入班別': ['丁桌']})
+                self.run_actions(action('ask', question=decision_table.reference_question(step)))
+                answer = self.reply('收樣班別')
+                resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+                self.assertEqual(resolved['steps'][-1]['observation']['possible_results'], [expected])
+
+    def test_same_step_source_order_survives_waiting_recheck_and_rejects_reordered_backup_proof(self):
+        self.save_same_step_sources(guidance_first=True)
+        checked = self.initial()
+        step = checked['steps'][-1]
+        self.run_actions(action('ask', question=decision_table.reference_question(step)))
+        revised = self.guide('驗入班別正式改為晚班。')['goal']['reference_review']
+        self.assertEqual({b['field']: b['possible_results'] for b in revised['field_reference']['branches']},
+                         {'收樣班別': ['後桌'], '驗入班別': ['丁桌']})
+        answer = self.reply('收樣班別')
+        resolved = self.run_actions(action('check_decision', field_reference=f'[補充#{answer}]', resolve=True))
+        self.assertEqual(resolved['steps'][-1]['observation']['possible_results'], ['後桌'])
+        saved = create_backup(self.store.path, self.root / 'source-order.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), resolved)
+        step['observation']['field_reference']['initial_source_order'].reverse()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
     def test_early_reply_and_later_pre_table_update_keep_the_newer_shift_after_resolution_and_restore(self):
         self.run_actions(action('ask', question='本次現場有什麼變動？'))
         self.reply('正式改成晚班。')

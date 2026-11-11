@@ -55,6 +55,39 @@ def replies_for(case):
     return replies
 
 
+def initial_reply_guidance(case):
+    if 'initial_reply_guidance' not in case:
+        return None
+    change = case['initial_reply_guidance']
+    if (not isinstance(change, dict) or change.keys() not in ({'question', 'before'}, {'question', 'after'})
+            or 'reply' not in case):
+        raise ValueError('同一步測量須指定初始問句及答覆前或後的一則更正。')
+    autonomy.text(change['question'], 800)
+    autonomy.text(change.get('before', change.get('after')), 4000)
+    return change
+
+
+def save_initial_reply(store, sid, gid, asked, reply, change, turn):
+    if change is not None and asked['question'] != change['question']:
+        raise ValueError('初始問句與預設更正範圍不同，未提交答覆及更正。')
+    step_count = len(asked['steps'])
+
+    def save_guidance(phase):
+        current = goal_guidance.snapshot(store, sid, gid)
+        saved = goal_guidance.save(store, sid, gid, change[phase], expected_fingerprint=current['fingerprint'])
+        assert saved['step_count'] == step_count
+        turn['initial_reply_guidance'] = {'phase': phase, 'saved': saved}
+
+    if change and 'before' in change:
+        save_guidance('before')
+    observed = goal_replies.snapshot(store, sid, gid)
+    turn['reply'] = reply
+    turn['saved'] = goal_replies.save(store, sid, gid, reply, expected_fingerprint=observed['fingerprint'])
+    assert turn['saved']['goal']['status'] == 'paused'
+    if change and 'after' in change:
+        save_guidance('after')
+
+
 def apply_amendments(store, sid, gid, case):
     if 'amendments' not in case and 'prior_read_ranges' not in case:
         return None
@@ -219,6 +252,7 @@ def main():
         for case in cases:
             autonomy.text(case['prompt'], 4000)
             replies_for(case)
+            initial_reply_guidance(case)
             waiting_change(case)
             followup_change(case, 'report_change')
             followup_change(case, 'reference_waiting_change')
@@ -232,6 +266,11 @@ def main():
                     assert goal_replies.snapshot(store, sid, gid)['goal']['status'] == 'pending'
                     apply_amendments(store, sid, gid, case)
                     prepare_planning(store, sid, gid, case)
+                    if around := initial_reply_guidance(case):
+                        action = {'tool': 'ask', 'args': {'question': around['question']}, 'note': '合成等待狀態'}
+                        engine = SimpleNamespace(answer=lambda prompt, cancel: json.dumps(action, ensure_ascii=False))
+                        state = autonomy.run_goal(store, sid, gid, engine, max_steps=1)
+                        save_initial_reply(store, sid, gid, state, case['reply'], around, {})
                     change = waiting_change(case)
                     if change is not None:
                         action = {'tool': 'ask', 'args': {'question': '初始等待補充？'}, 'note': '合成等待狀態'}
@@ -314,11 +353,9 @@ def main():
                         turn = row
                     if state['status'] != 'needs_input':
                         raise ValueError('初始執行未停下提問；未提交預設回答。')
-                    observed = goal_replies.snapshot(store, sid, gid)
                     before_calls = len(row['calls'])
-                    turn['reply'] = reply
-                    turn['saved'] = goal_replies.save(store, sid, gid, reply, expected_fingerprint=observed['fingerprint'])
-                    assert turn['saved']['goal']['status'] == 'paused' and len(row['calls']) == before_calls
+                    save_initial_reply(store, sid, gid, state, reply, initial_reply_guidance(case), turn)
+                    assert len(row['calls']) == before_calls
                     save_report(trace_path, row)
                     state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=8)
                 if change := followup_change(case, 'reference_waiting_change'):
