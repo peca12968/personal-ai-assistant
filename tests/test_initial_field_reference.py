@@ -260,6 +260,97 @@ class InitialFieldReferenceTests(unittest.TestCase):
         resolved = self.run_actions(action('check_decision', version_confirmation=source))
         self.assertIsNotNone(decision_table.reference_question_for_steps(resolved['steps']))
 
+    def test_waiting_field_question_withdraws_after_an_explicit_version_merges_results(self):
+        self.check_document_versions(targets=(('西桌', '西桌'), ('北桌', '南桌')))
+        checked = autonomy.get_goal(self.store, self.sid, self.gid)
+        question = decision_table.reference_question(checked['steps'][-1])
+        asked = self.run_actions(action('ask', question=question, partial_result='兩版暫表。'))
+        stale = goal_replies.snapshot(self.store, self.sid, self.gid)
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        amended = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(amended['status'], 'paused')
+        self.assertEqual(amended['reply_sources'], asked['reply_sources'])
+        self.assertEqual(amended['withdrawn_questions'][0]['question'], question)
+        step = amended['steps'][-1]
+        self.assertEqual(step['observation']['possible_results'], ['西桌'])
+        receipt = step['observation']['field_reference']['waiting_field_version']
+        self.assertTrue(receipt['withdraws_question'])
+        self.assertEqual(receipt['adoptions'][0]['evidence']['quote'], '本輪「甲批」正式採用版本「v1」。')
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            goal_replies.save(self.store, self.sid, self.gid, '收樣班別', expected_fingerprint=stale['fingerprint'])
+        saved = create_backup(self.store.path, self.root / 'withdrawn-field-version.paibackup')
+        restored = self.root / 'restored-field-version'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), amended)
+        with backup.connect() as db:
+            db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=?', (self.gid,))
+        with self.assertRaisesRegex(ValueError, '缺少相符的欄名問題撤下紀錄'):
+            validate_database(backup.path)
+
+    def test_waiting_field_uses_later_version_and_conditions_with_actual_field_reply(self):
+        self.check_document_versions(targets=(('西桌', '北桌'), ('西桌', '南桌')))
+        checked = autonomy.get_goal(self.store, self.sid, self.gid)
+        question = decision_table.reference_question_for_steps(checked['steps'])
+        asked = self.run_actions(action('ask', question=question))
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        self.guide('收樣班別正式改為早班。')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['steps'], asked['steps'])
+        self.assertEqual(waiting['question'], question)
+        preview = waiting['reference_review']
+        self.assertIn('v2', decision_table.describe_waiting_review(preview))
+        self.assertIn('前桌', decision_table.describe_waiting_review(preview))
+        answer = f'[補充#{self.reply("驗入班別")}]'
+        resolved = self.run_actions(action('check_decision', field_reference=answer, resolve=True))
+        observation = resolved['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['南桌'])
+        proof = observation['field_reference']
+        receipt = proof['waiting_field_version']
+        self.assertEqual([item['version'] for item in receipt['adoptions']], ['v1', 'v2'])
+        self.assertEqual(receipt['version'], 'v2')
+        self.assertEqual([source['citation'] for source in receipt['source_order']], ['[更正#1]', '[更正#2]', '[更正#3]'])
+        self.assertEqual(receipt['condition_changes'][0]['field'], '收樣班別')
+        self.assertEqual(proof['confirmation']['citation'], answer)
+        saved = create_backup(self.store.path, self.root / 'answered-field-version.paibackup')
+        restored = self.root / 'restored-answered-field'
+        restore_backup(saved['path'], restored)
+        self.assertEqual(autonomy.get_goal(Store(restored / 'assistant.sqlite3'), self.sid, self.gid), resolved)
+
+    def test_new_version_during_field_wait_preserves_earlier_version_answer(self):
+        ask = self.check_document_versions(targets=(('西桌', '西桌'), ('北桌', '南桌')))
+        self.run_actions(action('ask', **ask))
+        source = f'[補充#{self.reply("v2")}]'
+        selected = self.run_actions(action('check_decision', version_confirmation=source))
+        previous = selected['steps'][-1]['observation']['field_reference']['version_confirmation']
+        question = decision_table.reference_question_for_steps(selected['steps'])
+        self.run_actions(action('ask', question=question))
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        amended = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(amended['status'], 'paused')
+        self.assertEqual(amended['steps'][-1]['observation']['possible_results'], ['西桌'])
+        proof = amended['steps'][-1]['observation']['field_reference']
+        self.assertEqual(proof['version_confirmation'], previous)
+        self.assertEqual(proof['waiting_field_version']['version'], 'v1')
+        self.assertEqual(amended['reply_sources'][-1]['citation'], source)
+
+    def test_out_of_scope_or_missing_version_does_not_withdraw_waiting_field(self):
+        for correction, expected in [('本輪「另批」正式採用版本「v1」。', False), ('本輪「甲批」正式採用版本「v2」。', True)]:
+            with self.subTest(correction=correction):
+                self.check_document_versions(missing=True, targets=(('西桌', '北桌'), ('南桌', '南桌')))
+                checked = autonomy.get_goal(self.store, self.sid, self.gid)
+                question = decision_table.reference_question(checked['steps'][-1])
+                self.run_actions(action('ask', question=question))
+                self.guide(correction)
+                waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+                self.assertEqual(waiting['question'], question)
+                self.assertEqual('reference_review' in waiting, expected)
+                if expected:
+                    preview = waiting['reference_review']['field_reference']['waiting_field_version']
+                    self.assertEqual(preview['status'], 'missing_rules')
+                    self.assertFalse(preview['withdraws_question'])
+
     def test_document_version_confirmation_preserves_actual_reply_and_later_correction_on_restore(self):
         question = self.check_document_versions()
         partial = 'v1 去西桌，v2 去南桌。版本待確認。'

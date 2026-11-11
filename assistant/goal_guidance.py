@@ -138,6 +138,16 @@ def append_waiting_recheck(db, current, notes):
     _append_reference_recheck(db, goal, notes, current['step_count'] + 1, args, goal['reference_review'])
 
 
+def append_waiting_field_version(db, current, notes):
+    goal = current['goal']
+    review = goal['reference_review']
+    receipt = review['field_reference']['waiting_field_version']
+    if current['step_count'] + (2 if receipt['withdraws_question'] else 3) > MAX_STEPS:
+        raise ValueError('剩餘步數不足以重核版本與原欄名，請帶入目前進度建立下一階段。')
+    args = {'waiting_field_version': receipt['source']}
+    _append_reference_recheck(db, goal, notes, current['step_count'] + 1, args, review)
+
+
 def append_answered_revision(db, current, notes):
     goal = current['goal']
     observation = goal['answered_reference_review']
@@ -190,6 +200,16 @@ def apply_waiting_review(db, current):
     if review is None:
         return current
     proof = review['field_reference']
+    if adoption := proof.get('waiting_field_version'):
+        if not adoption['withdraws_question']:
+            return current
+        source = next(item for item in goal['guidance_sources'] if item['citation'] == adoption['source'])
+        append_waiting_field_version(db, current, goal['notes'])
+        goal_question_withdrawals.record(db, goal['id'], current['question_withdrawal'], source)
+        notice = decision_table.describe_waiting_review(review)
+        db.execute("UPDATE autonomous_goals SET status='paused',question='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (notice, goal['id']))
+        return _snapshot(db, goal['session_id'], goal['id'])
     if version := proof.get('waiting_version_recheck'):
         if not version['withdraws_question']:
             return current

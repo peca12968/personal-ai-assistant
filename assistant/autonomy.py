@@ -340,7 +340,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
     if name == 'check_decision':
-        if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('partial_reply')
+        if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('waiting_field_version') or args.get('partial_reply')
                 or args.get('answered_revision') or args.get('combined_reply')):
             raise ValueError('等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         if decision_table.DOCUMENT_RULE_FIELDS & args.keys() and args != pending_document_rule:
@@ -536,6 +536,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             field_proof = latest_decision['observation'].get('field_reference', {}) if latest_decision else {}
             document_version_review = field_proof.get('document_rules', {}).get('version_review')
             version_confirmed = field_proof.get('version_confirmation')
+            waiting_field_version = field_proof.get('waiting_field_version')
             version_rules_applied = field_proof.get('version_rules')
             document_question_plan = decision_table.document_question_plan(latest_decision) if latest_decision else None
             if document_question_plan:
@@ -600,12 +601,14 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
                 ('\n' + decision_table.DOCUMENT_RULE_GUIDANCE if pending_document_rule else '') +
-                ('\n' + decision_table.DOCUMENT_VERSION_GUIDANCE if document_version_review and not version_confirmed else '') +
+                ('\n' + decision_table.DOCUMENT_VERSION_GUIDANCE if document_version_review and not (version_confirmed or waiting_field_version) else '') +
                 ('\n' + decision_table.DOCUMENT_QUESTION_PLAN_GUIDANCE if document_question_plan else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_QUESTION_GUIDANCE if document_version_question else '') +
                 ('\n' + decision_table.DOCUMENT_VERSION_REPLY_GUIDANCE
-                 if document_version_reply or version_confirmed and not version_rules_applied else '') +
-                ('\n' + decision_table.DOCUMENT_VERSION_RULE_GUIDANCE if document_version_rules or version_rules_applied else '') +
+                 if document_version_reply or version_confirmed and not (version_rules_applied or waiting_field_version) else '') +
+                ('\n' + decision_table.DOCUMENT_VERSION_RULE_GUIDANCE
+                 if document_version_rules or version_rules_applied and not waiting_field_version else '') +
+                ('\n' + decision_table.WAITING_FIELD_VERSION_GUIDANCE if waiting_field_version else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE

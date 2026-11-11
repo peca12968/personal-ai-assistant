@@ -5,7 +5,7 @@ from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
 from . import decision_table, goal_question_withdrawals, goal_reply_sources
 from .goal_guidance import (_append_step, _snapshot, _steps, append_answered_revision, append_followup_question,
-                            append_waiting_recheck, apply_waiting_review, snapshot)
+                            append_waiting_field_version, append_waiting_recheck, apply_waiting_review, snapshot)
 
 
 def _save_partial_followup(db, current, notes, kind, review):
@@ -62,6 +62,10 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             return _snapshot(db, sid, gid)
         if not combined and 'answered_reference_review' in goal:
             append_answered_revision(db, current, notes)
+        elif not combined and review and 'waiting_field_version' in review['field_reference']:
+            if review['field_reference']['waiting_field_version']['withdraws_question']:
+                raise ValueError('正式版本更正後欄名已無須回答，請先撤下此問題。')
+            append_waiting_field_version(db, current, notes)
         elif (not combined and review and 'waiting_recheck' in review['field_reference']
               and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS):
             append_waiting_recheck(db, current, notes)
@@ -86,6 +90,9 @@ def withdraw(store, sid, gid, correction_number, *, expected_fingerprint):
         goal = current['goal']
         source = next(item for item in goal['guidance_sources'] if item['number'] == correction_number)
         review = goal.get('reference_review')
+        adoption = review['field_reference'].get('waiting_field_version') if review else None
+        if adoption and adoption['withdraws_question'] and source['citation'] == adoption['source']:
+            return apply_waiting_review(db, current)
         version = review['field_reference'].get('waiting_version_recheck') if review else None
         if (version and version['withdraws_question']
                 and source['citation'] == version['changes'][-1]['evidence']['citation']):

@@ -63,6 +63,7 @@ DOCUMENT_VERSION_QUESTION_GUIDANCE = '''需要定案且使用者允許時，用 
 DOCUMENT_VERSION_REPLY_GUIDANCE = '''有 document_version_reply 時，用 check_decision 的 args 原樣使用它，核對已保存的正式版本答覆與同一步的正式更正。version_confirmation 是本輪採用依據，引用實際答覆及生效的較新更正。若 status 為 missing_rules，所選版本已確認，去向仍待查。版本已確認後，按最新分支交付，欄名只有仍有用途時才問。'''
 DOCUMENT_QUESTION_PLAN_GUIDANCE = '''document_question_plan 比較先問欄名與先問採用版本的追問次數。若原因為 missing_version_rules，先確認採用版本，判斷缺版規則是否仍需要。若需定案且可追問，依 first 只問第一項，使用相應的 document_version_question 或 field_reference_question。收到答覆後先核對結果，已確定去向時不必再問另一項，保留另一項待查。'''
 DOCUMENT_VERSION_RULE_GUIDANCE = '''有 document_version_rules 時，先用 check_decision 的 args 原樣使用它，把後讀到的規則接回已保存的版本答覆。版本不必再問。version_rules 紀錄補讀證據；依最新去向交付，版本答覆及補讀的規則分開引用。'''
+WAITING_FIELD_VERSION_GUIDANCE = '''field_reference.waiting_field_version 記錄等待欄名時收到的正式採用更正。以其中最後一筆採用原話及最新分支為準。先前版本答覆保留在紀錄。若原欄名問題已撤下，無須等待該答覆；若已回答仍有用的原欄名問題，使用 field_reference 和 resolve 核對實際答覆。所選版本缺少規則時保留待查。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -502,7 +503,7 @@ _FIELDLESS_CHANGE = re.compile(r'(?:這一欄|那一欄|這欄|那欄)?(?:正式
 _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha256'}
 DOCUMENT_RULE_FIELDS = {'document_rule', 'document_rules'}
 _TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference',
-                      'version_confirmation', 'version_rules', 'waiting_version_recheck'} | DOCUMENT_RULE_FIELDS
+                      'version_confirmation', 'version_rules', 'waiting_version_recheck', 'waiting_field_version'} | DOCUMENT_RULE_FIELDS
 
 
 class _RejectedRevision(ValueError):
@@ -522,10 +523,10 @@ def validate_tool(args):
     elif isinstance(args, dict) and 'version_rules' in args:
         if args.keys() != {'version_rules'} or not document_rule_update.valid_citations(args['version_rules']):
             raise ValueError('版本補讀須列出已選定版本的完整文件行。')
-    elif isinstance(args, dict) and 'waiting_version_recheck' in args:
-        if args.keys() != {'waiting_version_recheck'} or not isinstance(args['waiting_version_recheck'], str) or not re.fullmatch(
-                r'\[更正#[1-9][0-9]{0,3}\]', args['waiting_version_recheck']):
-            raise ValueError('等待版本時重核須引用已保存的正式條件更正。')
+    elif isinstance(args, dict) and args.keys() & {'waiting_version_recheck', 'waiting_field_version'}:
+        if (len(args) != 1 or not isinstance(source := next(iter(args.values())), str)
+                or not re.fullmatch(r'\[更正#[1-9][0-9]{0,3}\]', source)):
+            raise ValueError('等待期間重核須引用已保存的正式更正。')
     elif isinstance(args, dict) and 'revision' in args:
         if (set(args) not in ({'revision'}, {'revision', 'compare'}) or not isinstance(args['revision'], str)
                 or not _REVISION_SOURCE.fullmatch(args['revision'])
@@ -1761,6 +1762,11 @@ def waiting_reference_review(steps, replies, guidance):
     if source is None:
         return None
     previous, _, _ = _recheck_saved(steps, replies, guidance)
+    if previous and previous[1].get('pending_field_reference', {}).get('document_rules'):
+        try:
+            return _waiting_field_version(previous, steps, ask['sequence'] + 1, replies, guidance)[1]
+        except ValueError:
+            pass
     args = {'field_reference': source['citation'], 'waiting_recheck': True}
     try:
         return _apply_waiting_recheck(args, previous, ask['sequence'] + 1, steps, guidance)[1]
@@ -1770,6 +1776,16 @@ def waiting_reference_review(steps, replies, guidance):
 
 def describe_waiting_review(review):
     proof = review['field_reference']
+    if adopted := proof.get('waiting_field_version'):
+        source = adopted['adoptions'][-1]['evidence']['citation']
+        opening = f'依 {source} 採用 {adopted["version"]}。'
+        if adopted['status'] == 'missing_rules':
+            return opening + '此版規則仍待查，保留原欄名問題。'
+        if adopted['withdraws_question']:
+            return opening + f'各欄名分支都去{"／".join(review["possible_results"])}，欄名保留待查。'
+        details = '、'.join(f"若原先指{branch['field']}，去{'／'.join(branch.get('possible_results') or ['待查'])}"
+                            for branch in proof['branches'])
+        return opening + details + '。原欄名問題仍需回答。'
     if version := proof.get('waiting_version_recheck'):
         source = version['changes'][-1]['evidence']['citation']
         if version['withdraws_question']:
@@ -2002,7 +2018,7 @@ def _document_version_question(steps):
     proof = checked['observation'].get('field_reference', {})
     rules = proof.get('document_rules', {})
     review = rules.get('version_review', {})
-    if ('version_confirmation' in proof or review.get('status') != 'conflicting_adoption'
+    if (proof.keys() & {'version_confirmation', 'waiting_field_version'} or review.get('status') != 'conflicting_adoption'
             or all(version.get('status') == 'missing_rules' for version in review['versions'])):
         return None
     field_settled = proof.get('status') == 'applied' and checked['observation'].get('status') == 'version_uncertain'
@@ -2187,6 +2203,73 @@ def _waiting_document_version(previous, steps, sequence, replies, guidance):
     return plan, observation
 
 
+def _original_document_candidates(steps, replies, guidance, root_step):
+    original = _recheck_saved(steps[:root_step], replies, guidance)[0][1]
+    pending = original['pending_field_reference']
+    core = {key: value for key, value in original.items() if key != 'pending_field_reference'}
+    plans = [_reference_plan(core, branch['field'], pending['value'], pending.get('overwritten_fields', ()))
+             for branch in pending['branches']]
+    return core, plans
+
+
+def _waiting_field_version(previous, steps, sequence, replies, guidance):
+    ask = _waiting_reference(steps)
+    if (ask is None or ask['action']['args'].keys() - {'question', 'partial_result'} or previous is None
+            or previous[0] != ask['sequence'] - 1 or ask['sequence'] != sequence - 1):
+        raise ValueError('版本更正須接續目前的單一原欄名問題。')
+    base_step, base = previous
+    pending = base.get('pending_field_reference', {})
+    document_rules = pending.get('document_rules', {})
+    records = document_rules.get('records', ())
+    if not records:
+        raise ValueError('目前欄名問題未有可核對的文件版本。')
+    records = list({rule['evidence']['citation']: rule for rule in [*records, *pending.get('version_rules', {}).get('records', ())]}.values())
+    scope = records[0]['scope']
+    versions = {rule['version'] for rule in records if 'version' in rule} | {rule['adopts'] for rule in records if 'adopts' in rule}
+    sources = [source for source in _followup_sources(base_step, sequence, replies, guidance).values()
+               if not _unadopted_note(source)]
+    ordered = _ordered_note_sources(sources)
+    if not ordered or any(_source_step(source) != ask['sequence'] for source in ordered):
+        raise ValueError('版本更正須用本欄名問題下可核對順序的正式補充。')
+    replied = 'ask_sequence' in ordered[-1]
+    amendments = ordered[:-1] if replied else ordered
+    adoptions, conditions = [], []
+    for source in amendments:
+        if 'steps_seen' not in source:
+            raise ValueError('正式版本更正須保存在欄名答覆之前。')
+        text = source['content']
+        version = document_rule_update.adoption_answer(text, scope, versions)
+        if version is None:
+            conditions.append(source)
+        else:
+            adoptions.append({'version': version, 'evidence': _source_excerpt(source, text)})
+    if not adoptions:
+        raise ValueError('須有同批已列版本的正式採用更正。')
+    version = adoptions[-1]['version']
+    plan, proof, changes = _document_version_conditions(base, pending, conditions)
+    plan.pop('document_rule_rows', None)
+    chosen = {'version': version}
+    rules = [record for record in records if record.get('version') == version]
+    if rules:
+        original, candidates = _original_document_candidates(steps, replies, guidance, document_rules['base_step'])
+        common = [record for record in records if 'when' in record and 'version' not in record]
+        chosen['rows'], _ = _document_rule_rows(original, [*common, *rules], candidates)
+    plan['document_version_plans'] = [chosen]
+    plan, observation, results = _document_version_result(plan, proof, pending)
+    if all(result['status'] == 'no_match' for result in results):
+        raise ValueError('所選版本及正式更正與原欄名的可行情境不相容。')
+    proof = observation['field_reference']
+    withdraws = proof['status'] == 'agreement'
+    if withdraws and replied:
+        raise ValueError('已撤下的欄名問題不得保存答覆。')
+    proof['waiting_field_version'] = {'ask_sequence': ask['sequence'], 'base_step': base_step,
+                                      'base_sha256': digest(base), 'scope': scope, 'version': version,
+                                      'status': 'confirmed' if rules else 'missing_rules', 'withdraws_question': withdraws,
+                                      'adoptions': adoptions, 'condition_changes': changes, 'source_order': _source_order(amendments),
+                                      'source': amendments[-1]['citation']}
+    return plan, observation
+
+
 def _version_rules_inputs(steps, sequence, replies, guidance):
     for step in reversed(steps):
         if step['action']['tool'] not in {'read', 'read_ranges', 'read_line', 'find_document_text', 'search', 'invalid'}:
@@ -2211,12 +2294,7 @@ def _complete_document_version(previous, steps, replies, guidance, confirmed, se
     proof = confirmed['observation']['field_reference']
     confirmation = proof['version_confirmation']
     document_rules = proof['document_rules']
-    root_step = document_rules['base_step']
-    original = _recheck_saved(steps[:root_step], replies, guidance)[0][1]
-    original_pending = original['pending_field_reference']
-    core = {key: value for key, value in original.items() if key != 'pending_field_reference'}
-    plans = [_reference_plan(core, branch['field'], original_pending['value'], original_pending.get('overwritten_fields', ()))
-             for branch in original_pending['branches']]
+    core, plans = _original_document_candidates(steps, replies, guidance, document_rules['base_step'])
     common = [rule for rule in document_rules['records'] if 'when' in rule and 'version' not in rule]
     rows, changes = _document_rule_rows(core, [*common, *selected.values()], plans)
     plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
@@ -2305,7 +2383,7 @@ def _post_reply_reference_inputs(steps, sequence, replies, guidance):
         if (len(later_checks) != 1 or latest['sequence'] != number + 1
                 or proof.get('status') != 'needs_field'
                 or not any(latest['action']['args'].get(key) and proof.get(key, {}).get('ask_sequence') == number
-                           for key in ('waiting_recheck', 'answered_revision'))):
+                           for key in ('waiting_recheck', 'answered_revision', 'waiting_field_version'))):
             return None
         checked = latest
     base_step = checked['sequence']
@@ -2356,7 +2434,8 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     pending = base.get('pending_field_reference', {})
     waiting = pending.get('waiting_recheck', {})
     partial = pending.get('partial_reply', {})
-    carried_ask = pending.get('answered_revision', {}).get('ask_sequence', waiting.get('ask_sequence'))
+    carried_ask = pending.get('answered_revision', {}).get('ask_sequence',
+                    waiting.get('ask_sequence', pending.get('waiting_field_version', {}).get('ask_sequence')))
     if args.get('resolve') and pending:
         inputs = _post_reply_reference_inputs(steps, sequence, replies, guidance)
         if inputs and inputs[0] == base_step:
@@ -2550,6 +2629,13 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 
 
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps):
+    if 'waiting_field_version' in args:
+        plan, observation = _waiting_field_version(previous, steps, sequence, replies, guidance)
+        receipt = observation['field_reference']['waiting_field_version']
+        answered = any(reply['ask_sequence'] == receipt['ask_sequence'] for reply in replies)
+        if args['waiting_field_version'] != receipt['source'] or answered == receipt['withdraws_question']:
+            raise ValueError('欄名等待重核須對應正式更正及實際答覆或撤下。')
+        return plan, observation
     if 'waiting_version_recheck' in args:
         plan, observation = _waiting_document_version(previous, steps, sequence, replies, guidance)
         receipt = observation['field_reference']['waiting_version_recheck']
@@ -2717,6 +2803,17 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             if step['action']['tool'] != 'check_decision':
                 continue
             args = step['action']['args']
+            if 'waiting_field_version' in args:
+                receipt = step['observation']['field_reference']['waiting_field_version']
+                source = next(item for item in guidance if item['citation'] == receipt['source'])
+                if receipt['withdraws_question']:
+                    has_table = db.execute("SELECT 1 FROM sqlite_master WHERE name='autonomous_question_withdrawals'").fetchone()
+                    withdrawn = db.execute('SELECT guidance_number,guidance_sha256 FROM autonomous_question_withdrawals '
+                                           'WHERE goal_id=? AND ask_sequence=?', (gid, receipt['ask_sequence'])).fetchone() if has_table else None
+                    if withdrawn != (source['number'], source['sha256']):
+                        raise ValueError('版本更正重核缺少相符的欄名問題撤下紀錄。')
+                else:
+                    _validate_waiting_reply(db, gid, receipt['ask_sequence'], source, replies_present)
             if args.get('partial_reply'):
                 remaining = step['observation']['field_reference']['partial_reply']['next_question']
                 _validate_followup_question(by_sequence, step, remaining, status, question, count)
