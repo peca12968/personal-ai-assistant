@@ -149,6 +149,88 @@ class InitialFieldReferenceTests(unittest.TestCase):
         self.assertEqual([record['evidence']['citation'] for record in receipt['records']], [*citations, adoption])
         self.assertEqual(receipt['rows'][0]['results'], [{'result': '乙桌', 'citations': citations[1:]}])
 
+    def test_conflicting_adoption_keeps_a_shared_result_only_when_all_versions_resolve(self):
+        rule = ('本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                '原「甲桌」改為「乙桌」。其他配對沿用原表。')
+        docs = self.prepare_document_rules(rule, rule.replace('v1', 'v2'),
+                                           '本輪「甲批」正式採用版本「v1」。\n本輪「甲批」正式採用版本「v2」。')
+        ranges = [{'document_id': doc, 'start_line': 1, 'end_line': 2 if doc == docs[-1] else 1} for doc in docs]
+        citations = [f'[D{doc}:L1]' for doc in docs] + [f'[D{docs[-1]}:L2]']
+        checked = self.run_actions(action('read_ranges', ranges=ranges),
+                                   action('check_decision', document_rules=citations, scope='甲批'))
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['乙桌'])
+        proof = observation['field_reference']
+        self.assertEqual(proof['status'], 'agreement')
+        review = proof['document_rules']['version_review']
+        self.assertEqual(review['status'], 'conflicting_adoption')
+        self.assertFalse(review['field_changes_result'])
+        self.assertNotIn('adopted_version', proof['document_rules'])
+        self.assertEqual([version['adoption_citations'] for version in review['versions']], [[x] for x in citations[-2:]])
+        self.assertTrue(all(branch['version_results'] == [
+            {'version': version, 'status': 'resolved', 'possible_results': ['乙桌']} for version in ('v1', 'v2')]
+                            for branch in proof['branches']))
+        self.run_actions(action('finish', report='兩種欄名及兩個版本都去乙桌，欄名待查。'))
+        self.guide('收樣班別正式改為夜班。')
+        updated = autonomy.get_goal(self.store, self.sid, self.gid)
+        step = updated['steps'][-1]
+        self.assertEqual(step['observation']['max_questions'], 1)
+        self.assertTrue(step['observation']['field_reference']['document_rules']['version_review']['field_changes_result'])
+        self.assertIsNotNone(decision_table.reference_question_for_steps(updated['steps']))
+
+    def test_adopted_version_with_missing_rules_can_be_completed_by_a_later_read(self):
+        rule = ('本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                '原「甲桌」改為「西桌」。其他配對沿用原表。')
+        docs = self.prepare_document_rules(rule, '本輪「甲批」正式採用版本「v2」。',
+                                           rule.replace('v1', 'v2').replace('西桌', '乙桌'))
+        citations = [f'[D{doc}:L1]' for doc in docs]
+        missing = self.run_actions(action('read_ranges', ranges=[{'document_id': doc, 'start_line': 1, 'end_line': 1}
+                                                                 for doc in docs[:2]]),
+                                   action('check_decision', document_rules=citations[:2], scope='甲批'))
+        observation = missing['steps'][-1]['observation']
+        self.assertEqual(observation['max_questions'], 0)
+        self.assertIsNone(decision_table.reference_question_for_steps(missing['steps']))
+        self.assertNotIn('possible_results', observation)
+        self.assertEqual(observation['field_reference']['branches'][0]['version_results'],
+                         [{'version': 'v2', 'status': 'missing_rules'}])
+        checked = self.run_actions(action('read', document_id=docs[2], start_line=1, end_line=1),
+                                   action('check_decision', document_rules=citations, scope='甲批'))
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['乙桌'])
+        self.assertEqual(observation['field_reference']['document_rules']['adopted_version'],
+                         {'version': 'v2', 'citations': [citations[1]]})
+
+    def test_late_conflicting_adoption_invalidates_old_agreement_and_replays_missing_version(self):
+        rule = ('本輪「甲批」的「v1」版規則。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
+                '原「甲桌」改為「乙桌」。其他配對沿用原表。')
+        docs = self.prepare_document_rules(rule, '本輪「甲批」正式採用版本「v1」。', '本輪「甲批」正式採用版本「v2」。')
+        citations = [f'[D{doc}:L1]' for doc in docs]
+        old = self.run_actions(action('read_ranges', ranges=[{'document_id': doc, 'start_line': 1, 'end_line': 1}
+                                                             for doc in docs[:2]]),
+                               action('check_decision', document_rules=citations[:2], scope='甲批'))
+        self.assertEqual(old['steps'][-1]['observation']['possible_results'], ['乙桌'])
+        disputed = self.run_actions(action('read', document_id=docs[2], start_line=1, end_line=1),
+                                    action('check_decision', document_rules=citations, scope='甲批'))
+        step = disputed['steps'][-1]
+        self.assertEqual(step['observation']['max_questions'], 0)
+        self.assertNotIn('possible_results', step['observation'])
+        branch = step['observation']['field_reference']['branches'][0]
+        self.assertEqual(branch['status'], 'version_uncertain')
+        self.assertEqual(branch['recorded_results'], ['乙桌'])
+        self.assertEqual(branch['version_results'][-1], {'version': 'v2', 'status': 'missing_rules'})
+        self.assertEqual(disputed['steps'][:len(old['steps'])], old['steps'])
+        saved = create_backup(self.store.path, self.root / 'disputed-document-versions.paibackup')
+        restored = self.root / 'restored'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), disputed)
+        branch['version_results'].pop()
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation'], ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
     def test_effective_document_rule_requires_recheck_and_merges_branches_on_restore(self):
         args = self.read_document_rule('本輪「甲批」正式生效。若「收樣班別」為「晚班」、「驗入班別」為「早班」，'
                                        '原「甲桌」改為「乙桌」。其他配對沿用原表。')

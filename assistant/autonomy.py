@@ -516,6 +516,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 goal['steps'], reply_sources, guidance_sources, goal['objective'], goal['sources'])
             if pending_document_rule:
                 payload['pending_document_rule'] = pending_document_rule
+            latest_decision = next((step['observation'] for step in reversed(goal['steps'])
+                                    if step['action']['tool'] == 'check_decision' and not step['action']['args'].get('what_if')), {})
+            document_version_review = latest_decision.get('field_reference', {}).get('document_rules', {}).get('version_review')
             reference_question = decision_table.reference_question_for_steps(goal['steps'])
             if reference_question:
                 payload['field_reference_question'] = reference_question
@@ -566,6 +569,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  and any(step['action']['tool'] == 'check_decision' for step in payload['steps']) else '') +
                 ('\n' + decision_table.INITIAL_REFERENCE_GUIDANCE if initial_reference else '') +
                 ('\n' + decision_table.DOCUMENT_RULE_GUIDANCE if pending_document_rule else '') +
+                ('\n' + decision_table.DOCUMENT_VERSION_GUIDANCE if document_version_review else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +
                 ('\n' + decision_table.RECHECK_GUIDANCE

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "conflicting_adoption_records_leave_a_common_destination",
+    "category": "goal_disputed_document_versions",
+    "documents": [
+      {"name": "baseline.txt", "content": "松津 T4 的採樣班別及核驗班別原為早班。兩欄各可早班或晚班，四組皆可。\n"},
+      {"name": "routes.txt", "content": "兩欄都是早班去前桌，都是晚班去後桌。採樣晚班且核驗早班去甲桌，採樣早班且核驗晚班去乙桌。\n"},
+      {"name": "version-one.txt", "content": "本輪「松津 T4」的「v1」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「乙桌」。其他配對沿用原表。\n"},
+      {"name": "version-two.txt", "content": "本輪「松津 T4」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「乙桌」。其他配對沿用原表。\n"},
+      {"name": "adoption.txt", "content": "本輪「松津 T4」正式採用版本「v1」。\n本輪「松津 T4」正式採用版本「v2」。\n"}
+    ],
+    "prompt": "本次為「松津 T4」。先查 D1、D2，核對四組原安排，再問我現場更動。收到改值後先用原表核對兩種候選，再查讀 [D3:L1]、[D4:L1]、[D5:L1-L2]。同級記載沒有額外優先資訊。若各版本、各欄名的去向都相同，交付共同結果並保留欄名及採用版本待查，附各版原文及兩筆採用來源。",
+    "reply": "正式改成晚班。",
+    "criteria": ["分別核對 v1 和 v2 的採樣及核驗分支，四個結果均為乙桌。", "直接交乙桌，欄名和採用版本待查，保留兩筆互相矛盾的採用原文。"]
+  },
+  {
+    "id": "version_dispute_affects_only_one_field_branch",
+    "category": "goal_disputed_document_versions",
+    "documents": [
+      {"name": "baseline.txt", "content": "桂岸 G8 的採樣班別及核驗班別原為早班。兩欄各可早班或晚班，四組皆可。\n"},
+      {"name": "routes.txt", "content": "兩欄都是早班去前桌，都是晚班去後桌。採樣晚班且核驗早班去甲桌，採樣早班且核驗晚班去乙桌。\n"},
+      {"name": "version-one.txt", "content": "本輪「桂岸 G8」的「v1」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「西桌」。其他配對沿用原表。\n"},
+      {"name": "version-two.txt", "content": "本輪「桂岸 G8」的「v2」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「南桌」。其他配對沿用原表。\n"},
+      {"name": "adoption.txt", "content": "本輪「桂岸 G8」正式採用版本「v1」。\n本輪「桂岸 G8」正式採用版本「v2」。\n"}
+    ],
+    "prompt": "本次為「桂岸 G8」。先查 D1、D2，核對四組原安排，再問我現場更動。收到改值後先用原表核對兩種候選，再查讀 [D3:L1]、[D4:L1]、[D5:L1-L2]。同級記載沒有額外優先資訊。只交條件式報告，分欄名及版本列去向，指出哪些有共同結果。收到第一次更動後不要再提問。",
+    "reply": "正式改成晚班。",
+    "criteria": ["採樣分支 v1 去西桌、v2 去南桌，版本採用未定。", "核驗分支兩版皆去乙桌。保留規則與兩筆採用來源，無新增問題。"]
+  },
+  {
+    "id": "new_adoption_conflicts_with_the_checked_version_and_its_rules_are_missing",
+    "category": "goal_disputed_document_versions",
+    "documents": [
+      {"name": "baseline.txt", "content": "青潭 H7 的採樣班別及核驗班別原為早班。兩欄各可早班或晚班，四組皆可。\n"},
+      {"name": "routes.txt", "content": "兩欄都是早班去前桌，都是晚班去後桌。採樣晚班且核驗早班去甲桌，採樣早班且核驗晚班去乙桌。\n"},
+      {"name": "version-one.txt", "content": "本輪「青潭 H7」的「v1」版規則。若「採樣班別」為「晚班」、「核驗班別」為「早班」，原「甲桌」改為「乙桌」。其他配對沿用原表。\n"},
+      {"name": "first-adoption.txt", "content": "本輪「青潭 H7」正式採用版本「v1」。\n"},
+      {"name": "second-adoption.txt", "content": "本輪「青潭 H7」正式採用版本「v2」。\n"}
+    ],
+    "prompt": "本次為「青潭 H7」。先查 D1、D2，核對四組原安排，再問我現場更動。收到改值後先用原表核對兩種候選，再查讀 [D3:L1]、[D4:L1]，先核對當時已讀的版本及去向。完成該次核對後才讀 [D5:L1]，按新讀到的採用原文更新結論。文件目錄是本輪全部資料，沒有其他優先資訊。只交目前可確認的條件式報告，收到第一次更動後不要再提問。",
+    "reply": "正式改成晚班。",
+    "criteria": ["保留第一次依 v1 得出乙桌的歷史。讀到同批 v2 採用行後，指出兩筆採用衝突及 v2 規則缺漏。", "只說 v1 的兩個分支為乙桌，整體去向待查，附兩筆採用及 v1 規則原文。"]
+  }
+]

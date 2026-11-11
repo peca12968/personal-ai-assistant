@@ -57,6 +57,8 @@ POST_REPLY_REFERENCE_GUIDANCE = '''有 reference_reply_with_guidance 時，已�
 
 DOCUMENT_RULE_GUIDANCE = '''有 pending_document_rule 時，先用 check_decision，args 原樣使用 pending_document_rule。程式依已完整查讀的本批文件更新指定配對。請先讀完使用者明列的相關區段。document_rules 的 rows 列各配對的結果及來源，conflicting 保留多個結果，已確定的其他配對仍有效。adopted_version 只按明示採用行決定，規則與採用行各自引用。依重算分支決定是否提問。去向一致且欄名無其他用途時直接交付並保留欄名待查；只需條件式報告時，保留每組結果及衝突的各份原文。若需欄名，實際回覆後用 field_reference 和 resolve。'''
 
+DOCUMENT_VERSION_GUIDANCE = '''field_reference.document_rules.version_review 是本輪最新的版本核對。採用記載衝突時仍保留各版。各欄名的 version_results 是分開核算的結果；missing_rules 表示該候選版尚無已讀規則。僅在所有相容版本都有相同的確定結果時交付共同去向，採用版本仍待查。若只有個別分支相同，列出該分支的共同結果，其他分支各自列版本及缺漏。不要把缺版視為沿用另一版或沿用原表。使用者允許提問且確需定案時，field_changes_result 為真才為了去向追問欄名，否則只確認缺少的採用依據或規則。只交條件式報告時直接按已知情況交付。規則、採用和原欄名來源分開引用。'''
+
 
 WAITING_REFERENCE_GUIDANCE = '''
 先依交付需求判斷原欄名是否只用來區分決策結果。沿用尚未被撤回或更正的已知條件，查讀來源已確認的份數或人名無須重問。
@@ -670,10 +672,27 @@ def _revision_changes(text, base_step, base):
 
 
 def _result_summary(result):
-    return {key: result[key] for key in ('status', 'possible_results', 'recorded_results') if key in result}
+    return {key: result[key] for key in ('status', 'possible_results', 'recorded_results', 'version_results') if key in result}
 
 
 def _current_result(plan, *, require_all=False):
+    if 'document_version_plans' in plan:
+        core = {key: value for key, value in plan.items() if key != 'document_version_plans'}
+        versions = []
+        for candidate in plan['document_version_plans']:
+            if 'rows' in candidate:
+                outcome = _result_summary(_current_result({**core, 'document_rule_rows': candidate['rows']},
+                                                          require_all=require_all))
+            else:
+                outcome = {'status': 'missing_rules'}
+            versions.append({'version': candidate['version'], **outcome})
+        possible = list(dict.fromkeys(value for version in versions
+                                      for value in version.get('possible_results', version.get('recorded_results', ()))))
+        if len(possible) == 1 and all(version['status'] == 'resolved' for version in versions):
+            return {'status': 'resolved', 'possible_results': possible, 'version_results': versions, 'max_questions': 0}
+        if all(version['status'] == 'no_match' for version in versions):
+            return {'status': 'no_match', 'possible_results': [], 'version_results': versions}
+        return {'status': 'version_uncertain', 'recorded_results': possible, 'version_results': versions, 'needs_evidence': True}
     document_rows = plan.get('document_rule_rows')
     if document_rows is not None:
         plan = {key: value for key, value in plan.items() if key != 'document_rule_rows'}
@@ -1042,6 +1061,15 @@ def _pending_reference(base, proof, results):
     proof = {**proof, 'status': 'agreement' if agreed else 'needs_field'}
     observation = {'status': 'resolved' if agreed else 'needs_check', 'max_questions': 0 if agreed else 1,
                    'field_reference': proof}
+    document_rules = proof.get('document_rules', {})
+    if 'version_review' in document_rules:
+        outcomes = {tuple((version['status'], frozenset(version.get('possible_results', version.get('recorded_results', ()))))
+                          for version in result['version_results']) for result in results}
+        field_changes = len(outcomes) > 1
+        review = {**document_rules['version_review'], 'field_changes_result': field_changes}
+        proof['document_rules'] = {**document_rules, 'version_review': review}
+        if not field_changes:
+            observation['max_questions'] = 0
     if agreed:
         observation['possible_results'] = results[0]['possible_results']
     return {**base, 'pending_field_reference': proof}, observation
@@ -1106,7 +1134,8 @@ def _reference_question(proof):
 def reference_question(step):
     if step['action']['tool'] == 'check_decision':
         proof = step['observation'].get('field_reference', {})
-        if proof.get('status') == 'needs_field':
+        review = proof.get('document_rules', {}).get('version_review', {})
+        if proof.get('status') == 'needs_field' and review.get('field_changes_result', True):
             return _reference_question(proof)
     return None
 
@@ -1779,8 +1808,9 @@ def _document_rule_basis(previous, steps):
     anchor, base = previous
     by_sequence = {step['sequence']: step for step in steps}
     step = by_sequence[anchor]
-    core = {key: value for key, value in base.items() if key not in {'pending_field_reference', 'document_rule_rows'}}
-    if 'document_rule_rows' in base and 'document_rules' not in step['action']['args']:
+    version_fields = {'document_rule_rows', 'document_version_plans'}
+    core = {key: value for key, value in base.items() if key not in version_fields | {'pending_field_reference'}}
+    if version_fields & base.keys() and 'document_rules' not in step['action']['args']:
         raise ValueError('現行條件已有後續核對，請重新確認文件更正的適用範圍。')
     if 'document_rules' in step['action']['args']:
         step = by_sequence[base['pending_field_reference']['document_rules']['base_step']]
@@ -1795,20 +1825,7 @@ def _document_rule_basis(previous, steps):
     return step['sequence'], core, step['observation']['field_reference']
 
 
-def _apply_document_rules(basis, records):
-    base_step, core, pending = basis
-    adoptions = [record for record in records.values() if 'adopts' in record]
-    versions = {record['adopts'] for record in adoptions}
-    versioned = [record for record in records.values() if 'version' in record]
-    if versioned and (len(versions) != 1 or not any(record['version'] in versions for record in versioned)):
-        raise ValueError('版本規則須有同批唯一正式採用版本，並已完整讀到該版規則。')
-    active = [record for record in records.values() if 'when' in record
-              and ('version' not in record or record['version'] in versions)]
-    if not active:
-        raise ValueError('沒有符合本輪的已採用配對規則。')
-    candidates = [branch['field'] for branch in pending['branches']]
-    overwritten = pending.get('overwritten_fields', ())
-    plans = [_reference_plan(core, field, pending['value'], overwritten) for field in candidates]
+def _document_rule_rows(core, active, plans):
     by_row = {}
     for rule in active:
         index = _document_rule_row(core, rule, plans)
@@ -1823,10 +1840,48 @@ def _apply_document_rules(basis, records):
         changes.append({'row': index + 1, 'when': original['when'], 'before': original['result'],
                         'status': 'conflicting' if others else 'resolved',
                         'results': [{'result': result, 'citations': citations} for result, citations in alternatives.items()]})
-    plan = {**core, 'document_rule_rows': rows + extra_rows}
+    return rows + extra_rows, changes
+
+
+def _apply_document_rules(basis, records):
+    base_step, core, pending = basis
+    adoptions = [record for record in records.values() if 'adopts' in record]
+    versions = list(dict.fromkeys(record['adopts'] for record in adoptions))
+    versioned = [record for record in records.values() if 'version' in record]
+    if versioned and not versions:
+        raise ValueError('版本規則須有同批正式採用記載。')
+    common = [record for record in records.values() if 'when' in record and 'version' not in record]
+    candidates = [branch['field'] for branch in pending['branches']]
+    overwritten = pending.get('overwritten_fields', ())
+    plans = [_reference_plan(core, field, pending['value'], overwritten) for field in candidates]
+    receipt = {'base_step': base_step, 'base_sha256': digest(core), 'records': list(records.values())}
+    if versions and (len(versions) != 1 or not any(record['version'] in versions for record in versioned)):
+        if 'rows' not in core or 'current_alternatives' in core:
+            raise ValueError('文件版本核對須有原表的完整配對。')
+        version_plans, version_review = [], []
+        for version in versions:
+            cited = [record['evidence']['citation'] for record in adoptions if record['adopts'] == version]
+            rules = [record for record in versioned if record['version'] == version]
+            if rules:
+                rows, changes = _document_rule_rows(core, common + rules, plans)
+                version_plans.append({'version': version, 'rows': rows})
+                version_review.append({'version': version, 'adoption_citations': cited, 'rows': changes})
+            else:
+                version_plans.append({'version': version})
+                version_review.append({'version': version, 'adoption_citations': cited, 'status': 'missing_rules'})
+        plan = {**core, 'document_version_plans': version_plans}
+        _, results, branches = _reference_results(plan, candidates, pending['value'], overwritten)
+        receipt['version_review'] = {'status': 'conflicting_adoption' if len(versions) > 1 else 'missing_rules',
+                                     'versions': version_review}
+        return _pending_reference(plan, {**pending, 'branches': branches, 'document_rules': receipt}, results)
+    active = [record for record in records.values() if 'when' in record
+              and ('version' not in record or record['version'] in versions)]
+    if not active:
+        raise ValueError('沒有符合本輪的已採用配對規則。')
+    rows, receipt['rows'] = _document_rule_rows(core, active, plans)
+    plan = {**core, 'document_rule_rows': rows}
     _, results, branches = _reference_results(plan, candidates, pending['value'], overwritten)
-    receipt = {'base_step': base_step, 'base_sha256': digest(core), 'records': list(records.values()), 'rows': changes}
-    if versioned:
+    if versions:
         receipt['adopted_version'] = {'version': next(iter(versions)),
                                       'citations': [record['evidence']['citation'] for record in adoptions]}
     return _pending_reference(plan, {**pending, 'branches': branches, 'document_rules': receipt}, results)
@@ -2185,7 +2240,7 @@ def _apply_transition(args, previous, sequence, replies, guidance, rejected, wha
             if args != expected:
                 raise ValueError('須引用本批所有已完整查讀的規則及採用記載。')
             return _apply_document_rules(basis, records)
-        if 'document_rule_rows' in previous[1]:
+        if {'document_rule_rows', 'document_version_plans'} & previous[1].keys():
             raise ValueError('本輪已有多則文件規則，須一併核對。')
         rules = document_rule_update.read_rules(steps, anchor, args['scope'])
         if list(rules) != [args['document_rule']]:
