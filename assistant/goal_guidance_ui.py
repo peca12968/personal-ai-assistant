@@ -38,8 +38,12 @@ class GoalGuidanceWindow:
                 files = self.current['supplement_documents']
                 lines.append('目前已匯入文件\n' + '\n'.join(f'D{row["document_id"]} · {row["name"]}' for row in files))
             if conflict := self.current.get('document_conflict_report'):
-                lines.append('待確認的相衝突原行\n' + '\n'.join(
-                    f'{option["citation"]} · {option["rule"]["evidence"]["quote"]}' for option in conflict['options']))
+                if conflict['options']:
+                    lines.append('待確認的相衝突原行\n' + '\n'.join(
+                        f'{option["citation"]} · {option["rule"]["evidence"]["quote"]}' for option in conflict['options']))
+                for amendment in conflict['amendments']:
+                    lines.append(f'目前採用 {amendment["citation"]}\n' + '\n'.join(
+                        f'{option["citation"]} · {option["rule"]["evidence"]["quote"]}' for option in amendment['options']))
             self.context.configure(state='normal');self.context.delete('1.0','end');self.context.insert('1.0','\n\n'.join(lines));self.context.configure(state='disabled')
             self.save_button.configure(state='normal' if allowed else 'disabled');self.notice.set(reason)
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:

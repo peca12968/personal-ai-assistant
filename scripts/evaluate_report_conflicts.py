@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ def run(suite, seeds, output):
     cases = json.loads(suite.read_text(encoding='utf-8'))
     assert len({case['id'] for case in cases}) == len(cases)
     for case in cases:
-        assert case['seed'] in {'conflict', 'partial', 'two'}
+        assert re.fullmatch(r'[a-z][a-z0-9_-]{0,32}', case['seed'])
         assert case['expected'] in {'resolved', 'field', 'partial', 'conflict', 'rejected'}
         assert bool(case.get('reply')) == (case['expected'] == 'field')
         autonomy.text(case['correction'], 4000)
@@ -40,7 +41,7 @@ def run(suite, seeds, output):
         with store.connect() as db:
             sid, gid = db.execute('SELECT session_id,id FROM autonomous_goals').fetchone()
         before = autonomy.get_goal(store, sid, gid)
-        assert before['status'] == 'report_ready' and '待查' in before['result']
+        assert before['status'] == 'report_ready'
         correction = case['correction']
         snapshot = goal_guidance.snapshot(store, sid, gid)
         row = {'id': case['id'], 'before': before, 'content': correction, 'calls': []}

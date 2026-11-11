@@ -353,6 +353,126 @@ class InitialFieldReferenceTests(unittest.TestCase):
                     self.guide(content)
                 self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
 
+    def test_reported_choice_replacement_preserves_prior_proof_and_requires_actual_field(self):
+        did, _ = self.deliver_conflicting_supplement()
+        self.guide(f'正式採用 [D{did}:L1]。')
+        prior = self.run_actions(action('finish', report='選定第 1 行，兩組都去南桌。'))
+        content = f'改為正式採用 [D{did}:L2]。'
+        self.guide(content)
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(current['steps'][:-1], prior['steps'])
+        self.assertEqual(current['sources'], prior['sources'])
+        step = current['steps'][-1]
+        proof = step['observation']['field_reference']
+        first, replacement = proof['report_conflict_choices']
+        self.assertEqual(replacement['operation'], 'replace')
+        self.assertEqual(replacement['previous_choice'], {'citation': first['evidence']['citation'], 'sha256': digest(first)})
+        self.assertEqual(replacement['report_sha256'], digest(prior['steps'][-1]))
+        self.assertEqual(replacement['evidence']['quote'], content)
+        self.assertEqual(replacement['selected']['evidence']['citation'], f'[D{did}:L2]')
+        question = decision_table.reference_question_for_steps(current['steps'])
+        self.assertIn('「收樣班別」、「驗入班別」', question)
+        self.run_actions(action('ask', question=question))
+        reply = f'[補充#{self.reply("收樣班別")}]'
+        final = self.run_actions(action('check_decision', field_reference=reply, resolve=True),
+                                 action('finish', report='已確認收樣班別，依第 2 行交北桌。'))
+        check = final['steps'][-2]['observation']
+        self.assertEqual(check['possible_results'], ['北桌'])
+        self.assertEqual(check['field_reference']['confirmation']['citation'], reply)
+        self.guide(f'改採 [D{did}:L1]。')
+        reverted = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = reverted['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        self.assertEqual(check['field_reference']['confirmation']['citation'], reply)
+        self.assertIsNone(decision_table.reference_question_for_steps(reverted['steps']))
+
+    def test_reported_choice_withdrawal_restores_only_its_conflict_and_allows_new_choice(self):
+        did, _ = self.deliver_conflicting_supplement(two=True)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        self.run_actions(action('finish', report='採樣去南桌，核驗仍待查。'))
+        self.guide(f'正式採用 [D{did}:L3]。')
+        resolved = self.run_actions(action('finish', report='兩組都去南桌。'))
+        self.guide(f'撤回正式採用 [D{did}:L1]。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(current['steps'][:-1], resolved['steps'])
+        check = current['steps'][-1]['observation']
+        first, second, withdrawal = check['field_reference']['report_conflict_choices']
+        self.assertEqual(withdrawal['operation'], 'withdraw')
+        self.assertEqual(withdrawal['previous_choice']['sha256'], digest(first))
+        branches = [branch['version_results'][0] for branch in check['field_reference']['branches']]
+        self.assertEqual(branches[0]['coverage']['conflicting_rows'][0]['results'], ['南桌', '北桌'])
+        self.assertEqual(branches[1]['possible_results'], ['南桌'])
+        self.assertIsNone(decision_table.reference_question_for_steps(current['steps']))
+        self.run_actions(action('finish', report='採樣仍衝突，核驗確定去南桌。'))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        report = snapshot['document_conflict_report']
+        self.assertEqual([option['citation'] for option in report['options']], [f'[D{did}:L1]', f'[D{did}:L2]'])
+        self.assertEqual([item['citation'] for item in report['amendments']], [f'[D{did}:L3]'])
+        self.guide(f'正式採用 [D{did}:L1]。')
+        next_state = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = next_state['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        self.assertEqual(check['field_reference']['report_conflict_choices'][1], second)
+        validate_database(self.store.path)
+
+    def test_replacement_persists_when_later_supplement_fills_an_independent_gap(self):
+        did, _ = self.deliver_conflicting_supplement(partial=True)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        self.run_actions(action('finish', report='採樣南桌，核驗仍缺規則。'))
+        self.guide(f'本輪「甲批」的「v2」版改採 [D{did}:L2] 的北桌。')
+        amended = autonomy.get_goal(self.store, self.sid, self.gid)
+        branches = [item['version_results'][0] for item in amended['steps'][-1]['observation']['field_reference']['branches']]
+        self.assertEqual(branches[0]['possible_results'], ['北桌'])
+        self.assertEqual(branches[1]['coverage']['missing_rows'], [['早班', '晚班']])
+        self.run_actions(action('finish', report='採樣北桌，核驗仍缺規則。'))
+        second = self.attach_supplement('other-pair.txt', self.supplementary_rule(second=True, partial=True, result='北桌'))
+        self.guide(f'補件 [D{second}:L1]')
+        final = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(final['steps'][-1]['observation']['possible_results'], ['北桌'])
+        validate_database(self.store.path)
+
+    def test_uncertain_or_mismatched_amendment_keeps_last_choice_and_version_changes_still_work(self):
+        did, _ = self.deliver_conflicting_supplement()
+        self.guide(f'正式採用 [D{did}:L1]。')
+        prior = self.run_actions(action('finish', report='兩組都去南桌。'))
+        for content in (f'改採 [D{did}:L1]。', f'改採 [D{did}:L3]。', f'撤回正式採用 [D{did}:L2]。',
+                        f'我在考慮改採 [D{did}:L2]。', f'本輪「另批」的「v2」版改採 [D{did}:L2]。',
+                        f'改採 [D{did}:L2] 的南桌。'):
+            with self.subTest(content=content):
+                with self.assertRaises(ValueError):
+                    self.guide(content)
+                self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+        self.guide('本輪「甲批」正式採用版本「v1」。')
+        original = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(original['steps'][-1]['observation']['possible_results'], ['西桌'])
+        self.run_actions(action('finish', report='已改採 v1，去西桌。'))
+        self.guide('本輪「甲批」正式採用版本「v2」。')
+        again = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(again['steps'][-1]['observation']['possible_results'], ['南桌'])
+
+    def test_restored_amendment_detects_a_modified_previous_choice_pointer(self):
+        did, _ = self.deliver_conflicting_supplement(known_field=True)
+        self.guide(f'正式採用 [D{did}:L2]。')
+        self.run_actions(action('finish', report='依已確認欄名去北桌。'))
+        self.guide(f'撤回採用 [D{did}:L2]。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        last = current['steps'][-1]
+        proof = last['observation']['field_reference']
+        self.assertEqual(last['observation']['status'], 'version_uncertain')
+        self.assertEqual(proof['field'], '收樣班別')
+        self.assertIn('confirmation', proof)
+        saved = create_backup(self.store.path, self.root / 'amended-choice.paibackup')
+        restored = self.root / 'restored-amendment'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), current)
+        proof['report_conflict_choices'][-1]['previous_choice']['sha256'] = '0' * 64
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(last['observation'], ensure_ascii=False), self.gid, last['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
         self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))

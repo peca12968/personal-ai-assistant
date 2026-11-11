@@ -13,8 +13,9 @@ _RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式生效。{_ROW}')
 _VERSIONED_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_ROW}')
 _PARTIAL_RULE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版規則。{_CHANGE}其他配對待補。')
 _ADOPTION = re.compile(rf'本輪「(?P<scope>{_LABEL})」正式採用版本「(?P<version>{_LABEL})」。')
+_CHOICE_ACTIONS = {'改為正式採用': 'replace', '改採': 'replace', '撤回正式採用': 'withdraw', '撤回採用': 'withdraw'}
 _CONFLICT_CHOICE = re.compile(
-    rf'(?P<prefix>.*?)正式採用[ \t]*(?P<citation>{_CITATION.pattern})'
+    rf'(?P<prefix>.*?)(?P<action>{"|".join(_CHOICE_ACTIONS)}|正式採用)[ \t]*(?P<citation>{_CITATION.pattern})'
     r'(?:[ \t]*的(?P<result>「[^「」\r\n]{1,120}」|[^\[\]「」，。；？！\r\n]{1,120}))?。')
 _CHOICE_SCOPE = re.compile(rf'本輪「(?P<scope>{_LABEL})」的「(?P<version>{_LABEL})」版(?:，(?P<pair>.+)，|，)?')
 _CHOICE_CONDITION = re.compile(r'(?P<field>「[^「」]{1,120}」|[^「」為]{1,120}?)為(?P<value>「[^「」]{1,120}」|[^「」]{1,120})')
@@ -36,6 +37,8 @@ def conflict_choice(text):
     if match is None:
         return None
     choice = {'citation': match['citation']}
+    if match['action'] in _CHOICE_ACTIONS:
+        choice['operation'] = _CHOICE_ACTIONS[match['action']]
     if match['result'] is not None:
         choice['result'] = match['result'].strip().removeprefix('「').removesuffix('」')
     prefix = match['prefix']

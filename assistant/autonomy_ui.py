@@ -324,7 +324,7 @@ class AutonomousWindow:
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result'],
-                      '可按「補充／更正此目標」指定正式採用的原行。' if conflict_report
+                      '可按「補充／更正此目標」查看、指定或更正採用原行。' if conflict_report
                       else '匯入所缺版本規則後，可按「補充／更正此目標」指定補件原行。' if supplement_report
                       else '如有本批正式版本更正，可按「補充／更正此目標」重核成果。' if version_report
                       else '如有新的明確欄位更正，可按「補充／更正此目標」依序重核各分支。' if reference_report

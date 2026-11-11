@@ -1,0 +1,51 @@
+[
+  {
+    "id": "change_adopted_line_and_ask_the_original_field",
+    "seed": "common",
+    "correction": "改為正式採用 [D5:L2]。",
+    "expected": "field",
+    "reply": "採樣班別"
+  },
+  {
+    "id": "withdraw_the_active_line_and_restore_the_conflict",
+    "seed": "common",
+    "correction": "撤回正式採用 [D5:L1]。",
+    "expected": "conflict"
+  },
+  {
+    "id": "change_the_line_and_keep_a_verified_field",
+    "seed": "known",
+    "correction": "本輪「沐潭 H5」的「v2」版改採 [D5:L1] 的南桌。",
+    "expected": "resolved"
+  },
+  {
+    "id": "change_one_row_without_filling_a_missing_rule",
+    "seed": "partial",
+    "correction": "改採 [D5:L2]。",
+    "expected": "partial"
+  },
+  {
+    "id": "another_pair_cannot_replace_the_adopted_line",
+    "seed": "common",
+    "correction": "改為正式採用 [D5:L3]。",
+    "expected": "rejected"
+  },
+  {
+    "id": "a_proposal_does_not_change_the_adopted_line",
+    "seed": "common",
+    "correction": "我在考慮改採 [D5:L2]。",
+    "expected": "rejected"
+  },
+  {
+    "id": "withdrawal_must_cite_the_active_line",
+    "seed": "common",
+    "correction": "撤回正式採用 [D5:L2]。",
+    "expected": "rejected"
+  },
+  {
+    "id": "another_batch_cannot_change_the_adopted_line",
+    "seed": "common",
+    "correction": "本輪「沐潭 H6」的「v2」版改採 [D5:L2]。",
+    "expected": "rejected"
+  }
+]

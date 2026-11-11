@@ -638,6 +638,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.REPORT_VERSION_GUIDANCE if report_version and not (waiting_field_version or report_supplement) else '') +
                 ('\n' + decision_table.REPORT_SUPPLEMENT_GUIDANCE if report_supplement else '') +
                 ('\n' + decision_table.REPORT_CONFLICT_GUIDANCE if conflict_choices else '') +
+                ('\n' + decision_table.REPORT_CHOICE_AMENDMENT_GUIDANCE
+                 if conflict_choices and any('operation' in choice for choice in conflict_choices) else '') +
                 ('\n' + decision_table.WAITING_FIELD_VERSION_GUIDANCE if waiting_field_version else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +

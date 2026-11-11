@@ -102,8 +102,16 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
-    conflict = value.get('document_conflict_report')
-    choice_hint = f'可指定正式採用的一筆原行，例如 正式採用 {conflict["options"][0]["citation"]}。' if conflict else ''
+    conflict = value.get('document_conflict_report', {})
+    choice_hint = ''
+    if options := conflict.get('options'):
+        choice_hint = f'可指定正式採用的一筆原行，例如 正式採用 {options[0]["citation"]}。'
+    if amendments := conflict.get('amendments'):
+        active = amendments[0]['citation']
+        alternate = next((option['citation'] for option in amendments[0]['options'] if option['citation'] != active), None)
+        if alternate:
+            choice_hint += f'已定案的配對可用 改採 {alternate}。'
+        choice_hint += f'要撤回目前選擇，可用 撤回正式採用 {active}。'
     if status == 'report_ready' and 'document_supplement' in value:
         if not value['supplement_sources_match']:
             return False, '原目標已有文件版本變更或移除，請先恢復原匯入版本。'
@@ -125,13 +133,13 @@ def eligibility(value):
     if reference_report:
         if value['step_count'] + 2 > MAX_STEPS:
             return False, '剩餘步數不足以重核及更新成果，請帶入原成果建立下一階段。'
-        if conflict:
-            return True, choice_hint
         if 'document_version_report' in value:
             scope = value['document_version_report']['document_rules']['records'][0]['scope']
             example = f'本輪「{scope}」正式採用版本「版號」。'
             field = '也可用完整欄名更正一欄。' if 'reference_report' in value else ''
-            return True, f'可保存本批正式版本更正，例如 {example}{field}保存後保留先前成果並等待你接續。'
+            return True, f'{choice_hint}可保存本批正式版本更正，例如 {example}{field}保存後保留先前成果並等待你接續。'
+        if conflict:
+            return True, choice_hint
         return True, '可用完整欄名更正一欄。保存時會按原話先後重核各分支，保留先前成果，等待你接續。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
@@ -158,7 +166,11 @@ def _save_reference_recheck(db, current, notes):
     steps = _steps(db, gid)
     sources = goal_guidance_sources.read(db, gid, notes, step_count)
     latest = sources[-1]
-    if 'document_conflict_report' in current:
+    content = latest['content']
+    choice = document_rule_update.conflict_choice(content)
+    amendment_mentioned = '[D' in content and re.search(r'改採|改為正式採用|撤回(?:正式)?採用', content)
+    regular = current.keys() & {'reference_report', 'document_version_report'}
+    if 'document_conflict_report' in current and (choice or amendment_mentioned or not regular):
         args = {'report_conflict_choice': latest['citation']}
     elif 'document_version_report' in current and (
             'reference_report' not in current or document_rule_update.is_adoption_notice(latest['content'])):
@@ -171,7 +183,9 @@ def _save_reference_recheck(db, current, notes):
     if step_count + (4 if needs_field else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核及完成新成果，請帶入原成果建立下一階段。')
     _append_reference_recheck(db, goal, notes, step_count + 1, args, observation)
-    notice = ('已核對正式採用的原行' if 'report_conflict_choice' in args else '已重核原分支')
+    notice = '已重核原分支'
+    if 'report_conflict_choice' in args:
+        notice = '已撤回原行的正式採用' if choice.get('operation') == 'withdraw' else '已核對正式採用的原行'
     db.execute("UPDATE autonomous_goals SET notes=?,status='paused',result='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                (notes, notice + '；先前成果保留在步驟紀錄，請接續更新成果。', gid))
 
