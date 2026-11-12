@@ -68,6 +68,7 @@ REPORT_VERSION_GUIDANCE = '''field_reference.report_version_recheck 是使用者
 REPORT_SUPPLEMENT_GUIDANCE = '''field_reference.report_supplement 是已交付待查報告後，使用者指定並核對的補件。沿用已確認的採用版本與欄名。以最新分支及已讀原行更新報告，引用補件與原版本確認。coverage.missing_rows 是仍缺的配對，coverage.conflicting_rows 保留所有相衝突的結果。缺規則及衝突須列出對應配對，已核得的分支一併交付。只有 field_reference_question 存在時才需補問欄名。較早的報告是歷史紀錄。'''
 REPORT_CONFLICT_GUIDANCE = '''field_reference.report_conflict_choices 保留使用者交付後正式指定採用的補件原行。按最新核對結果更新報告，引用每筆仍適用的正式更正及其選中原行。舊報告與同配對的其他原行可作歷史，不能再當成當前去向。其他配對的核對結果、缺規則與衝突各自保留。若提供 field_reference_question，只問這個欄名，等實際答覆再用 resolve 核對。'''
 REPORT_CHOICE_AMENDMENT_GUIDANCE = '''同一版本、同一配對以最後一筆正式指示為準。operation=replace 表示改採 selected 原行。operation=withdraw 表示撤回該配對原先的選擇，selected 是被撤回的原行，仍有效的競爭原行依最新 coverage 並列。引用本次更正與各原行，保留其他配對的正式選擇、已確認欄名及待查狀態。'''
+REPORT_MIXED_GUIDANCE = '''field_reference.report_mixed_guidance 是同一則交付後更正核對出的各段原話。condition_changes 是正式欄位更新。clauses 中 proposal 是明示未採用的提案，不能當成使用者指示。依正式更新後的欄位值與最新分支交付；改採的規則只有在該配對相符時才決定去向。若提供 field_reference_question，保持原問並使用實際答覆。引用本次更正及仍適用的原行，保留已知和待查項目。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -499,6 +500,8 @@ _ROW_SENTENCE = re.compile(
     r'(?:「(?P<quoted>[^「」｜\x00\r\n]{1,120})」|(?P<plain>[\u3400-\u9fffA-Za-z0-9 -]{0,23}[廳台架區位口席桌門庫站室]))')
 _UNADOPTED_SENTENCE = re.compile(
     r'(?:群聊提議|有人提議|有人建議|轉述|引述)(?:「[^「」]{1,200}」|『[^『』]{1,200}』)[，,] *(?:未採用|不採用|僅供參考)')
+_REPORT_CLAUSE_BOUNDARY = re.compile(
+    r'[「」『』]|[。；;\r\n]+|[，,][ \t]*(?:並且?|同時|另外|而且|也|再)(?:把|將)?[ \t]*')
 _ANSWERED_NOTE_TOKEN = re.compile(
     rf'(?P<proposal>{_UNADOPTED_SENTENCE.pattern})|(?P<deferred>{_DEFERRED_REPLY.pattern})|'
     rf'(?P<correction>{_NATURAL_ANSWERED_CHANGE})')
@@ -508,7 +511,8 @@ _STEP_METADATA = {'companion_profile', 'engine_selection', 'goal_conditions_sha2
 DOCUMENT_RULE_FIELDS = {'document_rule', 'document_rules'}
 _TRANSITION_FIELDS = {'revision', 'known_update', 'row_confirmation', 'field_reference',
                       'version_confirmation', 'version_rules', 'waiting_version_recheck', 'waiting_field_version',
-                      'report_version_recheck', 'report_supplement', 'report_conflict_choice'} | DOCUMENT_RULE_FIELDS
+                      'report_version_recheck', 'report_supplement', 'report_conflict_choice',
+                      'report_mixed_guidance'} | DOCUMENT_RULE_FIELDS
 
 
 class _RejectedRevision(ValueError):
@@ -536,7 +540,8 @@ def validate_tool(args):
                 or not goal_sources.valid_source_list(args['added_sources'])):
             raise ValueError('補件核對須有保存的補件指定及完整文件範圍。')
     elif isinstance(args, dict) and args.keys() & {
-            'waiting_version_recheck', 'waiting_field_version', 'report_version_recheck', 'report_conflict_choice'}:
+            'waiting_version_recheck', 'waiting_field_version', 'report_version_recheck', 'report_conflict_choice',
+            'report_mixed_guidance'}:
         if (len(args) != 1 or not isinstance(source := next(iter(args.values())), str)
                 or not re.fullmatch(r'\[更正#[1-9][0-9]{0,3}\]', source)):
             raise ValueError('版本重核須引用已保存的正式更正。')
@@ -906,6 +911,35 @@ def _updated_plan(base, updates):
 
 def _natural_clauses(text):
     return [clause.strip() for clause in re.split(r'[。；\r\n]+', text) if clause.strip()]
+
+
+def _report_guidance_spans(text):
+    spans, quotes = [], []
+    opening = {'「': '」', '『': '』'}
+    start = 0
+    for token in _REPORT_CLAUSE_BOUNDARY.finditer(text):
+        value = token[0]
+        if value in opening:
+            quotes.append(opening[value])
+        elif value in opening.values():
+            if not quotes or quotes.pop() != value:
+                raise ValueError('請先補齊引文的引號，保留原報告。')
+        elif not quotes:
+            segment = text[start:token.start()]
+            if segment.strip():
+                spans.append((start + len(segment) - len(segment.lstrip()), segment.strip()))
+            start = token.end()
+    if quotes:
+        raise ValueError('請先補齊引文的引號，保留原報告。')
+    segment = text[start:]
+    if segment.strip():
+        spans.append((start + len(segment) - len(segment.lstrip()), segment.strip()))
+    return spans
+
+
+def report_guidance_has_bundle(text):
+    spans = _report_guidance_spans(text)
+    return len(spans) > 1 or any(_UNADOPTED_SENTENCE.fullmatch(clause) for _, clause in spans)
 
 
 def _unadopted_note(source):
@@ -2215,24 +2249,30 @@ def document_version_reply_candidate(steps, replies, guidance):
 
 
 def _document_version_conditions(base, proof, sources):
+    updates = []
+    for source in sources:
+        named = _named_reference_change(base, source)
+        if named is None:
+            raise ValueError('等待版本時的更正須用原表完整欄名及明確新值。')
+        updates.append(named)
+    return _apply_version_conditions(base, proof, updates)
+
+
+def _apply_version_conditions(base, proof, updates, *, allow_unchanged=False):
     pending = base.get('pending_field_reference')
     candidates = [branch['field'] for branch in pending['branches']] if pending else []
     overwritten = set(proof.get('overwritten_fields', ()))
     plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
     changes = []
-    for source in sources:
-        named = _named_reference_change(plan, source)
-        if named is None:
-            raise ValueError('等待版本時的更正須用原表完整欄名及明確新值。')
-        (field, value), evidence = named
+    for (field, value), evidence in updates:
         replaces_reference = field in candidates and field not in overwritten
-        if plan['known'].get(field) == value and not replaces_reference:
+        if plan['known'].get(field) == value and not replaces_reference and not allow_unchanged:
             raise ValueError('新值與已核對的欄位值相同，無須更正。')
         if field in candidates:
             overwritten.add(field)
         plan, updated = _updated_plan(plan, {field: value})
         changes.append({**updated[0], 'evidence': evidence})
-    if sources and pending and overwritten:
+    if updates and pending and overwritten:
         proof = {**proof, 'overwritten_fields': [field for field in candidates if field in overwritten]}
     return plan, proof, changes
 
@@ -2510,21 +2550,33 @@ def _recheck_report_supplement(args, previous, steps, sequence, replies, guidanc
     return plan, {**observation, 'excerpts': excerpts}
 
 
-def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance):
-    report = steps[-1] if steps else None
-    anchor = document_conflict_report(steps, report['observation'].get('report') if report else None)
-    if (anchor is None or previous is None or anchor[0]['sequence'] != previous[0]
-            or report['sequence'] != sequence - 1):
-        raise ValueError('正式採用、更換或撤回須接續本目標已交付且已核對原行的報告。')
-    checked, conflict = anchor
-    citation = args['report_conflict_choice']
-    sources = _followup_sources(checked['sequence'], sequence, replies, guidance)
-    source = sources.get(citation, {})
-    if sources.keys() != {citation} or source.get('steps_seen') != report['sequence']:
-        raise ValueError('正式採用須引用交付後保存的更正原話。')
-    choice = document_rule_update.conflict_choice(source['content'])
-    if choice is None:
-        raise ValueError('請用單一明確句指定一筆原行，例如「正式採用 [D5:L2]。」或「撤回正式採用 [D5:L2]。」。')
+def _report_guidance_bundle(base, source):
+    spans = _report_guidance_spans(source['content'])
+    if len(spans) > 8:
+        raise ValueError('一次最多核對八段明確更正，請分開保存。')
+    choice, updates, clauses = None, [], []
+    for start, clause in spans:
+        evidence = _source_excerpt(source, clause, start=start)
+        if _UNADOPTED_SENTENCE.fullmatch(clause):
+            kind = 'proposal'
+        elif parsed := document_rule_update.conflict_choice(clause + '。'):
+            if choice is not None:
+                raise ValueError('同一則更正有多筆規則採用或撤回，請先確認要套用的一筆。原報告保留。')
+            kind, choice = 'choice', (parsed, evidence)
+        elif (named := _natural_condition(base, clause)) is not None and named[1] is not None:
+            kind = 'condition'
+            updates.append((named, evidence))
+        elif clause == '其他欄位照舊':
+            kind = 'unchanged'
+        else:
+            raise ValueError(f'「{clause[:160]}」尚無法核對。請明確指定欄名與一個新值，或一筆正式採用的原行。原報告保留。')
+        clauses.append({'kind': kind, 'evidence': evidence})
+    if choice is None and not updates:
+        raise ValueError('這則補充沒有可套用的正式更正，原報告保留。')
+    return choice, updates, clauses
+
+
+def _report_conflict_choice(choice, evidence, conflict, proof, report, checked):
     scope, version = conflict['scope'], conflict['version']
     if choice.get('scope', scope) != scope or choice.get('version', version) != version:
         raise ValueError(f'正式採用須符合本批「{scope}」的「{version}」版。')
@@ -2548,33 +2600,70 @@ def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance)
     if (choice.get('when', selected['rule']['when']) != selected['rule']['when']
             or choice.get('result', selected['result']) != selected['result']):
         raise ValueError('更正所述配對或去向與指定原行不一致。')
-    proof = checked['observation']['field_reference']
-    base = previous[1]
-    candidates = base.get('document_version_plans', ())
-    if len(candidates) != 1 or candidates[0]['version'] != version or 'rows' not in candidates[0]:
-        raise ValueError('目前無可核對的所採版本配對。')
     alternatives = next(row['results'] for row in proof['version_rules']['rows'] if row['when'] == selected['when'])
     receipt = {'report_step': report['sequence'], 'report_sha256': digest(report),
                'decision_step': checked['sequence'], 'decision_sha256': digest(checked),
                'scope': scope, 'version': version, 'when': selected['when'], 'selected': selected['rule'],
-               'alternatives': alternatives, 'evidence': _source_excerpt(source, source['content'])}
+               'alternatives': alternatives, 'evidence': evidence}
     if prior is not None:
         receipt['operation'] = operation
         receipt['previous_choice'] = {'citation': prior['evidence']['citation'], 'sha256': digest(prior)}
-    history = [*proof.get('report_conflict_choices', ()), receipt]
-    proof = {**proof, 'report_conflict_choices': history}
-    plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
-    if prior is None:
-        rows = _apply_document_choices(candidates[0]['rows'], [receipt])
+    return receipt
+
+
+def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance):
+    report = steps[-1] if steps else None
+    anchor = document_conflict_report(steps, report['observation'].get('report') if report else None)
+    if (anchor is None or previous is None or anchor[0]['sequence'] != previous[0]
+            or report['sequence'] != sequence - 1):
+        raise ValueError('正式採用、更換或撤回須接續本目標已交付且已核對原行的報告。')
+    checked, conflict = anchor
+    mixed = 'report_mixed_guidance' in args
+    citation = args['report_mixed_guidance'] if mixed else args['report_conflict_choice']
+    sources = _followup_sources(checked['sequence'], sequence, replies, guidance)
+    source = sources.get(citation, {})
+    if sources.keys() != {citation} or source.get('steps_seen') != report['sequence']:
+        raise ValueError('正式採用須引用交付後保存的更正原話。')
+    base = previous[1]
+    if mixed:
+        choice, updates, clauses = _report_guidance_bundle(base, source)
     else:
-        documents = proof['document_rules']
-        core, original = _original_document_candidates(steps, replies, guidance, documents['base_step'])
-        common = [rule for rule in documents['records'] if 'when' in rule and 'version' not in rule]
-        records = [*common, *proof['version_rules']['records']]
-        choices = _document_choices(proof, scope, version, records)
-        rows, _ = _selected_document_rows(core, records, original, choices=choices)
-    plan['document_version_plans'] = [{**candidates[0], 'rows': rows}]
-    plan, observation, _ = _document_version_result(plan, proof, base.get('pending_field_reference'))
+        parsed = document_rule_update.conflict_choice(source['content'])
+        if parsed is None:
+            raise ValueError('請用單一明確句指定一筆原行，例如「正式採用 [D5:L2]。」或「撤回正式採用 [D5:L2]。」。')
+        choice = parsed, _source_excerpt(source, source['content'])
+    proof = checked['observation']['field_reference']
+    candidates = base.get('document_version_plans', ())
+    if len(candidates) != 1 or candidates[0]['version'] != conflict['version'] or 'rows' not in candidates[0]:
+        raise ValueError('目前無可核對的所採版本配對。')
+    plan = {key: value for key, value in base.items() if key != 'pending_field_reference'}
+    if choice is not None:
+        receipt = _report_conflict_choice(*choice, conflict, proof, report, checked)
+        history = [*proof.get('report_conflict_choices', ()), receipt]
+        proof = {**proof, 'report_conflict_choices': history}
+        if 'operation' not in receipt:
+            rows = _apply_document_choices(candidates[0]['rows'], [receipt])
+        else:
+            documents = proof['document_rules']
+            core, original = _original_document_candidates(steps, replies, guidance, documents['base_step'])
+            common = [rule for rule in documents['records'] if 'when' in rule and 'version' not in rule]
+            records = [*common, *proof['version_rules']['records']]
+            choices = _document_choices(proof, conflict['scope'], conflict['version'], records)
+            rows, _ = _selected_document_rows(core, records, original, choices=choices)
+        plan['document_version_plans'] = [{**candidates[0], 'rows': rows}]
+    pending = base.get('pending_field_reference')
+    if mixed:
+        if pending:
+            plan['pending_field_reference'] = pending
+        plan, proof, changes = _apply_version_conditions(plan, proof, updates, allow_unchanged=choice is not None)
+        proof = {**proof, 'report_mixed_guidance': {
+            'report_step': report['sequence'], 'report_sha256': digest(report),
+            'decision_step': checked['sequence'], 'decision_sha256': digest(checked),
+            'clauses': clauses, 'condition_changes': changes,
+        }}
+    plan, observation, results = _document_version_result(plan, proof, pending)
+    if mixed and all(result['status'] == 'no_match' for result in results):
+        raise ValueError('更正後的條件與原表所有配對均不相容。原報告保留。')
     return plan, observation
 
 
@@ -2744,7 +2833,8 @@ def _apply_field_reference(args, previous, sequence, replies, guidance, what_if_
     citation = args['field_reference']
     pending = base.get('pending_field_reference', {})
     choices = pending.get('report_conflict_choices', ())
-    reports = (pending.get('report_supplement'), pending.get('report_version_recheck'), choices[-1] if choices else None)
+    reports = (pending.get('report_supplement'), pending.get('report_version_recheck'),
+               pending.get('report_mixed_guidance'), choices[-1] if choices else None)
     report_version = max((item for item in reports if item), key=lambda item: item['report_step'], default=None)
     if args.get('resolve') and report_version:
         reply = next((item for item in replies if item['citation'] == citation), None)
@@ -2912,10 +3002,13 @@ def _bind_update_evidence(evidence, sources, positions):
     return bound
 
 
-def _source_excerpt(source, quote):
+def _source_excerpt(source, quote, *, start=None):
     text = _source_text(source)
-    start = text.find(quote)
-    if start < 0 or text.find(quote, start + 1) >= 0 or text.startswith(('核對#', '取代｜')):
+    if start is None:
+        start = text.find(quote)
+        if text.find(quote, start + 1) >= 0:
+            raise ValueError('欄位證據須逐字引用自然補充中可唯一定位的短句。')
+    if start < 0 or text[start:start + len(quote)] != quote or text.startswith(('核對#', '取代｜')):
         raise ValueError('欄位證據須逐字引用自然補充中可唯一定位的短句。')
     return {'citation': source['citation'], 'quote': quote, 'source_sha256': source['sha256'],
             'start': start, 'end': start + len(quote)}
@@ -2948,7 +3041,7 @@ def _verified_rejection(step, previous, replies, guidance, rejected, what_if_sou
 
 
 def _apply_transition(args, previous, sequence, replies, guidance, rejected, what_if_sources, steps, *, excerpts=None):
-    if 'report_conflict_choice' in args:
+    if args.keys() & {'report_conflict_choice', 'report_mixed_guidance'}:
         return _recheck_report_conflict(args, previous, steps, sequence, replies, guidance)
     if 'report_supplement' in args:
         return _recheck_report_supplement(args, previous, steps, sequence, replies, guidance, excerpts)
@@ -3133,9 +3226,11 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             if step['action']['tool'] == 'check_decision' and args.keys() & {'version_rules', 'report_supplement'}:
                 for record in step['observation']['field_reference']['version_rules']['records']:
                     document_rule_update.verify_context(record, objective, step_sources)
-            if step['action']['tool'] == 'check_decision' and 'report_conflict_choice' in args:
-                choice = step['observation']['field_reference']['report_conflict_choices'][-1]
-                document_rule_update.verify_context(choice['selected'], objective, step_sources)
+            if step['action']['tool'] == 'check_decision' and args.keys() & {'report_conflict_choice', 'report_mixed_guidance'}:
+                proof = step['observation']['field_reference']
+                mixed = proof.get('report_mixed_guidance')
+                if 'report_conflict_choice' in args or any(item['kind'] == 'choice' for item in mixed['clauses']):
+                    document_rule_update.verify_context(proof['report_conflict_choices'][-1]['selected'], objective, step_sources)
         for step in steps:
             if step['action']['tool'] != 'check_decision':
                 continue

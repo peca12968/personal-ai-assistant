@@ -24,6 +24,9 @@ def run(suite, seeds, output):
         assert re.fullmatch(r'[a-z][a-z0-9_-]{0,32}', case['seed'])
         assert case['expected'] in {'resolved', 'field', 'partial', 'conflict', 'rejected'}
         assert bool(case.get('reply')) == (case['expected'] == 'field')
+        if 'reply_question' in case:
+            assert case['expected'] == 'field'
+            autonomy.text(case['reply_question'], 800)
         autonomy.text(case['correction'], 4000)
     if seeds is None:
         print(f'Validated {len(cases)} report conflict fixtures without model calls.')
@@ -71,7 +74,8 @@ def run(suite, seeds, output):
             state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
             if 'reply' in case:
                 row['asked'] = state
-                if state['status'] == 'needs_input' and state['question'] == FIELD_QUESTION:
+                expected_question = case.get('reply_question', FIELD_QUESTION)
+                if state['status'] == 'needs_input' and state['question'] == expected_question:
                     observed = goal_replies.snapshot(store, sid, gid)
                     goal_replies.save(store, sid, gid, case['reply'], expected_fingerprint=observed['fingerprint'])
                     state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)

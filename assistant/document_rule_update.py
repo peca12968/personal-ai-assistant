@@ -42,7 +42,7 @@ def conflict_choice(text):
     if match['result'] is not None:
         choice['result'] = match['result'].strip().removeprefix('「').removesuffix('」')
     prefix = match['prefix']
-    if prefix in ('', '這一組', '本組'):
+    if prefix in ('', '這組', '這一組', '本組'):
         return choice
     declared = _CHOICE_SCOPE.fullmatch(prefix)
     if declared is None:

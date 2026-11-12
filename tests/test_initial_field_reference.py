@@ -473,6 +473,103 @@ class InitialFieldReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '決策表結果'):
             validate_database(backup.path)
 
+    def test_mixed_report_guidance_distinguishes_repeated_quoted_and_formal_text_and_binds_offsets(self):
+        did, _ = self.deliver_conflicting_supplement()
+        self.guide(f'正式採用 [D{did}:L1]。')
+        prior = self.run_actions(action('finish', report='兩組都去南桌。'))
+        choice = f'改採 [D{did}:L2]'
+        content = f'有人提議『{choice}。』，未採用。{choice}。驗入班別正式改為早班。'
+        self.guide(content)
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(current['steps'][:-1], prior['steps'])
+        step = current['steps'][-1]
+        observation = step['observation']
+        proof = observation['field_reference']
+        mixed = proof['report_mixed_guidance']
+        self.assertEqual([item['kind'] for item in mixed['clauses']], ['proposal', 'choice', 'condition'])
+        for item in mixed['clauses']:
+            evidence = item['evidence']
+            self.assertEqual(content[evidence['start']:evidence['end']], evidence['quote'])
+        self.assertEqual(proof['report_conflict_choices'][-1]['evidence']['start'], content.rindex(choice))
+        self.assertEqual(mixed['condition_changes'][0]['field'], '驗入班別')
+        question = decision_table.reference_question_for_steps(current['steps'])
+        self.assertIn('「收樣班別」、「驗入班別」', question)
+        self.run_actions(action('ask', question=question))
+        reply = f'[補充#{self.reply("收樣班別")}]'
+        final = self.run_actions(action('check_decision', field_reference=reply, resolve=True))
+        self.assertEqual(final['steps'][-1]['observation']['possible_results'], ['北桌'])
+
+        saved = create_backup(self.store.path, self.root / 'mixed-guidance.paibackup')
+        restored = self.root / 'restored-mixed'
+        restore_backup(saved['path'], restored)
+        backup = Store(restored / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(backup, self.sid, self.gid), final)
+        mixed['clauses'][1]['evidence']['start'] = content.index(choice)
+        with backup.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '決策表結果'):
+            validate_database(backup.path)
+
+    def test_linked_formal_changes_preserve_known_field_and_use_the_changed_pair(self):
+        did, _ = self.deliver_conflicting_supplement(known_field=True)
+        self.guide(f'正式採用 [D{did}:L2]。')
+        prior = self.run_actions(action('finish', report='收樣改晚班，依第 2 行交北桌。'))
+        original = prior['steps'][-2]['observation']['field_reference']['confirmation']
+        self.guide(f'改採 [D{did}:L1]，並把驗入班別正式改為晚班。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        check = current['steps'][-1]['observation']
+        proof = check['field_reference']
+        self.assertEqual(proof['confirmation'], original)
+        self.assertEqual(check['possible_results'], ['後桌'])
+        self.assertEqual(proof['report_conflict_choices'][-1]['selected']['after'], '南桌')
+        self.assertEqual(proof['report_mixed_guidance']['condition_changes'][0]['after'], '晚班')
+        self.assertIsNone(decision_table.reference_question_for_steps(current['steps']))
+
+    def test_declined_proposal_with_punctuation_does_not_create_a_new_rule_choice(self):
+        did, _ = self.deliver_conflicting_supplement()
+        self.guide(f'正式採用 [D{did}:L1]。')
+        prior = self.run_actions(action('finish', report='依第 1 行，兩組都去南桌。'))
+        self.guide(f'群聊提議『改採 [D{did}:L2]；收樣班別正式改為早班』，不採用。驗入班別正式改為晚班。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        proof = current['steps'][-1]['observation']['field_reference']
+        self.assertEqual(proof['report_conflict_choices'],
+                         prior['steps'][-2]['observation']['field_reference']['report_conflict_choices'])
+        self.assertEqual([item['kind'] for item in proof['report_mixed_guidance']['clauses']], ['proposal', 'condition'])
+        branches = [item['version_results'][0]['possible_results'] for item in proof['branches']]
+        self.assertEqual(branches, [['後桌'], ['南桌']])
+
+    def test_withdrawal_with_named_condition_keeps_missing_pair_and_competing_results(self):
+        did, _ = self.deliver_conflicting_supplement(partial=True)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        self.run_actions(action('finish', report='第一組南桌，第二組仍缺。'))
+        self.guide(f'撤回正式採用 [D{did}:L1]；驗入班別正式改為早班。')
+        current = autonomy.get_goal(self.store, self.sid, self.gid)
+        proof = current['steps'][-1]['observation']['field_reference']
+        self.assertEqual(proof['report_conflict_choices'][-1]['operation'], 'withdraw')
+        first, second = [item['version_results'][0]['coverage'] for item in proof['branches']]
+        self.assertEqual(first['conflicting_rows'][0]['results'], ['南桌', '北桌'])
+        self.assertEqual(second['missing_rows'], [['早班', '早班']])
+        self.assertIsNone(decision_table.reference_question_for_steps(current['steps']))
+        validate_database(self.store.path)
+
+    def test_ambiguous_mixed_guidance_leaves_every_formal_change_unsaved(self):
+        did, _ = self.deliver_conflicting_supplement()
+        self.guide(f'正式採用 [D{did}:L1]。')
+        prior = self.run_actions(action('finish', report='兩組都去南桌。'))
+        invalid = (
+            (f'改採 [D{did}:L2]。驗入班別可能改為早班或晚班。', '驗入班別可能改為早班或晚班'),
+            (f'本輪「另批」的「v2」版改採 [D{did}:L2]。驗入班別正式改為晚班。', '本批'),
+            (f'有人提議『改採 [D{did}:L2]。驗入班別正式改為晚班。』，未採用。', '沒有可套用'),
+            (f'改採 [D{did}:L2]。撤回採用 [D{did}:L1]。驗入班別正式改為晚班。', '多筆'),
+            (f'有人提議『改採 [D{did}:L2]。驗入班別正式改為晚班。', '引號'),
+        )
+        for content, reason in invalid:
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.guide(content)
+                self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
         self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))

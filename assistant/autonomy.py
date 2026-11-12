@@ -361,7 +361,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'check_decision':
         if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('waiting_field_version') or args.get('partial_reply')
                 or args.get('answered_revision') or args.get('combined_reply') or args.get('report_version_recheck')
-                or args.get('report_supplement') or args.get('report_conflict_choice')):
+                or args.get('report_supplement') or args.get('report_conflict_choice') or args.get('report_mixed_guidance')):
             raise ValueError('版本重核、等待重核及分項答覆紀錄只由保存使用者更正或答覆時產生。')
         if decision_table.DOCUMENT_RULE_FIELDS & args.keys() and args != pending_document_rule:
             raise ValueError('文件更正須使用目前提示的本輪來源與範圍。')
@@ -560,6 +560,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             report_version = field_proof.get('report_version_recheck')
             report_supplement = field_proof.get('report_supplement')
             conflict_choices = field_proof.get('report_conflict_choices')
+            mixed_report_guidance = field_proof.get('report_mixed_guidance')
             if report_version and (waiting_field_version or {}).get('ask_sequence', 0) <= report_version['report_step']:
                 waiting_field_version = None
             version_rules_applied = field_proof.get('version_rules')
@@ -640,6 +641,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + decision_table.REPORT_CONFLICT_GUIDANCE if conflict_choices else '') +
                 ('\n' + decision_table.REPORT_CHOICE_AMENDMENT_GUIDANCE
                  if conflict_choices and any('operation' in choice for choice in conflict_choices) else '') +
+                ('\n' + decision_table.REPORT_MIXED_GUIDANCE if mixed_report_guidance else '') +
                 ('\n' + decision_table.WAITING_FIELD_VERSION_GUIDANCE if waiting_field_version else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +

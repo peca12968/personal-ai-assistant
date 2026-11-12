@@ -170,7 +170,10 @@ def _save_reference_recheck(db, current, notes):
     choice = document_rule_update.conflict_choice(content)
     amendment_mentioned = '[D' in content and re.search(r'改採|改為正式採用|撤回(?:正式)?採用', content)
     regular = current.keys() & {'reference_report', 'document_version_report'}
-    if 'document_conflict_report' in current and (choice or amendment_mentioned or not regular):
+    conflict = 'document_conflict_report' in current
+    if conflict and not choice and decision_table.report_guidance_has_bundle(content):
+        args = {'report_mixed_guidance': latest['citation']}
+    elif conflict and (choice or amendment_mentioned or not regular):
         args = {'report_conflict_choice': latest['citation']}
     elif 'document_version_report' in current and (
             'reference_report' not in current or document_rule_update.is_adoption_notice(latest['content'])):
@@ -178,7 +181,8 @@ def _save_reference_recheck(db, current, notes):
     else:
         args = {'field_reference': latest['citation'], 'recheck': True}
     observation = decision_table.observe(args, steps, goal.get('reply_sources', ()), sources)
-    needs_field = (observation.get('max_questions', 0) > 0 if args.keys() & {'report_version_recheck', 'report_conflict_choice'}
+    needs_field = (observation.get('max_questions', 0) > 0 if args.keys() & {
+        'report_version_recheck', 'report_conflict_choice', 'report_mixed_guidance'}
                    else observation['field_reference']['status'] == 'needs_field')
     if step_count + (4 if needs_field else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核及完成新成果，請帶入原成果建立下一階段。')
@@ -186,6 +190,8 @@ def _save_reference_recheck(db, current, notes):
     notice = '已重核原分支'
     if 'report_conflict_choice' in args:
         notice = '已撤回原行的正式採用' if choice.get('operation') == 'withdraw' else '已核對正式採用的原行'
+    if 'report_mixed_guidance' in args:
+        notice = '已核對這則補充中的正式更正'
     db.execute("UPDATE autonomous_goals SET notes=?,status='paused',result='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                (notes, notice + '；先前成果保留在步驟紀錄，請接續更新成果。', gid))
 

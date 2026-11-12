@@ -1,0 +1,54 @@
+[
+  {
+    "id": "reported_proposal_followed_by_two_explicit_changes",
+    "seed": "workshop",
+    "correction": "有人提議『改採 [D5:L1]』，未採用。這組改採 [D5:L2]。核對班別正式改為早班。",
+    "expected": "field",
+    "reply": "收件班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "linked_changes_respect_the_new_pair_and_known_field",
+    "seed": "archives",
+    "correction": "改採 [D5:L1]，並把核對班別正式改為晚班。",
+    "expected": "resolved"
+  },
+  {
+    "id": "withdrawal_and_named_change_leave_conflict_and_missing_pair",
+    "seed": "supplies",
+    "correction": "撤回正式採用 [D5:L1]；有人建議『改採 [D5:L2]。收件班別正式改為早班。』，未採用；核對班別正式改為早班。",
+    "expected": "partial"
+  },
+  {
+    "id": "a_reported_proposal_does_not_replace_the_adopted_rule",
+    "seed": "workshop",
+    "correction": "群聊提議『改採 [D5:L2]；收件班別正式改為早班』，不採用。核對班別正式改為晚班。",
+    "expected": "field",
+    "reply": "核對班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "an_uncertain_condition_keeps_the_delivered_report",
+    "seed": "workshop",
+    "correction": "改採 [D5:L2]。核對班別可能改為早班或晚班。",
+    "expected": "rejected"
+  },
+  {
+    "id": "a_different_scope_cannot_commit_an_independent_change",
+    "seed": "workshop",
+    "correction": "本輪「芒灣 W7」的「v2」版改採 [D5:L2]。核對班別正式改為晚班。",
+    "expected": "rejected"
+  },
+  {
+    "id": "instructions_inside_an_unadopted_quote_are_not_applied",
+    "seed": "workshop",
+    "correction": "有人提議『改採 [D5:L2]。核對班別正式改為早班。』，未採用。",
+    "expected": "rejected"
+  },
+  {
+    "id": "two_competing_adoptions_are_not_guessed",
+    "seed": "workshop",
+    "correction": "改採 [D5:L2]。撤回採用 [D5:L1]。核對班別正式改為早班。",
+    "expected": "rejected"
+  }
+]
