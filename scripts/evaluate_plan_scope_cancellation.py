@@ -28,7 +28,7 @@ def prepare(path, case):
     source = path / 'input.txt'
     source.write_text(case['document'], encoding='utf-8', newline='\n')
     did = store.attach_document(sid, source)
-    gid = autonomy.create_goal(store, sid, case['prompt'])
+    gid = autonomy.create_goal(store, sid, case['prompt'], file_delivery=case.get('file_delivery', False))
     tasks = case['done'] + case['pending']
     items = [{'id': i, 'task': task, 'state': 'done' if i <= len(case['done']) else 'pending',
               'evidence_steps': [1] if i <= len(case['done']) else [], 'note': ''}

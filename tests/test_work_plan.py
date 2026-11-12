@@ -1293,6 +1293,90 @@ class WorkPlanTests(unittest.TestCase):
         self.assertTrue(after['work_plan']['delivery_review']['ready'])
         validate_database(self.store.path)
 
+    def _wait_for_file_plan_choice(self):
+        self.gid = a.create_goal(self.store, self.sid, '核對工作清單並依目前方式交付', file_delivery=True)
+        self._wait_for_gate_with_confirmed_fields()
+        return self.save_scope_reply('6 號。領用人改為周雅文或江明洋。')
+
+    def test_mode_and_choice_share_an_actual_reply_and_backup_requires_both_receipts(self):
+        waiting = self._wait_for_file_plan_choice()
+        answer = '改成文字回覆，用江明洋。'
+        saved = self.save_scope_reply(answer)
+        plan = saved['work_plan']
+        mode = saved['delivery_mode_change']
+        self.assertFalse(saved['file_delivery'])
+        self.assertEqual(saved['reply_sources'][-1]['question'], waiting['question'])
+        self.assertEqual(plan['scope_reply']['delivery_mode'], {'receipt': mode, 'changed': True})
+        self.assertEqual(answer[mode['start']:mode['end']], '改成文字回覆')
+        choice = plan['scope_reply']['revisions'][0]['evidence']
+        self.assertEqual(answer[choice['start']:choice['end']], '用江明洋')
+        self.assertEqual(plan['items'][2]['note'], f'依 {mode["citation"]} 確認：江明洋。')
+        self.assertTrue(plan['delivery_review']['ready'])
+        backup = create_backup(self.store.path, self.root / 'joined-delivery.paibackup')
+        restore_backup(backup['path'], self.root / 'restored-joined-delivery')
+        restored = Store(self.root / 'restored-joined-delivery/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), saved)
+        with restored.connect() as db:
+            db.execute('DELETE FROM autonomous_delivery_changes WHERE goal_id=?', (self.gid,))
+        with self.assertRaisesRegex(ValueError, '缺少相符的交付方式紀錄'):
+            validate_database(restored.path)
+        result = self.run_actions(action('write_artifact', filename='unexpected.txt', content='舊內容'),
+                                  action('finish', report='領用人江明洋，門號 6 號。'))
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-2:]], ['invalid', 'finish'])
+        self.assertEqual(result['artifacts'], [])
+        validate_database(self.store.path)
+
+    def test_mode_only_reply_keeps_pending_choice_and_noop_mode_can_accompany_selection(self):
+        waiting = self._wait_for_file_plan_choice()
+        with self.assertRaisesRegex(ValueError, '待選更正仍未確認'):
+            self.save_scope_reply('如果選周雅文，改成文字回覆。')
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid), waiting)
+        saved = self.save_scope_reply('不用出檔，直接交文字。')
+        self.assertEqual(saved['question'], waiting['question'])
+        self.assertFalse(saved['file_delivery'])
+        self.assertTrue(saved['work_plan']['conditions_current'])
+        self.assertEqual(saved['work_plan']['items'], waiting['work_plan']['items'])
+        self.assertNotEqual(saved['steps'][-1]['sequence'], waiting['steps'][-1]['sequence'])
+        self.assertEqual(saved['delivery_mode_change']['quote'], '不用出檔，直接交文字')
+        final = self.save_scope_reply('沿用原值。改成文字回覆。')
+        self.assertEqual(final['delivery_mode_change'], saved['delivery_mode_change'])
+        self.assertFalse(final['work_plan']['scope_reply']['delivery_mode']['changed'])
+        self.assertEqual(final['work_plan']['items'][2], waiting['work_plan']['items'][2])
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
+    def test_mode_guidance_reanchors_pending_ask_and_reply_can_restore_file_delivery(self):
+        waiting = self._wait_for_file_plan_choice()
+        snapshot = goal_replies.snapshot(self.store, self.sid, self.gid)
+        saved = self.save_scope_guidance('交付方式改為文字。')
+        self.assertEqual(saved['question'], waiting['question'])
+        self.assertTrue(saved['work_plan']['conditions_current'])
+        self.assertFalse(saved['file_delivery'])
+        self.assertEqual(saved['withdrawn_questions'][-1]['ask_sequence'], waiting['steps'][-1]['sequence'])
+        self.assertEqual(saved['work_plan']['scope_change']['delivery_mode'], saved['delivery_mode_change'])
+        with self.assertRaisesRegex(ValueError, '重新載入'):
+            goal_replies.save(self.store, self.sid, self.gid, '用周雅文。', expected_fingerprint=snapshot['fingerprint'])
+        selected = self.save_scope_reply('用周雅文，改回交檔。')
+        self.assertTrue(selected['file_delivery'])
+        self.assertEqual(selected['reply_sources'][-1]['ask_sequence'], saved['steps'][-1]['sequence'])
+        content = '領用人周雅文，門號 6 號。'
+        result = self.run_actions(action('write_artifact', filename='report.md', content=content),
+                                  action('deliver', report='已完成', filenames=['report.md']))
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual((self.root / 'autonomy-artifacts' / self.gid / 'report.md').read_text(encoding='utf-8'), content)
+        validate_database(self.store.path)
+
+    def test_original_plan_question_accepts_confirmed_value_with_mode_change(self):
+        self.gid = a.create_goal(self.store, self.sid, '確認門號後交付', file_delivery=True)
+        question = '入場門號是多少？'
+        self.run_actions(action('update_plan', verify_delivery=True, items=[item(1, '確認入場門號')]),
+                         action('ask', question=question, plan_questions=[{'question': question, 'items': [1]}]))
+        saved = self.save_scope_reply('入場門號是 7 號，改成文字回覆。')
+        self.assertFalse(saved['file_delivery'])
+        self.assertEqual(saved['work_plan']['scope_reply']['completed_items'], [1])
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

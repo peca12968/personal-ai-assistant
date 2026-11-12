@@ -17,6 +17,8 @@ _CANCEL = re.compile(
 _RESTORE = re.compile(
     rf'{_SCOPE}(?:(?:改回|恢復)(?:出檔|交檔|(?:文件|檔案)交付)|照原要求(?:出檔|交檔)|'
     rf'(?:交付形式|交付方式)改回(?:本機)?(?:文件|檔案))')
+_COMMA = re.compile(r'\s*')
+_TEXT_ONLY = re.compile(_TEXT_ACTION)
 GUIDANCE = ('delivery_mode_change 是使用者已保存且生效的交付方式更正。依目前 file_delivery 選擇工具。'
             '切換為文字時保留仍適用的工作內容，在視窗完成定稿；較早的檔案要求與草稿留在歷史。'
             '按需要引用更正原話的 citation，無須重問交付方式。')
@@ -75,6 +77,76 @@ def _receipt(source):
             'steps_seen': source.get('ask_sequence', source.get('steps_seen'))}
 
 
+def _plan_receipt(source):
+    if 'answer' not in source:
+        return None
+    text = source['answer']
+    parts = []
+    for start, clause, question in goal_guidance_sources.standalone_clauses(text, comma_before=_COMMA):
+        if question:
+            continue
+        end = start + len(clause)
+        if _CANCEL.fullmatch(clause):
+            mode = False
+        elif _RESTORE.fullmatch(clause):
+            mode = True
+        else:
+            if parts and not parts[-1]['file_delivery'] and _TEXT_ONLY.fullmatch(clause):
+                combined = text[parts[-1]['start']:end]
+                if _CANCEL.fullmatch(combined):
+                    parts[-1].update(end=end, quote=combined)
+            continue
+        parts.append({'file_delivery': mode, 'start': start, 'end': end, 'quote': clause})
+    if not parts:
+        return None
+    if len({part['file_delivery'] for part in parts}) > 1:
+        raise ValueError('同一則補充同時取消及恢復文件交付，請明確選擇一種交付方式。')
+    return {**parts[-1], 'citation': source['citation'], 'source_sha256': source['sha256'],
+            'steps_seen': source['ask_sequence'], 'plan_parts': parts}
+
+
+def plan_reply(db, gid, source):
+    if not initially_enabled(db, gid):
+        return None
+    receipt = _plan_receipt(source)
+    if receipt is None:
+        return None
+    previous = db.execute('SELECT receipt_json FROM autonomous_delivery_changes WHERE goal_id=? AND notes_start<? '
+                          'ORDER BY notes_start DESC LIMIT 1', (gid, source['notes_start'])).fetchone()
+    mode = strict_json(previous[0])['file_delivery'] if previous else True
+    return {'receipt': receipt, 'changed': receipt['file_delivery'] != mode}
+
+
+def _record(db, gid, source, receipt):
+    db.execute('INSERT INTO autonomous_delivery_changes(goal_id,citation,notes_start,receipt_json) VALUES(?,?,?,?)',
+               (gid, source['citation'], source['notes_start'], json.dumps(receipt, ensure_ascii=False)))
+
+
+def record_plan_reply(db, gid, source, directive):
+    if directive['changed']:
+        _record(db, gid, source, directive['receipt'])
+
+
+def _saved_change(db, gid, citation):
+    row = db.execute('SELECT receipt_json FROM autonomous_delivery_changes WHERE goal_id=? AND citation=?',
+                     (gid, citation)).fetchone()
+    return strict_json(row[0]) if row else None
+
+
+def verify_plan_reply(db, gid, source):
+    directive = plan_reply(db, gid, source)
+    if directive is None or _saved_change(db, gid, source['citation']) != (directive['receipt'] if directive['changed'] else None):
+        raise ValueError('工作清單答覆缺少相符的交付方式紀錄。')
+    return directive
+
+
+def verify_plan_guidance(db, gid, source):
+    receipt = _receipt(source)
+    if not initially_enabled(db, gid) or receipt is None or _saved_change(db, gid, source['citation']) != receipt:
+        raise ValueError('工作清單更正缺少相符的交付方式紀錄。')
+    return receipt
+
+
 def capture(db, gid, notes, step_count, *, reply=False):
     if not initially_enabled(db, gid):
         return None
@@ -88,8 +160,7 @@ def capture(db, gid, notes, step_count, *, reply=False):
     receipt = _receipt(source)
     if receipt is None or receipt['file_delivery'] == enabled(db, gid):
         return None
-    db.execute('INSERT INTO autonomous_delivery_changes(goal_id,citation,notes_start,receipt_json) VALUES(?,?,?,?)',
-               (gid, source['citation'], source['notes_start'], json.dumps(receipt, ensure_ascii=False)))
+    _record(db, gid, source, receipt)
     return receipt
 
 
@@ -111,12 +182,23 @@ def validate_saved(db, *, changes_present, replies_present, guidance_present):
         for citation, start, raw in rows:
             source = by_citation.get(citation)
             receipt = strict_json(raw)
+            combined = isinstance(receipt, dict) and 'plan_parts' in receipt
+            expected = (_plan_receipt(source) if combined else _receipt(source)) if source is not None else None
             if (source is None or start != source['notes_start'] or type(start) is not int or start <= position
                     or not isinstance(receipt, dict) or type(receipt.get('file_delivery')) is not bool
                     or any(type(receipt.get(key)) is not int for key in ('start', 'end', 'steps_seen'))
-                    or receipt != _receipt(source) or receipt['file_delivery'] == mode
+                    or receipt != expected or receipt['file_delivery'] == mode
                     or (changes and receipt['steps_seen'] < changes[-1]['steps_seen'])):
                 raise ValueError('交付方式更正與保存的原話或先後順序不一致。')
+            if combined:
+                linked = db.execute('SELECT action_json,observation_json FROM autonomous_steps WHERE goal_id=? AND sequence=?',
+                                    (gid, receipt['steps_seen'] + 1)).fetchone()
+                action, observation = map(strict_json, linked) if linked else (None, None)
+                proof = observation.get('scope_reply') if isinstance(observation, dict) else None
+                if (not isinstance(action, dict) or action.get('tool') != 'update_plan'
+                        or action.get('args') != {'scope_reply': citation, 'scope_reply_version': 5}
+                        or not isinstance(proof, dict) or proof.get('delivery_mode') != {'receipt': receipt, 'changed': True}):
+                    raise ValueError('合併交付方式更正缺少相符的工作清單答覆。')
             position = start
             mode = receipt['file_delivery']
             changes.append(receipt)

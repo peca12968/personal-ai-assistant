@@ -433,7 +433,7 @@ def _save_ordered_waiting_correction(db, current, notes):
     return _snapshot(db, goal['session_id'], gid)
 
 
-def _save_plan_scope_change(db, current, notes):
+def _save_plan_scope_change(db, current, notes, delivery_change=None):
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
     if goal['status'] == 'report_ready':
@@ -451,21 +451,28 @@ def _save_plan_scope_change(db, current, notes):
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
-    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting)
+    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting, delivery=delivery_change)
     if observation is None:
         return None
     proof = observation['scope_change']
     successor = proof.get('successor')
-    if count + (3 if successor else 2) > MAX_STEPS:
+    minimum = 3 if successor else 2
+    if delivery_change:
+        pending = proof.get('language', {}).get('pending_revisions', ())
+        minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_change['file_delivery'])
+    if count + minimum > MAX_STEPS:
         raise ValueError('剩餘步數不足以更新工作清單及交付，請帶入目前進度建立下一階段。')
     args = {'scope_correction': source['citation']}
+    if delivery_change:
+        args['delivery_mode'] = True
     if waiting:
         args['ask_sequence'] = proof['ask_sequence']
         options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
         if not options or source['number'] not in options['correction_numbers']:
             raise ValueError('這筆更正與目前等待的問題不一致。')
         goal_question_withdrawals.record(db, gid, options, source)
-    action = {'tool': 'update_plan', 'args': args, 'note': '依使用者更正取消指定工作項目'}
+    note = '依使用者更正更新交付方式與工作清單' if delivery_change else '依使用者更正取消指定工作項目'
+    action = {'tool': 'update_plan', 'args': args, 'note': note}
     _append_step(db, goal, notes, count + 1, action, observation)
     if successor:
         append_followup_question(db, {**goal, 'guidance_sources': guidance}, notes, count + 2, successor['question'],
@@ -473,6 +480,8 @@ def _save_plan_scope_change(db, current, notes):
     status = 'needs_input' if successor else 'paused'
     notice = ('已取消指定項目。只需回答目前保留的問題。' if successor else
               '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
+    if delivery_change:
+        notice = delivery_preference.describe(delivery_change) + ('仍請回答目前的問題。' if successor else '工作清單已更新。')
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                (notes, status, successor['question'] if successor else '', notice, gid))
     return _snapshot(db, goal['session_id'], gid)
@@ -508,7 +517,7 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         delivery_change = delivery_preference.capture(db, gid, notes, step_count)
         if 'report_colloquial_question' in current:
             return _save_ordered_waiting_correction(db, current, notes)
-        if changed_scope := _save_plan_scope_change(db, current, notes):
+        if changed_scope := _save_plan_scope_change(db, current, notes, delivery_change):
             return changed_scope
         if supplement:
             _save_report_supplement(db, current, notes, content)

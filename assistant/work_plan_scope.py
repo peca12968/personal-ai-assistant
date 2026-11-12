@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
+from . import delivery_preference, goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
 
 
 GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項目，提問使用 plan_questions，例如
@@ -190,15 +190,33 @@ def _successor(steps, plan, cancelled):
     return _next_question(remaining)
 
 
-def observe(steps, source, scope, prior_scope, *, waiting):
+def _without_delivery(text, spans):
+    for row in spans:
+        start, end = row['start'], row['end']
+        text = text[:start] + ' ' * (end - start) + text[end:]
+    return text
+
+
+def observe(steps, source, scope, prior_scope, *, waiting, delivery=None):
     plan = work_plan.latest(steps)
     if plan is None or source['steps_seen'] != len(steps):
         return None
-    changes = cancellations(source, plan)
-    if not changes:
-        return None
+    if delivery:
+        if not waiting or prior_scope != plan['goal_conditions_sha256'] or not _waiting_parts(steps, plan)[1]:
+            return None
+        text = _without_delivery(source['content'], [delivery])
+        clauses = goal_guidance_sources.standalone_clauses(text, comma_before=_SCOPE_COMMA)
+        changes = _cancellations(clauses, plan)
+        if clauses and not changes:
+            return None
+    else:
+        changes = cancellations(source, plan)
+        if not changes:
+            return None
     cancelled = {number for change in changes for number in change['items']}
     result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
+    if delivery:
+        proof['delivery_mode'] = delivery
     if waiting:
         successor = _successor(steps, plan, cancelled)
         if previous := language_followup(steps):
@@ -307,7 +325,7 @@ def _reply_parts(clauses, parts, fields, cancelled, *, single_followup):
     return parsed
 
 
-def observe_reply(steps, source, scope, prior_scope, *, version=1):
+def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None):
     plan = work_plan.latest(steps)
     if plan is None or source['ask_sequence'] != len(steps):
         return None
@@ -315,8 +333,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1):
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version in (2, 3, 4):
-        return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version)
+    if version in (2, 3, 4, 5):
+        return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version, delivery=delivery)
     fields = [_asked_field(part, tasks) for part in parts]
     prefixes = '|'.join(re.escape(name) for name in fields if name)
     reply_prefix = rf'|\s*{_REPLY_CONNECTOR}(?:{prefixes})' if prefixes else ''
@@ -553,51 +571,61 @@ def _show_waiting(language, tasks):
     return [{**entry['part'], 'question': entry['display']} for entry in language['waiting']]
 
 
-def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, version):
+def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, version, delivery):
     receipt = _scope_receipt(plan)
     follows = plan['sequence'] == len(steps) - 1 and receipt.get('successor') == steps[-1]['action']['args']
     previous = receipt.get('language', {}) if follows else {}
     waiting = previous.get('waiting', [])
     if previous:
         parts = [entry['part'] for entry in waiting]
-    comma = {3: _REVISION_COMMA, 4: _PENDING_COMMA}.get(version, _PLAIN_COMMA)
-    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma)
-    if not clauses or any(question_mark for _, _, question_mark in clauses):
+    text = source['answer']
+    if version == 5:
+        if (not delivery or prior_scope != plan['goal_conditions_sha256']
+                or not (follows or 'plan_questions' in steps[-1]['action']['args'])):
+            return None
+        text = _without_delivery(text, delivery['receipt']['plan_parts'])
+    comma = {3: _REVISION_COMMA, 4: _PENDING_COMMA, 5: _PENDING_COMMA}.get(version, _PLAIN_COMMA)
+    clauses = goal_guidance_sources.standalone_clauses(text, comma_before=comma)
+    if (not clauses and version != 5) or any(question_mark for _, _, question_mark in clauses):
         return None
     declined = []
-    if version == 4:
+    if version in (4, 5):
         declined = [_literal_span(start, clause) for start, clause, _ in clauses if _DECLINED_PROPOSAL.fullmatch(clause)]
         clauses = [entry for entry in clauses if not _DECLINED_PROPOSAL.fullmatch(entry[1])]
     scope_parts = _natural_scope(clauses, plan, tasks, previous.get('cancellation'), source)
     if scope_parts is None:
         return None
     changes, field_clauses, pending, resolution = scope_parts
-    if not (changes or pending or resolution or follows):
+    if not (changes or pending or resolution or follows or version == 5):
         return None
     cancelled = {number for change in changes for number in change['items']}
     language = {'cancellation': pending, 'resolution': resolution, 'unassigned': [], 'previous_waiting': waiting}
     revisions = ()
-    if version in (3, 4):
-        if not follows or prior_scope != plan['goal_conditions_sha256']:
+    if version in (3, 4, 5):
+        if (version != 5 and not follows) or prior_scope != plan['goal_conditions_sha256']:
             return None
-        if version == 4:
-            revised = _parse_revision_choices(field_clauses, steps, plan, tasks, cancelled, previous, source, declined)
+        if version in (4, 5):
+            revised = _parse_revision_choices(field_clauses, steps, plan, tasks, cancelled, previous, source, declined,
+                                             delivery_only_ok=version == 5)
         else:
             revised = _parse_revisions(field_clauses, steps, plan, tasks, cancelled)
         if revised is None:
             return None
         field_clauses, revisions = revised[:2]
-        if version == 4:
+        if version in (4, 5):
             language.update(revised[2])
     fields = [_asked_field(part, tasks) for part in parts]
-    explicit = version == 4 and bool(previous.get('pending_revisions') or previous.get('cancellation'))
+    explicit = version in (4, 5) and bool(previous.get('pending_revisions') or previous.get('cancellation'))
     replies = _natural_fields(field_clauses, parts, fields, cancelled, allow_bare=not explicit)
     if replies is None:
         return None
     parsed, unassigned = replies
     language['unassigned'] = unassigned
-    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed,
-                         language=language, revisions=revisions)
+    result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed,
+                           language=language, revisions=revisions)
+    if result and version == 5:
+        result['scope_reply']['delivery_mode'] = delivery
+    return result
 
 
 def _confirmed_fields(steps, plan, tasks):
@@ -701,7 +729,7 @@ def _revision_selection(clause, match, choice):
     return None
 
 
-def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, source, declined):
+def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, source, declined, *, delivery_only_ok=False):
     confirmed = _confirmed_fields(steps, plan, tasks)
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded' and row['id'] not in cancelled}
     prior = previous.get('pending_revisions', [])
@@ -761,7 +789,7 @@ def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, so
             return None
         pending.append({'field': field, 'question': question, 'previous': old, 'items': items, 'options': alternatives,
                         'statements': options, 'citation': source['citation'], 'source_sha256': source['sha256']})
-    if not (declined or pending or resolution or prior or out_of_scope):
+    if not (declined or pending or resolution or prior or out_of_scope or delivery_only_ok):
         return None
     return remaining, revisions, {'declined_proposals': declined, 'pending_revisions': pending,
                                   'revision_resolution': resolution, 'out_of_scope_revisions': out_of_scope}
@@ -785,8 +813,10 @@ def _apply_revisions(result, proof, complete, plan, revisions, source):
     proof['revisions'] = revisions
 
 
-def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
-    if args.keys() not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'}):
+def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, delivery_present=False):
+    keys = args.keys() - {'delivery_mode'}
+    if (keys not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'})
+            or ('delivery_mode' in args and (args['delivery_mode'] is not True or not delivery_present))):
         raise ValueError('已保存的工作範圍更正格式不符。')
     source = next((item for item in guidance if item['citation'] == args['scope_correction']), None)
     if source is None:
@@ -796,7 +826,8 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
     previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})
     scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
     waiting = 'ask_sequence' in args
-    expected = observe(prior, source, scope, previous, waiting=waiting)
+    delivery = delivery_preference.verify_plan_guidance(db, goal['id'], source) if 'delivery_mode' in args else None
+    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery)
     if expected is None:
         raise ValueError('工作範圍更正與原清單或保存步驟不一致。')
     if waiting:
@@ -810,15 +841,16 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
             raise ValueError('工作範圍更正缺少相符的問題撤下紀錄。')
         successor = proof['successor']
         if successor and (not after or after['action']['tool'] != 'ask' or after['action']['args'] != successor
-                          or after['observation'].get('question') != successor['question']):
+                          or after['observation'].get('question') != successor['question']
+                          or (delivery and after['observation'].get('goal_conditions_sha256') != scope)):
             raise ValueError('工作範圍更正缺少相符的保留問題。')
     return expected
 
 
-def replay_reply(args, prior, after, goal, replies):
+def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4) else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4):
+    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5) else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -827,7 +859,12 @@ def replay_reply(args, prior, after, goal, replies):
     end = start + len(goal_reply_sources.note(source['question'], source['answer']))
     previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})
     scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
-    expected = observe_reply(prior, source, scope, previous, version=version)
+    delivery = None
+    if version == 5:
+        if not delivery_present:
+            raise ValueError('工作清單答覆缺少交付方式紀錄。')
+        delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
+    expected = observe_reply(prior, source, scope, previous, version=version, delivery=delivery)
     if expected is None:
         raise ValueError('工作清單答覆與原問題或保存來源不一致。')
     successor = expected['scope_reply']['successor']

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from assistant import autonomy, goal_replies
+from assistant import artifacts, autonomy, goal_guidance, goal_replies
 from assistant.backup import validate_database
 from assistant.engine import CodexEngine, EngineError
 from scripts.evaluate_plan_scope_cancellation import action, prepare
@@ -97,6 +97,33 @@ def collect(path, case, frozen, *, live=False, suite=SUITE):
         case.get('measure_fallback_delivery') and 'after_followup' in row)
     if 'resolution_reply' in case:
         ready_to_measure = checks['resolution']
+    if turns := case.get('delivery_turns'):
+        row['delivery_turns'] = []
+        for turn in turns:
+            if state['status'] != 'needs_input':
+                break
+            before_turn = state
+            entry = {'before': state, 'source': turn}
+            try:
+                if 'guidance' in turn:
+                    view = goal_guidance.snapshot(store, sid, gid)
+                    goal_guidance.save(store, sid, gid, turn['guidance'], expected_fingerprint=view['fingerprint'])
+                    state = autonomy.get_goal(store, sid, gid)
+                else:
+                    state = reply(store, sid, gid, turn['answer'])
+            except ValueError as exc:
+                entry['error'] = str(exc)
+                state = autonomy.get_goal(store, sid, gid)
+            proof = state['work_plan'].get('scope_reply', {})
+            entry['after'] = state
+            entry['passed'] = (state == before_turn and 'error' in entry if turn.get('reject') else
+                               ('error' not in entry and state['file_delivery'] == turn['file_delivery']
+                                and state['question'] == turn.get('remaining', '') and state['work_plan']['conditions_current']
+                                and {rev['field']: rev['value'] for rev in proof.get('revisions', ())} == turn.get('revisions', {})
+                                and state.get('delivery_mode_change', {}).get('quote') == turn.get('mode_quote')))
+            row['delivery_turns'].append(entry)
+        checks['delivery_turns'] = len(row['delivery_turns']) == len(turns) and all(row['passed'] for row in row['delivery_turns'])
+        ready_to_measure = checks['delivery_turns'] or (case.get('measure_fallback_delivery') and not state['file_delivery'])
     if live and 'must_include' in case and state['status'] == 'paused' and ready_to_measure:
         engine = CodexEngine(path / 'engine')
 
@@ -118,10 +145,22 @@ def collect(path, case, frozen, *, live=False, suite=SUITE):
                 return call['raw']
 
         state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
-        report = state.get('result', '').replace(' ', '')
+        report = state.get('result', '')
+        delivered = state['steps'][-1]['observation'].get('artifacts', ()) if state['status'] == 'report_ready' else ()
+        if delivered:
+            row['delivered_files'] = []
+            for receipt in delivered:
+                data = (artifacts.directory(store, gid) / artifacts.filename(receipt['name'])).read_bytes()
+                if hashlib.sha256(data).hexdigest() != receipt['sha256']:
+                    raise ValueError('已交付文件與實際保存的內容不一致。')
+                row['delivered_files'].append({**receipt, 'content': data.decode('utf-8')})
+            report += '\n' + '\n'.join(file['content'] for file in row['delivered_files'])
+        report = report.replace(' ', '')
         checks['delivery'] = (state['status'] == 'report_ready'
                               and all(text.replace(' ', '') in report for text in case['must_include'])
-                              and all(text not in report for text in case['must_omit']))
+                              and all(text.replace(' ', '') not in report for text in case['must_omit'])
+                              and (bool(delivered) == case['expect_artifact'] if 'expect_artifact' in case else True)
+                              and (case.get('expect_artifact', True) or not state['artifacts']))
     elif live and 'must_include' in case:
         checks['delivery'] = False
     row['final'] = state

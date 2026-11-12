@@ -30,9 +30,10 @@ def _save_partial_followup(db, current, notes, kind, review):
 
 
 def _save_scope_reply(db, current, steps, notes):
+    plan = work_plan.latest(steps)
     if (not steps or steps[-1]['action']['tool'] != 'ask'
             or steps[-1]['action']['args'].keys() - {'question', 'partial_result', 'plan_questions'}
-            or decision_table.reference_question_for_steps(steps[:-1]) or work_plan.latest(steps) is None):
+            or decision_table.reference_question_for_steps(steps[:-1]) or plan is None):
         return False
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
@@ -45,33 +46,43 @@ def _save_scope_reply(db, current, steps, notes):
     answer = replies[-1]['answer']
     if '改' in answer or '更正' in answer:
         versions = (3, *versions)
-    if pending_revision and scopes[1] == work_plan.latest(steps)['goal_conditions_sha256']:
+    if pending_revision and scopes[1] == plan['goal_conditions_sha256']:
         versions = (4,)
     elif any(word in answer for word in ('改', '更正', '提議', '建議')):
         versions = (4, *versions)
+    delivery = delivery_preference.plan_reply(db, gid, replies[-1]) if language or 'plan_questions' in steps[-1]['action']['args'] else None
+    strict_choice = versions == (4,)
+    if delivery:
+        versions = (5,)
     for version in versions:
-        result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version)
+        result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery)
         if result is not None:
             break
     else:
-        if versions == (4,):
+        if strict_choice:
             raise ValueError('待選更正仍未確認。請明確選擇目前列出的值或沿用原值。')
         return False
     proof = result['scope_reply']
     successor = proof['successor']
     pending = proof.get('language', {}).get('pending_revisions', ())
     minimum = max(3 if successor else 2, 2 + 2 * len(pending))
+    if delivery and delivery['receipt']['file_delivery']:
+        minimum += 1
     if not current['sources_match'] or count + minimum > MAX_STEPS:
         raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
     args = {'scope_reply': proof['citation']}
     if version != 1:
         args['scope_reply_version'] = version
     action = {'tool': 'update_plan', 'args': args, 'note': '依使用者實際回覆更新工作清單'}
+    if delivery:
+        delivery_preference.record_plan_reply(db, gid, replies[-1], delivery)
     _append_step(db, goal, notes, count + 1, action, result)
     if successor:
         append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, successor['question'],
                                  '保留目前仍需回答的工作分問', plan_questions=successor['plan_questions'])
     notice = '已更新工作清單。只需回答目前保留的問題。' if successor else '已保存答覆並更新工作清單，可接續工作。'
+    if delivery and delivery['changed']:
+        notice = delivery_preference.describe(delivery['receipt']) + notice
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                (notes, 'needs_input' if successor else 'paused', successor['question'] if successor else '', notice, gid))
     return True
@@ -99,9 +110,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
-        delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)
-        if not (colloquial or combined or delivery_change) and _save_scope_reply(db, current, steps, notes):
+        if not (colloquial or combined) and _save_scope_reply(db, current, steps, notes):
             return _snapshot(db, sid, gid)
+        delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)
         if colloquial:
             replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
             args = {'report_colloquial_guidance': colloquial['source'], 'reply': replies[-1]['citation']}
