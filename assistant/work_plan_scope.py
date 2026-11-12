@@ -9,7 +9,7 @@ GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項
 {"question":"收貨窗口是誰？\n入場門號是多少？","plan_questions":[{"question":"收貨窗口是誰？","items":[2]},{"question":"入場門號是多少？","items":[3]}]}。
 question 逐行等於各分問。items 填這個問題實際影響的所有未完成項目；一個獨立分問對應一個資料缺漏，無關的問題不綁進清單。
 scope_cancelled 列出使用者已取消的項目。當前成果只交保留項目的實際結果。取消項目和原因已保存於工作清單，除非使用者要求一併交代，定稿省略已取消項目的名稱、經過及結果。
-scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。'''
+scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。revisions 保存使用者更正後的值、舊依據和須重核的項目。成果使用現行值並引用新回覆。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。'''
 _CANCEL = re.compile(r'(?:本輪|這次|本次)?\s*(?:先取消|取消|先不做|不做|先暫停|暫停|不用再做)\s*(.+)')
 _TITLES = re.compile(r'「[^「」\r\n]+」(?:\s*(?:、|，|,|及|和|與)\s*「[^「」\r\n]+」)*')
 _UNCHANGED = {'其他項目照舊', '其餘項目照舊', '其他項目維持原樣', '其餘照舊', '其他照舊'}
@@ -30,6 +30,11 @@ _UNCERTAIN = re.compile(r'待|未|還|不|暫|可能|大概|或|應該|也許|�
 _POST_CANCEL = re.compile(r'(.{2,90}?)\s*(?:先不用了|不用了|先不做了|不做了|先取消|取消掉)')
 _PLAIN_COMMA = re.compile(r'\s*(?!\s*「)|\s*「[^」\r\n]+」\s*(?:先不用了|不用了|先不做了|不做了|先取消|取消掉)')
 _KEEP_ALL = {'都保留', '都先保留', '兩項都保留', '都不取消', '不取消'}
+_REVISION_VERB = r'(?:改成|改為|更正為|更正成|應改為)'
+_REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))\s*'
+                       r'(?:(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
+                       rf'{_REVISION_VERB}\s*(.+)')
+_REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern})')
 
 
 def validate_questions(args):
@@ -304,8 +309,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1):
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version == 2:
-        return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+    if version in (2, 3):
+        return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version)
     fields = [_asked_field(part, tasks) for part in parts]
     prefixes = '|'.join(re.escape(name) for name in fields if name)
     reply_prefix = rf'|\s*{_REPLY_CONNECTOR}(?:{prefixes})' if prefixes else ''
@@ -328,7 +333,7 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1):
     return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed)
 
 
-def _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed, *, language=None):
+def _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed, *, language=None, revisions=()):
     cancelled = {number for change in changes for number in change['items']}
 
     result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
@@ -347,6 +352,8 @@ def _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks,
                     complete[number] = outcome['value']
         elif ids:
             remaining.append({'question': part['question'], 'items': ids})
+    if revisions:
+        _apply_revisions(result, proof, complete, plan, revisions, source)
     for index, item in enumerate(result['items']):
         if item['id'] in complete:
             note = f'依 {source["citation"]} 確認：{complete[item["id"]]}。'
@@ -532,14 +539,15 @@ def _show_waiting(language, tasks):
     return [{**entry['part'], 'question': entry['display']} for entry in language['waiting']]
 
 
-def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks):
+def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, version):
     receipt = _scope_receipt(plan)
     follows = plan['sequence'] == len(steps) - 1 and receipt.get('successor') == steps[-1]['action']['args']
     previous = receipt.get('language', {}) if follows else {}
     waiting = previous.get('waiting', [])
     if previous:
         parts = [entry['part'] for entry in waiting]
-    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_PLAIN_COMMA)
+    comma = _REVISION_COMMA if version == 3 else _PLAIN_COMMA
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma)
     if not clauses or any(question_mark for _, _, question_mark in clauses):
         return None
     scope_parts = _natural_scope(clauses, plan, tasks, previous.get('cancellation'), source)
@@ -549,13 +557,118 @@ def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks
     if not (changes or pending or resolution or follows):
         return None
     cancelled = {number for change in changes for number in change['items']}
+    revisions = ()
+    if version == 3:
+        if not follows or prior_scope != plan['goal_conditions_sha256']:
+            return None
+        revised = _parse_revisions(field_clauses, steps, plan, tasks, cancelled)
+        if revised is None:
+            return None
+        field_clauses, revisions = revised
     fields = [_asked_field(part, tasks) for part in parts]
     replies = _natural_fields(field_clauses, parts, fields, cancelled)
     if replies is None:
         return None
     parsed, unassigned = replies
     language = {'cancellation': pending, 'resolution': resolution, 'unassigned': unassigned, 'previous_waiting': waiting}
-    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed, language=language)
+    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed,
+                         language=language, revisions=revisions)
+
+
+def _confirmed_fields(steps, plan, tasks):
+    chain = []
+    sequence = plan['sequence']
+    while proof := _scope_receipt(steps[sequence - 1]['observation']):
+        chain.append((steps[sequence - 1], proof))
+        prior = proof['plan_step']
+        if not 1 <= prior < sequence or proof['prior_scope'] != steps[prior - 1]['observation'].get('goal_conditions_sha256'):
+            break
+        sequence = prior
+    confirmed = {}
+    for step, proof in reversed(chain):
+        origin = {'step': step['sequence'], 'step_sha256': goal_stages.digest(step), 'citation': proof['citation'],
+                  'source_sha256': proof['source_sha256']}
+        for part in proof.get('parts', ()):
+            field = _asked_field(part, tasks)
+            if field and part['state'] == 'confirmed':
+                ids = part['active_items']
+                collected = sorted(set(ids) & set(proof['completed_items']))
+                confirmed[part['question']] = {'field': field, 'items': ids, 'collected_items': collected,
+                                               'value': part['value'], 'evidence': part['evidence'], **origin}
+        for revision in proof.get('revisions', ()):
+            confirmed[revision['question']] = {**{key: revision[key] for key in ('field', 'items', 'collected_items',
+                                                                                'value', 'evidence', 'operand_paths')}, **origin}
+    return confirmed
+
+
+def _dependent_operands(plan, previous, field):
+    paths = {row['id']: set(row['paths']) for row in previous.get('operand_paths', ())}
+    for row in plan.get('evidence_requirements', ()):
+        for operand in row.get('operands', ()):
+            if operand.get('field') == field:
+                paths.setdefault(row['id'], set()).add(operand['path'])
+    evidence = previous['evidence']
+    for row in plan.get('evidence_matches', ()):
+        for operand in row.get('operands', ()):
+            if (operand.get('source_sha256') == previous['source_sha256'] and operand.get('citation') == previous['citation']
+                    and evidence['start'] <= operand['number_start'] < operand['number_end'] <= evidence['end']):
+                paths.setdefault(row['id'], set()).add(operand['path'])
+    return paths
+
+
+def _parse_revisions(clauses, steps, plan, tasks, cancelled):
+    if not any(_REVISION.fullmatch(clause) for _, clause in clauses):
+        return None
+    confirmed = _confirmed_fields(steps, plan, tasks)
+    active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded' and row['id'] not in cancelled}
+    required = {row['id'] for row in plan.get('evidence_requirements', ())}
+    remaining, revisions, seen = [], [], set()
+    for start, clause in clauses:
+        match = _REVISION.fullmatch(clause)
+        if match is None:
+            remaining.append((start, clause))
+            continue
+        field = (match[1] or match[2]).strip()
+        options = [(question, row) for question, row in confirmed.items() if row['field'] == field
+                   and set(row['items']) & active.keys()]
+        value = _value(match[3].strip())
+        if len(options) != 1 or field in seen or value is None:
+            return None
+        question, previous = options[0]
+        if _NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value):
+            return None
+        seen.add(field)
+        ids = set(previous['items']) & active.keys()
+        collected = sorted(number for number in (ids & set(previous['collected_items'])) - required
+                           if active[number]['state'] == 'done' and active[number]['evidence_steps'] == [previous['step']])
+        recheck = []
+        dependent = _dependent_operands(plan, previous, field)
+        if _value_identity(value) != _value_identity(previous['value']):
+            recheck = sorted(((ids | dependent.keys()) & active.keys()) - set(collected))
+        revisions.append({'field': field, 'question': question, 'items': sorted(ids), 'value': value,
+                          'evidence': _literal_span(start, clause), 'previous': previous,
+                          'collected_items': collected, 'recheck_items': recheck,
+                          'operand_paths': [{'id': number, 'paths': sorted(dependent[number])}
+                                            for number in sorted(dependent.keys() & active.keys())]})
+    return remaining, revisions
+
+
+def _apply_revisions(result, proof, complete, plan, revisions, source):
+    recheck = {number for row in revisions for number in row['recheck_items']}
+    revised = {number: row['value'] for row in revisions for number in row['collected_items']}
+    affected = recheck | revised.keys()
+    for index, item in enumerate(result['items']):
+        if item['id'] in recheck:
+            result['items'][index] = {**item, 'state': 'pending', 'evidence_steps': [],
+                                      'note': f'依 {source["citation"]} 的更正重新核對此項。'}
+            complete.pop(item['id'], None)
+    complete.update(revised)
+    proof['retained_items'] = [number for number in proof['retained_items'] if number not in affected]
+    if 'evidence_requirements' in result:
+        result['evidence_requirements'] = [row if row['id'] in recheck else current for row, current in zip(
+            plan['evidence_requirements'], result['evidence_requirements'], strict=True)]
+        result['evidence_matches'] = [row for row in result['evidence_matches'] if row['id'] not in recheck]
+    proof['revisions'] = revisions
 
 
 def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
@@ -590,8 +703,8 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
 
 def replay_reply(args, prior, after, goal, replies):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version == 2 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2):
+    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3) else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

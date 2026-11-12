@@ -39,19 +39,21 @@ def _save_scope_reply(db, current, steps, notes):
     replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
     scope_goal = _condition_goal(db, goal, goal['notes'])
     scopes = work_plan.conditions({**scope_goal, 'notes': notes}), work_plan.conditions(scope_goal)
-    version = 2 if work_plan_scope.language_followup(steps) else 1
-    result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version)
-    if result is None and version == 1:
-        version = 2
+    versions = (2,) if work_plan_scope.language_followup(steps) else (1, 2)
+    if '改' in replies[-1]['answer'] or '更正' in replies[-1]['answer']:
+        versions = (3, *versions)
+    for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version)
-    if result is None:
+        if result is not None:
+            break
+    else:
         return False
     proof = result['scope_reply']
     successor = proof['successor']
     if not current['sources_match'] or count + (3 if successor else 2) > MAX_STEPS:
         raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
     args = {'scope_reply': proof['citation']}
-    if version == 2:
+    if version != 1:
         args['scope_reply_version'] = version
     action = {'tool': 'update_plan', 'args': args, 'note': '依使用者實際回覆更新工作清單'}
     _append_step(db, goal, notes, count + 1, action, result)

@@ -61,11 +61,19 @@ def _numeric_match(quote, value, pattern, factor):
 
 
 def _field_position(quote, number_start, field):
-    match = _FIELD.search(quote[:number_start])
-    if (not isinstance(field, str) or field.strip() != field
-            or match is None or match['name'] != field):
+    if not isinstance(field, str) or not re.fullmatch(r'[^「」\r\n\0]{1,80}', field) or field.strip() != field:
         raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
-    return match.span('name')
+    prefix = quote[:number_start]
+    if (match := _FIELD.search(prefix)) and match['name'] == field:
+        return match.span('name')
+    name = re.escape(field)
+    revision = re.fullmatch(rf'(?:(?:欄位\s*)?「{name}」|{name})\s*'
+                            r'(?:(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
+                            r'(?:改成|改為|更正為|更正成|應改為)\s*', prefix)
+    if revision:
+        start = prefix.index('「') + 1 if '「' in prefix else 0
+        return start, start + len(field)
+    raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
 
 
 def validate(rows, expression, ranges, *, omitted_paths=()):

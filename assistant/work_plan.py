@@ -343,6 +343,34 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
     return match
 
 
+def _latest_revised_operands(steps, scope):
+    requirements = {}
+    for step in reversed(steps):
+        observation = step['observation']
+        proof = observation.get('scope_reply') or observation.get('scope_change')
+        if not proof or observation.get('goal_conditions_sha256') != scope:
+            continue
+        for revision in reversed(proof.get('revisions', ())):
+            for affected in revision['operand_paths']:
+                if affected['id'] in revision['recheck_items']:
+                    for path in affected['paths']:
+                        requirements.setdefault((affected['id'], path), (proof, revision))
+        scope = proof['prior_scope']
+    return requirements
+
+
+def _check_revised_operands(match, revisions):
+    operands = {row['path']: row for row in match.get('operands', ())}
+    for (item_id, path), (proof, revision) in revisions.items():
+        if item_id != match['id']:
+            continue
+        actual = operands.get(path, {})
+        span = revision['evidence']
+        if (actual.get('citation') != proof['citation'] or actual.get('source_sha256') != proof['source_sha256']
+                or not span['start'] <= actual['number_start'] < actual['number_end'] <= span['end']):
+            raise ValueError(f'項目 {item_id} 的「{revision["field"]}」已更正。請用 {proof["citation"]} 的新值重算並核對運算元。')
+
+
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
     validate(args)
     previous = latest(steps)
@@ -364,6 +392,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
         and step['observation'].get('goal_conditions_sha256') == scope for step in steps))
     sequence = len(steps) + 1
     user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, sequence)
+    revised_operands = _latest_revised_operands(steps, scope) if requirements else {}
     reusable, rechecks = _calculation_reuse_review(previous, scope, sequence, reply_sources, guidance_sources)
     proofs = {}
     calculation_proofs = []
@@ -402,7 +431,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                if (step['action'].get('args') not in (original, {**original, 'scope_reply_version': 2})
+                if (step['action'].get('args') not in (original, {**original, 'scope_reply_version': 2},
+                                                     {**original, 'scope_reply_version': 3})
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
@@ -424,7 +454,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 if number not in proofs:
                     proofs[number] = _read_proof(step, scope, sources)
         if item['state'] == 'done' and item['id'] in requirements:
-            matches.append(_match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources))
+            match = _match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources)
+            _check_revised_operands(match, revised_operands)
+            matches.append(match)
     if position_checks:
         by_item = {row['id']: row['operands'] for row in matches if 'operands' in row}
         for number, changed in position_checks.items():

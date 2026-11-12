@@ -1137,6 +1137,95 @@ class WorkPlanTests(unittest.TestCase):
         self.assertTrue(saved['work_plan']['delivery_review']['ready'])
         validate_database(self.store.path)
 
+    def test_revision_reopens_only_the_calculation_that_depends_on_the_corrected_field(self):
+        self.gid = a.create_goal(self.store, self.sid, '欄位「留存份數」為 2 份。每組倍率為 3。核對留存份數與獨立數量。')
+        calculation = {'operation': 'product', 'values': ['2', '3']}
+        unrelated = {'operation': 'sum', 'values': ['1', '4']}
+        requirement = {'id': 1, 'expression': calculation, 'operands': [
+            {'path': '/values/0', 'citation': '[目標]', 'quote': '欄位「留存份數」為 2 份', 'field': '留存份數'},
+            {'path': '/values/1', 'citation': '[目標]', 'quote': '每組倍率為 3'}]}
+        parts = [{'question': '窗口是誰？', 'items': [3]}, {'question': '入場門號是多少？', 'items': [4]},
+                 {'question': '留存份數是多少？', 'items': [5]}]
+        self.run_actions(action('calculate_expression', expression=calculation),
+                         action('calculate_expression', expression=unrelated),
+                         action('update_plan', verify_delivery=True, items=[item(1, '計算總份數', state='done', refs=[1]),
+                                item(2, '計算獨立數量', state='done', refs=[2]), item(3, '安排窗口'),
+                                item(4, '確認入場門號'), item(5, '確認留存份數')],
+                                evidence_requirements=[requirement, {'id': 2, 'expression': unrelated}]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        first = self.save_scope_reply('取消「安排窗口」。入場門號還沒確認。留存份數是 2 份。')
+        state = self.save_scope_reply('7 號。留存份數改為 5 份。')
+        plan = state['work_plan']
+        proof = plan['scope_reply']
+        self.assertEqual(proof['retained_items'], [2])
+        self.assertEqual(proof['completed_items'], [4, 5])
+        self.assertEqual(proof['revisions'][0]['recheck_items'], [1])
+        self.assertEqual(proof['revisions'][0]['previous']['citation'], first['reply_sources'][-1]['citation'])
+        self.assertEqual(plan['items'][0]['state'], 'pending')
+        self.assertEqual(plan['items'][1]['evidence_steps'], [2])
+        self.assertFalse(plan['delivery_review']['ready'])
+        current_ref = len(state['steps']) + 1
+        rejected = self.run_actions(action('calculate_expression', expression=calculation),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [current_ref]},
+                                         *plan['items'][1:]], evidence_requirements=[requirement]))
+        self.assertIn('的「留存份數」已更正', rejected['steps'][-1]['observation']['error'])
+        expression = {'operation': 'product', 'values': ['5', '3']}
+        new_requirement = {**requirement, 'expression': expression, 'operands': [
+            {**requirement['operands'][0], 'citation': proof['citation'], 'quote': '留存份數改為 5 份'},
+            requirement['operands'][1]]}
+        new_ref = len(rejected['steps']) + 1
+        final = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [new_ref]},
+                                         *plan['items'][1:]], evidence_requirements=[new_requirement]),
+            action('finish', report='總份數 15，獨立數量 5，入場門號 7。'))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [2])
+        validate_database(self.store.path)
+
+    def test_successive_revisions_replay_from_latest_actual_answer_after_backup(self):
+        parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '進場門號是多少？', 'items': [2]},
+                 {'question': '領用人是誰？', 'items': [3]}]
+        self.run_actions(action('update_plan', verify_delivery=True,
+                                items=[item(1, '安排窗口'), item(2, '確認進場門號'), item(3, '確認領用人')]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        before = self.save_scope_reply('取消「安排窗口」。進場門號還沒確認。領用人是林語安。')
+        revised = self.save_scope_reply('領用人剛才說錯，改成周雅文。')
+        self.assertEqual(revised['question'], before['question'])
+        self.assertEqual(revised['work_plan']['scope_reply']['revisions'][0]['previous']['value'], '林語安')
+        backup = create_backup(self.store.path, self.root / 'successive-replies.paibackup')
+        restore_backup(backup['path'], self.root / 'restored-replies')
+        restored = Store(self.root / 'restored-replies/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), revised)
+        final = self.save_scope_reply('領用人更正為江明洋。6 號。', store=restored)
+        proof = final['work_plan']['scope_reply']
+        self.assertEqual(proof['revisions'][0]['previous']['value'], '周雅文')
+        self.assertEqual(proof['revisions'][0]['previous']['step'], revised['work_plan']['sequence'])
+        self.assertEqual(proof['completed_items'], [2, 3])
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        validate_database(restored.path)
+        with restored.connect() as db:
+            host = final['steps'][-1]
+            bad = copy.deepcopy(host['observation'])
+            bad['scope_reply']['revisions'][0]['previous']['source_sha256'] = '0' * 64
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(bad), self.gid, host['sequence']))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_reply_cannot_revive_prior_confirmation_after_unverified_scope_change(self):
+        parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '門號是多少？', 'items': [2]},
+                 {'question': '領用人是誰？', 'items': [3]}]
+        self.run_actions(action('update_plan', items=[item(1, '安排窗口'), item(2, '確認門號'), item(3, '確認領用人')]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        self.save_scope_reply('取消「安排窗口」。門號還沒確認。領用人為林語安。')
+        before = self.save_scope_guidance('更正為不同批次。')
+        self.assertFalse(before['work_plan']['conditions_current'])
+        after = self.save_scope_reply('門號是 9 號。領用人改為周雅文。')
+        self.assertEqual(after['steps'], before['steps'])
+        self.assertFalse(after['work_plan']['conditions_current'])
+        self.assertEqual(after['reply_sources'][-1]['answer'], '門號是 9 號。領用人改為周雅文。')
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,70 @@
+[
+  {
+    "id": "gate_choice_and_colloquial_person_correction",
+    "prompt": "墨楓 X2 核對箱數、安排送件窗口、確認進場門號及領用人。只交保留項與最新確認值。",
+    "document": "墨楓 X2 共 26 箱。\n",
+    "done": ["核對箱數"], "pending": ["安排送件窗口", "確認進場門號", "確認領用人"],
+    "parts": [{"question": "送件窗口是誰？", "items": [2]}, {"question": "進場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排送件窗口」。進場門號是 5 號。進場門號是 8 號。領用人為蘇怡安。",
+    "cancelled": [2], "completed": [4], "remaining": "進場門號要以「5 號」還是「8 號」為準？",
+    "followup": "就用 8 號。領用人剛才說錯，改成周雅文。", "followup_completed": [3, 4],
+    "followup_revisions": {"領用人": "周雅文"}, "measure_fallback_delivery": true,
+    "must_include": ["26", "8 號", "周雅文"], "must_omit": ["送件窗口", "蘇怡安", "5 號"]
+  },
+  {
+    "id": "scope_choice_new_window_and_corrected_gate",
+    "prompt": "白簷 N9 核對件數、確認收貨窗口、確認覆核窗口、確認入場門號。以最新內容交付保留工作。",
+    "document": "白簷 N9 共 32 件。\n",
+    "done": ["核對件數"], "pending": ["確認收貨窗口", "確認覆核窗口", "確認入場門號"],
+    "parts": [{"question": "收貨窗口是誰？", "items": [2]}, {"question": "覆核窗口是誰？", "items": [3]}, {"question": "入場門號是多少？", "items": [4]}],
+    "reply": "取消窗口。入場門號是 3 號。",
+    "cancelled": [], "completed": [4], "scope_receipt": true, "scope_candidates": [2, 3],
+    "remaining": "要取消哪一項？請選「確認收貨窗口」或「確認覆核窗口」，也可回答「都保留」。",
+    "followup": "入場門號改為 9 號。確認覆核窗口。收貨窗口是林語安。", "followup_completed": [2, 4],
+    "followup_revisions": {"入場門號": "9 號"}, "followup_cancelled": [3], "measure_fallback_delivery": true,
+    "must_include": ["32", "9 號", "林語安"], "must_omit": ["覆核窗口", "3 號"]
+  },
+  {
+    "id": "revision_only_preserves_the_pending_question",
+    "prompt": "檜坪 Q2 核對袋數、安排訪客窗口、確認出場門號及領用人。",
+    "document": "檜坪 Q2 共 18 袋。\n",
+    "done": ["核對袋數"], "pending": ["安排訪客窗口", "確認出場門號", "確認領用人"],
+    "parts": [{"question": "訪客窗口是誰？", "items": [2]}, {"question": "出場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "訪客窗口先不用了。出場門號是 4 號。出場門號是 6 號。領用人是連佳霏。",
+    "cancelled": [2], "completed": [4], "remaining": "出場門號要以「4 號」還是「6 號」為準？",
+    "followup": "領用人更正為江明洋。", "followup_completed": [4], "followup_revisions": {"領用人": "江明洋"},
+    "followup_remaining": "出場門號要以「4 號」還是「6 號」為準？"
+  },
+  {
+    "id": "two_distinct_prior_fields_and_one_new_answer",
+    "prompt": "杉坪 C4 核對件數、安排支援窗口、確認寄放櫃號、確認領用人及留存份數。只交目前採用值。",
+    "document": "杉坪 C4 共 38 件。\n",
+    "done": ["核對件數"], "pending": ["安排支援窗口", "確認寄放櫃號", "確認領用人", "確認留存份數"],
+    "parts": [{"question": "支援窗口是誰？", "items": [2]}, {"question": "寄放櫃號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}, {"question": "留存份數是多少？", "items": [5]}],
+    "reply": "取消「安排支援窗口」。寄放櫃號還沒確認。領用人是洪淑靜。留存份數是 2 份。",
+    "cancelled": [2], "completed": [4, 5], "remaining": "寄放櫃號是多少？",
+    "followup": "留存份數改成 5 份，11 號，領用人先前填錯了，改為宋一珊。", "followup_completed": [3, 4, 5],
+    "followup_revisions": {"留存份數": "5 份", "領用人": "宋一珊"}, "measure_fallback_delivery": true,
+    "must_include": ["38", "11 號", "5 份", "宋一珊"], "must_omit": ["支援窗口", "洪淑靜", "2 份"]
+  },
+  {
+    "id": "a_reported_proposal_does_not_revive_or_replace_a_value",
+    "prompt": "梨梁 S6 核對件數、安排接待窗口、確認入場門號及領用人。",
+    "document": "梨梁 S6 共 15 件。\n",
+    "done": ["核對件數"], "pending": ["安排接待窗口", "確認入場門號", "確認領用人"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排接待窗口」。入場門號還沒確認。領用人為羅文靜。",
+    "cancelled": [2], "completed": [4], "remaining": "入場門號是多少？",
+    "followup": "7 號。有人提議『領用人改成江一蘭』，目前未採用。", "followup_completed": [], "followup_fallback": true
+  },
+  {
+    "id": "conflicting_replacements_stay_unverified",
+    "prompt": "青塘 E3 核對袋數、安排核銷窗口、確認出場門號及領用人。",
+    "document": "青塘 E3 共 21 袋。\n",
+    "done": ["核對袋數"], "pending": ["安排核銷窗口", "確認出場門號", "確認領用人"],
+    "parts": [{"question": "核銷窗口是誰？", "items": [2]}, {"question": "出場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排核銷窗口」。出場門號還沒確認。領用人為丁以彤。",
+    "cancelled": [2], "completed": [4], "remaining": "出場門號是多少？",
+    "followup": "10 號。領用人改為喬安怡。領用人改成鄧玉心。", "followup_completed": [], "followup_fallback": true
+  }
+]

@@ -66,7 +66,15 @@ def collect(path, case, frozen, *, live=False, suite=SUITE):
                               and state['reply_sources'][-1]['question'] == case['remaining'])
         if 'followup_cancelled' in case:
             checks['followup_cancelled'] = state['work_plan'].get('scope_cancelled', []) == case['followup_cancelled']
-    if live and 'must_include' in case and state['status'] == 'paused' and ('followup' not in case or checks['followup']):
+        if 'followup_revisions' in case:
+            proof = state['work_plan'].get('scope_reply', {})
+            checks['revisions'] = {row['field']: row['value'] for row in proof.get('revisions', ())} == case['followup_revisions']
+        if case.get('followup_fallback'):
+            checks['followup'] = ('after_followup' in row and state['steps'] == saved['steps']
+                                  and state['reply_sources'][-1]['answer'] == case['followup'])
+    ready_to_measure = 'followup' not in case or checks['followup'] or (
+        case.get('measure_fallback_delivery') and 'after_followup' in row)
+    if live and 'must_include' in case and state['status'] == 'paused' and ready_to_measure:
         engine = CodexEngine(path / 'engine')
 
         class Recorded:
