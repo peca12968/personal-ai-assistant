@@ -70,10 +70,33 @@ def collect(path, case, frozen, *, live=False, suite=SUITE):
             proof = state['work_plan'].get('scope_reply', {})
             checks['revisions'] = {row['field']: row['value'] for row in proof.get('revisions', ())} == case['followup_revisions']
         if case.get('followup_fallback'):
-            checks['followup'] = ('after_followup' in row and state['steps'] == saved['steps']
+            proof = state['work_plan'].get('scope_reply', {})
+            previous = saved['work_plan']['items']
+            safe = (state['steps'] == saved['steps'] or (not proof.get('revisions')
+                    and state['work_plan'].get('scope_cancelled', []) == saved['work_plan'].get('scope_cancelled', [])
+                    and all(old == new for old, new in zip(previous, state['work_plan']['items'], strict=True)
+                            if old['state'] == 'done')))
+            checks['followup'] = ('after_followup' in row and safe
                                   and state['reply_sources'][-1]['answer'] == case['followup'])
+        if 'pending_values' in case:
+            language = state['work_plan'].get('scope_reply', {}).get('language', {})
+            checks['pending_values'] = [[option['value'] for option in pending['options']]
+                                        for pending in language.get('pending_revisions', ())] == case['pending_values']
+        if 'declined_count' in case:
+            language = state['work_plan'].get('scope_reply', {}).get('language', {})
+            checks['declined'] = len(language.get('declined_proposals', ())) == case['declined_count']
+    if 'resolution_reply' in case:
+        if state['status'] == 'needs_input' and state['question'] == case['followup_remaining']:
+            state = row['after_resolution'] = reply(store, sid, gid, case['resolution_reply'])
+        result = state['work_plan'].get('scope_reply', {})
+        checks['resolution'] = ('after_resolution' in row and state['question'] == case.get('resolution_remaining', '')
+                                and state['work_plan']['conditions_current']
+                                and {rev['field']: rev['value'] for rev in result.get('revisions', ())} == case['resolution_revisions']
+                                and state['reply_sources'][-1]['question'] == case['followup_remaining'])
     ready_to_measure = 'followup' not in case or checks['followup'] or (
         case.get('measure_fallback_delivery') and 'after_followup' in row)
+    if 'resolution_reply' in case:
+        ready_to_measure = checks['resolution']
     if live and 'must_include' in case and state['status'] == 'paused' and ready_to_measure:
         engine = CodexEngine(path / 'engine')
 

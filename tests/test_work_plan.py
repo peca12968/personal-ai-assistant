@@ -1226,6 +1226,73 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(after['reply_sources'][-1]['answer'], '門號是 9 號。領用人改為周雅文。')
         validate_database(self.store.path)
 
+    def _wait_for_gate_with_confirmed_fields(self):
+        parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '門號是多少？', 'items': [2]},
+                 {'question': '領用人是誰？', 'items': [3]}, {'question': '留存份數是多少？', 'items': [4]}]
+        self.run_actions(action('update_plan', verify_delivery=True, items=[item(1, '安排窗口'), item(2, '確認門號'),
+                                item(3, '確認領用人'), item(4, '確認留存份數')]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        return self.save_scope_reply('取消「安排窗口」。門號還沒確認。領用人是林語安。留存份數是 3 份。')
+
+    def test_declined_quoted_proposal_is_saved_but_leaves_the_confirmed_value_intact(self):
+        before = self._wait_for_gate_with_confirmed_fields()
+        answer = '6 號。主管建議『領用人改成周雅文？』，本輪不採用。'
+        saved = self.save_scope_reply(answer)
+        proof = saved['work_plan']['scope_reply']
+        span = proof['language']['declined_proposals'][0]
+        self.assertEqual(answer[span['start']:span['end']], '主管建議『領用人改成周雅文？』，本輪不採用')
+        self.assertEqual(saved['work_plan']['items'][2], before['work_plan']['items'][2])
+        self.assertEqual(proof['completed_items'], [2])
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
+    def test_two_disputes_bind_to_successive_asks_and_preserve_a_draft_on_invalid_choice(self):
+        before = self._wait_for_gate_with_confirmed_fields()
+        waiting = self.save_scope_reply('6 號。領用人改成周雅文。領用人改為江明洋。留存份數改為 4 份或 6 份。')
+        plan = waiting['work_plan']
+        self.assertEqual(plan['items'][2:], before['work_plan']['items'][2:])
+        self.assertEqual(plan['delivery_review']['pending_revision_fields'], ['領用人', '留存份數'])
+        self.assertFalse(plan['delivery_review']['ready'])
+        self.assertEqual(waiting['question'], '領用人要改為「周雅文」或「江明洋」，還是沿用「林語安」？')
+        with self.assertRaisesRegex(ValueError, '待選更正'):
+            p.check_delivery(plan, plan['goal_conditions_sha256'], {'tool': 'finish', 'args': {}}, waiting['steps'])
+        with self.assertRaisesRegex(ValueError, '待選更正仍未確認'):
+            self.save_scope_reply('8 份。')
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid), waiting)
+        backup = create_backup(self.store.path, self.root / 'revision-choices.paibackup')
+        restore_backup(backup['path'], self.root / 'restored-choices')
+        restored = Store(self.root / 'restored-choices/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), waiting)
+        second = self.save_scope_reply('就用江明洋。', store=restored)
+        self.assertEqual(second['question'], '留存份數要改為「4 份」或「6 份」，還是沿用「3 份」？')
+        proof = second['work_plan']['scope_reply']
+        self.assertEqual(proof['language']['revision_resolution']['from'], waiting['reply_sources'][-1]['citation'])
+        self.assertEqual(proof['revisions'][0]['value'], '江明洋')
+        self.assertIn('江明洋', second['work_plan']['items'][2]['note'])
+        final = self.save_scope_reply('維持原值。', store=restored)
+        self.assertEqual(final['work_plan']['items'][3], before['work_plan']['items'][3])
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        validate_database(restored.path)
+        with restored.connect() as db:
+            host = waiting['steps'][-2]
+            bad = copy.deepcopy(host['observation'])
+            bad['scope_reply']['language']['pending_revisions'][0]['options'][0]['value'] = '另一人'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(bad), self.gid, host['sequence']))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_scope_removal_eliminates_a_choice_that_no_longer_affects_delivery(self):
+        before = self._wait_for_gate_with_confirmed_fields()
+        waiting = self.save_scope_reply('6 號。領用人改為周雅文或江明洋。')
+        self.assertIn('領用人要改為', waiting['question'])
+        after = self.save_scope_guidance('取消「確認領用人」。')
+        self.assertEqual(after['status'], 'paused')
+        self.assertFalse(after['question'])
+        self.assertEqual(after['work_plan']['items'][3], before['work_plan']['items'][3])
+        self.assertTrue(after['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,64 @@
+[
+  {
+    "id": "reported_proposal_declined_and_gate_confirmed",
+    "prompt": "楓灣 F6 核對件數、安排接待窗口、確認入場門號及領用人。只交現行欄位。",
+    "document": "楓灣 F6 共 34 件。\n",
+    "done": ["核對件數"], "pending": ["安排接待窗口", "確認入場門號", "確認領用人"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排接待窗口」。入場門號還沒確認。領用人為蘇怡安。",
+    "cancelled": [2], "completed": [4], "remaining": "入場門號是多少？",
+    "followup": "11 號。有人提議『領用人改成周雅文』，目前未採用。", "followup_completed": [3],
+    "declined_count": 1, "measure_fallback_delivery": true,
+    "must_include": ["34", "11 號", "蘇怡安"], "must_omit": ["周雅文", "接待窗口"]
+  },
+  {
+    "id": "a_declined_proposal_and_an_independent_explicit_change",
+    "prompt": "雲溪 M9 核對袋數、安排點交窗口、確認進場門號及領用人。只交最終值。",
+    "document": "雲溪 M9 共 16 袋。\n",
+    "done": ["核對袋數"], "pending": ["安排點交窗口", "確認進場門號", "確認領用人"],
+    "parts": [{"question": "點交窗口是誰？", "items": [2]}, {"question": "進場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排點交窗口」。進場門號還沒確認。領用人為許明霞。",
+    "cancelled": [2], "completed": [4], "remaining": "進場門號是多少？",
+    "followup": "同事建議「領用人改成趙雅昕」，本輪不採用。進場門號是 7 號。領用人改為林語安。",
+    "followup_completed": [3, 4], "followup_revisions": {"領用人": "林語安"}, "declined_count": 1,
+    "measure_fallback_delivery": true, "must_include": ["16", "7 號", "林語安"],
+    "must_omit": ["趙雅昕", "許明霞", "點交窗口"]
+  },
+  {
+    "id": "competing_replacements_wait_for_actual_selection",
+    "prompt": "榆澗 L2 核對件數、安排通知窗口、確認出場門號及領用人。只交最後確認的欄位。",
+    "document": "榆澗 L2 共 27 件。\n",
+    "done": ["核對件數"], "pending": ["安排通知窗口", "確認出場門號", "確認領用人"],
+    "parts": [{"question": "通知窗口是誰？", "items": [2]}, {"question": "出場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排通知窗口」。出場門號還沒確認。領用人為何星如。",
+    "cancelled": [2], "completed": [4], "remaining": "出場門號是多少？",
+    "followup": "9 號。領用人改成洪淑靜。領用人改為宋一珊。", "followup_completed": [3], "pending_values": [["洪淑靜", "宋一珊"]],
+    "followup_remaining": "領用人要改為「洪淑靜」或「宋一珊」，還是沿用「何星如」？",
+    "resolution_reply": "用宋一珊。", "resolution_revisions": {"領用人": "宋一珊"},
+    "must_include": ["27", "9 號", "宋一珊"], "must_omit": ["何星如", "洪淑靜", "通知窗口"]
+  },
+  {
+    "id": "a_single_clause_of_alternatives_can_keep_the_existing_value",
+    "prompt": "星田 C5 核對物件數、安排覆核窗口、確認入場門號及留存份數。只交已確認結果。",
+    "document": "星田 C5 共 22 件。\n",
+    "done": ["核對物件數"], "pending": ["安排覆核窗口", "確認入場門號", "確認留存份數"],
+    "parts": [{"question": "覆核窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}, {"question": "留存份數是多少？", "items": [4]}],
+    "reply": "取消「安排覆核窗口」。入場門號還沒確認。留存份數是 3 份。",
+    "cancelled": [2], "completed": [4], "remaining": "入場門號是多少？",
+    "followup": "8 號。留存份數改為 5 份或 6 份。", "followup_completed": [3], "pending_values": [["5 份", "6 份"]],
+    "followup_remaining": "留存份數要改為「5 份」或「6 份」，還是沿用「3 份」？",
+    "resolution_reply": "沿用原值。", "resolution_revisions": {},
+    "must_include": ["22", "8 號", "3 份"], "must_omit": ["5 份", "6 份", "覆核窗口"]
+  },
+  {
+    "id": "an_unresolved_report_is_not_read_as_a_declined_proposal",
+    "prompt": "霧塘 R4 核對袋數、安排值班窗口、確認入場門號及領用人。",
+    "document": "霧塘 R4 共 25 袋。\n",
+    "done": ["核對袋數"], "pending": ["安排值班窗口", "確認入場門號", "確認領用人"],
+    "parts": [{"question": "值班窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排值班窗口」。入場門號還沒確認。領用人為江明洋。",
+    "cancelled": [2], "completed": [4], "remaining": "入場門號是多少？",
+    "followup": "12 號。有人提議『領用人改成葉舒禾』，等主管答覆。", "followup_completed": [],
+    "followup_fallback": true, "declined_count": 0
+  }
+]

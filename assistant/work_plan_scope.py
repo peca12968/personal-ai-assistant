@@ -9,7 +9,7 @@ GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項
 {"question":"收貨窗口是誰？\n入場門號是多少？","plan_questions":[{"question":"收貨窗口是誰？","items":[2]},{"question":"入場門號是多少？","items":[3]}]}。
 question 逐行等於各分問。items 填這個問題實際影響的所有未完成項目；一個獨立分問對應一個資料缺漏，無關的問題不綁進清單。
 scope_cancelled 列出使用者已取消的項目。當前成果只交保留項目的實際結果。取消項目和原因已保存於工作清單，除非使用者要求一併交代，定稿省略已取消項目的名稱、經過及結果。
-scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。revisions 保存使用者更正後的值、舊依據和須重核的項目。成果使用現行值並引用新回覆。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。'''
+scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。revisions 保存使用者更正後的值、舊依據和須重核的項目。成果使用現行值並引用新回覆。declined_proposals 已明示未採用。pending_revisions 保存待選原話，選定前沿用最後確認值。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。'''
 _CANCEL = re.compile(r'(?:本輪|這次|本次)?\s*(?:先取消|取消|先不做|不做|先暫停|暫停|不用再做)\s*(.+)')
 _TITLES = re.compile(r'「[^「」\r\n]+」(?:\s*(?:、|，|,|及|和|與)\s*「[^「」\r\n]+」)*')
 _UNCHANGED = {'其他項目照舊', '其餘項目照舊', '其他項目維持原樣', '其餘照舊', '其他照舊'}
@@ -35,6 +35,11 @@ _REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\
                        r'(?:(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
                        rf'{_REVISION_VERB}\s*(.+)')
 _REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern})')
+_DECLINE = r'(?:(?:目前|本輪|這次)\s*)?(?:未採用|尚未採用|沒有採用|不採用|先不採用|維持原值)'
+_DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:提議|建議)\s*'
+                                r'(?:「[^」\r\n]{1,200}」|『[^』\r\n]{1,200}』)\s*[，,、]?\s*' + _DECLINE)
+_PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
+_KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改', '保持原值'}
 
 
 def validate_questions(args):
@@ -65,9 +70,10 @@ def bind_questions(args, steps):
         raise ValueError('須先保存工作清單，才能依工作項目提問。')
     active = {row['id'] for row in plan['items'] if row['state'] not in {'done', 'superseded'}}
     receipt = _scope_receipt(plan)
-    cancellation = receipt.get('language', {}).get('cancellation')
-    if cancellation and args == receipt['successor']:
-        active.update(cancellation['items'])
+    language = receipt.get('language', {})
+    choice = language.get('cancellation') or next(iter(language.get('pending_revisions', ())), None)
+    if choice and args == receipt['successor']:
+        active.update(choice['items'])
     parts = args['plan_questions']
     if any(not set(part['items']) <= active for part in parts):
         raise ValueError('問題只能連到仍需處理的工作項目。')
@@ -309,7 +315,7 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1):
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version in (2, 3):
+    if version in (2, 3, 4):
         return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version)
     fields = [_asked_field(part, tasks) for part in parts]
     prefixes = '|'.join(re.escape(name) for name in fields if name)
@@ -451,7 +457,7 @@ def _bare_value(clause, *, numeric):
     return _value(literal) if clause.startswith('「') else None
 
 
-def _natural_fields(clauses, parts, fields, cancelled):
+def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True):
     statements, unassigned = {}, []
     active = [index for index, part in enumerate(parts) if set(part['items']) - cancelled]
     for start, raw in clauses:
@@ -469,7 +475,7 @@ def _natural_fields(clauses, parts, fields, cancelled):
                 outcome = ('confirmed', rest)
             if outcome and (not numeric or outcome[1] is None or _NUMBER.fullmatch(outcome[1])):
                 matches.append((index, outcome))
-        if not matches:
+        if not matches and allow_bare:
             for index in active:
                 numeric = bool(_NUMERIC_QUESTION.search(parts[index]['question']))
                 if value := _bare_value(clause, numeric=numeric):
@@ -528,7 +534,10 @@ def _retain_language(previous, cancelled):
     pending = previous['cancellation']
     if pending and set(pending['items']) & cancelled:
         pending = None
-    return {'waiting': waiting, 'cancellation': pending}
+    retained = {'waiting': waiting, 'cancellation': pending}
+    if 'pending_revisions' in previous:
+        retained['pending_revisions'] = _trim_revision_choices(previous['pending_revisions'], cancelled)
+    return retained
 
 
 def _show_waiting(language, tasks):
@@ -536,6 +545,11 @@ def _show_waiting(language, tasks):
         ids = cancellation['items']
         choices = '或'.join(f'「{tasks[number]}」' for number in ids)
         return [{'question': f'要取消哪一項？請選{choices}，也可回答「都保留」。', 'items': ids}]
+    if pending := language.get('pending_revisions'):
+        choice = pending[0]
+        old = choice['previous']['value']
+        values = '或'.join(f'「{row["value"]}」' for row in choice['options'])
+        return [{'question': f'{choice["field"]}要改為{values}，還是沿用「{old}」？', 'items': choice['items']}]
     return [{**entry['part'], 'question': entry['display']} for entry in language['waiting']]
 
 
@@ -546,10 +560,14 @@ def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks
     waiting = previous.get('waiting', [])
     if previous:
         parts = [entry['part'] for entry in waiting]
-    comma = _REVISION_COMMA if version == 3 else _PLAIN_COMMA
+    comma = {3: _REVISION_COMMA, 4: _PENDING_COMMA}.get(version, _PLAIN_COMMA)
     clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma)
     if not clauses or any(question_mark for _, _, question_mark in clauses):
         return None
+    declined = []
+    if version == 4:
+        declined = [_literal_span(start, clause) for start, clause, _ in clauses if _DECLINED_PROPOSAL.fullmatch(clause)]
+        clauses = [entry for entry in clauses if not _DECLINED_PROPOSAL.fullmatch(entry[1])]
     scope_parts = _natural_scope(clauses, plan, tasks, previous.get('cancellation'), source)
     if scope_parts is None:
         return None
@@ -557,20 +575,27 @@ def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks
     if not (changes or pending or resolution or follows):
         return None
     cancelled = {number for change in changes for number in change['items']}
+    language = {'cancellation': pending, 'resolution': resolution, 'unassigned': [], 'previous_waiting': waiting}
     revisions = ()
-    if version == 3:
+    if version in (3, 4):
         if not follows or prior_scope != plan['goal_conditions_sha256']:
             return None
-        revised = _parse_revisions(field_clauses, steps, plan, tasks, cancelled)
+        if version == 4:
+            revised = _parse_revision_choices(field_clauses, steps, plan, tasks, cancelled, previous, source, declined)
+        else:
+            revised = _parse_revisions(field_clauses, steps, plan, tasks, cancelled)
         if revised is None:
             return None
-        field_clauses, revisions = revised
+        field_clauses, revisions = revised[:2]
+        if version == 4:
+            language.update(revised[2])
     fields = [_asked_field(part, tasks) for part in parts]
-    replies = _natural_fields(field_clauses, parts, fields, cancelled)
+    explicit = version == 4 and bool(previous.get('pending_revisions') or previous.get('cancellation'))
+    replies = _natural_fields(field_clauses, parts, fields, cancelled, allow_bare=not explicit)
     if replies is None:
         return None
     parsed, unassigned = replies
-    language = {'cancellation': pending, 'resolution': resolution, 'unassigned': unassigned, 'previous_waiting': waiting}
+    language['unassigned'] = unassigned
     return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed,
                          language=language, revisions=revisions)
 
@@ -621,7 +646,6 @@ def _parse_revisions(clauses, steps, plan, tasks, cancelled):
         return None
     confirmed = _confirmed_fields(steps, plan, tasks)
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded' and row['id'] not in cancelled}
-    required = {row['id'] for row in plan.get('evidence_requirements', ())}
     remaining, revisions, seen = [], [], set()
     for start, clause in clauses:
         match = _REVISION.fullmatch(clause)
@@ -638,19 +662,109 @@ def _parse_revisions(clauses, steps, plan, tasks, cancelled):
         if _NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value):
             return None
         seen.add(field)
-        ids = set(previous['items']) & active.keys()
-        collected = sorted(number for number in (ids & set(previous['collected_items'])) - required
-                           if active[number]['state'] == 'done' and active[number]['evidence_steps'] == [previous['step']])
-        recheck = []
-        dependent = _dependent_operands(plan, previous, field)
-        if _value_identity(value) != _value_identity(previous['value']):
-            recheck = sorted(((ids | dependent.keys()) & active.keys()) - set(collected))
-        revisions.append({'field': field, 'question': question, 'items': sorted(ids), 'value': value,
-                          'evidence': _literal_span(start, clause), 'previous': previous,
-                          'collected_items': collected, 'recheck_items': recheck,
-                          'operand_paths': [{'id': number, 'paths': sorted(dependent[number])}
-                                            for number in sorted(dependent.keys() & active.keys())]})
+        revisions.append(_revision_entry(plan, active, field, question, previous, value, _literal_span(start, clause)))
     return remaining, revisions
+
+
+def _revision_entry(plan, active, field, question, previous, value, evidence):
+    required = {row['id'] for row in plan.get('evidence_requirements', ())}
+    ids = set(previous['items']) & active.keys()
+    collected = sorted(number for number in (ids & set(previous['collected_items'])) - required
+                       if active[number]['state'] == 'done' and active[number]['evidence_steps'] == [previous['step']])
+    dependent = _dependent_operands(plan, previous, field)
+    changed = _value_identity(value) != _value_identity(previous['value'])
+    recheck = sorted(((ids | dependent.keys()) & active.keys()) - set(collected)) if changed else []
+    return {'field': field, 'question': question, 'items': sorted(ids), 'value': value, 'evidence': evidence,
+            'previous': previous, 'collected_items': collected, 'recheck_items': recheck,
+            'operand_paths': [{'id': number, 'paths': sorted(dependent[number])}
+                              for number in sorted(dependent.keys() & active.keys())]}
+
+
+def _trim_revision_choices(choices, cancelled):
+    return [{**row, 'items': items} for row in choices
+            if (items := [number for number in row['items'] if number not in cancelled])]
+
+
+def _revision_selection(clause, match, choice):
+    if clause in _KEEP_VALUE:
+        return choice['previous']['value']
+    if match:
+        if (match[1] or match[2]).strip() != choice['field']:
+            return None
+        literal = match[3].strip()
+    else:
+        literal = re.sub(r'^(?:就用|改用|選用|採用|沿用|選|用)\s*', '', clause, count=1)
+    value = _value(literal)
+    if value is not None and any(_value_identity(value) == _value_identity(row)
+                                 for row in [choice['previous']['value'], *(row['value'] for row in choice['options'])]):
+        return value
+    return None
+
+
+def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, source, declined):
+    confirmed = _confirmed_fields(steps, plan, tasks)
+    active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded' and row['id'] not in cancelled}
+    prior = previous.get('pending_revisions', [])
+    pending = _trim_revision_choices(prior, cancelled)
+    shown = prior[0] if prior and not previous.get('cancellation') and pending and pending[0]['field'] == prior[0]['field'] else None
+    remaining, revisions, grouped = [], [], {}
+    resolution = None
+    for start, clause in clauses:
+        evidence = _literal_span(start, clause)
+        match = _REVISION.fullmatch(clause)
+        if shown and (selected := _revision_selection(clause, match, shown)) is not None:
+            if resolution:
+                return None
+            old = shown['previous']
+            keep = _value_identity(selected) == _value_identity(old['value'])
+            resolution = {'field': shown['field'], 'value': selected, 'kept': keep, 'evidence': evidence,
+                          'from': shown['citation'], 'source_sha256': shown['source_sha256']}
+            if not keep:
+                revisions.append(_revision_entry(plan, active, shown['field'], shown['question'], old, selected, evidence))
+            pending = pending[1:]
+            continue
+        if match is None:
+            remaining.append((start, clause))
+            continue
+        field = (match[1] or match[2]).strip()
+        if (resolution and field == resolution['field']) or any(row['field'] == field for row in pending):
+            return None
+        literals = re.split(r'\s*(?:或者|或是|或)\s*', match[3].strip())
+        options = [{'value': _value(literal), 'evidence': evidence} for literal in literals]
+        if any(row['value'] is None for row in options):
+            return None
+        grouped.setdefault(field, []).extend(options)
+
+    out_of_scope = []
+    for field, options in grouped.items():
+        candidates = [(question, row) for question, row in confirmed.items() if row['field'] == field]
+        if len(candidates) != 1:
+            return None
+        question, old = candidates[0]
+        if _NUMERIC_QUESTION.search(question) and any(not _NUMBER.fullmatch(row['value']) for row in options):
+            return None
+        items = sorted((set(old['items']) | _dependent_operands(plan, old, field).keys()) & active.keys())
+        if not items:
+            if not set(old['items']) & cancelled:
+                return None
+            out_of_scope.append({'field': field, 'options': options})
+            continue
+        identities = {}
+        for row in options:
+            identities.setdefault(_value_identity(row['value']), row)
+        if len(identities) == 1:
+            selected = next(iter(identities.values()))
+            revisions.append(_revision_entry(plan, active, field, question, old, selected['value'], selected['evidence']))
+            continue
+        alternatives = [row for identity, row in identities.items() if identity != _value_identity(old['value'])]
+        if len(alternatives) > 4:
+            return None
+        pending.append({'field': field, 'question': question, 'previous': old, 'items': items, 'options': alternatives,
+                        'statements': options, 'citation': source['citation'], 'source_sha256': source['sha256']})
+    if not (declined or pending or resolution or prior or out_of_scope):
+        return None
+    return remaining, revisions, {'declined_proposals': declined, 'pending_revisions': pending,
+                                  'revision_resolution': resolution, 'out_of_scope_revisions': out_of_scope}
 
 
 def _apply_revisions(result, proof, complete, plan, revisions, source):
@@ -703,8 +817,8 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
 
 def replay_reply(args, prior, after, goal, replies):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3) else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3):
+    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4) else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

@@ -39,18 +39,29 @@ def _save_scope_reply(db, current, steps, notes):
     replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
     scope_goal = _condition_goal(db, goal, goal['notes'])
     scopes = work_plan.conditions({**scope_goal, 'notes': notes}), work_plan.conditions(scope_goal)
-    versions = (2,) if work_plan_scope.language_followup(steps) else (1, 2)
-    if '改' in replies[-1]['answer'] or '更正' in replies[-1]['answer']:
+    language = work_plan_scope.language_followup(steps) or {}
+    pending_revision = bool(language.get('pending_revisions'))
+    versions = (2,) if language else (1, 2)
+    answer = replies[-1]['answer']
+    if '改' in answer or '更正' in answer:
         versions = (3, *versions)
+    if pending_revision and scopes[1] == work_plan.latest(steps)['goal_conditions_sha256']:
+        versions = (4,)
+    elif any(word in answer for word in ('改', '更正', '提議', '建議')):
+        versions = (4, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version)
         if result is not None:
             break
     else:
+        if versions == (4,):
+            raise ValueError('待選更正仍未確認。請明確選擇目前列出的值或沿用原值。')
         return False
     proof = result['scope_reply']
     successor = proof['successor']
-    if not current['sources_match'] or count + (3 if successor else 2) > MAX_STEPS:
+    pending = proof.get('language', {}).get('pending_revisions', ())
+    minimum = max(3 if successor else 2, 2 + 2 * len(pending))
+    if not current['sources_match'] or count + minimum > MAX_STEPS:
         raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
     args = {'scope_reply': proof['citation']}
     if version != 1:

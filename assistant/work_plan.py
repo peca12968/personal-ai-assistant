@@ -383,6 +383,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     previous_requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
     requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources, by_id)
     same_scope = previous is not None and previous['goal_conditions_sha256'] == scope
+    if same_scope and _pending_revision_fields(previous):
+        raise ValueError('須先保存待選更正的實際答覆。')
     prior_cancelled = previous.get('scope_cancelled', ()) if previous else ()
     if same_scope and any(by_id[number]['state'] != 'superseded' for number in prior_cancelled):
         raise ValueError('使用者已取消的工作項目須保留取消狀態。')
@@ -431,8 +433,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                if (step['action'].get('args') not in (original, {**original, 'scope_reply_version': 2},
-                                                     {**original, 'scope_reply_version': 3})
+                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4)))
+                if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
@@ -510,8 +512,11 @@ def _covering_read_steps(requirement, old_excerpts):
 def _delivery_review(plan, goal, scope, sources_current):
     by_sequence = {step['sequence']: step for step in goal['steps']}
     open_items = _open_items(plan)
-    review = {'ready': plan['conditions_current'] and not open_items, 'open_items': open_items,
+    pending_fields = _pending_revision_fields(plan)
+    review = {'ready': plan['conditions_current'] and not open_items and not pending_fields, 'open_items': open_items,
               'recheck_items': [], 'reusable_documents': []}
+    if pending_fields:
+        review['pending_revision_fields'] = pending_fields
     if plan['conditions_current']:
         return review
     calculations, rechecks = _calculation_reuse_review(
@@ -561,7 +566,14 @@ def _delivery_review(plan, goal, scope, sources_current):
     return review
 
 
+def _pending_revision_fields(plan):
+    proof = plan.get('scope_reply') or plan.get('scope_change') or {}
+    return [row['field'] for row in proof.get('language', {}).get('pending_revisions', ())]
+
+
 def check_delivery(plan, scope, action, steps):
+    if plan and plan['goal_conditions_sha256'] == scope and (pending_fields := _pending_revision_fields(plan)):
+        raise ValueError('交付前請確認「' + '、'.join(pending_fields) + '」的待選更正。')
     if plan is None or not plan.get('verify_delivery'):
         return None
     if plan['goal_conditions_sha256'] != scope:
@@ -604,6 +616,8 @@ def describe(value):
     if 'delivery_review' in value:
         review = value['delivery_review']
         lines.append('工作清單已通過交付核對。' if review['ready'] else '交付前仍需核對目前的工作清單。')
+        if pending_fields := review.get('pending_revision_fields'):
+            lines.append('仍待確認的更正 · ' + '、'.join(pending_fields))
         lines.extend(_calculation_recheck_message(row) for row in review.get('calculation_rechecks', ()))
     if value.get('evidence_matches'):
         numbers = '、'.join(str(row['id']) for row in value['evidence_matches'])
