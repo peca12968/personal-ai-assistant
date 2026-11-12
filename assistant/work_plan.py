@@ -116,7 +116,8 @@ def latest(steps):
                 value['reused_document_steps'] = observation['reused_document_steps']
             if observation.get('verify_delivery') is True:
                 value['verify_delivery'] = True
-            for key in ('evidence_requirements', 'evidence_matches', 'reused_calculations', 'scope_change', 'scope_cancelled'):
+            for key in ('evidence_requirements', 'evidence_matches', 'reused_calculations', 'scope_change', 'scope_reply',
+                        'scope_cancelled'):
                 if key in observation:
                     value[key] = observation[key]
             return value
@@ -392,9 +393,14 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                     calculation_proofs.append(candidate)
         for number in item['evidence_steps']:
             step = by_sequence.get(number)
-            if step is None or step['action']['tool'] in {'update_plan', 'ask', 'finish', 'deliver'}:
+            if step is None or step['action']['tool'] in {'ask', 'finish', 'deliver'}:
                 raise ValueError('證據需指向本目標先前已執行的實際工具，不能引用清單或宣告。')
             observed = step['observation']
+            if step['action']['tool'] == 'update_plan':
+                verified = observed.get('scope_reply', {})
+                if (step['action'].get('args') != {'scope_reply': verified.get('citation')}
+                        or item_id not in verified.get('completed_items', ())):
+                    raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
                     observed.get('status') in ('failed', 'cancelled') or
                     any(row['status'] != 'provided' for row in observed.get('requested_ranges', [])) or
@@ -586,8 +592,10 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
                           'ORDER BY sequence', (gid,)).fetchall()
         has_operands = any('"operands"' in row[1] for row in rows)
-        has_scope_change = any('"scope_correction"' in row[1] for row in rows)
-        replies = goal_reply_sources.read(db, gid, notes) if has_operands and replies_present else []
+        has_scope_reply = any('"scope_reply"' in row[1] for row in rows)
+        has_scope_change = has_scope_reply or any('"scope_correction"' in row[1] for row in rows)
+        replies = (goal_reply_sources.read(db, gid, notes, include_positions=has_scope_reply)
+                   if (has_operands or has_scope_reply) and replies_present else [])
         guidance = goal_guidance_sources.read(db, gid, notes, len(rows)) if (has_operands or has_scope_change) and guidance_present else []
         steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for sequence, action, observation in rows]
@@ -612,18 +620,21 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 scope = observation.get('goal_conditions_sha256')
                 if not isinstance(scope, str) or not re.fullmatch('[a-f0-9]{64}', scope):
                     raise ValueError('工作清單缺少有效的條件紀錄。')
+                next_step = steps[index + 1] if index + 1 < len(steps) else None
                 if 'scope_correction' in args:
-                    next_step = steps[index + 1] if index + 1 < len(steps) else None
                     expected = work_plan_scope.replay(db, args, prior, next_step,
                         {**scope_goal, 'sources': history.get(sequence, sources)}, guidance,
                         withdrawals_present='autonomous_question_withdrawals' in available)
+                elif 'scope_reply' in args:
+                    expected = work_plan_scope.replay_reply(args, prior, next_step,
+                        {**scope_goal, 'sources': history.get(sequence, sources)}, replies)
                 else:
                     expected = observe(args, prior, scope, sources, objective=objective,
                                        reply_sources=replies, guidance_sources=guidance)
                 if any(observation.get(key) != expected.get(key)
                        for key in ('status', 'items', 'reused_document_steps', 'verify_delivery',
                                    'goal_conditions_sha256', 'evidence_requirements', 'evidence_matches',
-                                   'reused_calculations', 'scope_change', 'scope_cancelled')):
+                                   'reused_calculations', 'scope_change', 'scope_reply', 'scope_cancelled')):
                     raise ValueError('工作清單與保存動作不一致。')
             if action['tool'] in DELIVERY_TOOLS or 'plan_check_step' in observation:
                 scope = observation.get('goal_conditions_sha256')

@@ -1,0 +1,92 @@
+[
+  {
+    "id": "cancel_window_and_confirm_gate",
+    "prompt": "青灣 H3 要核對袋數、安排收貨窗口及確認入場門號。依目前工作清單只交仍需的結果。兩項未確認資料分行問。",
+    "document": "青灣 H3 共 11 袋。\n",
+    "done": ["核對袋數"],
+    "pending": ["安排收貨窗口", "確認入場門號"],
+    "parts": [{"question": "收貨窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}],
+    "reply": "取消「安排收貨窗口」，入場門號是 3 號。",
+    "cancelled": [2],
+    "completed": [3],
+    "must_include": ["11", "3"],
+    "must_omit": ["收貨窗口"]
+  },
+  {
+    "id": "defer_the_gate_then_answer_the_preserved_question",
+    "prompt": "竹灣 L6 要核對件數、安排點交窗口及確認進場門號。依目前工作清單交付。兩項未確認資料分行問。",
+    "document": "竹灣 L6 共 16 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排點交窗口", "確認進場門號"],
+    "parts": [{"question": "點交窗口是誰？", "items": [2]}, {"question": "進場門號是多少？", "items": [3]}],
+    "reply": "先不做「安排點交窗口」。進場門號還沒確認。",
+    "cancelled": [2],
+    "completed": [],
+    "remaining": "進場門號是多少？",
+    "followup": "7 號。",
+    "followup_completed": [3],
+    "must_include": ["16", "7"],
+    "must_omit": ["點交窗口"]
+  },
+  {
+    "id": "two_fields_have_the_same_value",
+    "prompt": "水樺 K8 要核對物資箱數、確認進場門號、確認領用份數，還要安排複核窗口。依目前工作清單交付。把三項資料分開問。",
+    "document": "水樺 K8 已核對 12 箱。\n",
+    "done": ["核對箱數"],
+    "pending": ["確認進場門號", "確認領用份數", "安排複核窗口"],
+    "parts": [{"question": "進場門號是多少？", "items": [2]}, {"question": "領用份數是多少？", "items": [3]}, {"question": "複核窗口是誰？", "items": [4]}],
+    "reply": "領用份數為 5 份，取消「安排複核窗口」，進場門號是 5 號。",
+    "cancelled": [4],
+    "completed": [2, 3],
+    "must_include": ["12", "5 份", "5 號"],
+    "must_omit": ["複核窗口"]
+  },
+  {
+    "id": "shared_question_keeps_its_active_dependency",
+    "prompt": "木浜 P4 要核對箱數、製作入場清單、製作車輛表及確認領用人。門號影響兩份表。依現行清單交付。",
+    "document": "木浜 P4 已核對 9 箱。\n",
+    "done": ["核對箱數"],
+    "pending": ["製作入場清單", "製作車輛表", "確認領用人"],
+    "parts": [{"question": "進場門號是多少？", "items": [2, 3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「製作車輛表」。領用人為「陳怡君」。",
+    "cancelled": [3],
+    "completed": [4],
+    "remaining": "進場門號是多少？",
+    "remaining_items": [2]
+  },
+  {
+    "id": "leave_a_choice_pending_without_completing_an_item",
+    "prompt": "榛渡 F3 要核對件數、安排接待窗口及確認寄放櫃號。依清單交付。",
+    "document": "榛渡 F3 有 4 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排接待窗口", "確認寄放櫃號"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "寄放櫃號是多少？", "items": [3]}],
+    "reply": "取消「安排接待窗口」。寄放櫃號是 3 號或 4 號。",
+    "cancelled": [2],
+    "completed": [],
+    "remaining": "寄放櫃號是多少？"
+  },
+  {
+    "id": "reported_proposal_is_not_an_instruction",
+    "prompt": "蘆橋 J6 要核對件數、安排接待窗口及確認寄放櫃號。依清單交付。",
+    "document": "蘆橋 J6 有 6 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排接待窗口", "確認寄放櫃號"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "寄放櫃號是多少？", "items": [3]}],
+    "reply": "有人提議「取消安排接待窗口」，目前未採用。寄放櫃號是 3 號。",
+    "cancelled": []
+  },
+  {
+    "id": "answer_can_be_used_without_claiming_a_table_is_finished",
+    "prompt": "杏堤 Q2 要核對件數、安排接待窗口、製作寄放標籤。寄放標籤須含櫃號及標籤色。",
+    "document": "杏堤 Q2 有 8 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排接待窗口", "製作寄放標籤"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "寄放櫃號是多少？", "items": [3]}, {"question": "標籤色是什麼？", "items": [3]}],
+    "reply": "寄放櫃號是 9 號。取消「安排接待窗口」。",
+    "cancelled": [2],
+    "completed": [],
+    "remaining": "標籤色是什麼？",
+    "remaining_items": [3]
+  }
+]

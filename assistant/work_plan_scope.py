@@ -7,13 +7,25 @@ from . import goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
 GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項目，提問使用 plan_questions，例如
 {"question":"收貨窗口是誰？\n入場門號是多少？","plan_questions":[{"question":"收貨窗口是誰？","items":[2]},{"question":"入場門號是多少？","items":[3]}]}。
 question 逐行等於各分問。items 填這個問題實際影響的所有未完成項目；一個獨立分問對應一個資料缺漏，無關的問題不綁進清單。
-scope_cancelled 列出使用者已取消的項目。當前成果只交保留項目的實際結果。取消項目和原因已保存於工作清單，除非使用者要求一併交代，定稿省略已取消項目的名稱、經過及結果。'''
+scope_cancelled 列出使用者已取消的項目。當前成果只交保留項目的實際結果。取消項目和原因已保存於工作清單，除非使用者要求一併交代，定稿省略已取消項目的名稱、經過及結果。
+scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。'''
 _CANCEL = re.compile(r'(?:本輪|這次|本次)?\s*(?:先取消|取消|先不做|不做|先暫停|暫停|不用再做)\s*(.+)')
 _TITLES = re.compile(r'「[^「」\r\n]+」(?:\s*(?:、|，|,|及|和|與)\s*「[^「」\r\n]+」)*')
 _UNCHANGED = {'其他項目照舊', '其餘項目照舊', '其他項目維持原樣', '其餘照舊', '其他照舊'}
 _OUTPUT_ONLY = re.compile(r'只(?:交付|交|提供|要)(?:已核對的|已確認的)?[\u4e00-\u9fff、]{1,45}')
 _SCOPE_COMMA = re.compile(r'\s*(?:先取消|取消|先不做|不做|先暫停|暫停|不用再做|其餘|其他|只交|只提供|只要)')
 _WORK_VERB = re.compile(r'^(?:安排|確認|核對|決定|記錄|填寫)')
+_COLLECT_FIELD = re.compile(r'^(?:確認|記錄|登記|填寫)')
+_ASK_FIELD = re.compile(r'(?:是誰|為誰|是哪位|是什麼|是多少|有多少|要用哪個|是哪一個|是哪個)[？?]$')
+_NUMERIC_QUESTION = re.compile(r'(?:是|有)多少[？?]$')
+_FIELD_NAME = re.compile(r'[\u4e00-\u9fffA-Za-z0-9][\u4e00-\u9fffA-Za-z0-9 _-]{1,30}')
+_REPLY_CONNECTOR = r'(?:(?:另外|然後)\s*)?'
+_ASSIGN = re.compile(r'(?:已確認為|已確認是|確定為|確定是|是|為|：|:)\s*(.+)')
+_DEFERRED = re.compile(r'(?:目前\s*)?(?:還沒確認|還未確認|尚未確認|未確認|待確認|還要確認|尚待確認|未知|還不知道|先不決定|稍後確認)')
+_NUMBER = re.compile(r'(?:[0-9０-９]+(?:\.[0-9０-９]+)?|[零〇一二兩三四五六七八九十百千]+)\s*(?:[號号份件箱袋組張位人個座樓層班]|分鐘|小時)?')
+_CODE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,23}')
+_SHORT_WORD = re.compile(r'[\u4e00-\u9fff]{1,12}')
+_UNCERTAIN = re.compile(r'待|未|還|不|暫|可能|大概|或|應該|也許|若|如果|請|要|確認|取消|改成|改為|另外|同時|再說|回覆|晚點|等下|稍後')
 
 
 def validate_questions(args):
@@ -71,12 +83,17 @@ def _legacy_parts(question, plan):
 
 
 def cancellations(source, plan):
+    clauses = goal_guidance_sources.standalone_clauses(source['content'], comma_before=_SCOPE_COMMA)
+    return _cancellations(clauses, plan)
+
+
+def _cancellations(clauses, plan):
     ids_by_task = {}
     for item in plan['items']:
         ids_by_task.setdefault(item['task'], []).append(item['id'])
     active = {item['id'] for item in plan['items'] if item['state'] != 'superseded'}
     changes, used, outputs = [], set(), []
-    for start, clause, question in goal_guidance_sources.standalone_clauses(source['content'], comma_before=_SCOPE_COMMA):
+    for start, clause, question in clauses:
         if question:
             return []
         if clause in _UNCHANGED:
@@ -106,7 +123,7 @@ def cancellations(source, plan):
     return changes
 
 
-def _successor(steps, plan, cancelled):
+def _waiting_parts(steps, plan):
     ask = steps[-1]
     action, observation = ask['action'], ask['observation']
     args = action['args']
@@ -120,6 +137,17 @@ def _successor(steps, plan, cancelled):
         parts = binding['parts']
     else:
         parts = _legacy_parts(question, plan)
+    return question, parts
+
+
+def _next_question(parts):
+    if parts:
+        return {'question': '\n'.join(part['question'] for part in parts), 'plan_questions': parts}
+    return None
+
+
+def _successor(steps, plan, cancelled):
+    question, parts = _waiting_parts(steps, plan)
     if not parts:
         return {'question': question}
     remaining = []
@@ -127,7 +155,7 @@ def _successor(steps, plan, cancelled):
         ids = [number for number in part['items'] if number not in cancelled]
         if ids:
             remaining.append({'question': part['question'], 'items': ids})
-    return {'question': '\n'.join(part['question'] for part in remaining), 'plan_questions': remaining} if remaining else None
+    return _next_question(remaining)
 
 
 def observe(steps, source, scope, prior_scope, *, waiting):
@@ -137,6 +165,16 @@ def observe(steps, source, scope, prior_scope, *, waiting):
     changes = cancellations(source, plan)
     if not changes:
         return None
+    cancelled = {number for change in changes for number in change['items']}
+    result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
+    if waiting:
+        proof.update(ask_sequence=steps[-1]['sequence'], ask_sha256=goal_stages.digest(steps[-1]),
+                     successor=_successor(steps, plan, cancelled))
+    result['scope_change'] = proof
+    return result
+
+
+def _scope_update(steps, plan, source, changes, scope, prior_scope):
     cancelled = {number for change in changes for number in change['items']}
     current = prior_scope == plan['goal_conditions_sha256']
     items = []
@@ -153,10 +191,7 @@ def observe(steps, source, scope, prior_scope, *, waiting):
     proof = {'citation': source['citation'], 'source_sha256': source['sha256'], 'changes': changes,
              'plan_step': plan['sequence'], 'plan_sha256': goal_stages.digest(steps[plan['sequence'] - 1]),
              'prior_scope': prior_scope, 'retained_items': [item['id'] for item in items if item['id'] in retained]}
-    if waiting:
-        proof.update(ask_sequence=steps[-1]['sequence'], ask_sha256=goal_stages.digest(steps[-1]),
-                     successor=_successor(steps, plan, cancelled))
-    result = {'status': 'plan_recorded', 'items': items, 'goal_conditions_sha256': scope, 'scope_change': proof,
+    result = {'status': 'plan_recorded', 'items': items, 'goal_conditions_sha256': scope,
               'scope_cancelled': sorted(cancelled | set(plan.get('scope_cancelled', ()))),
               'review_note': '依實際更正更新工作清單，先前步驟及答覆仍可核對。'}
     if plan.get('verify_delivery'):
@@ -166,6 +201,126 @@ def observe(steps, source, scope, prior_scope, *, waiting):
             {**item, 'defined_scope': scope} if item['id'] in retained else item
             for item in plan['evidence_requirements']]
         result['evidence_matches'] = [item for item in plan['evidence_matches'] if item['id'] in retained]
+    return result, proof
+
+
+def _asked_field(part, tasks):
+    match = _ASK_FIELD.search(part['question'])
+    if match is None:
+        return ''
+    name = part['question'][:match.start()].removeprefix('請問').strip()
+    candidates = {_target(tasks[number]).removeprefix('登記') for number in part['items']}
+    candidates = {item for item in candidates if name == item or name.endswith(('的' + item, '的正式' + item))}
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    # A shared question can ask a field which is not itself the title of any task.
+    name = name.rsplit('的', 1)[-1].removeprefix('正式')
+    return name if _FIELD_NAME.fullmatch(name) else ''
+
+
+def _value(literal):
+    if re.fullmatch(r'「[^「」\r\n]{1,40}」', literal):
+        literal = literal[1:-1].strip()
+    if literal.casefold() in {'tbd', 'unknown', 'none', 'null', 'na', '有', '無', '沒有', '某人', '有人', '等等'}:
+        return None
+    if (_NUMBER.fullmatch(literal) or _CODE.fullmatch(literal)
+            or (_SHORT_WORD.fullmatch(literal) and not _UNCERTAIN.search(literal))):
+        return literal
+    return None
+
+
+def _reply_value(text):
+    if _DEFERRED.fullmatch(text):
+        return 'deferred', None
+    if match := _ASSIGN.fullmatch(text):
+        literal = match[1]
+        if _DEFERRED.fullmatch(literal):
+            return 'deferred', None
+        choices = re.split(r'\s*(?:或者|或是|或)\s*', literal)
+        if len(choices) > 1 and all(_value(item) is not None for item in choices):
+            return 'ambiguous', None
+        if value := _value(literal):
+            return 'confirmed', value
+    return None
+
+
+def _reply_parts(clauses, parts, fields, cancelled, *, single_followup):
+    parsed = {}
+    active_parts = [index for index, part in enumerate(parts) if set(part['items']) - cancelled]
+    for start, raw, _ in clauses:
+        clause = re.sub('^' + _REPLY_CONNECTOR, '', raw, count=1)
+        matches = [(index, result) for index in active_parts if (name := fields[index]) and clause.startswith(name)
+                   and (result := _reply_value(clause[len(name):].strip()))]
+        if not matches and single_followup and len(active_parts) == 1 and len(clauses) == 1:
+            index = active_parts[0]
+            if (_NUMBER.fullmatch(clause) and _NUMERIC_QUESTION.search(parts[index]['question'])) or clause.startswith('「'):
+                if value := _value(clause):
+                    matches = [(index, ('confirmed', value))]
+            elif _DEFERRED.fullmatch(clause):
+                matches = [(index, ('deferred', None))]
+        if len(matches) != 1 or matches[0][0] in parsed:
+            return None
+        index, (state, value) = matches[0]
+        if value and _NUMERIC_QUESTION.search(parts[index]['question']) and not _NUMBER.fullmatch(value):
+            return None
+        evidence = {'start': start, 'end': start + len(raw), 'quote': raw}
+        parsed[index] = {'state': state, 'evidence': evidence}
+        if value is not None:
+            parsed[index]['value'] = value
+    return parsed
+
+
+def observe_reply(steps, source, scope, prior_scope):
+    plan = work_plan.latest(steps)
+    if plan is None or source['ask_sequence'] != len(steps):
+        return None
+    question, parts = _waiting_parts(steps, plan)
+    if not parts or source['question'] != question:
+        return None
+    tasks = {item['id']: item['task'] for item in plan['items']}
+    fields = [_asked_field(part, tasks) for part in parts]
+    prefixes = '|'.join(re.escape(name) for name in fields if name)
+    reply_prefix = rf'|\s*{_REPLY_CONNECTOR}(?:{prefixes})' if prefixes else ''
+    comma_before = re.compile(rf'{_SCOPE_COMMA.pattern}|\s*(?:本輪|這次|本次){_SCOPE_COMMA.pattern}{reply_prefix}')
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before)
+    if not clauses or any(question_mark for _, _, question_mark in clauses):
+        return None
+    scope_clauses = [clause for clause in clauses if _CANCEL.fullmatch(clause[1]) or clause[1] in _UNCHANGED]
+    changes = _cancellations(scope_clauses, plan)
+    single_followup = (plan['sequence'] == len(steps) - 1
+                       and (plan.get('scope_reply') or {}).get('successor') == steps[-1]['action']['args'])
+    if not changes and (scope_clauses or not single_followup):
+        return None
+    cancelled = {number for change in changes for number in change['items']}
+    parsed = _reply_parts([clause for clause in clauses if clause not in scope_clauses], parts, fields, cancelled,
+                          single_followup=single_followup)
+    if parsed is None:
+        return None
+
+    result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
+    remaining, dispositions, complete = [], [], {}
+    requirements = {item['id'] for item in plan.get('evidence_requirements', ())}
+    for index, part in enumerate(parts):
+        ids = [number for number in part['items'] if number not in cancelled]
+        outcome = parsed.get(index, {'state': 'unanswered' if ids else 'cancelled'})
+        dispositions.append({'question': part['question'], 'items': part['items'], 'active_items': ids, **outcome})
+        if outcome['state'] == 'confirmed':
+            for number in ids:
+                task = tasks[number]
+                if (number not in requirements and _COLLECT_FIELD.match(task)
+                        and _COLLECT_FIELD.sub('', task, count=1) == fields[index]
+                        and sum(number in other['items'] for other in parts) == 1):
+                    complete[number] = outcome['value']
+        elif ids:
+            remaining.append({'question': part['question'], 'items': ids})
+    for index, item in enumerate(result['items']):
+        if item['id'] in complete:
+            note = f'依 {source["citation"]} 確認：{complete[item["id"]]}。'
+            result['items'][index] = {**item, 'state': 'done', 'evidence_steps': [len(steps) + 1], 'note': note}
+    proof.update(ask_sequence=len(steps), ask_sha256=goal_stages.digest(steps[-1]), parts=dispositions,
+                 completed_items=sorted(complete), successor=_next_question(remaining))
+    result['scope_reply'] = proof
+    result['review_note'] = '分開核對原回覆內的範圍變更、確認值與待答分問。'
     return result
 
 
@@ -196,4 +351,25 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
         if successor and (not after or after['action']['tool'] != 'ask' or after['action']['args'] != successor
                           or after['observation'].get('question') != successor['question']):
             raise ValueError('工作範圍更正缺少相符的保留問題。')
+    return expected
+
+
+def replay_reply(args, prior, after, goal, replies):
+    if args.keys() != {'scope_reply'}:
+        raise ValueError('已保存的工作清單答覆格式不符。')
+    source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
+    if source is None:
+        raise ValueError('工作清單答覆缺少使用者原話。')
+    start = source['notes_start']
+    end = start + len(goal_reply_sources.note(source['question'], source['answer']))
+    previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})
+    scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
+    expected = observe_reply(prior, source, scope, previous)
+    if expected is None:
+        raise ValueError('工作清單答覆與原問題或保存來源不一致。')
+    successor = expected['scope_reply']['successor']
+    if successor and (not after or after['action']['tool'] != 'ask' or after['action']['args'] != successor
+                      or after['observation'].get('question') != successor['question']
+                      or after['observation'].get('goal_conditions_sha256') != scope):
+        raise ValueError('工作清單答覆缺少相符的保留問題。')
     return expected

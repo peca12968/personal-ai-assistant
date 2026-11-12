@@ -163,15 +163,18 @@ def eligibility(value):
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 
-def _append_step(db, goal, notes, sequence, action, observation):
-    gid = goal['id']
-    history = conversation_history.saved_fingerprint(db, gid)
+def _condition_goal(db, goal, notes):
+    history = conversation_history.saved_fingerprint(db, goal['id'])
     scope = {**goal, 'notes': notes, 'sources': json.loads(goal['sources_json'])}
     if history is not None:
         scope['conversation_history'] = {'sha256': history}
-    observation = {**observation, 'goal_conditions_sha256': work_plan.conditions(scope)}
+    return scope
+
+
+def _append_step(db, goal, notes, sequence, action, observation):
+    observation = {**observation, 'goal_conditions_sha256': work_plan.conditions(_condition_goal(db, goal, notes))}
     db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
-               (gid, sequence, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
+               (goal['id'], sequence, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
 
 
 def _append_reference_recheck(db, goal, notes, sequence, args, observation):
@@ -445,10 +448,7 @@ def _save_plan_scope_change(db, current, notes):
         return None
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
-    scope_goal = {**goal, 'sources': json.loads(goal['sources_json'])}
-    history = conversation_history.saved_fingerprint(db, gid)
-    if history is not None:
-        scope_goal['conversation_history'] = {'sha256': history}
+    scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
     observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting)
