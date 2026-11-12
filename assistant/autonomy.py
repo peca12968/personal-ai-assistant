@@ -22,6 +22,7 @@ from . import goal_question_withdrawals
 from . import goal_reply_sources
 from . import goal_sources
 from . import artifacts
+from . import artifact_names
 from . import delivery_preference
 from . import autonomy_csv
 from . import date_tools
@@ -534,6 +535,27 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 reason = 'sources_changed'
                 update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
                 break
+            conditions_hash = work_plan.conditions(goal)
+            required_filename = artifact_names.requirement(goal) if goal['file_delivery'] else None
+            if name_question := artifact_names.question(goal, conditions_hash, required_filename):
+                if len(goal['steps']) + 4 > MAX_STEPS or len(goal['artifacts']) >= artifacts.MAX_FILES:
+                    reason = 'goal_limit'
+                    update(store, gid, 'paused', notice='定稿需要新檔名。請帶入目前進度建立下一階段，再交付文件。')
+                    break
+                question = artifact_names.question_text(name_question)
+                action = {'tool': 'ask', 'args': {'question': question, artifact_names.ASK_MARK: True},
+                          'note': '依原指示核對定稿檔名與舊草稿'}
+                observation = {'question': question, artifact_names.ASK_MARK: name_question,
+                               'goal_conditions_sha256': conditions_hash}
+                sequence = len(goal['steps']) + 1
+                with store.connect() as db:
+                    db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
+                               (gid, sequence, json.dumps(action, ensure_ascii=False), json.dumps(observation, ensure_ascii=False)))
+                    db.execute("UPDATE autonomous_goals SET status='needs_input',question=?,notice='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                               (question, gid))
+                progress({'step': sequence, 'tool': 'ask', 'note': action['note']})
+                reason = 'needs_input'
+                break
             guidance_sources = goal.get('guidance_sources', ())
             payload = {'objective': goal['objective'],
                        'user_notes': goal_guidance_sources.prompt_notes(goal['notes'], guidance_sources),
@@ -547,6 +569,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            if required_filename:
+                payload['artifact_filename_requirement'] = required_filename
             reply_sources = goal.get('reply_sources', ())
             delivery_change = goal.get('delivery_mode_change')
             if delivery_change:
@@ -605,7 +629,6 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                              if checked_report else [])
             if report_fields:
                 payload['quantity_report_fields'] = report_fields
-            conditions_hash = work_plan.conditions(goal)
             note_review = quantity_evidence.review_batch_notes(goal, conditions_hash, reply_sources, guidance_sources)
             if note_review:
                 payload['quantity_note_review'] = note_review
@@ -631,6 +654,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
                 ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +
+                ('\n' + artifact_names.GUIDANCE if required_filename else '') +
                 ('\n' + document_ranges.LOOKUP_GUIDANCE if catalog else '') +
                 ('\n' + document_ranges.LOOKUP_EVIDENCE_GUIDANCE
                  if any(step['action']['tool'] == 'find_document_text' for step in payload['steps']) else '') +
@@ -720,6 +744,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 check = None
                 plan_check = None
                 if action['tool'] in work_plan.DELIVERY_TOOLS:
+                    if required_filename:
+                        artifact_names.check_action(required_filename, action)
                     plan_check = work_plan.check_delivery(goal['work_plan'], conditions_hash, action, goal['steps'])
                     if declared:
                         check = source_decision.checked_step(goal['steps'], declared, conditions_hash)

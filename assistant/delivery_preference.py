@@ -111,10 +111,15 @@ def plan_reply(db, gid, source):
     receipt = _plan_receipt(source)
     if receipt is None:
         return None
+    return {'receipt': receipt, 'changed': receipt['file_delivery'] != enabled_before(db, gid, source['notes_start'])}
+
+
+def enabled_before(db, gid, notes_end):
+    if not initially_enabled(db, gid):
+        return False
     previous = db.execute('SELECT receipt_json FROM autonomous_delivery_changes WHERE goal_id=? AND notes_start<? '
-                          'ORDER BY notes_start DESC LIMIT 1', (gid, source['notes_start'])).fetchone()
-    mode = strict_json(previous[0])['file_delivery'] if previous else True
-    return {'receipt': receipt, 'changed': receipt['file_delivery'] != mode}
+                          'ORDER BY notes_start DESC LIMIT 1', (gid, notes_end)).fetchone()
+    return strict_json(previous[0])['file_delivery'] if previous else True
 
 
 def _record(db, gid, source, receipt):

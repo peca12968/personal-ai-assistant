@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import delivery_preference, goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
+from . import artifact_names, delivery_preference, goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
 
 
 GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項目，提問使用 plan_questions，例如
@@ -197,12 +197,23 @@ def _without_delivery(text, spans):
     return text
 
 
-def observe(steps, source, scope, prior_scope, *, waiting, delivery=None):
+def observe(steps, source, scope, prior_scope, *, waiting, delivery=None, filename_declaration=None):
     plan = work_plan.latest(steps)
     if plan is None or source['steps_seen'] != len(steps):
         return None
-    if delivery:
-        if not waiting or prior_scope != plan['goal_conditions_sha256'] or not _waiting_parts(steps, plan)[1]:
+    filename_ask = waiting and steps[-1]['observation'].get(artifact_names.ASK_MARK)
+    if filename_declaration:
+        if prior_scope != plan['goal_conditions_sha256'] or waiting and not filename_ask:
+            return None
+        if filename_ask:
+            name = filename_declaration['filename']
+            draft = filename_ask['draft']['name']
+            if name.casefold() in artifact_names.writes(steps) or name.rsplit('.', 1)[1].casefold() != draft.rsplit('.', 1)[1].casefold():
+                raise ValueError('請提供同格式且尚未使用的定稿檔名。')
+        changes = []
+    elif delivery:
+        if (not waiting or prior_scope != plan['goal_conditions_sha256']
+                or (filename_ask and delivery['file_delivery']) or (not filename_ask and not _waiting_parts(steps, plan)[1])):
             return None
         text = _without_delivery(source['content'], [delivery])
         clauses = goal_guidance_sources.standalone_clauses(text, comma_before=_SCOPE_COMMA)
@@ -217,8 +228,10 @@ def observe(steps, source, scope, prior_scope, *, waiting, delivery=None):
     result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
     if delivery:
         proof['delivery_mode'] = delivery
+    if filename_declaration:
+        proof['filename_declaration'] = filename_declaration
     if waiting:
-        successor = _successor(steps, plan, cancelled)
+        successor = None if filename_ask else _successor(steps, plan, cancelled)
         if previous := language_followup(steps):
             language = _retain_language(previous, cancelled)
             tasks = {item['id']: item['task'] for item in plan['items']}
@@ -329,6 +342,15 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     plan = work_plan.latest(steps)
     if plan is None or source['ask_sequence'] != len(steps):
         return None
+    if version == artifact_names.REPLY_VERSION:
+        if plan['goal_conditions_sha256'] != prior_scope:
+            raise ValueError('定稿檔名問題的條件已改變，請重新核對工作清單。')
+        choice = artifact_names.selection(steps, source, prior_scope)
+        result, proof = _scope_update(steps, plan, source, [], scope, prior_scope)
+        proof.update(filename_choice=choice, completed_items=[], successor=None)
+        result['scope_reply'] = proof
+        result['review_note'] = '依實際答覆確認定稿檔名並保留仍適用的核對證據。'
+        return result
     question, parts = _waiting_parts(steps, plan)
     if not parts or source['question'] != question:
         return None
@@ -814,9 +836,10 @@ def _apply_revisions(result, proof, complete, plan, revisions, source):
 
 
 def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, delivery_present=False):
-    keys = args.keys() - {'delivery_mode'}
+    keys = args.keys() - {'delivery_mode', 'filename_declaration'}
     if (keys not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'})
-            or ('delivery_mode' in args and (args['delivery_mode'] is not True or not delivery_present))):
+            or any(args[key] is not True or not delivery_present for key in args.keys() - keys)
+            or {'delivery_mode', 'filename_declaration'} <= args.keys()):
         raise ValueError('已保存的工作範圍更正格式不符。')
     source = next((item for item in guidance if item['citation'] == args['scope_correction']), None)
     if source is None:
@@ -827,7 +850,12 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
     scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
     waiting = 'ask_sequence' in args
     delivery = delivery_preference.verify_plan_guidance(db, goal['id'], source) if 'delivery_mode' in args else None
-    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery)
+    named = None
+    if 'filename_declaration' in args:
+        named = artifact_names.declaration(source['content'], only=True)
+        if not named or not delivery_preference.initially_enabled(db, goal['id']):
+            raise ValueError('定稿檔名補充缺少可核對的來源。')
+    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named)
     if expected is None:
         raise ValueError('工作範圍更正與原清單或保存步驟不一致。')
     if waiting:
@@ -849,8 +877,8 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
 
 def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5) else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5):
+    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5, 6) else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5, 6):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -864,6 +892,8 @@ def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=Fals
         if not delivery_present:
             raise ValueError('工作清單答覆缺少交付方式紀錄。')
         delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
+    if version == artifact_names.REPLY_VERSION and (not delivery_present or not delivery_preference.enabled_before(db, goal['id'], start)):
+        raise ValueError('定稿檔名答覆缺少當時的文件交付設定。')
     expected = observe_reply(prior, source, scope, previous, version=version, delivery=delivery)
     if expected is None:
         raise ValueError('工作清單答覆與原問題或保存來源不一致。')

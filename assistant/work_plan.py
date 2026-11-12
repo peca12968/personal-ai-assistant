@@ -433,7 +433,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5)))
+                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -631,25 +631,29 @@ def describe(value):
 
 
 def validate_saved(db, *, replies_present=False, guidance_present=False):
-    from . import conversation_history, goal_sources, work_plan_scope
+    from . import artifact_names, conversation_history, goal_sources, work_plan_scope
 
     available = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     delivery_present = {'autonomous_delivery', 'autonomous_delivery_changes'} <= available
-    goals = db.execute("SELECT DISTINCT g.id,g.session_id,g.sources_json,g.objective,g.notes FROM autonomous_goals g JOIN autonomous_steps s "
+    goals = db.execute("SELECT DISTINCT g.id,g.session_id,g.sources_json,g.objective,g.notes,g.status,g.question FROM autonomous_goals g JOIN autonomous_steps s "
                        "ON s.goal_id=g.id WHERE s.action_json LIKE '%update_plan%' "
-                       "OR s.observation_json LIKE '%\"plan_check_step\"%'")
-    for gid, sid, source_json, objective, notes in goals:
+                       "OR s.observation_json LIKE '%\"plan_check_step\"%' OR s.action_json LIKE '%\"artifact_filename_question\"%' "
+                       "OR s.observation_json LIKE '%\"artifact_filename_question\"%'")
+    for gid, sid, source_json, objective, notes, status, question in goals:
         sources = json.loads(source_json)
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
                           'ORDER BY sequence', (gid,)).fetchall()
         has_operands = any('"operands"' in row[1] for row in rows)
         has_scope_reply = any('"scope_reply"' in row[1] for row in rows)
-        has_scope_change = has_scope_reply or any('"scope_correction"' in row[1] for row in rows)
-        replies = (goal_reply_sources.read(db, gid, notes, include_positions=has_scope_reply)
-                   if (has_operands or has_scope_reply) and replies_present else [])
+        has_filename_question = any(f'"{artifact_names.ASK_MARK}"' in field for row in rows for field in row[1:])
+        has_scope_change = has_scope_reply or has_filename_question or any('"scope_correction"' in row[1] for row in rows)
+        replies = (goal_reply_sources.read(db, gid, notes, include_positions=has_scope_reply or has_filename_question)
+                   if (has_operands or has_scope_reply or has_filename_question) and replies_present else [])
         guidance = goal_guidance_sources.read(db, gid, notes, len(rows)) if (has_operands or has_scope_change) and guidance_present else []
         steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for sequence, action, observation in rows]
+        if status == 'needs_input' and steps[-1]['observation'].get(artifact_names.ASK_MARK) and question != steps[-1]['observation'].get('question'):
+            raise ValueError('目前定稿檔名問題與已保存提問不一致。')
         scope_goal = {'id': gid, 'objective': objective, 'notes': notes, 'sources': sources}
         history = {}
         if has_scope_change:
@@ -660,9 +664,15 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                     'SELECT id,name,sha256,content FROM documents WHERE session_id=?', (sid,))}
                 history = goal_sources.verify_history(steps, sources, documents)
         prior = []
+        checked_filename = False
         for index, step in enumerate(steps):
             sequence, action, observation = step['sequence'], step['action'], step['observation']
             args = action['args']
+            if artifact_names.ASK_MARK in args or artifact_names.ASK_MARK in observation:
+                if not delivery_present:
+                    raise ValueError('定稿檔名問題缺少文件交付紀錄。')
+                artifact_names.verify_question(db, {**scope_goal, 'sources': history.get(sequence, sources)},
+                                               prior, step, replies, guidance)
             if action['tool'] == 'ask' and ('plan_questions' in args or 'work_plan_question' in observation):
                 if ('plan_questions' not in args
                         or observation.get('work_plan_question') != work_plan_scope.bind_questions(args, prior)):
@@ -687,6 +697,14 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                    'goal_conditions_sha256', 'evidence_requirements', 'evidence_matches',
                                    'reused_calculations', 'scope_change', 'scope_reply', 'scope_cancelled')):
                     raise ValueError('工作清單與保存動作不一致。')
+                checked_filename = (checked_filename or 'filename_declaration' in args
+                                    or args.get('scope_reply_version') == artifact_names.REPLY_VERSION)
+            if checked_filename and action['tool'] in {'write_artifact', 'deliver'}:
+                active_name = artifact_names.requirement({**scope_goal, 'steps': prior,
+                    'reply_sources': [row for row in replies if row['ask_sequence'] < sequence],
+                    'guidance_sources': [row for row in guidance if row['steps_seen'] < sequence]})
+                if active_name:
+                    artifact_names.check_action(active_name, action)
             if action['tool'] in DELIVERY_TOOLS or 'plan_check_step' in observation:
                 scope = observation.get('goal_conditions_sha256')
                 check = check_delivery(latest(prior), scope, action, prior) if action['tool'] in DELIVERY_TOOLS else None

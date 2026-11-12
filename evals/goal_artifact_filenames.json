@@ -1,0 +1,7 @@
+[
+  {"id":"old_named_draft_after_mode_restore","objective":"核對門號與領用人。若交檔請交 report.md。","draft":"report.md","text_round":true,"chosen":"report-final.md","ask":true,"must_include":["8 號","宋一珊"],"must_omit":["林語安"]},
+  {"id":"named_draft_with_occupied_suggestion","objective":"核對門號與領用人。定稿檔名為「交接.md」。","draft":"交接.md","also_draft":"交接-final.md","chosen":"交接定稿.md","ask":true,"must_include":["8 號","宋一珊"],"must_omit":["林語安"]},
+  {"id":"filename_reference_does_not_authorize_a_required_target","objective":"核對門號與領用人。參考舊草稿 report.md 的欄位，交付新文件。","draft":"report.md","chosen":null,"ask":false,"must_include":["8 號","宋一珊"],"must_omit":["林語安"]},
+  {"id":"available_exact_name_needs_no_clarification","objective":"核對門號與領用人。請交 report.md。","draft":null,"chosen":"report.md","ask":false,"must_include":["8 號","宋一珊"],"must_omit":["林語安"]},
+  {"id":"later_explicit_filename_selects_an_available_target","objective":"核對門號與領用人。請交 report.md。","draft":"report.md","guidance":"定稿檔名改為 current.md。","chosen":"current.md","ask":false,"must_include":["8 號","宋一珊"],"must_omit":["林語安"]}
+]

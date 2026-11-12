@@ -313,6 +313,87 @@ class ArtifactTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual((Path(result['directory']) / 'cli.txt').read_text(), 'local content')
 
+    def _wait_on_named_draft(self):
+        from scripts.evaluate_artifact_filenames import prepare
+        case = {'objective': '核對門號和領用人。若交檔請交 report.md。',
+                'draft': 'report.md', 'also_draft': 'report-final.md', 'text_round': True}
+        self.store, self.sid, self.gid = prepare(self.root / 'named-draft', case)
+        engine = ScriptedEngine()
+        goal = a.run_goal(self.store, self.sid, self.gid, engine)
+        self.assertFalse(engine.prompts)
+        self.assertEqual(goal['status'], 'needs_input')
+        self.assertIn('report-final-2.md', goal['question'])
+        return goal
+
+    def test_named_draft_waits_for_new_filename_and_uses_literal_answer(self):
+        from scripts.evaluate_artifact_filenames import DRAFT, reply
+        before = self._wait_on_named_draft()
+        for unusable in ('REPORT.md。', '定稿用「report-final.md」。', '定稿用 report-final.txt。', '../unsafe.md'):
+            with self.subTest(unusable=unusable), self.assertRaisesRegex(ValueError, '同格式且尚未使用'):
+                reply(self.store, self.sid, self.gid, unusable)
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid), before)
+        saved = reply(self.store, self.sid, self.gid, '用戶.md。')
+        proof = saved['work_plan']['scope_reply']['filename_choice']
+        self.assertEqual(proof['selection']['filename'], '用戶.md')
+        self.assertEqual(saved['reply_sources'][-1]['question'], before['question'])
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        self.assertEqual(saved['work_plan']['items'], before['work_plan']['items'])
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='other.md', content='錯誤檔名'),
+            action('write_artifact', filename='用戶.md', content='領用人宋一珊，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['report.md']),
+            action('deliver', report='已完成', filenames=['用戶.md'])))
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-4:]], ['invalid', 'write_artifact', 'invalid', 'deliver'])
+        self.assertEqual([row['name'] for row in result['artifacts']], ['report.md', 'report-final.md', '用戶.md'])
+        self.assertEqual((f.directory(self.store, self.gid) / 'report.md').read_text(encoding='utf-8'), DRAFT)
+        validate_database(self.store.path)
+
+    def test_filename_ask_and_actual_choice_replay_and_reject_a_changed_draft_pointer(self):
+        from scripts.evaluate_artifact_filenames import reply
+        waiting = self._wait_on_named_draft()
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'restored-named')
+        restored = Store(self.root / 'restored-named/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), waiting)
+        saved = reply(restored, self.sid, self.gid, '定稿用「result.md」。')
+        self.assertEqual(saved['status'], 'paused')
+        validate_database(restored.path)
+        ask = waiting['steps'][-1]
+        altered = {**ask['observation'], 'artifact_filename_question': {**ask['observation']['artifact_filename_question'],
+                                                                         'suggested': 'forged.md'}}
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(altered), self.gid, ask['sequence']))
+        with self.assertRaisesRegex(ValueError, '定稿檔名問題與原指示或舊草稿不一致'):
+            validate_database(restored.path)
+
+    def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
+        for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
+            with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:
+                self.root = Path(scratch)
+                waiting = self._wait_on_named_draft()
+                view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+                goal_guidance.save(self.store, self.sid, self.gid, statement, expected_fingerprint=view['fingerprint'])
+                saved = a.get_goal(self.store, self.sid, self.gid)
+                self.assertEqual(saved['file_delivery'], expected)
+                self.assertFalse(saved['question'])
+                self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+                self.assertEqual(saved['withdrawn_questions'][-1]['ask_sequence'], waiting['steps'][-1]['sequence'])
+                validate_database(self.store.path)
+
+    def test_current_exact_file_can_be_delivered_without_filename_question(self):
+        from assistant import artifact_names
+        self.assertIsNone(artifact_names.declaration('請使用 template.md。'))
+        self.gid = a.create_goal(self.store, self.sid, '整理摘要。請交 report.md。', file_delivery=True)
+        current = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='report.md', content='完整摘要。')), max_steps=1)
+        self.assertEqual(current['status'], 'paused')
+        final = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('deliver', report='完成', filenames=['report.md'])), max_steps=1)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['steps'][-1]['action']['args']['filenames'], ['report.md'])
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -3,7 +3,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import decision_table, delivery_preference, goal_question_withdrawals, goal_reply_sources, work_plan, work_plan_scope
+from . import artifact_names, artifacts, decision_table, delivery_preference, goal_question_withdrawals, goal_reply_sources, work_plan, work_plan_scope
 from .goal_guidance import (_append_step, _condition_goal, _snapshot, _steps, append_answered_revision, append_followup_question,
                             append_waiting_field_version, append_waiting_recheck, apply_waiting_review, snapshot)
 
@@ -88,6 +88,26 @@ def _save_scope_reply(db, current, steps, notes):
     return True
 
 
+def _save_filename_reply(db, current, steps, notes):
+    goal = current['goal']
+    gid = goal['id']
+    count = current['step_count']
+    if not current['sources_match'] or count + 3 > MAX_STEPS or not delivery_preference.enabled(db, gid):
+        raise ValueError('來源、交付方式或可用步數已變更，請重新核對目前工作。')
+    replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
+    before = _condition_goal(db, goal, goal['notes'])
+    scope = work_plan.conditions({**before, 'notes': notes})
+    observation = work_plan_scope.observe_reply(steps, replies[-1], scope, work_plan.conditions(before),
+                                                version=artifact_names.REPLY_VERSION)
+    choice = observation['scope_reply']['filename_choice']['selection']['filename']
+    if any(row['name'].casefold() == choice.casefold() for row in artifacts.inventory(db, gid)):
+        raise ValueError('請提供同格式且尚未使用的定稿檔名。')
+    args = {'scope_reply': replies[-1]['citation'], 'scope_reply_version': artifact_names.REPLY_VERSION}
+    _append_step(db, goal, notes, count + 1, {'tool': 'update_plan', 'args': args, 'note': '保存使用者確認的定稿檔名'}, observation)
+    db.execute("UPDATE autonomous_goals SET notes=?,status='paused',question='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               (notes, f'已確認定稿檔名「{choice}」，可以接續交付。', gid))
+
+
 def save(store, sid, gid, answer, *, expected_fingerprint):
     answer = text(answer, 4000)
     if not isinstance(expected_fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', expected_fingerprint):
@@ -110,6 +130,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
+        if steps and steps[-1]['observation'].get(artifact_names.ASK_MARK):
+            _save_filename_reply(db, current, steps, notes)
+            return _snapshot(db, sid, gid)
         if not (colloquial or combined) and _save_scope_reply(db, current, steps, notes):
             return _snapshot(db, sid, gid)
         delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)

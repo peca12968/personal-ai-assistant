@@ -7,7 +7,7 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
-from . import (conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
+from . import (artifact_names, conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
                goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
                work_plan_scope)
 
@@ -442,16 +442,22 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
     if work_plan.latest(steps) is None:
         return None
     waiting = goal['status'] == 'needs_input'
+    filename_ask = waiting and steps[-1]['observation'].get(artifact_names.ASK_MARK)
     if waiting and (not steps or steps[-1]['action']['tool'] != 'ask'
-                    or steps[-1]['action']['args'].keys() - {'question', 'partial_result', 'plan_questions'}
+                    or steps[-1]['action']['args'].keys() - {'question', 'partial_result', 'plan_questions', artifact_names.ASK_MARK}
                     or decision_table.reference_question_for_steps(steps[:-1])):
         return None
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
+    named = (artifact_names.declaration(source['content'], only=True)
+             if not delivery_change and delivery_preference.initially_enabled(db, gid) else None)
+    if filename_ask and not (named or delivery_change):
+        return None
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
-    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting, delivery=delivery_change)
+    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting, delivery=delivery_change,
+                                          filename_declaration=named)
     if observation is None:
         return None
     proof = observation['scope_change']
@@ -460,18 +466,23 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
     if delivery_change:
         pending = proof.get('language', {}).get('pending_revisions', ())
         minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_change['file_delivery'])
+    if named:
+        minimum += int(delivery_preference.enabled(db, gid))
     if count + minimum > MAX_STEPS:
         raise ValueError('剩餘步數不足以更新工作清單及交付，請帶入目前進度建立下一階段。')
     args = {'scope_correction': source['citation']}
     if delivery_change:
         args['delivery_mode'] = True
+    if named:
+        args['filename_declaration'] = True
     if waiting:
         args['ask_sequence'] = proof['ask_sequence']
         options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
         if not options or source['number'] not in options['correction_numbers']:
             raise ValueError('這筆更正與目前等待的問題不一致。')
         goal_question_withdrawals.record(db, gid, options, source)
-    note = '依使用者更正更新交付方式與工作清單' if delivery_change else '依使用者更正取消指定工作項目'
+    note = ('依使用者更正更新交付方式與工作清單' if delivery_change else
+            '依使用者更正更新定稿檔名與工作清單' if named else '依使用者更正取消指定工作項目')
     action = {'tool': 'update_plan', 'args': args, 'note': note}
     _append_step(db, goal, notes, count + 1, action, observation)
     if successor:
@@ -482,6 +493,8 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
               '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
     if delivery_change:
         notice = delivery_preference.describe(delivery_change) + ('仍請回答目前的問題。' if successor else '工作清單已更新。')
+    if named:
+        notice = f'已確認定稿檔名「{named["filename"]}」，可以接續交付。'
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                (notes, status, successor['question'] if successor else '', notice, gid))
     return _snapshot(db, goal['session_id'], gid)
