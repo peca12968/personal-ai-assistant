@@ -570,6 +570,101 @@ class InitialFieldReferenceTests(unittest.TestCase):
                     self.guide(content)
                 self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
 
+    def deliver_adopted_report(self, *, known_field=False):
+        did, _ = self.deliver_conflicting_supplement(known_field=known_field)
+        self.guide(f'正式採用 [D{did}:L1]。')
+        return did, self.run_actions(action('finish', report='依第 1 行去南桌。'))
+
+    def test_reported_colloquial_choice_retains_confirmed_clause_until_exact_reply(self):
+        did, prior = self.deliver_adopted_report()
+        content = f'有人說「先改採 [D{did}:L2]」。驗入班別這邊，晚班就好。'
+        self.guide(content)
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['steps'][:-1], prior['steps'])
+        self.assertEqual(waiting['question'], f'「[D{did}:L2]」要正式改採嗎？請回答「改採」或「維持原規則」。')
+        receipt = waiting['steps'][-1]['observation']['report_colloquial_question']
+        self.assertEqual(receipt['report_sha256'], digest(prior['steps'][-1]))
+        self.assertIn('驗入班別這邊，晚班就好', waiting['partial_result'])
+        current = goal_replies.snapshot(self.store, self.sid, self.gid)
+        with self.assertRaisesRegex(ValueError, '維持原規則'):
+            goal_replies.save(self.store, self.sid, self.gid, '晚班',
+                              expected_fingerprint=current['fingerprint'])
+        self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), waiting)
+        self.reply('維持原規則')
+        reviewed = autonomy.get_goal(self.store, self.sid, self.gid)
+        proof = reviewed['steps'][-1]['observation']['field_reference']
+        guidance = proof['report_mixed_guidance']
+        self.assertEqual(guidance['condition_changes'][0]['after'], '晚班')
+        self.assertEqual(guidance['clarification']['answer'], 'keep')
+        self.assertEqual(guidance['clarification']['reply']['quote'], '維持原規則')
+        self.assertEqual(len(proof['report_conflict_choices']), 1)
+        question = decision_table.reference_question_for_steps(reviewed['steps'])
+        self.run_actions(action('ask', question=question))
+        reply = f'[補充#{self.reply("驗入班別")}]'
+        final = self.run_actions(action('check_decision', field_reference=reply, resolve=True))
+        self.assertEqual(final['steps'][-1]['observation']['possible_results'], ['南桌'])
+
+    def test_colloquial_deferred_rule_preserves_active_rule_without_an_adoption_question(self):
+        did, prior = self.deliver_adopted_report()
+        self.guide(f'驗入就晚班好了，改採 [D{did}:L2] 還沒確定。')
+        reviewed = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(reviewed['status'], 'paused')
+        self.assertEqual(reviewed['steps'][:-1], prior['steps'])
+        proof = reviewed['steps'][-1]['observation']['field_reference']
+        guidance = proof['report_mixed_guidance']
+        self.assertEqual([item['kind'] for item in guidance['clauses']], ['condition', 'deferred_rule'])
+        self.assertEqual(guidance['condition_changes'][0]['field'], '驗入班別')
+        self.assertEqual(proof['report_conflict_choices'][-1]['selected']['evidence']['citation'], f'[D{did}:L1]')
+
+    def test_colloquial_value_question_binds_options_and_restores_before_and_after_answer(self):
+        _, prior = self.deliver_adopted_report()
+        self.guide('驗入班別早班還是晚班？收樣班別就用晚班。')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['question'], '「驗入班別」要用哪個值？請回答「早班」或「晚班」。')
+        saved = create_backup(self.store.path, self.root / 'colloquial-waiting.paibackup')
+        restore_backup(saved['path'], self.root / 'restored-colloquial')
+        restored = Store(self.root / 'restored-colloquial/assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), waiting)
+        snapshot = goal_replies.snapshot(restored, self.sid, self.gid)
+        goal_replies.save(restored, self.sid, self.gid, '早班', expected_fingerprint=snapshot['fingerprint'])
+        updated = autonomy.get_goal(restored, self.sid, self.gid)
+        self.assertEqual(updated['steps'][:len(prior['steps'])], prior['steps'])
+        check = updated['steps'][-1]['observation']
+        self.assertEqual(check['possible_results'], ['南桌'])
+        changes = check['field_reference']['report_mixed_guidance']['condition_changes']
+        self.assertEqual([item['evidence']['quote'] for item in changes], ['收樣班別就用晚班', '早班'])
+        validate_database(restored.path)
+        ask = waiting['steps'][-1]
+        ask['observation']['report_colloquial_question']['pending']['target']['values'].reverse()
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(ask['observation'], ensure_ascii=False), self.gid, ask['sequence']))
+        with self.assertRaisesRegex(ValueError, '口語釐清'):
+            validate_database(restored.path)
+
+    def test_cancelling_colloquial_clarification_does_not_apply_the_saved_condition(self):
+        did, prior = self.deliver_adopted_report(known_field=True)
+        self.guide(f'有人說「先改採 [D{did}:L2]」。驗入班別就用晚班。')
+        self.reply('取消這則補充')
+        state = autonomy.get_goal(self.store, self.sid, self.gid)
+        observation = state['steps'][-1]['observation']
+        self.assertEqual(state['steps'][:len(prior['steps'])], prior['steps'])
+        self.assertEqual(observation['possible_results'], ['南桌'])
+        mixed = observation['field_reference']['report_mixed_guidance']
+        self.assertEqual(mixed['clarification']['answer'], 'cancel')
+        self.assertFalse(mixed['condition_changes'])
+        validate_database(self.store.path)
+
+    def test_unverified_colloquial_targets_or_competing_questions_keep_report_intact(self):
+        did, prior = self.deliver_adopted_report()
+        for content in (f'有人說「先改採 [D{did}:L3]」。驗入班別就用晚班。',
+                        f'改採 [D{did}:L2] 嗎？驗入班別早班還是晚班？',
+                        '驗入就晚班好了，另把複核班別改成早班。'):
+            with self.subTest(content=content):
+                with self.assertRaises(ValueError):
+                    self.guide(content)
+                self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
         self.assertIn('document_version_report', goal_guidance.snapshot(self.store, self.sid, self.gid))

@@ -27,6 +27,9 @@ def run(suite, seeds, output):
         if 'reply_question' in case:
             assert case['expected'] == 'field'
             autonomy.text(case['reply_question'], 800)
+        if 'clarification_reply' in case or 'clarification_question' in case:
+            autonomy.text(case['clarification_reply'], 4000)
+            autonomy.text(case['clarification_question'], 800)
         autonomy.text(case['correction'], 4000)
     if seeds is None:
         print(f'Validated {len(cases)} report conflict fixtures without model calls.')
@@ -56,9 +59,9 @@ def run(suite, seeds, output):
             row['final'] = autonomy.get_goal(store, sid, gid)
             assert row['final'] == before
         else:
-            row['after_save'] = autonomy.get_goal(store, sid, gid)
-            assert row['after_save']['status'] == 'paused'
-            assert row['after_save']['steps'][:-1] == before['steps']
+            state = row['after_save'] = autonomy.get_goal(store, sid, gid)
+            assert state['status'] in {'paused', 'needs_input'}
+            assert state['steps'][:-1] == before['steps']
             engine = CodexEngine(folder / 'engine')
 
             class Recorded:
@@ -71,7 +74,13 @@ def run(suite, seeds, output):
                     save_report(trace, row)
                     return call['raw']
 
-            state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
+            if (state['status'] == 'needs_input' and state['question'] == case.get('clarification_question')
+                    and 'clarification_reply' in case):
+                observed = goal_replies.snapshot(store, sid, gid)
+                goal_replies.save(store, sid, gid, case['clarification_reply'], expected_fingerprint=observed['fingerprint'])
+                state = row['after_clarification'] = autonomy.get_goal(store, sid, gid)
+            if state['status'] == 'paused':
+                state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
             if 'reply' in case:
                 row['asked'] = state
                 expected_question = case.get('reply_question', FIELD_QUESTION)

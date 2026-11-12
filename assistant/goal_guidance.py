@@ -39,7 +39,14 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
         fingerprint = hashlib.sha256((fingerprint + ''.join(item['question_sha256'] + item['guidance_sha256']
                                                              for item in withdrawals)).encode('utf-8')).hexdigest()
     options = None
+    colloquial_question = None
     if goal['status'] == 'needs_input':
+        steps = _steps(db, gid)
+        if steps:
+            colloquial_question = steps[-1]['observation'].get('report_colloquial_question')
+            if colloquial_question:
+                receipt = json.dumps(steps[-1], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                fingerprint = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
         details = goal_partials.read_waiting(db, gid, goal['question'])
         goal.update(details)
         if 'partial_result' in details:
@@ -51,7 +58,6 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
             options = goal_question_withdrawals.options(db, gid, goal['question'], waiting_step, guidance)
             if options:
                 fingerprint = hashlib.sha256((fingerprint + options['question_sha256']).encode('utf-8')).hexdigest()
-                steps = _steps(db, gid)
                 pending = decision_table.answered_reference_review(steps, sources, guidance)
                 key = 'answered_reference_review'
                 if pending is None:
@@ -65,7 +71,9 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
               'step_count':review['step_count'], 'sources_match':review['sources_match']}
     if options:
         result['question_withdrawal'] = options
-    if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(_steps(db, gid)):
+    if colloquial_question:
+        result['report_colloquial_question'] = colloquial_question
+    if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(steps):
         result['reference_partial_reply'] = True
     if goal['status'] == 'report_ready' and not review['file_delivery']:
         steps = _steps(db, gid)
@@ -102,6 +110,8 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
+    if 'report_colloquial_question' in value:
+        return False, '請在目前問題保存答覆，或回答「取消這則補充」。'
     conflict = value.get('document_conflict_report', {})
     choice_hint = ''
     if options := conflict.get('options'):
@@ -180,9 +190,31 @@ def _save_reference_recheck(db, current, notes):
         args = {'report_version_recheck': latest['citation']}
     else:
         args = {'field_reference': latest['citation'], 'recheck': True}
-    observation = decision_table.observe(args, steps, goal.get('reply_sources', ()), sources)
+    replies = goal.get('reply_sources', ())
+    try:
+        observation = decision_table.observe(args, steps, replies, sources)
+    except ValueError as original:
+        if not conflict:
+            raise
+        try:
+            question = decision_table.prepare_report_colloquial_question(steps, replies, sources, latest['citation'])
+        except decision_table.ReportColloquialUnrecognized:
+            raise original
+        if question:
+            if step_count + 3 > MAX_STEPS:
+                raise ValueError('剩餘步數不足以釐清並更新成果，請帶入原成果建立下一階段。')
+            ask, partial, receipt = question
+            append_followup_question(db, {**goal, 'guidance_sources': sources}, notes, step_count + 1,
+                                     ask, '釐清同一則口語補充中未確認的事項',
+                                     partial_result=partial, colloquial_receipt=receipt)
+            db.execute("UPDATE autonomous_goals SET notes=?,status='needs_input',question=?,result='',notice=?,"
+                       "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                       (notes, ask, '已保存補充。只需要確認這一項，再一起重算。', gid))
+            return
+        args = {'report_colloquial_guidance': latest['citation']}
+        observation = decision_table.observe(args, steps, replies, sources)
     needs_field = (observation.get('max_questions', 0) > 0 if args.keys() & {
-        'report_version_recheck', 'report_conflict_choice', 'report_mixed_guidance'}
+        'report_version_recheck', 'report_conflict_choice', 'report_mixed_guidance', 'report_colloquial_guidance'}
                    else observation['field_reference']['status'] == 'needs_field')
     if step_count + (4 if needs_field else 2) > MAX_STEPS:
         raise ValueError('剩餘步數不足以重核及完成新成果，請帶入原成果建立下一階段。')
@@ -190,7 +222,7 @@ def _save_reference_recheck(db, current, notes):
     notice = '已重核原分支'
     if 'report_conflict_choice' in args:
         notice = '已撤回原行的正式採用' if choice.get('operation') == 'withdraw' else '已核對正式採用的原行'
-    if 'report_mixed_guidance' in args:
+    if args.keys() & {'report_mixed_guidance', 'report_colloquial_guidance'}:
         notice = '已核對這則補充中的正式更正'
     db.execute("UPDATE autonomous_goals SET notes=?,status='paused',result='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                (notes, notice + '；先前成果保留在步驟紀錄，請接續更新成果。', gid))
@@ -257,7 +289,7 @@ def append_answered_revision(db, current, notes):
     _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
 
 
-def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None):
+def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None, colloquial_receipt=None):
     excerpts = [row for step in _steps(db, goal['id']) for row in step['observation'].get('excerpts', [])]
     citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
                                                   goal.get('guidance_sources', ()))
@@ -265,6 +297,9 @@ def append_followup_question(db, goal, notes, sequence, question, note, *, parti
     if citations:
         observation['question_citations'] = citations
     action = {'tool': 'ask', 'args': {'question': question}, 'note': note}
+    if colloquial_receipt is not None:
+        action['args']['report_colloquial_question'] = colloquial_receipt['source']
+        observation['report_colloquial_question'] = colloquial_receipt
     if partial_result is not None:
         goal_partials.validate(partial_result)
         checks = check_citations(partial_result, excerpts)

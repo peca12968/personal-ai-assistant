@@ -1,0 +1,72 @@
+[
+  {
+    "id": "reported_rule_needs_confirmation_and_decided_shift_is_saved",
+    "seed": "workshop",
+    "correction": "有人說「先改採 [D5:L2]」。核對班別這邊，晚班就好。",
+    "expected": "field",
+    "clarification_question": "「[D5:L2]」要正式改採嗎？請回答「改採」或「維持原規則」。",
+    "clarification_reply": "維持原規則",
+    "reply": "核對班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "decided_shift_with_explicitly_pending_rule",
+    "seed": "workshop",
+    "correction": "核對就晚班好了，改採 [D5:L2] 還沒確定。",
+    "expected": "field",
+    "reply": "收件班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "rule_question_preserves_the_original_field_until_answered",
+    "seed": "workshop",
+    "correction": "改採 [D5:L2] 嗎？核對照舊。",
+    "expected": "field",
+    "clarification_question": "「[D5:L2]」要正式改採嗎？請回答「改採」或「維持原規則」。",
+    "clarification_reply": "改採",
+    "reply": "收件班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "casual_confirmed_shift_and_deferred_choice",
+    "seed": "workshop",
+    "correction": "核對班別就用晚班。改採那筆先等等。",
+    "expected": "field",
+    "reply": "核對班別",
+    "reply_question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。"
+  },
+  {
+    "id": "rule_question_and_waiting_shift_keep_the_last_verified_choice",
+    "seed": "workshop",
+    "correction": "聽說要改採 [D5:L2]，是確定了嗎？核對還在等回覆。",
+    "expected": "resolved",
+    "clarification_question": "「[D5:L2]」要正式改採嗎？請回答「改採」或「維持原規則」。",
+    "clarification_reply": "維持原規則"
+  },
+  {
+    "id": "one_confirmed_shift_and_another_explicitly_pending",
+    "seed": "archives",
+    "correction": "收件班別早班，核對班別晚班或早班我還要問。",
+    "expected": "resolved"
+  },
+  {
+    "id": "single_unclear_field_is_asked_with_exact_values",
+    "seed": "workshop",
+    "correction": "核對班別早班還是晚班？收件班別就用晚班。",
+    "expected": "resolved",
+    "clarification_question": "「核對班別」要用哪個值？請回答「早班」或「晚班」。",
+    "clarification_reply": "早班"
+  },
+  {
+    "id": "unverified_rule_cannot_be_smuggled_through_a_question",
+    "seed": "workshop",
+    "correction": "有人說「先改採 [D5:L3]」。核對班別就用晚班。",
+    "expected": "rejected"
+  },
+  {
+    "id": "an_unrelated_condition_cannot_be_applied_silently",
+    "seed": "workshop",
+    "correction": "核對就晚班好了，另把複核班別改成早班。",
+    "expected": "rejected"
+  }
+]
