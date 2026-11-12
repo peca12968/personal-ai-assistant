@@ -87,3 +87,28 @@ def answer(pending, text):
         if text == '維持原值':
             return 'keep', None
     raise ValueError(question(pending) + ' 可回答「取消這則補充」。')
+
+
+def named_answer(pending, text):
+    target = pending['target']
+    if pending['kind'] == 'clarify_rule':
+        citation = re.escape(target['citation'])
+        if re.fullmatch(rf'(?:正式)?改採 *{citation}', text):
+            return 'choice', target
+        if re.fullmatch(rf'(?:不改採|不用改採|維持原規則) *{citation}', text):
+            return 'keep', None
+        if re.fullmatch(rf'改採 *{citation} *(?:還沒確定|先等等)', text):
+            return 'defer', None
+        return None
+    field = target['field']
+    if not text.startswith(field):
+        return None
+    remainder = text[len(field):].strip()
+    if remainder in {'先不決定', '還沒確定', '還在等回覆'}:
+        return 'defer', None
+    match = re.fullmatch(r'(?:正式改為|正式確認為|改為|改成|就用|[：:])? *(.+)', remainder)
+    if match:
+        value = match[1].removeprefix('「').removesuffix('」')
+        if value in target['values']:
+            return 'condition', (field, value)
+    return None

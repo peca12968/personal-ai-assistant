@@ -55,11 +55,24 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
             args = {'report_colloquial_guidance': colloquial['source'], 'reply': replies[-1]['citation']}
             observation = decision_table.observe(args, steps, replies, goal.get('guidance_sources', ()))
-            required = 4 if observation.get('max_questions', 0) else 2
+            ordered = observation['field_reference']['report_mixed_guidance'].get('ordered')
+            needs_followup = ordered is not None and ordered['next'] is not None
+            required = 6 if needs_followup else 4 if observation.get('max_questions', 0) else 2
             if current['step_count'] + required > MAX_STEPS:
                 raise ValueError('剩餘步數不足以重算並交付，請帶入目前進度建立下一階段。')
             action = {'tool': 'check_decision', 'args': args, 'note': '依確切答覆重算同一則口語補充'}
             _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
+            if needs_followup:
+                sources = goal.get('guidance_sources', ())
+                ask, partial, receipt = decision_table.prepare_report_colloquial_question(
+                    _steps(db, gid), replies, sources, colloquial['source'])
+                append_followup_question(db, {**goal, 'reply_sources': replies}, notes, current['step_count'] + 2,
+                                         ask, '只保留仍影響交付的口語釐清', partial_result=partial,
+                                         colloquial_receipt=receipt)
+                db.execute("UPDATE autonomous_goals SET notes=?,status='needs_input',question=?,notice=?,"
+                           "updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
+                           (notes, ask, '已保存答覆。這一項仍會影響成果。', gid, sid))
+                return _snapshot(db, sid, gid)
         elif combined:
             replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
             args = {'field_reference': replies[-1]['citation'], 'combined_reply': True}

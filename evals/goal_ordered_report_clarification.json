@@ -1,0 +1,113 @@
+[
+  {
+    "id": "field_first_answer_makes_the_rule_irrelevant",
+    "seed": "archives",
+    "correction": "改採 [D5:L1] 嗎？收件班別早班還是晚班？核對照舊。",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "早班"}
+    ],
+    "destination": "集合席",
+    "pending": ["[D5:L1]"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "field_first_answer_still_needs_the_rule",
+    "seed": "archives",
+    "correction": "改採 [D5:L1] 嗎？收件班別早班還是晚班？核對照舊。",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"},
+      {"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "改採"}
+    ],
+    "destination": "青席",
+    "pending": [],
+    "active_rule": "[D5:L1]"
+  },
+  {
+    "id": "named_answers_to_both_questions_in_one_reply",
+    "seed": "archives",
+    "correction": "改採 [D5:L1] 嗎？收件班別早班還是晚班？核對照舊。",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "改採 [D5:L1]。收件班別晚班。"}
+    ],
+    "destination": "青席",
+    "pending": [],
+    "active_rule": "[D5:L1]"
+  },
+  {
+    "id": "correct_the_first_answer_and_defer_the_current_rule",
+    "seed": "archives",
+    "correction": "收件班別早班還是晚班？改採 [D5:L1] 嗎？",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"},
+      {"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "收件班別改為早班。改採 [D5:L1] 還沒確定。"}
+    ],
+    "destination": "集合席",
+    "pending": ["[D5:L1]"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "confirmed_shift_makes_the_rule_irrelevant_from_the_start",
+    "seed": "archives",
+    "correction": "改採 [D5:L1] 嗎？收件班別早班還是晚班？核對就晚班好了。",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"}
+    ],
+    "destination": "交接席",
+    "pending": ["[D5:L1]"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "two_different_fields_with_explicit_deferral",
+    "seed": "archives",
+    "correction": "核對班別早班還是晚班？收件班別早班還是晚班？",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「核對班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"},
+      {"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "先不決定"}
+    ],
+    "destination": "交接席",
+    "pending": ["收件班別"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "rule_first_answer_makes_the_quantity_irrelevant",
+    "seed": "quantity",
+    "correction": "改採 [D5:L1] 嗎？交付份數6還是8？覆核時段照舊。",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "改採"}
+    ],
+    "destination": "青席",
+    "pending": ["交付份數"],
+    "active_rule": "[D5:L1]"
+  },
+  {
+    "id": "both_named_numeric_fields_apply_to_the_right_columns",
+    "seed": "quantity",
+    "correction": "覆核時段6還是8？交付份數6還是8？",
+    "expected": "resolved",
+    "clarifications": [
+      {"question": "「交付份數」要用哪個值？請回答「6」或「8」。", "reply": "交付份數6。覆核時段8。"}
+    ],
+    "destination": "青席",
+    "pending": [],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "an_unverified_rule_stays_rejected",
+    "seed": "archives",
+    "correction": "改採 [D5:L3] 嗎？收件班別早班還是晚班？",
+    "expected": "rejected"
+  },
+  {
+    "id": "two_different_requests_about_the_same_field_stay_rejected",
+    "seed": "archives",
+    "correction": "收件班別早班還是晚班？收件班別晚班還是早班？",
+    "expected": "rejected"
+  }
+]

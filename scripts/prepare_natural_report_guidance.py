@@ -17,19 +17,23 @@ ROUTES = {('早班', '早班'): '集合席', ('晚班', '早班'): '西席',
           ('早班', '晚班'): '東席', ('晚班', '晚班'): '交接席'}
 SEEDS = (('workshop', '芒灣 W6', '工坊零件交接'), ('archives', '石荔 A7', '圖冊回庫'),
          ('supplies', '竹湧 S9', '器材借出'))
+QUANTITY_ROUTES = {('6', '6'): '青席', ('8', '6'): '西席',
+                   ('6', '8'): '東席', ('8', '8'): '交接席'}
 
 
 def action(tool, **args):
     return json.dumps({'tool': tool, 'args': args, 'note': '建立固定測量狀態'}, ensure_ascii=False)
 
 
-def prepare_seed(work, destination, name, scope, task):
+def prepare_seed(work, destination, name, scope, task, *, fields=FIELDS, routes=ROUTES):
     store = Store(work / 'assistant.sqlite3')
     sid = store.new_session()
-    table = {'conditions': list(FIELDS), 'domains': {field: ['早班', '晚班'] for field in FIELDS},
-             'excluded': [], 'known': dict.fromkeys(FIELDS, '早班'),
-             'rows': [{'when': list(when), 'result': result} for when, result in ROUTES.items()]}
-    changed, alternate = ('晚班', '早班'), ('早班', '晚班')
+    baseline, changed, alternate, _ = routes
+    domains = {field: list(dict.fromkeys(pair[index] for pair in routes)) for index, field in enumerate(fields)}
+    table = {'conditions': list(fields), 'domains': domains,
+             'excluded': [], 'known': dict(zip(fields, baseline)),
+             'rows': [{'when': list(when), 'result': result} for when, result in routes.items()]}
+    initial_change = f'正式改成{alternate[1]}。'
 
     def attach(expected_id, filename, lines):
         path = work / filename
@@ -39,11 +43,15 @@ def prepare_seed(work, destination, name, scope, task):
 
     def rule(version, when, result, ending='其他配對沿用原表。'):
         left, right = when
-        return (f'本輪「{scope}」的「{version}」版規則。若「收件班別」為「{left}」、「核對班別」為「{right}」，'
-                f'原「{ROUTES[when]}」改為「{result}」。{ending}')
+        return (f'本輪「{scope}」的「{version}」版規則。若「{fields[0]}」為「{left}」、「{fields[1]}」為「{right}」，'
+                f'原「{routes[when]}」改為「{result}」。{ending}')
 
-    attach(1, 'baseline.txt', [f'{scope} 的收件班別、核對班別原本都是早班。'])
-    attach(2, 'routes.txt', [f'收件{left}、核對{right}去{result}。' for (left, right), result in ROUTES.items()])
+    if fields == FIELDS:
+        attach(1, 'baseline.txt', [f'{scope} 的收件班別、核對班別原本都是早班。'])
+        attach(2, 'routes.txt', [f'收件{left}、核對{right}去{result}。' for (left, right), result in routes.items()])
+    else:
+        attach(1, 'baseline.txt', [f'{scope} 的{fields[0]}原為{baseline[0]}，{fields[1]}原為{baseline[1]}。'])
+        attach(2, 'routes.txt', [f'{fields[0]}{left}、{fields[1]}{right}去{result}。' for (left, right), result in routes.items()])
     attach(3, 'v1.txt', [rule('v1', changed, '臨時席'), rule('v1', alternate, '臨時席')])
     attach(4, 'adoptions.txt', [f'本輪「{scope}」正式採用版本「{version}」。' for version in ('v1', 'v2')])
     objective = (f'本次為「{scope}」。處理{task}，依核對規則交付確定去向及來源。'
@@ -67,7 +75,7 @@ def prepare_seed(work, destination, name, scope, task):
     run(action('read_ranges', ranges=[{'document_id': d, 'start_line': 1, 'end_line': end}
                                       for d, end in ((1, 1), (2, 4))]),
         action('check_decision', **table), action('ask', question='現場有什麼更動？'))
-    source = reply('正式改成晚班。')
+    source = reply(initial_change)
     run(action('check_decision', field_reference=source),
         action('read_ranges', ranges=[{'document_id': d, 'start_line': 1, 'end_line': 2} for d in (3, 4)]),
         action('check_decision', scope=scope, document_rules=['[D3:L1]', '[D3:L2]', '[D4:L1]', '[D4:L2]']),
@@ -89,15 +97,15 @@ def prepare_seed(work, destination, name, scope, task):
     guide(f'補件 [D5:L1-L{len(lines)}]')
     run(action('finish', report='v2 在收件晚班、核對早班時有青席與金席兩筆規則，去向待查。'))
 
-    selected = 2 if name == 'archives' else 1
+    selected = 2 if name in {'archives', 'quantity'} else 1
     guide(f'正式採用 [D5:L{selected}]。')
-    if name == 'archives':
+    if name in {'archives', 'quantity'}:
         state = autonomy.get_goal(store, sid, gid)
         question = decision_table.reference_question_for_steps(state['steps'])
         run(action('ask', question=question))
-        confirmed = reply('收件班別')
+        confirmed = reply(fields[0])
         run(action('check_decision', field_reference=confirmed, resolve=True))
-        prior = '已確認收件班別改為晚班，依 v2 去金席。'
+        prior = f'已確認{fields[0]}改為{changed[0]}，依 v2 去金席。'
     elif partial:
         prior = '收件晚班、核對早班去青席。另一配對缺 v2 規則。'
     else:
@@ -110,11 +118,16 @@ def prepare_seed(work, destination, name, scope, task):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--ordered-clarification', action='store_true')
     args = parser.parse_args()
     args.output.mkdir(parents=True)
     for name, scope, task in SEEDS:
         with TemporaryDirectory(dir=args.output) as temporary:
             prepare_seed(Path(temporary), args.output / (name + '.paibackup'), name, scope, task)
+    if args.ordered_clarification:
+        with TemporaryDirectory(dir=args.output) as temporary:
+            prepare_seed(Path(temporary), args.output / 'quantity.paibackup', 'quantity', '橡灣 T4', '校樣交付',
+                         fields=('交付份數', '覆核時段'), routes=QUANTITY_ROUTES)
 
 
 if __name__ == '__main__':

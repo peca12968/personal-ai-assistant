@@ -201,15 +201,16 @@ def _save_reference_recheck(db, current, notes):
         except decision_table.ReportColloquialUnrecognized:
             raise original
         if question:
-            if step_count + 3 > MAX_STEPS:
-                raise ValueError('剩餘步數不足以釐清並更新成果，請帶入原成果建立下一階段。')
             ask, partial, receipt = question
+            if step_count + (7 if 'ordered' in receipt else 3) > MAX_STEPS:
+                raise ValueError('剩餘步數不足以釐清並更新成果，請帶入原成果建立下一階段。')
             append_followup_question(db, {**goal, 'guidance_sources': sources}, notes, step_count + 1,
                                      ask, '釐清同一則口語補充中未確認的事項',
                                      partial_result=partial, colloquial_receipt=receipt)
             db.execute("UPDATE autonomous_goals SET notes=?,status='needs_input',question=?,result='',notice=?,"
                        "updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                       (notes, ask, '已保存補充。只需要確認這一項，再一起重算。', gid))
+                       (notes, ask, ('已保存補充。先確認這一項，再判斷是否還需要另一項。' if 'ordered' in receipt
+                                     else '已保存補充。只需要確認這一項，再一起重算。'), gid))
             return
         args = {'report_colloquial_guidance': latest['citation']}
         observation = decision_table.observe(args, steps, replies, sources)

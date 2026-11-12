@@ -30,6 +30,16 @@ def run(suite, seeds, output):
         if 'clarification_reply' in case or 'clarification_question' in case:
             autonomy.text(case['clarification_reply'], 4000)
             autonomy.text(case['clarification_question'], 800)
+        if 'clarifications' in case:
+            assert case['expected'] != 'rejected' and 'clarification_question' not in case
+            assert 1 <= len(case['clarifications']) <= 2
+            for clarification in case['clarifications']:
+                assert clarification.keys() == {'question', 'reply'}
+                autonomy.text(clarification['question'], 800)
+                autonomy.text(clarification['reply'], 4000)
+            autonomy.text(case['destination'], 100)
+            assert isinstance(case['pending'], list) and all(isinstance(item, str) for item in case['pending'])
+            assert re.fullmatch(r'\[D[1-9][0-9]*:L[1-9][0-9]*\]', case['active_rule'])
         autonomy.text(case['correction'], 4000)
     if seeds is None:
         print(f'Validated {len(cases)} report conflict fixtures without model calls.')
@@ -79,6 +89,15 @@ def run(suite, seeds, output):
                 observed = goal_replies.snapshot(store, sid, gid)
                 goal_replies.save(store, sid, gid, case['clarification_reply'], expected_fingerprint=observed['fingerprint'])
                 state = row['after_clarification'] = autonomy.get_goal(store, sid, gid)
+            if 'clarifications' in case:
+                row['clarifications'] = []
+                for clarification in case['clarifications']:
+                    if state['status'] != 'needs_input' or state['question'] != clarification['question']:
+                        break
+                    observed = goal_replies.snapshot(store, sid, gid)
+                    goal_replies.save(store, sid, gid, clarification['reply'], expected_fingerprint=observed['fingerprint'])
+                    state = autonomy.get_goal(store, sid, gid)
+                    row['clarifications'].append(state)
             if state['status'] == 'paused':
                 state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
             if 'reply' in case:

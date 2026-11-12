@@ -70,6 +70,7 @@ REPORT_CONFLICT_GUIDANCE = '''field_reference.report_conflict_choices 保留使�
 REPORT_CHOICE_AMENDMENT_GUIDANCE = '''同一版本、同一配對以最後一筆正式指示為準。operation=replace 表示改採 selected 原行。operation=withdraw 表示撤回該配對原先的選擇，selected 是被撤回的原行，仍有效的競爭原行依最新 coverage 並列。引用本次更正與各原行，保留其他配對的正式選擇、已確認欄名及待查狀態。'''
 REPORT_MIXED_GUIDANCE = '''field_reference.report_mixed_guidance 是同一則交付後更正核對出的各段原話。condition_changes 是正式欄位更新。clauses 中 proposal 是明示未採用的提案，不能當成使用者指示。依正式更新後的欄位值與最新分支交付；改採的規則只有在該配對相符時才決定去向。若提供 field_reference_question，保持原問並使用實際答覆。引用本次更正及仍適用的原行，保留已知和待查項目。'''
 REPORT_COLLOQUIAL_GUIDANCE = '''field_reference.report_mixed_guidance 若有 colloquial，依 condition_changes、實際的 clarification.reply 和最新核對分支交付。deferred_condition、deferred_rule 是使用者表示仍待確定的事項，原已核對條件或規則保持生效。clarify_rule 引述或問句本身沒有採用規則，只有 clarification 的正式回覆可改採。若使用者取消補充，保留原核對結果。已解決的釐清不用重問，只有 field_reference_question 存在時才問原欄名。'''
+REPORT_ORDERED_GUIDANCE = '''field_reference.report_mixed_guidance.ordered 記錄同一則補充的兩項釐清。targets 依陣列位置編號，answers 按實際保存先後；同一 index 的最後答覆才有效。remaining 是仍待確認的項目，即使其新值不影響交付，也保留待確認及目前生效值。已核對的 condition_changes 和現行分支決定報告。引用實際答覆的 evidence、原補充及適用的文件行。提議與暫緩均不改採。cancelled 時使用原結果。口語釐清已由程式處理，只有 field_reference_question 存在時才追問原欄名。'''
 
 
 WAITING_REFERENCE_GUIDANCE = '''
@@ -2567,7 +2568,7 @@ def _report_guidance_bundle(base, source, *, colloquial=False):
     spans = _report_guidance_spans(source['content'], boundary=boundary)
     if len(spans) > 8:
         raise ValueError('一次最多核對八段明確更正，請分開保存。')
-    choice, pending, updates, clauses = None, None, [], []
+    choice, pending, updates, clauses = None, [], [], []
     recognized = False
     for start, clause in spans:
         evidence = _source_excerpt(source, clause, start=start)
@@ -2590,9 +2591,7 @@ def _report_guidance_bundle(base, source, *, colloquial=False):
                 updates.append((target, evidence))
                 target = None
             elif kind in {'clarify_rule', 'clarify_condition'}:
-                if pending:
-                    raise ValueError('這則補充有不只一個待釐清事項，請先明確指定其中一項。原報告保留。')
-                pending = {'kind': kind, 'target': target, 'evidence': evidence}
+                pending.append({'kind': kind, 'target': target, 'evidence': evidence})
         else:
             if colloquial:
                 raise ReportColloquialUnrecognized()
@@ -2603,11 +2602,21 @@ def _report_guidance_bundle(base, source, *, colloquial=False):
         clauses.append(item)
     if colloquial and not recognized:
         raise ReportColloquialUnrecognized()
-    if pending and ((pending['kind'] == 'clarify_rule' and choice)
-                    or (pending['kind'] == 'clarify_condition' and
-                        any(update[0] == pending['target']['field'] for update, _ in updates))):
+    identities = [item['target'].get('field') for item in pending]
+    if len(pending) > 2 or len(set(identities)) != len(identities):
+        raise ValueError('每則補充可釐清最多兩個不同事項；同一欄位或改採請只指定一次。原報告保留。')
+    if len(pending) == 2:
+        fields = report_colloquial.field_names(base['domains'])
+        deferred_fields = {item['target']['field'] for item in clauses if item['kind'] == 'deferred_condition'}
+        unchanged = {f'{name}{suffix}' for name, field in fields.items() if field in identities
+                     for suffix in ('照舊', '維持原值')}
+        if (deferred_fields.intersection(identities)
+                or any(item['evidence']['quote'] in unchanged for item in clauses if item['kind'] == 'unchanged')
+                or (None in identities and any(item['kind'] == 'deferred_rule' for item in clauses))):
+            raise ValueError('同一事項請只指定一種待確認或暫緩方式。原報告保留。')
+    if (None in identities and choice) or any(update[0] in identities for update, _ in updates):
         raise ValueError('同一事項同時有正式更正和待確認說法，請先確認一個做法。原報告保留。')
-    if choice is None and not updates and pending is None:
+    if choice is None and not updates and not pending:
         raise ValueError('這則補充沒有可套用的正式更正，原報告保留。')
     return choice, updates, clauses, pending
 
@@ -2663,11 +2672,19 @@ def _report_guidance_context(previous, steps, sequence, replies, guidance, citat
 
 
 def _report_colloquial_question(previous, steps, replies, guidance, citation):
+    if previous and (state := previous[1].get('ordered_report_clarification')):
+        if state['source']['citation'] != citation or previous[0] != len(steps):
+            raise ValueError('第二項釐清須緊接同一則補充的前次核對。')
+        return _ordered_report_question(state)
     report, checked, conflict, source, _ = _report_guidance_context(
         previous, steps, len(steps) + 1, replies, guidance, citation)
     choice, _, clauses, pending = _report_guidance_bundle(previous[1], source, colloquial=True)
     if not pending:
         return None
+    if len(pending) == 2:
+        state = _ordered_report_state(previous[1], steps, replies, guidance, report, checked, conflict, source)
+        return _ordered_report_question(state)
+    pending, = pending
     proof = checked['observation']['field_reference']
     if choice:
         _report_conflict_choice(*choice, conflict, proof, report, checked)
@@ -2693,9 +2710,12 @@ def _validate_report_colloquial_question(step, previous, steps, replies, guidanc
     if not expected:
         raise ValueError('保存的口語釐清缺少待確認事項。')
     question, partial, expected_receipt = expected
-    if (step['sequence'] != len(steps) + 1 or action['args'].get('question') != question
+    args = {'question': question, 'report_colloquial_question': citation}
+    if partial is not None:
+        args['partial_result'] = partial
+    if (step['sequence'] != len(steps) + 1 or action['args'] != args
             or step['observation'].get('question') != question or receipt != expected_receipt
-            or action['args'].get('partial_result') != partial or step['observation'].get('partial_result') != partial):
+            or step['observation'].get('partial_result') != partial):
         raise ValueError('保存的口語釐清與原報告或補充不一致。')
     return receipt
 
@@ -2707,12 +2727,20 @@ def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance)
                                           'report_conflict_choice') if key in args)
     reply_citation = args.get('reply') if colloquial else None
     report_steps = steps[:-1] if reply_citation else steps
+    if reply_citation and steps and 'ordered' in steps[-1]['observation'].get('report_colloquial_question', {}):
+        return _recheck_ordered_report(args, previous, steps, replies, guidance)
     report, checked, conflict, source, reply = _report_guidance_context(
         previous, report_steps, sequence, replies, guidance, citation, reply_citation)
     base = previous[1]
     clarification = None
     if mixed:
-        choice, updates, clauses, target = _report_guidance_bundle(base, source, colloquial=colloquial)
+        choice, updates, clauses, targets = _report_guidance_bundle(base, source, colloquial=colloquial)
+        if len(targets) == 2:
+            state = _ordered_report_state(base, steps, replies, guidance, report, checked, conflict, source)
+            if state['next'] is not None:
+                raise ValueError('先回答目前的口語釐清問題，再重算成果。')
+            return _ordered_report_result(state)
+        target = targets[0] if targets else None
         if target:
             if (not reply or reply.get('ask_sequence') != sequence - 1
                     or steps[-1]['action']['tool'] != 'ask'
@@ -2735,6 +2763,18 @@ def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance)
         if parsed is None:
             raise ValueError('請用單一明確句指定一筆原行，例如「正式採用 [D5:L2]。」或「撤回正式採用 [D5:L2]。」。')
         choice = parsed, _source_excerpt(source, source['content'])
+    receipt = None
+    if mixed:
+        receipt = {'clauses': clauses}
+        if colloquial:
+            receipt['colloquial'] = True
+        if clarification:
+            receipt['clarification'] = clarification
+    return _apply_report_changes(base, steps, replies, guidance, report, checked, conflict, choice, updates if mixed else (), receipt)
+
+
+def _apply_report_changes(base, steps, replies, guidance, report, checked, conflict, choice, updates, mixed,
+                          *, allow_unchanged=False, reject_no_match=True):
     proof = checked['observation']['field_reference']
     candidates = base.get('document_version_plans', ())
     if len(candidates) != 1 or candidates[0]['version'] != conflict['version'] or 'rows' not in candidates[0]:
@@ -2758,20 +2798,154 @@ def _recheck_report_conflict(args, previous, steps, sequence, replies, guidance)
     if mixed:
         if pending:
             plan['pending_field_reference'] = pending
-        plan, proof, changes = _apply_version_conditions(plan, proof, updates, allow_unchanged=choice is not None)
+        plan, proof, changes = _apply_version_conditions(plan, proof, updates,
+                                                         allow_unchanged=allow_unchanged or choice is not None)
         proof = {**proof, 'report_mixed_guidance': {
             'report_step': report['sequence'], 'report_sha256': digest(report),
             'decision_step': checked['sequence'], 'decision_sha256': digest(checked),
-            'clauses': clauses, 'condition_changes': changes,
+            **mixed, 'condition_changes': changes,
         }}
-        if colloquial:
-            proof['report_mixed_guidance']['colloquial'] = True
-        if clarification:
-            proof['report_mixed_guidance']['clarification'] = clarification
     plan, observation, results = _document_version_result(plan, proof, pending)
-    if mixed and all(result['status'] == 'no_match' for result in results):
+    if mixed and reject_no_match and all(result['status'] == 'no_match' for result in results):
         raise ValueError('更正後的條件與原表所有配對均不相容。原報告保留。')
     return plan, observation
+
+
+def _ordered_report_state(base, steps, replies, guidance, report, checked, conflict, source):
+    choice, updates, clauses, targets = _report_guidance_bundle(base, source, colloquial=True)
+    state = {'context': (base, steps, replies, guidance, report, checked, conflict), 'source': source,
+             'choice': choice, 'updates': updates, 'clauses': clauses, 'targets': targets,
+             'history': [], 'next': None, 'pending': [0, 1], 'cancelled': False}
+    state['next'] = _next_ordered_report_target(state)
+    return state
+
+
+def _ordered_report_receipt(state):
+    return {'targets': state['targets'], 'answers': state['history'], 'remaining': state['pending'],
+            'next': state['next'], 'cancelled': state['cancelled']}
+
+
+def _ordered_report_question(state):
+    if state['next'] is None:
+        return None
+    _, _, _, _, report, checked, _ = state['context']
+    source = state['source']['citation']
+    pending = state['targets'][state['next']]
+    confirmed = [item['evidence']['quote'] for item in state['clauses'] if item['kind'] in {'condition', 'choice'}]
+    confirmed.extend(item['evidence']['quote'] for item in state['history'] if item['answer'] in {'condition', 'choice', 'keep'})
+    partial = '已保存下列補充，待確認後一併重算。\n' + '\n'.join(confirmed) if confirmed else None
+    return report_colloquial.question(pending), partial, {
+        'source': source, 'report_step': report['sequence'], 'report_sha256': digest(report),
+        'decision_step': checked['sequence'], 'decision_sha256': digest(checked),
+        'clauses': state['clauses'], 'pending': pending, 'ordered': _ordered_report_receipt(state),
+    }
+
+
+def _ordered_report_result(state, hypothetical=()):
+    choice, updates = (None, []) if state['cancelled'] else (state['choice'], list(state['updates']))
+    latest = {entry['index']: entry for entry in state['history'] if 'index' in entry}
+    answers = sorted(latest.values(), key=lambda item: (item['ask_sequence'], item['evidence']['start']))
+    for item in (() if state['cancelled'] else [*answers, *hypothetical]):
+        if item['answer'] == 'choice':
+            choice = item['value'], item['evidence']
+        elif item['answer'] == 'condition':
+            updates.append((item['value'], item['evidence']))
+    receipt = {'clauses': state['clauses'], 'colloquial': True, 'ordered': _ordered_report_receipt(state)}
+    plan, observation = _apply_report_changes(*state['context'], choice, updates, receipt,
+                                               allow_unchanged=True, reject_no_match=not hypothetical and state['next'] is None)
+    if state['next'] is not None and not hypothetical:
+        plan = {**plan, 'ordered_report_clarification': state}
+    return plan, observation
+
+
+def _ordered_outcome(observation):
+    proof = observation['field_reference']
+    if observation['status'] == 'resolved':
+        return ('resolved', tuple(observation['possible_results']))
+    branches = proof['branches'] if proof.get('status') == 'needs_field' else [observation]
+    return (observation['status'], observation.get('max_questions', 0),
+            tuple(digest(_result_summary(branch)) for branch in branches))
+
+
+def _next_ordered_report_target(state):
+    answered = {entry['index'] for entry in state['history'] if 'index' in entry}
+    remaining = [index for index in state['pending'] if index not in answered]
+    if not remaining or state['cancelled']:
+        return None
+    options = []
+    for index in remaining:
+        item = state['targets'][index]
+        target = item['target']
+        proposals = [('choice', target)] if item['kind'] == 'clarify_rule' else [
+            ('condition', [target['field'], value]) for value in target['values']]
+        options.append([{'answer': kind, 'value': value, 'evidence': item['evidence']}
+                        for kind, value in [('keep', None), *proposals]])
+    matrix = {indices: _ordered_outcome(_ordered_report_result(
+        state, tuple(options[axis][value] for axis, value in enumerate(indices)))[1])
+        for indices in product(*(range(len(items)) for items in options))}
+    if len(set(matrix.values())) == 1:
+        return None
+    if len(remaining) == 1:
+        return remaining[0]
+
+    def cost(axis):
+        groups = {tuple(outcome for indices, outcome in matrix.items() if indices[axis] == value)
+                  for value in range(len(options[axis]))}
+        followups = [len(set(group)) > 1 for group in groups]
+        return max(followups), sum(followups)
+
+    return remaining[min(range(len(remaining)), key=cost)]
+
+
+def _ordered_report_answers(state, reply):
+    text = reply['answer']
+    if text == '取消這則補充':
+        return [{'answer': 'cancel', 'ask_sequence': reply['ask_sequence'], 'evidence': _source_excerpt(reply, text)}]
+    spans = _report_guidance_spans(text, boundary=report_colloquial.clause_boundary(state['context'][0]['domains']))
+    answers = []
+    for start, clause in spans:
+        matching = [(index, parsed) for index, pending in enumerate(state['targets'])
+                    if (parsed := report_colloquial.named_answer(pending, clause))]
+        if not matching and len(spans) == 1:
+            active = state['next']
+            parsed = ('defer', None) if clause == '先不決定' else report_colloquial.answer(state['targets'][active], clause)
+            matching = [(active, parsed)]
+        if len(matching) != 1:
+            raise ValueError('同則回答多項時，請逐一寫明原表完整欄名或改採原行。')
+        index, (kind, value) = matching[0]
+        if any(item['index'] == index for item in answers):
+            raise ValueError('同一則答覆的每個事項請只指定一個答案。')
+        answers.append({'index': index, 'answer': kind, 'value': list(value) if isinstance(value, tuple) else value,
+                        'ask_sequence': reply['ask_sequence'], 'evidence': _source_excerpt(reply, clause, start=start)})
+    previous = {entry['index'] for entry in state['history']}
+    if not any(item['index'] not in previous for item in answers):
+        raise ValueError('可同時更正前一項，但請也回答一項待釐清事項，或寫「先不決定」。')
+    return answers
+
+
+def _recheck_ordered_report(args, previous, steps, replies, guidance):
+    ask = steps[-1]
+    citation = args['report_colloquial_guidance']
+    _validate_report_colloquial_question(ask, previous, steps[:-1], replies, guidance)
+    sources = _followup_sources(ask['sequence'] - 1, ask['sequence'] + 1, replies, guidance)
+    sources.pop(citation, None)
+    if set(sources) != {args['reply']}:
+        raise ValueError('須引用這次釐清實際保存的唯一答覆。')
+    reply = sources[args['reply']]
+    if reply.get('ask_sequence') != ask['sequence'] or reply['question'] != ask['action']['args']['question']:
+        raise ValueError('口語釐清答覆與目前問題不一致。')
+    state = previous[1].get('ordered_report_clarification')
+    if state is None:
+        context = _report_guidance_context(previous, steps[:-1], ask['sequence'], replies, guidance, citation)
+        state = _ordered_report_state(previous[1], steps[:-1], replies, guidance, *context[:4])
+    if state['source']['citation'] != citation:
+        raise ValueError('口語釐清答覆須與同一則補充連接。')
+    answers = _ordered_report_answers(state, reply)
+    state = {**state, 'history': [*state['history'], *answers], 'cancelled': answers[0]['answer'] == 'cancel'}
+    latest = {entry['index']: entry['answer'] for entry in state['history'] if 'index' in entry}
+    state['pending'] = [] if state['cancelled'] else [index for index in range(2) if latest.get(index) in (None, 'defer')]
+    state['next'] = _next_ordered_report_target(state)
+    return _ordered_report_result(state)
 
 
 def _version_rules_inputs(steps, sequence, replies, guidance):
@@ -3351,8 +3525,18 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 proof = step['observation']['field_reference']
                 mixed = proof.get('report_mixed_guidance')
                 answer = mixed.get('clarification', {}).get('answer') if mixed else None
+                ordered = mixed.get('ordered') if mixed else None
+                if ordered and ordered['next'] is not None:
+                    following = by_sequence.get(step['sequence'] + 1, {}).get('action', {})
+                    if (following.get('tool') != 'ask' or following.get('args', {}).get('report_colloquial_question')
+                            != args['report_colloquial_guidance']):
+                        raise ValueError('保存的口語核對缺少同一則補充的下一項問題。')
+                ordered_answers = ({item['index']: item['answer'] for item in ordered['answers'] if 'index' in item}
+                                   if ordered else {})
+                cancelled = answer == 'cancel' or bool(ordered and ordered['cancelled'])
                 if ('report_conflict_choice' in args or answer == 'choice'
-                        or (answer != 'cancel' and any(item['kind'] == 'choice' for item in mixed['clauses']))):
+                        or (not cancelled and ('choice' in ordered_answers.values()
+                                              or any(item['kind'] == 'choice' for item in mixed['clauses'])))):
                     document_rule_update.verify_context(proof['report_conflict_choices'][-1]['selected'], objective, step_sources)
         for step in steps:
             if step['action']['tool'] != 'check_decision':

@@ -658,12 +658,92 @@ class InitialFieldReferenceTests(unittest.TestCase):
     def test_unverified_colloquial_targets_or_competing_questions_keep_report_intact(self):
         did, prior = self.deliver_adopted_report()
         for content in (f'有人說「先改採 [D{did}:L3]」。驗入班別就用晚班。',
-                        f'改採 [D{did}:L2] 嗎？驗入班別早班還是晚班？',
+                        '驗入班別早班還是晚班？驗入班別晚班還是早班？',
                         '驗入就晚班好了，另把複核班別改成早班。'):
             with self.subTest(content=content):
                 with self.assertRaises(ValueError):
                     self.guide(content)
                 self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), prior)
+
+    def test_ordered_report_uses_first_answer_to_leave_unneeded_adoption_pending(self):
+        did, prior = self.deliver_adopted_report(known_field=True)
+        self.guide(f'改採 [D{did}:L2] 嗎？收樣班別早班還是晚班？')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['question'], '「收樣班別」要用哪個值？請回答「早班」或「晚班」。')
+        self.reply('早班')
+        checked = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(checked['status'], 'paused')
+        self.assertEqual(checked['steps'][:len(prior['steps'])], prior['steps'])
+        proof = checked['steps'][-1]['observation']['field_reference']
+        ordered = proof['report_mixed_guidance']['ordered']
+        self.assertEqual(ordered['remaining'], [0])
+        self.assertIsNone(ordered['next'])
+        self.assertEqual(proof['report_conflict_choices'][-1]['selected']['evidence']['citation'], f'[D{did}:L1]')
+        validate_database(self.store.path)
+
+    def test_ordered_report_replays_second_question_and_corrected_first_answer(self):
+        did, prior = self.deliver_adopted_report(known_field=True)
+        self.guide(f'收樣班別早班還是晚班？改採 [D{did}:L2] 嗎？')
+        self.reply('晚班')
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['question'], f'「[D{did}:L2]」要正式改採嗎？請回答「改採」或「維持原規則」。')
+        self.assertIn('晚班', waiting['partial_result'])
+        saved = create_backup(self.store.path, self.root / 'ordered-waiting.paibackup')
+        restore_backup(saved['path'], self.root / 'ordered-restore')
+        restored = Store(self.root / 'ordered-restore' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), waiting)
+        snapshot = goal_replies.snapshot(restored, self.sid, self.gid)
+        with self.assertRaisesRegex(ValueError, '也回答'):
+            goal_replies.save(restored, self.sid, self.gid, '收樣班別改為早班。', expected_fingerprint=snapshot['fingerprint'])
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid), waiting)
+        answer = f'收樣班別改為早班。改採 [D{did}:L2] 還沒確定。'
+        goal_replies.save(restored, self.sid, self.gid, answer, expected_fingerprint=snapshot['fingerprint'])
+        checked = autonomy.get_goal(restored, self.sid, self.gid)
+        self.assertEqual(checked['steps'][:len(prior['steps'])], prior['steps'])
+        proof = checked['steps'][-1]['observation']['field_reference']
+        mixed = proof['report_mixed_guidance']
+        ordered = mixed['ordered']
+        self.assertEqual([item['answer'] for item in ordered['answers']], ['condition', 'condition', 'defer'])
+        self.assertEqual(ordered['remaining'], [1])
+        self.assertEqual(mixed['condition_changes'][0]['after'], '早班')
+        self.assertEqual(mixed['condition_changes'][0]['evidence']['quote'], '收樣班別改為早班')
+        validate_database(restored.path)
+        ask = waiting['steps'][-1]
+        ask['observation']['report_colloquial_question']['ordered']['answers'][0]['evidence']['quote'] = '早班'
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(ask['observation'], ensure_ascii=False), self.gid, ask['sequence']))
+        with self.assertRaisesRegex(ValueError, '口語釐清'):
+            validate_database(restored.path)
+
+    def test_ordered_report_accepts_named_answers_in_either_order(self):
+        did, _ = self.deliver_adopted_report(known_field=True)
+        self.guide(f'收樣班別早班還是晚班？改採 [D{did}:L2] 嗎？')
+        self.reply(f'改採 [D{did}:L2]。收樣班別晚班。')
+        checked = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(checked['status'], 'paused')
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['北桌'])
+        proof = observation['field_reference']
+        answers = proof['report_mixed_guidance']['ordered']['answers']
+        self.assertEqual([item['index'] for item in answers], [1, 0])
+        self.assertEqual(answers[0]['evidence']['citation'], answers[1]['evidence']['citation'])
+        self.assertLess(answers[0]['evidence']['end'], answers[1]['evidence']['start'])
+        self.assertEqual(proof['report_conflict_choices'][-1]['selected']['evidence']['citation'], f'[D{did}:L2]')
+        validate_database(self.store.path)
+
+    def test_ordered_report_cancellation_discards_the_first_answer(self):
+        did, _ = self.deliver_adopted_report(known_field=True)
+        self.guide(f'收樣班別早班還是晚班？改採 [D{did}:L2] 嗎？')
+        self.reply('晚班')
+        self.reply('取消這則補充')
+        checked = autonomy.get_goal(self.store, self.sid, self.gid)
+        observation = checked['steps'][-1]['observation']
+        self.assertEqual(observation['possible_results'], ['南桌'])
+        mixed = observation['field_reference']['report_mixed_guidance']
+        self.assertTrue(mixed['ordered']['cancelled'])
+        self.assertFalse(mixed['condition_changes'])
+        validate_database(self.store.path)
 
     def test_delivered_version_reopens_with_checked_report_and_supports_a_later_change(self):
         prior = self.deliver_document_version()
