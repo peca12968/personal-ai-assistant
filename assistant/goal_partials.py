@@ -46,7 +46,7 @@ def saved(action, observation):
     validate(partial)
     question = args.get('question')
     if (action.get('tool') != 'ask' or args.keys() - {'question', 'partial_result', 'reference_remaining', 'document_version',
-                                                    'report_colloquial_question'}
+                                                    'report_colloquial_question', 'plan_questions'}
             or ('document_version' in args and (args['document_version'] is not True or 'reference_remaining' in args))
             or args.get('partial_result') != partial or not isinstance(question, str)
             or not question.strip() or observation.get('question') != question):

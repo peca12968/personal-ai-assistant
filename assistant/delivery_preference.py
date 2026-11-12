@@ -17,9 +17,6 @@ _CANCEL = re.compile(
 _RESTORE = re.compile(
     rf'{_SCOPE}(?:(?:改回|恢復)(?:出檔|交檔|(?:文件|檔案)交付)|照原要求(?:出檔|交檔)|'
     rf'(?:交付形式|交付方式)改回(?:本機)?(?:文件|檔案))')
-_TOKENS = re.compile(r"""```|~~~|`|[「」『』“”‘’"'。；;！？?!\r\n]""")
-_QUOTES = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'", '`': '`', '```': '```', '~~~': '~~~'}
-_LITERAL_QUOTE = {'"', "'", '`', '```', '~~~'}
 GUIDANCE = ('delivery_mode_change 是使用者已保存且生效的交付方式更正。依目前 file_delivery 選擇工具。'
             '切換為文字時保留仍適用的工作內容，在視窗完成定稿；較早的檔案要求與草稿留在歷史。'
             '按需要引用更正原話的 citation，無須重問交付方式。')
@@ -28,34 +25,14 @@ GUIDANCE = ('delivery_mode_change 是使用者已保存且生效的交付方式�
 def _directive(text):
     """Read standalone, unquoted directives with their exact source positions."""
     found = []
-    stack = []
-    start = 0
-    for token in [*_TOKENS.finditer(text), None]:
-        value = token[0] if token else ''
-        if value == "'" and 0 < token.start() < len(text) - 1:
-            left, right = text[token.start() - 1], text[token.end()]
-            if left.isascii() and left.isalnum() and right.isascii() and right.isalnum():
-                continue
-        if stack and value == stack[-1]:
-            stack.pop()
-        elif stack and stack[-1] in _LITERAL_QUOTE:
+    for offset, clause, question in goal_guidance_sources.standalone_clauses(text):
+        if question:
             continue
-        elif value in _QUOTES:
-            stack.append(_QUOTES[value])
-        elif value in _QUOTES.values():
-            return None
-        elif not stack:
-            end = token.start() if token else len(text)
-            raw = text[start:end]
-            clause = raw.strip()
-            if value not in {'？', '?'}:
-                offset = start + len(raw) - len(raw.lstrip())
-                if _CANCEL.fullmatch(clause):
-                    found.append((False, offset, clause))
-                elif _RESTORE.fullmatch(clause):
-                    found.append((True, offset, clause))
-            start = token.end() if token else end
-    if stack or not found:
+        if _CANCEL.fullmatch(clause):
+            found.append((False, offset, clause))
+        elif _RESTORE.fullmatch(clause):
+            found.append((True, offset, clause))
+    if not found:
         return None
     if len({item[0] for item in found}) > 1:
         raise ValueError('同一則補充同時取消及恢復文件交付，請明確選擇一種交付方式。')

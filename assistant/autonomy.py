@@ -35,6 +35,7 @@ from . import json_statistics
 from . import docx_text
 from .document_metadata import metadata as document_metadata
 from . import work_plan
+from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
 from . import conversation_history
@@ -248,11 +249,13 @@ def validate_action(value):
     name, args = value['tool'], value['args']
     if name == 'ask':
         if not isinstance(args, dict) or 'question' not in args or args.keys() - {
-                'question', 'partial_result', 'reference_remaining', 'document_version'}:
+                'question', 'partial_result', 'reference_remaining', 'document_version', 'plan_questions'}:
             raise ValueError('詢問須提供問題，可另附待補期間的成果。')
         if 'document_version' in args and (args['document_version'] is not True or 'reference_remaining' in args):
             raise ValueError('文件版本確認須使用單一正式採用問句。')
         text(args['question'], 800)
+        if 'plan_questions' in args:
+            work_plan_scope.validate_questions(args)
         if 'partial_result' in args:
             goal_partials.validate(args['partial_result'])
             try:
@@ -434,6 +437,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'ask':
         repair = decision_table.planned_reference_ask(args, steps, reply_sources, guidance_sources)
         question = {'question': args['question']}
+        if 'plan_questions' in args:
+            question['work_plan_question'] = work_plan_scope.bind_questions(args, steps)
         if repair is not None:
             question['reference_repair'] = repair
         if args.get('document_version'):
@@ -618,6 +623,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 payload['engine_selection'] = engine_selection
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + decision_table.GUIDANCE + '\n' + source_decision.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
+                ('\n' + work_plan_scope.GUIDANCE if goal['work_plan'] else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +

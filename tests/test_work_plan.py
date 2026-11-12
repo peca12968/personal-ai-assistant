@@ -863,6 +863,97 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['work_plan'], before['work_plan'])
         self.assertEqual(a.get_goal(self.store, self.sid, self.gid), before)
 
+    def save_scope_guidance(self, content):
+        current = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, content, expected_fingerprint=current['fingerprint'])
+        return a.get_goal(self.store, self.sid, self.gid)
+
+    def test_cancel_single_legacy_question_and_carry_verified_calculation(self):
+        expression = {'operation': 'product', 'values': ['120', '12']}
+        before = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', verify_delivery=True, items=[item(state='done', refs=[1]), item(2, '安排收貨窗口')],
+                   evidence_requirements=[{'id': 1, 'expression': expression}]),
+            action('ask', question='正式收貨窗口是誰？'))
+        state = self.save_scope_guidance('取消「安排收貨窗口」，只交已核對的總費用。')
+        self.assertEqual(state['status'], 'paused')
+        self.assertEqual(state['steps'][:-1], before['steps'])
+        self.assertNotIn('reply_sources', state)
+        self.assertEqual(state['withdrawn_questions'][-1]['ask_sequence'], 3)
+        plan = state['work_plan']
+        self.assertTrue(plan['delivery_review']['ready'])
+        self.assertEqual(plan['items'][0]['evidence_steps'], [1])
+        self.assertEqual(plan['evidence_requirements'][0]['defined_scope'], plan['goal_conditions_sha256'])
+        self.assertEqual(plan['scope_change']['retained_items'], [1])
+        reactivated = self.run_actions(action('update_plan', items=[plan['items'][0], item(2, '安排收貨窗口')]))
+        self.assertEqual(reactivated['steps'][-1]['action']['tool'], 'invalid')
+        final = self.run_actions(action('update_plan', items=plan['items']), action('finish', report='合計 1440 元。'))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['items'][0]['evidence_steps'], [1])
+        validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=?', (self.gid,))
+        with self.assertRaisesRegex(ValueError, '缺少相符的問題撤下紀錄'):
+            validate_database(self.store.path)
+
+    def test_cancel_one_bound_question_and_restore_the_remaining_question(self):
+        parts = [{'question': '收貨窗口是誰？', 'items': [1]}, {'question': '入場門號是多少？', 'items': [2]}]
+        before = self.run_actions(action('update_plan', items=[item(1, '安排收貨窗口'), item(2, '確認入場門號')]),
+            action('ask', question='收貨窗口是誰？\n入場門號是多少？', plan_questions=parts, partial_result='部分內容待核對。'))
+        stale = goal_replies.snapshot(self.store, self.sid, self.gid)
+        state = self.save_scope_guidance('先不做「安排收貨窗口」。')
+        self.assertEqual(state['steps'][:len(before['steps'])], before['steps'])
+        self.assertEqual(state['question'], '入場門號是多少？')
+        self.assertNotIn('partial_result', state)
+        binding = state['steps'][-1]['observation']['work_plan_question']
+        self.assertEqual(binding['parts'], [parts[1]])
+        self.assertEqual(binding['plan_step'], 3)
+        self.assertEqual(state['withdrawn_questions'][-1]['ask_sequence'], 2)
+        with self.assertRaisesRegex(ValueError, '重新載入'):
+            goal_replies.save(self.store, self.sid, self.gid, '窗口是廖同仁。', expected_fingerprint=stale['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'scope.paibackup')
+        restore_backup(backup['path'], self.root / 'restored-scope')
+        restored = Store(self.root / 'restored-scope/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), state)
+        view = goal_replies.snapshot(restored, self.sid, self.gid)
+        goal_replies.save(restored, self.sid, self.gid, '入場門號為 3。', expected_fingerprint=view['fingerprint'])
+        answered = a.get_goal(restored, self.sid, self.gid)
+        self.assertEqual(answered['reply_sources'][-1]['ask_sequence'], 4)
+        validate_database(restored.path)
+
+    def test_shared_question_remains_until_all_linked_items_are_cancelled(self):
+        question = '正式收貨窗口是誰？'
+        self.run_actions(action('update_plan', items=[item(1, '安排收貨窗口'), item(2, '準備通知名單')]),
+            action('ask', question=question, plan_questions=[{'question': question, 'items': [1, 2]}]))
+        first = self.save_scope_guidance('取消「安排收貨窗口」。')
+        self.assertEqual(first['question'], question)
+        self.assertEqual(first['steps'][-1]['action']['args']['plan_questions'], [{'question': question, 'items': [2]}])
+        second = self.save_scope_guidance('取消「準備通知名單」。')
+        self.assertEqual(second['status'], 'paused')
+        self.assertEqual(second['work_plan']['scope_cancelled'], [1, 2])
+        self.assertEqual([row['ask_sequence'] for row in second['withdrawn_questions']], [2, 4])
+        validate_database(self.store.path)
+
+    def test_partial_quoted_or_conflicting_scope_preserves_an_unconfirmed_question(self):
+        before = self.run_actions(action('update_plan', items=[item(1, '安排正式窗口'), item(2, '安排備援窗口')]),
+            action('ask', question='正式窗口是誰？'))
+        for content in ('取消「窗口」。', '有人提議「取消安排正式窗口」，未採用。',
+                        '取消「安排正式窗口」？', '取消「安排正式窗口」。只交正式窗口。'):
+            state = self.save_scope_guidance(content)
+            self.assertEqual(state['steps'], before['steps'])
+            self.assertEqual(state['question'], before['question'])
+            self.assertNotIn('withdrawn_questions', state)
+
+    def test_scope_change_cannot_revalidate_evidence_made_stale_by_an_earlier_correction(self):
+        self.run_actions(action('calculate', operation='product', values=['120', '12']),
+            action('update_plan', items=[item(state='done', refs=[1]), item(2, '排通知時間')]))
+        self.save_scope_guidance('更正為 6 個月。')
+        state = self.save_scope_guidance('取消「排通知時間」。')
+        self.assertEqual(state['work_plan']['items'][0]['state'], 'pending')
+        self.assertEqual(state['work_plan']['items'][0]['evidence_steps'], [])
+        self.assertEqual(state['work_plan']['scope_change']['retained_items'], [])
+        self.assertEqual(state['steps'][1]['observation']['items'][0]['state'], 'done')
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

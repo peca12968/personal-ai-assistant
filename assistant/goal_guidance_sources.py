@@ -15,6 +15,38 @@ GUIDANCE = ('本目標的user_notes依時間順序列出。history是先前問�
             '暫表與定稿保留已讀且仍屬本次交付的欄位，例如相同批次的窗口、查驗人或期限，除非使用者縮小範圍或欄位不再適用。'
             '編號只指原話，不能當成所有引文或假設都已採用。不可自行編號或沿用其他目標的編號。')
 STAMP = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00')
+_CLAUSE_TOKENS = re.compile(r"""```|~~~|`|[「」『』“”‘’"'。；;！？?!，,\r\n]""")
+_QUOTES = {'「': '」', '『': '』', '“': '”', '‘': '’', '"': '"', "'": "'", '`': '`', '```': '```', '~~~': '~~~'}
+_LITERAL_QUOTE = {'"', "'", '`', '```', '~~~'}
+
+
+def standalone_clauses(text, *, comma_before=None):
+    """Return exact clause offsets and whether the delimiter was a question mark."""
+    clauses, stack = [], []
+    start = 0
+    for token in [*_CLAUSE_TOKENS.finditer(text), None]:
+        value = token[0] if token else ''
+        if value == "'" and 0 < token.start() < len(text) - 1:
+            left, right = text[token.start() - 1], text[token.end()]
+            if left.isascii() and left.isalnum() and right.isascii() and right.isalnum():
+                continue
+        if stack and value == stack[-1]:
+            stack.pop()
+        elif stack and stack[-1] in _LITERAL_QUOTE:
+            continue
+        elif value in _QUOTES:
+            stack.append(_QUOTES[value])
+        elif value in _QUOTES.values():
+            return []
+        elif not stack:
+            if value in {'，', ','} and (comma_before is None or not comma_before.match(text, token.end())):
+                continue
+            end = token.start() if token else len(text)
+            raw = text[start:end]
+            if clause := raw.strip():
+                clauses.append((start + len(raw) - len(raw.lstrip()), clause, value in {'？', '?'}))
+            start = token.end() if token else end
+    return [] if stack else clauses
 
 
 def note(content, steps_seen, stamp):

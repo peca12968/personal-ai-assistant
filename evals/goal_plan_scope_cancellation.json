@@ -1,0 +1,79 @@
+[
+  {
+    "id": "cancel_the_only_item_waiting_for_a_window",
+    "prompt": "櫟池 E3 核對數量與庫位並安排收貨窗口。已有工作清單，交付前要核對。先只問缺的正式收貨窗口。",
+    "document": "櫟池 E3 有 8 包，庫位 M-8。\n正式收貨窗口尚待確認。\n",
+    "done": ["核對數量", "核對庫位"],
+    "pending": ["安排收貨窗口"],
+    "question": "櫟池 E3 的正式收貨窗口是誰？",
+    "correction": "取消「安排收貨窗口」。只交已核對的數量和庫位。",
+    "cancelled": [3],
+    "expected": "report",
+    "must_include": ["8", "M-8"],
+    "must_omit": ["收貨窗口"]
+  },
+  {
+    "id": "remove_one_part_of_a_live_two_item_question",
+    "prompt": "柳圃 P2 要核對袋數、安排收貨窗口及確認入場門號。沿工作清單核對，缺的兩項在同一次提問分行各問一次。",
+    "document": "柳圃 P2 有 11 袋。\n正式收貨窗口尚待確認。\n入場門號尚待確認。\n",
+    "done": ["核對袋數"],
+    "pending": ["安排收貨窗口", "確認入場門號"],
+    "ask_live": true,
+    "correction": "先不做「安排收貨窗口」。其他項目照舊。",
+    "cancelled": [2],
+    "expected": "partial",
+    "reply": "入場門號是 3 號。",
+    "reply_question": "入場門號",
+    "must_include": ["11", "3"],
+    "must_omit": ["收貨窗口"]
+  },
+  {
+    "id": "cancel_an_unrelated_completed_item_but_keep_a_needed_question",
+    "prompt": "榆橋 C3 核對箱數、核對庫位及安排收貨窗口，依工作清單交付。",
+    "document": "榆橋 C3 有 6 箱，庫位 A-12。\n正式收貨窗口尚待確認。\n",
+    "done": ["核對箱數", "核對庫位"],
+    "pending": ["安排收貨窗口"],
+    "question": "榆橋 C3 的正式收貨窗口是誰？",
+    "correction": "取消「核對庫位」。其他項目照舊。",
+    "cancelled": [2],
+    "expected": "keep",
+    "reply": "收貨窗口為方同仁。",
+    "reply_question": "收貨窗口",
+    "must_include": ["6", "方同仁"],
+    "must_omit": ["A-12"]
+  },
+  {
+    "id": "quoted_cancellation_does_not_remove_the_question",
+    "prompt": "苔汀 W7 核對箱數並安排收貨窗口，依工作清單交付。",
+    "document": "苔汀 W7 有 7 箱。\n正式收貨窗口尚待確認。\n",
+    "done": ["核對箱數"],
+    "pending": ["安排收貨窗口"],
+    "question": "苔汀 W7 的正式收貨窗口是誰？",
+    "correction": "有人提議「取消安排收貨窗口」，目前未採用。",
+    "cancelled": [],
+    "expected": "unchanged"
+  },
+  {
+    "id": "short_name_does_not_choose_between_similar_items",
+    "prompt": "瓦丘 J9 核對總件數並安排正式和備援窗口。",
+    "document": "瓦丘 J9 有 14 件。\n正式窗口及備援窗口均待確認。\n",
+    "done": ["核對總件數"],
+    "pending": ["安排正式窗口", "安排備援窗口"],
+    "question": "瓦丘 J9 的正式窗口是誰？",
+    "correction": "取消「窗口」。",
+    "cancelled": [],
+    "expected": "unchanged"
+  },
+  {
+    "id": "cancel_two_open_items_before_running_the_remaining_work",
+    "prompt": "青池 V5 核對件數並安排覆核窗口和通知對象，按已保存的清單交付。",
+    "document": "青池 V5 有 10 件。\n覆核窗口和通知對象均待確認。\n",
+    "done": ["核對件數"],
+    "pending": ["安排覆核窗口", "確認通知對象"],
+    "correction": "取消「安排覆核窗口」、「確認通知對象」。其他項目照舊。",
+    "cancelled": [2, 3],
+    "expected": "report",
+    "must_include": ["10"],
+    "must_omit": ["覆核窗口", "通知對象"]
+  }
+]

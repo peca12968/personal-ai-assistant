@@ -8,7 +8,8 @@ from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
 from . import (conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
-               goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan)
+               goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
+               work_plan_scope)
 
 
 def _steps(db, gid):
@@ -298,8 +299,10 @@ def append_answered_revision(db, current, notes):
     _append_step(db, goal, notes, current['step_count'] + 1, action, observation)
 
 
-def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None, colloquial_receipt=None):
-    excerpts = [row for step in _steps(db, goal['id']) for row in step['observation'].get('excerpts', [])]
+def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None, colloquial_receipt=None,
+                             plan_questions=None):
+    steps = _steps(db, goal['id'])
+    excerpts = [row for step in steps for row in step['observation'].get('excerpts', [])]
     citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
                                                   goal.get('guidance_sources', ()))
     observation = {'question': question}
@@ -309,6 +312,9 @@ def append_followup_question(db, goal, notes, sequence, question, note, *, parti
     if colloquial_receipt is not None:
         action['args']['report_colloquial_question'] = colloquial_receipt['source']
         observation['report_colloquial_question'] = colloquial_receipt
+    if plan_questions is not None:
+        action['args']['plan_questions'] = plan_questions
+        observation['work_plan_question'] = work_plan_scope.bind_questions(action['args'], steps)
     if partial_result is not None:
         goal_partials.validate(partial_result)
         checks = check_citations(partial_result, excerpts)
@@ -424,6 +430,54 @@ def _save_ordered_waiting_correction(db, current, notes):
     return _snapshot(db, goal['session_id'], gid)
 
 
+def _save_plan_scope_change(db, current, notes):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    if goal['status'] == 'report_ready':
+        return None
+    steps = _steps(db, gid)
+    if work_plan.latest(steps) is None:
+        return None
+    waiting = goal['status'] == 'needs_input'
+    if waiting and (not steps or steps[-1]['action']['tool'] != 'ask'
+                    or steps[-1]['action']['args'].keys() - {'question', 'partial_result', 'plan_questions'}
+                    or decision_table.reference_question_for_steps(steps[:-1])):
+        return None
+    guidance = goal_guidance_sources.read(db, gid, notes, count)
+    source = guidance[-1]
+    scope_goal = {**goal, 'sources': json.loads(goal['sources_json'])}
+    history = conversation_history.saved_fingerprint(db, gid)
+    if history is not None:
+        scope_goal['conversation_history'] = {'sha256': history}
+    prior_scope = work_plan.conditions(scope_goal)
+    scope = work_plan.conditions({**scope_goal, 'notes': notes})
+    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting)
+    if observation is None:
+        return None
+    proof = observation['scope_change']
+    successor = proof.get('successor')
+    if count + (3 if successor else 2) > MAX_STEPS:
+        raise ValueError('剩餘步數不足以更新工作清單及交付，請帶入目前進度建立下一階段。')
+    args = {'scope_correction': source['citation']}
+    if waiting:
+        args['ask_sequence'] = proof['ask_sequence']
+        options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
+        if not options or source['number'] not in options['correction_numbers']:
+            raise ValueError('這筆更正與目前等待的問題不一致。')
+        goal_question_withdrawals.record(db, gid, options, source)
+    action = {'tool': 'update_plan', 'args': args, 'note': '依使用者更正取消指定工作項目'}
+    _append_step(db, goal, notes, count + 1, action, observation)
+    if successor:
+        append_followup_question(db, {**goal, 'guidance_sources': guidance}, notes, count + 2, successor['question'],
+                                 '依目前工作範圍保留仍需回答的問題', plan_questions=successor.get('plan_questions'))
+    status = 'needs_input' if successor else 'paused'
+    notice = ('已取消指定項目。只需回答目前保留的問題。' if successor else
+              '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
+    db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (notes, status, successor['question'] if successor else '', notice, gid))
+    return _snapshot(db, goal['session_id'], gid)
+
+
 def save(store, sid, gid, content, *, expected_fingerprint):
     content = text(content,4000)
     if not isinstance(expected_fingerprint,str) or not re.fullmatch('[0-9a-f]{64}',expected_fingerprint):
@@ -454,6 +508,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         delivery_change = delivery_preference.capture(db, gid, notes, step_count)
         if 'report_colloquial_question' in current:
             return _save_ordered_waiting_correction(db, current, notes)
+        if changed_scope := _save_plan_scope_change(db, current, notes):
+            return changed_scope
         if supplement:
             _save_report_supplement(db, current, notes, content)
         elif current.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'}:
