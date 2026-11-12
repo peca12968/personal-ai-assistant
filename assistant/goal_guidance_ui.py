@@ -57,7 +57,8 @@ class GoalGuidanceWindow:
                 'reference_report', 'document_version_report', 'document_supplement', 'document_conflict_report',
                 'report_colloquial_question'} or (
                 self.current['goal']['status'] == 'needs_input'
-                and self.current['goal']['question'] != saved['goal']['question'])
+                and self.current['goal']['question'] != saved['goal']['question']) or (
+                self.current['goal'].get('delivery_mode_change') != saved['goal'].get('delivery_mode_change'))
             self.content.delete('1.0','end');self.reload();self.changed()
             if saved['goal'].get('answered_reference_review'):
                 self.notice.set(decision_table.describe_answered_review(saved['goal']['answered_reference_review']))

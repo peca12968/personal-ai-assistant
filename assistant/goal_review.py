@@ -6,6 +6,7 @@ from .autonomy import MAX_STEPS, signature
 from .artifacts import inventory
 from . import autonomy_csv
 from . import conversation_history
+from . import delivery_preference
 from . import goal_sources
 
 
@@ -50,6 +51,9 @@ def _rows(db, gid=None):
         # Full local state drives redisplay, even when the visible excerpt is clipped.
         evidence = {**row, 'current_sources': current_sources[sid], 'artifacts': files,
                     'csv_plans': autonomy_csv.inventory(db, row['id'])}
+        if row['file_delivery'] and (delivery_change := delivery_preference.latest(db, row['id'])):
+            row['file_delivery'] = evidence['file_delivery'] = int(delivery_change['file_delivery'])
+            evidence['delivery_mode_change'] = delivery_change
         history_sha = conversation_history.saved_fingerprint(db, row['id'])
         if history_sha is not None:
             evidence['conversation_history_sha256'] = history_sha

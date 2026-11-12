@@ -1,0 +1,55 @@
+[
+  {
+    "id": "cancel-json-file-in-the-actual-recipient-reply",
+    "documents": [{"name": "handoff.txt", "content": "葦橋 K5 本輪已核對：9 箱，交接入口為西口。\n簽收人仍待回覆，窗口是余同仁。\n"}],
+    "prompt": "準備葦橋 K5 的交接。資料齊全時原本要交 handoff.json，欄位是箱數、入口、簽收人。先讀資料，只問簽收人，收到最新指示再交付。",
+    "file_delivery": true,
+    "reply_when": ["簽收人", "簽收"],
+    "reply": "簽收人是簡同仁。這次先不用出檔，直接在這裡交文字。",
+    "artifact": {"name": "handoff.json"},
+    "expected": "最後交文字，含 9 箱、西口、簡同仁及來源。答覆後不建立或交付檔案。"
+  },
+  {
+    "id": "cancel-file-delivery-in-a-separate-sentence-in-the-reply",
+    "documents": [{"name": "intake.txt", "content": "石灣 B8 改裝作業：現有 12 台，5 台待覆核。\n領取點為竹桌。通知對象待現場確認。\n"}],
+    "prompt": "本目標原要交 intake.json，先問正式通知對象。知道後交現有數量、待覆核數量、領取點及通知對象。",
+    "file_delivery": true,
+    "reply_when": ["通知對象", "通知誰", "通知哪", "通知的"],
+    "reply": "通知陳同仁。取消文件交付，改為文字。",
+    "artifact": {"name": "intake.json"},
+    "expected": "最後交文字，含 12、5、竹桌、陳同仁及來源。答覆後不建立或交付檔案。"
+  },
+  {
+    "id": "two-signed-documents-with-no-precedence-and-a-known-window",
+    "documents": [
+      {"name": "east.txt", "content": "潭石 N4 2026-11-13 正式簽核。\nA 類仍由烏同仁接收。\nB 類改交東門。\n"},
+      {"name": "west.txt", "content": "潭石 N4 2026-11-13 正式簽核。\nA 類仍由烏同仁接收。\nB 類改交西門。\n"}
+    ],
+    "prompt": "幫我先把潭石 N4 目前確定的交接事項和仍待決定的事整理一下。兩份同日正式文件都在，沒有其他說哪份優先。現在先要一份可轉交的狀態，遇分歧直接寫各方原文及待查，不用追問。",
+    "expected": "A 類烏同仁，B 類待查，東門與西門皆列來源。不選定任何一份、不追問。"
+  },
+  {
+    "id": "duplicate-latest-row-with-no-explicit-tie-break",
+    "csv": {"name": "ledger.csv", "content": "單號,修訂,狀態,金額\nR-1,1,有效,10\nR-1,2,有效,18\nR-1,2,有效,21\nR-2,4,有效,7\nR-2,4,有效,7\nR-3,1,有效,45\nR-3,2,作廢,45\n"},
+    "prompt": "核對 ledger.csv。以每個單號最新修訂為準，重複而內容完全相同只算一次；最新修訂作廢就排除。若同一最新修訂內容不一致，列為待查，不計入已核對金額。先交可確定總額與待查各筆，不用追問。",
+    "expected": "R-1 同修訂 2 為 18 與 21，待查且不計；R-2 7 只算一次；R-3 作廢；已核對總額 7。"
+  },
+  {
+    "id": "quoted-file-revocation-does-not-change-the-current-request",
+    "documents": [{"name": "roster.txt", "content": "岬砂 M1 點收：4 盒，領取處是松台。\n收件人待確認。\n"}],
+    "prompt": "岬砂 M1 需要交 pickup.json，欄位為盒數、領取處、收件人。先讀資料，只問收件人，收到後交檔。",
+    "file_delivery": true,
+    "reply_when": ["收件人", "收件"],
+    "reply": "收件人為孔同仁。舊草稿曾寫「不用出檔，直接回文字」，這段未採用。照原要求交檔。",
+    "artifact": {"name": "pickup.json", "json": {"盒數": 4, "領取處": "松台", "收件人": "孔同仁"}},
+    "expected": "仍交付 pickup.json，內容符合固定答案，並留實際引用。"
+  },
+  {
+    "id": "narrow-a-multi-step-plan-to-the-confirmed-message",
+    "documents": [{"name": "brief.txt", "content": "角竹 J8 原工作含交接摘要、後續排程、庫位紀錄。\n已核對庫位為 B-17，共 6 袋。\n通知收件人等值班回覆。\n"}],
+    "prompt": "先照角竹 J8 的資料整理，問本輪收件人，再依我回覆完成交接摘要、排程及庫位紀錄。全部在視窗交文字。",
+    "reply_when": ["收件人", "收件"],
+    "reply": "通知賴同仁。排程和庫位紀錄先停，我現在只要一段可以貼給賴同仁的交接訊息，寫 B-17 和 6 袋。",
+    "expected": "只交一段給賴同仁的可貼訊息，含 B-17、6 袋。不產生排程及庫位紀錄。"
+  }
+]

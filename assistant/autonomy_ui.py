@@ -341,6 +341,8 @@ class AutonomousWindow:
                 tokens = [f"D{row['document_id']} L{row['start_line']}–L{row['end_line']}" for row in scope[key]]
                 lines += [label + ' · ' + ('、'.join(tokens) or '無')]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
+        if delivery_change := goal.get('delivery_mode_change'):
+            lines += [f"交付更正 {delivery_change['citation']} · {delivery_change['quote']}"]
         if goal['continuous_runs']:
             lines += ['最近10次持續執行紀錄（本機保存；執行中標記不代表程序仍存活）：']
             for run in goal['continuous_runs']:

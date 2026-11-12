@@ -47,6 +47,7 @@ TABLES = {
     'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
     'companion_profile': {'id', 'revision', 'settings_json', 'updated_at'},
     'autonomous_delivery': {'goal_id', 'enabled'},
+    'autonomous_delivery_changes': {'goal_id', 'citation', 'notes_start', 'receipt_json'},
     'autonomous_artifacts': {'id', 'goal_id', 'name', 'file_key', 'content', 'sha256', 'size_bytes', 'status', 'error', 'created_at', 'verified_at'},
     'goal_reviews': {'goal_id', 'fingerprint', 'hidden_at'},
     'review_reminders': {'id','revision','enabled','daily_time','last_day','snooze_until','notice_token'},
@@ -98,6 +99,9 @@ def validate_database(path):
         delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
         if len(actual_tables & delivery_tables) == 1 or (delivery_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主文件資料表不完整。')
+        delivery_changes = {'autonomous_delivery_changes'}
+        if delivery_changes <= actual_tables and not delivery_tables <= actual_tables:
+            raise ValueError('自主交付方式更正資料表不完整。')
         csv_tables = {'autonomous_csv_sources', 'autonomous_csv_plans'}
         if len(actual_tables & csv_tables) == 1 or (csv_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主CSV資料表不完整。')
@@ -106,7 +110,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals'} - delivery_tables - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals'} - delivery_tables - delivery_changes - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -163,6 +167,10 @@ def validate_database(path):
                     raise ValueError('自主文件內容與紀錄不符。')
             if db.execute('SELECT 1 FROM autonomous_artifacts GROUP BY goal_id HAVING COUNT(*)>? LIMIT 1', (MAX_FILES,)).fetchone():
                 raise ValueError('自主文件數量超過上限。')
+            from .delivery_preference import validate_saved
+            validate_saved(db, changes_present=delivery_changes <= actual_tables,
+                           replies_present='autonomous_reply_sources' in actual_tables,
+                           guidance_present='autonomous_guidance_sources' in actual_tables)
         if 'review_reminders' in actual_tables:
             from .reminders import read
             read(db)

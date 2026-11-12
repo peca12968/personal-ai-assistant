@@ -177,6 +177,10 @@ class Store:
                     settings_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS autonomous_delivery (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id), enabled INTEGER NOT NULL CHECK(enabled=1));
+                CREATE TABLE IF NOT EXISTS autonomous_delivery_changes (
+                    goal_id TEXT NOT NULL REFERENCES autonomous_delivery(goal_id), citation TEXT NOT NULL,
+                    notes_start INTEGER NOT NULL CHECK(notes_start>=0), receipt_json TEXT NOT NULL,
+                    PRIMARY KEY(goal_id,citation), UNIQUE(goal_id,notes_start));
                 CREATE TABLE IF NOT EXISTS autonomous_artifacts (
                     id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES autonomous_delivery(goal_id),
                     name TEXT NOT NULL, file_key TEXT NOT NULL, content TEXT NOT NULL,

@@ -22,6 +22,7 @@ from . import goal_question_withdrawals
 from . import goal_reply_sources
 from . import goal_sources
 from . import artifacts
+from . import delivery_preference
 from . import autonomy_csv
 from . import date_tools
 from . import document_diff
@@ -167,6 +168,8 @@ def get_goal(store, sid, gid, *, include_reply_positions=False):
         result = dict(row)
         result['sources'] = json.loads(result.pop('sources_json'))
         result['file_delivery'] = artifacts.enabled(db, gid)
+        if delivery_change := delivery_preference.latest(db, gid):
+            result['delivery_mode_change'] = delivery_change
         result['artifacts'] = artifacts.inventory(db, gid)
         result['csv_source'] = autonomy_csv.source(db, gid)
         result['csv_plans'] = autonomy_csv.inventory(db, gid)
@@ -540,6 +543,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
             reply_sources = goal.get('reply_sources', ())
+            delivery_change = goal.get('delivery_mode_change')
+            if delivery_change:
+                payload['delivery_mode_change'] = delivery_change
             if reply_sources:
                 payload['reply_sources'] = goal_reply_sources.without_positions(reply_sources)
             initial_reference = decision_table.initial_reference_candidate(goal['steps'], reply_sources, guidance_sources)
@@ -618,6 +624,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
+                ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +
                 ('\n' + document_ranges.LOOKUP_GUIDANCE if catalog else '') +
                 ('\n' + document_ranges.LOOKUP_EVIDENCE_GUIDANCE
                  if any(step['action']['tool'] == 'find_document_text' for step in payload['steps']) else '') +

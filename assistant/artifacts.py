@@ -12,6 +12,7 @@ import unicodedata
 import uuid
 from pathlib import Path
 
+from . import delivery_preference
 from .acceptance import strict_json
 from .answer_runs import lease
 
@@ -45,7 +46,7 @@ def payload(name, content):
 
 
 def enabled(db, gid):
-    return db.execute('SELECT 1 FROM autonomous_delivery WHERE goal_id=? AND enabled=1', (gid,)).fetchone() is not None
+    return delivery_preference.enabled(db, gid)
 
 
 def inventory(db, gid):
@@ -81,7 +82,7 @@ def directory(store, gid, *, create=False):
 
 def _record(store, gid, name):
     with store.connect() as db:
-        if not enabled(db, gid):
+        if not delivery_preference.initially_enabled(db, gid):
             raise ValueError('此目標未啟用交付文件，請另建已勾選交付文件的目標。')
         row = db.execute('SELECT * FROM autonomous_artifacts WHERE goal_id=? AND file_key=?', (gid, filename(name).casefold())).fetchone()
     if row is None:
@@ -159,6 +160,9 @@ def validate_names(names):
 
 def deliver(store, gid, names):
     names = validate_names(names)
+    with store.connect() as db:
+        if not enabled(db, gid):
+            raise ValueError('此目標目前採用文字交付，請在視窗交付文字。')
     # Check the whole selection before any reconstruction writes.
     for name in names:
         _record(store, gid, name)

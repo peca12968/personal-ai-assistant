@@ -3,7 +3,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import decision_table, goal_question_withdrawals, goal_reply_sources
+from . import decision_table, delivery_preference, goal_question_withdrawals, goal_reply_sources
 from .goal_guidance import (_append_step, _snapshot, _steps, append_answered_revision, append_followup_question,
                             append_waiting_field_version, append_waiting_recheck, apply_waiting_review, snapshot)
 
@@ -51,6 +51,7 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
+        delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)
         if colloquial:
             replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
             args = {'report_colloquial_guidance': colloquial['source'], 'reply': replies[-1]['citation']}
@@ -92,8 +93,9 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         elif (not combined and review and 'waiting_recheck' in review['field_reference']
               and review['field_reference']['status'] == 'needs_field' and current['step_count'] + 3 <= MAX_STEPS):
             append_waiting_recheck(db, current, notes)
-        db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
-                   (notes, gid, sid))
+        notice = delivery_preference.describe(delivery_change) if delivery_change else ''
+        db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?",
+                   (notes, notice, gid, sid))
         return _snapshot(db, sid, gid)
 
 

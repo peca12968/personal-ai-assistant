@@ -7,7 +7,7 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
-from . import (conversation_history, decision_table, document_ranges, document_rule_update, goal_guidance_sources,
+from . import (conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
                goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan)
 
 
@@ -24,6 +24,8 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
     review = next(goal_review._rows(db,gid))
     goal = dict(goal)
     fingerprint = review['fingerprint']
+    if delivery_change := delivery_preference.latest(db, gid):
+        goal['delivery_mode_change'] = delivery_change
     sources = goal_reply_sources.read(db, gid, goal['notes'], include_positions=True)
     if sources:
         goal['reply_sources'] = sources if include_reply_positions else goal_reply_sources.without_positions(sources)
@@ -449,12 +451,16 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
+        delivery_change = delivery_preference.capture(db, gid, notes, step_count)
         if 'report_colloquial_question' in current:
             return _save_ordered_waiting_correction(db, current, notes)
         if supplement:
             _save_report_supplement(db, current, notes, content)
         elif current.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'}:
             _save_reference_recheck(db, current, notes)
+        elif delivery_change:
+            db.execute('UPDATE autonomous_goals SET notes=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                       (notes, delivery_preference.describe(delivery_change), gid))
         else:
             db.execute('UPDATE autonomous_goals SET notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(notes,gid))
         saved = _snapshot(db, sid, gid)

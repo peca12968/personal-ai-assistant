@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant import artifacts as f, autonomy as a
+from assistant import artifacts as f, autonomy as a, goal_guidance, goal_replies, goal_review
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
@@ -187,6 +187,7 @@ class ArtifactTests(unittest.TestCase):
     def test_legacy_backup_gets_no_file_permission_and_artifacts_are_not_publishable(self):
         plain = a.create_goal(self.store, self.sid, 'legacy')
         with self.store.connect() as db:
+            db.execute('DROP TABLE autonomous_delivery_changes')
             db.execute('DROP TABLE autonomous_artifacts')
             db.execute('DROP TABLE autonomous_delivery')
         backup = create_backup(self.store.path)
@@ -196,6 +197,109 @@ class ArtifactTests(unittest.TestCase):
         self.assertFalse(a.get_goal(upgraded, self.sid, plain)['file_delivery'])
         for name in ['assistant/autonomy-artifacts/private.md', 'docs/AUTONOMY-ARTIFACTS/report.json']:
             self.assertFalse(validate_path(name))
+
+    def test_reply_switches_to_text_and_preserves_the_existing_draft(self):
+        before = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='draft.txt', content='原草稿'), action('ask', question='簽收人是誰？')))
+        reply = '簽收人是簡同仁。這次先不用出檔，直接在這裡交文字。'
+        view = goal_replies.snapshot(self.store, self.sid, self.gid)
+        goal_replies.save(self.store, self.sid, self.gid, reply, expected_fingerprint=view['fingerprint'])
+        state = a.get_goal(self.store, self.sid, self.gid)
+        self.assertFalse(state['file_delivery'])
+        self.assertEqual(state['steps'], before['steps'])
+        receipt = state['delivery_mode_change']
+        self.assertEqual(reply[receipt['start']:receipt['end']], '這次先不用出檔，直接在這裡交文字')
+        self.assertEqual(receipt['source_sha256'], state['reply_sources'][-1]['sha256'])
+        self.assertEqual(receipt['citation'], state['reply_sources'][-1]['citation'])
+        self.assertFalse(goal_context(self.store, self.sid)['goals'][0]['file_delivery'])
+        self.assertFalse(goal_review.snapshot(self.store)['items'][0]['file_delivery'])
+        engine = ScriptedEngine(action('write_artifact', filename='extra.txt', content='多餘'),
+                                action('deliver', report='原草稿', filenames=['draft.txt']),
+                                action('finish', report=f'簽收人為簡同仁。{receipt["citation"]}'))
+        result = a.run_goal(self.store, self.sid, self.gid, engine)
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-3:]], ['invalid', 'invalid', 'finish'])
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][-1]['observation']['artifacts'], [])
+        self.assertEqual(result['artifacts'], before['artifacts'])
+        folder = f.directory(self.store, self.gid)
+        self.assertEqual([path.name for path in folder.iterdir()], ['draft.txt'])
+        self.assertIn('"file_delivery": false', engine.prompts[0])
+        backup = create_backup(self.store.path, self.root / 'changed-mode.paibackup')
+        target = self.root / 'changed-mode'
+        restore_backup(backup['path'], target)
+        restored = Store(target / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), result)
+        self.assertFalse((target / 'autonomy-artifacts').exists())
+        rebuilt = f.rebuild(restored, self.sid, self.gid)
+        self.assertEqual((Path(rebuilt['directory']) / 'draft.txt').read_text(encoding='utf-8'), '原草稿')
+
+    def test_guidance_change_while_waiting_keeps_question_and_can_restore_original_mode(self):
+        question = '窗口是誰？'
+        a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(action('ask', question=question)))
+        stale = goal_replies.snapshot(self.store, self.sid, self.gid)
+        current = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '取消文件交付，改為文字。', expected_fingerprint=current['fingerprint'])
+        waiting = a.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(waiting['question'], question)
+        self.assertFalse(waiting['file_delivery'])
+        self.assertEqual(waiting['delivery_mode_change']['citation'], '[更正#1]')
+        with self.assertRaisesRegex(ValueError, '重新載入'):
+            goal_replies.save(self.store, self.sid, self.gid, '許同仁', expected_fingerprint=stale['fingerprint'])
+        current = goal_replies.snapshot(self.store, self.sid, self.gid)
+        goal_replies.save(self.store, self.sid, self.gid, '窗口是許同仁。改回交檔。',
+                          expected_fingerprint=current['fingerprint'])
+        state = a.get_goal(self.store, self.sid, self.gid)
+        self.assertTrue(state['file_delivery'])
+        self.assertEqual(state['delivery_mode_change']['citation'], '[補充#1]')
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='answer.txt', content='窗口是許同仁。'),
+            action('deliver', report='已交付', filenames=['answer.txt'])))
+        self.assertEqual(result['status'], 'report_ready')
+        validate_database(self.store.path)
+
+    def test_quoted_conditional_questioned_and_conflicting_instructions(self):
+        for text in ('舊草稿說「不用出檔。」，這段未採用。', '如果對方不收，這次不用出檔。', '這次先不用出檔？',
+                     '回覆範例：\n```\n不用出檔。\n```', '回覆範例：\n~~~\n不用出檔。\n~~~',
+                     "摘錄：'\n不用出檔。\n'", '> 不用出檔。'):
+            with self.subTest(text=text):
+                current = goal_guidance.snapshot(self.store, self.sid, self.gid)
+                goal_guidance.save(self.store, self.sid, self.gid, text, expected_fingerprint=current['fingerprint'])
+                self.assertTrue(a.get_goal(self.store, self.sid, self.gid)['file_delivery'])
+        current = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        with self.assertRaisesRegex(ValueError, '同時取消及恢復'):
+            goal_guidance.save(self.store, self.sid, self.gid, '不用出檔。照原要求交檔。',
+                               expected_fingerprint=current['fingerprint'])
+        self.assertEqual(goal_guidance.snapshot(self.store, self.sid, self.gid), current)
+
+    def test_text_goal_cannot_enable_file_delivery_from_a_saved_note(self):
+        screen = a.create_goal(self.store, self.sid, '文字目標')
+        current = goal_guidance.snapshot(self.store, self.sid, screen)
+        goal_guidance.save(self.store, self.sid, screen, '恢復文件交付。', expected_fingerprint=current['fingerprint'])
+        state = a.get_goal(self.store, self.sid, screen)
+        self.assertFalse(state['file_delivery'])
+        self.assertNotIn('delivery_mode_change', state)
+        with self.assertRaisesRegex(ValueError, '未啟用'):
+            f.write(self.store, screen, 'unapproved.txt', '不應產生檔案')
+
+    def test_backup_rejects_edited_or_missing_delivery_change_evidence(self):
+        view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '不用出檔。', expected_fingerprint=view['fingerprint'])
+        a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(action('finish', report='文字成果')))
+        validate_database(self.store.path)
+        with self.store.connect() as db:
+            raw = db.execute('SELECT receipt_json FROM autonomous_delivery_changes').fetchone()[0]
+            edited = {**json.loads(raw), 'quote': '不用交檔'}
+            db.execute('UPDATE autonomous_delivery_changes SET receipt_json=?', (json.dumps(edited, ensure_ascii=False),))
+        with self.assertRaisesRegex(ValueError, '交付方式更正.*原話'):
+            validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM autonomous_delivery_changes')
+        with self.assertRaisesRegex(ValueError, '交付步驟.*交付方式'):
+            validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DROP TABLE autonomous_delivery_changes')
+        with self.assertRaisesRegex(ValueError, '交付步驟.*交付方式'):
+            validate_database(self.store.path)
 
     def test_cli_rebuilds_saved_files_without_initializing_model(self):
         from assistant.__main__ import main

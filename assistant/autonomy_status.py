@@ -1,6 +1,6 @@
 """Bounded historical status for chat, without replaying tool data or old sources."""
 import json
-from . import goal_sources
+from . import delivery_preference, goal_sources
 
 
 def goal_context(store, sid):
@@ -11,13 +11,16 @@ def goal_context(store, sid):
         # Goals and current imported-source versions must describe one observation.
         # Do not use the cross-session review query: it reads full reports/receipts.
         db.execute('BEGIN')
-        rows = db.execute('''SELECT g.id,g.objective,g.status,g.updated_at,
+        rows = [dict(row) for row in db.execute('''SELECT g.id,g.objective,g.status,g.updated_at,
             g.question,g.sources_json,length(CAST(g.notes AS BLOB))>0 AS user_notes_present,
             (SELECT parent_goal_id FROM autonomous_handoffs h WHERE h.goal_id=g.id) AS parent_goal_id,
             EXISTS(SELECT 1 FROM autonomous_delivery d WHERE d.goal_id=g.id) AS file_delivery,
             (SELECT COUNT(*) FROM autonomous_artifacts a WHERE a.goal_id=g.id) AS saved_artifact_count,
             (SELECT COUNT(*) FROM autonomous_steps s WHERE s.goal_id=g.id) AS step_count
-            FROM autonomous_goals g WHERE g.session_id=? ORDER BY g.rowid DESC LIMIT 4''', (sid,)).fetchall()
+            FROM autonomous_goals g WHERE g.session_id=? ORDER BY g.rowid DESC LIMIT 4''', (sid,))]
+        for row in rows:
+            if row['file_delivery'] and (change := delivery_preference.latest(db, row['id'])):
+                row['file_delivery'] = change['file_delivery']
         sources = signature(db.execute(
             'SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
         scoped = {row['id'] for row in rows if goal_sources.saved_supplement(db, row['id'])}

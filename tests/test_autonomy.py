@@ -548,6 +548,7 @@ class AutonomyTests(unittest.TestCase):
             db.execute('DROP TABLE autonomous_csv_plans')
             db.execute('DROP TABLE autonomous_csv_sources')
             db.execute('DROP TABLE goal_reviews')
+            db.execute('DROP TABLE autonomous_delivery_changes')
             db.execute('DROP TABLE autonomous_artifacts')
             db.execute('DROP TABLE autonomous_delivery')
             db.execute('DROP TABLE autonomous_handoffs')
