@@ -202,7 +202,7 @@ def validate_saved(db, *, changes_present, replies_present, guidance_present):
                 proof = observation.get('scope_reply') if isinstance(observation, dict) else None
                 if (not isinstance(action, dict) or action.get('tool') != 'update_plan'
                         or action.get('args') not in ({'scope_reply': citation, 'scope_reply_version': version}
-                                                       for version in (5, 7))
+                                                       for version in (5, 7, 9))
                         or not isinstance(proof, dict) or proof.get('delivery_mode') != {'receipt': receipt, 'changed': True}):
                     raise ValueError('合併交付方式更正缺少相符的工作清單答覆。')
             position = start

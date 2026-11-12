@@ -54,8 +54,14 @@ def _save_scope_reply(db, current, steps, notes):
     strict_choice = versions == (4,)
     if delivery:
         versions = (5,)
+    requirement = None
+    if pending_revision and delivery_preference.initially_enabled(db, gid):
+        requirement = artifact_names.requirement({**goal, 'steps': steps, 'reply_sources': replies[:-1]})
+        if artifact_names.awaiting_confirmation(steps, requirement):
+            versions = (artifact_names.FIELD_CHOICE_REPLY_VERSION, *versions)
     for version in versions:
-        result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery)
+        result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
+                                               filename_requirement=requirement)
         if result is not None:
             break
     else:
@@ -64,10 +70,16 @@ def _save_scope_reply(db, current, steps, notes):
         return False
     proof = result['scope_reply']
     successor = proof['successor']
+    choice = proof.get('filename_choice', {}).get('selection', {}).get('filename')
     pending = proof.get('language', {}).get('pending_revisions', ())
     minimum = max(3 if successor else 2, 2 + 2 * len(pending))
-    if delivery and delivery['receipt']['file_delivery']:
+    file_delivery = delivery['receipt']['file_delivery'] if delivery else delivery_preference.enabled(db, gid)
+    if (choice or delivery) and file_delivery:
         minimum += 1
+    if choice and any(revision['recheck_items'] for revision in proof.get('revisions', ())):
+        minimum += 2
+    if choice and any(row['name'].casefold() == choice.casefold() for row in artifacts.inventory(db, gid)):
+        raise ValueError('請提供同格式且尚未使用的定稿檔名。')
     if not current['sources_match'] or count + minimum > MAX_STEPS:
         raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
     args = {'scope_reply': proof['citation']}
@@ -81,6 +93,9 @@ def _save_scope_reply(db, current, steps, notes):
         append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, successor['question'],
                                  '保留目前仍需回答的工作分問', plan_questions=successor['plan_questions'])
     notice = '已更新工作清單。只需回答目前保留的問題。' if successor else '已保存答覆並更新工作清單，可接續工作。'
+    if choice:
+        named = f'已確認定稿檔名「{choice}」。' if file_delivery else f'若之後恢復文件交付，定稿檔名為「{choice}」。'
+        notice = named + notice
     if delivery and delivery['changed']:
         notice = delivery_preference.describe(delivery['receipt']) + notice
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',

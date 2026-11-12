@@ -122,9 +122,22 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                                       and bool(state['steps'][-1]['observation'].get('artifact_filename_question')) == bool(turn.get('filename')))
                     if not checks[marker]:
                         break
-                    answer = reply(store, sid, gid, turn['answer'])
-                    history.append({'question': state, 'answer': answer})
-                    checks[marker] = answer['reply_sources'][-1]['question'] == expected
+                    event = {'question': state}
+                    history.append(event)
+                    try:
+                        answer = reply(store, sid, gid, turn['answer'])
+                    except ValueError as exc:
+                        event['error'] = str(exc)
+                        checks[marker] = bool(turn.get('reject')) and autonomy.get_goal(store, sid, gid) == state
+                        break
+                    event['answer'] = answer
+                    next_proof = answer['work_plan']['scope_reply']
+                    checks[marker] = not turn.get('reject') and answer['reply_sources'][-1]['question'] == expected
+                    if 'selected' in turn:
+                        resolution = next_proof.get('language', {}).get('revision_resolution') or {}
+                        checks[marker] &= resolution.get('value') == turn['selected']
+                    if 'accepted_name' in turn:
+                        checks[marker] &= next_proof.get('filename_choice', {}).get('selection', {}).get('filename') == turn['accepted_name']
                     if 'revisions' in turn:
                         checks[marker] &= ({item['field']: item['value'] for item in
                                             answer['work_plan']['scope_reply'].get('revisions', ())} == turn['revisions'])
@@ -141,7 +154,7 @@ def collect(path, case, frozen, *, live, suite=SUITE):
             data = (artifacts.directory(store, gid) / artifacts.filename(receipt['name'])).read_bytes()
             assert hashlib.sha256(data).hexdigest() == receipt['sha256']
             files.append({**receipt, 'content': data.decode('utf-8')})
-    if case.get('reject_reply'):
+    if case.get('reject_reply') or case.get('expect_wait'):
         checks['no_delivery'] = not files and state['status'] == 'needs_input'
     else:
         if case.get('expect_text'):

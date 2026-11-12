@@ -433,7 +433,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6, 7, 8)))
+                versions = (original, *({**original, 'scope_reply_version': version} for version in range(2, 10)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -688,7 +688,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                         withdrawals_present='autonomous_question_withdrawals' in available, delivery_present=delivery_present)
                 elif 'scope_reply' in args:
                     expected = work_plan_scope.replay_reply(db, args, prior, next_step,
-                        {**scope_goal, 'sources': history.get(sequence, sources)}, replies, delivery_present=delivery_present)
+                        {**scope_goal, 'sources': history.get(sequence, sources)}, replies, guidance, delivery_present=delivery_present)
                 else:
                     expected = observe(args, prior, scope, sources, objective=objective,
                                        reply_sources=replies, guidance_sources=guidance)

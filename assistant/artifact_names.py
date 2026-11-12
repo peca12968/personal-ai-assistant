@@ -10,6 +10,7 @@ _INSTRUCTION = re.compile(
     rf'{_CONDITIONAL}(?:最後\s*)?(?:(?:定稿|成果|交付)檔名\s*(?:改為|改成|為|是|：|:)|'
     rf'請\s*(?:交付|交|另存為)|定稿(?:請)?(?:使用|用))\s*{_NAME}')
 _USE_TO_DELIVER = re.compile(rf'{_CONDITIONAL}(?:請)?(?:使用|用)\s*{_NAME}\s*交付(?:完整)?(?:結果|成果)')
+_FOLLOWUP_NAME = re.compile(rf'{_CONDITIONAL}(?:定稿)?檔名\s*(?:請用|用|叫|改用|為|是|：|:)\s*{_NAME}')
 _ANSWER = re.compile(rf'(?:(?:定稿)?(?:請)?(?:改用|使用|用|選擇|選)(?:\s+|(?=[`「])))?{_NAME}')
 _TRAILING = re.compile(r'\s*(?:不要|不用|不必)(?:在|附|把|加|另)')
 _END = re.compile(r'[。！!]$')
@@ -17,6 +18,7 @@ ASK_MARK = 'artifact_filename_question'
 REPLY_VERSION = 6
 MIXED_REPLY_VERSION = 7
 DEFERRED_REPLY_VERSION = 8
+FIELD_CHOICE_REPLY_VERSION = 9
 GUIDANCE = 'artifact_filename_requirement 是使用者已指定的定稿檔名。交付時檔名必須一致。請使用最新欄位及可沿用的核對證據。'
 PENDING_GUIDANCE = '定稿檔名仍待確認。請先完成工作清單中依賴已更正資料的項目。清單完成後由程式確認定稿檔名。'
 
@@ -139,6 +141,27 @@ def reply_filename(text, *, start=0):
     name = _parsed(_ANSWER.fullmatch(literal))
     if name:
         return {'filename': name, 'start': start, 'end': start + len(literal), 'quote': literal}
+    return None
+
+
+def followup_declaration(clause, start):
+    name = _parsed(_INSTRUCTION.fullmatch(clause) or _USE_TO_DELIVER.fullmatch(clause) or _FOLLOWUP_NAME.fullmatch(clause))
+    return {'filename': name, 'start': start, 'end': start + len(clause), 'quote': clause} if name else None
+
+
+def deferred_question(steps, expected):
+    if expected is None:
+        return None
+    for step in reversed(steps):
+        reply = step['observation'].get('scope_reply', {})
+        if reply.get('filename_pending') != expected:
+            continue
+        ask = steps[reply['ask_sequence'] - 1]
+        question = ask['observation'].get(ASK_MARK)
+        if (not question or question['requirement'] != expected or goal_stages.digest(ask) != reply['ask_sha256']
+                or writes(steps).get(expected['filename'].casefold()) != question['draft']):
+            raise ValueError('待確認檔名與原問題或草稿不一致。')
+        return ask, question
     return None
 
 

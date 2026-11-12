@@ -1296,6 +1296,31 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(final['status'], 'report_ready')
         validate_database(self.store.path)
 
+    def test_field_choice_with_filename_rechecks_the_selected_operand_and_delivers_without_another_question(self):
+        waiting, _, requirement = self._wait_for_filename_with_bound_calculation()
+        pending = self.save_scope_reply('留存份數改為 5 份或 7 份。')
+        self.assertIn('留存份數要改為', pending['question'])
+        state = self.save_scope_reply('用 7 份，檔名用 result.md。')
+        plan = state['work_plan']
+        proof = plan['scope_reply']
+        self.assertEqual(proof['retained_items'], [2])
+        self.assertEqual(proof['revisions'][0]['recheck_items'], [1])
+        self.assertEqual(proof['filename_choice']['question_step'], waiting['steps'][-1]['sequence'])
+        expression = {'operation': 'product', 'values': ['7', '3']}
+        new_requirement = {**requirement, 'expression': expression, 'operands': [
+            {'path': '/values/0', 'citation': proof['citation'], 'quote': '用 7 份'},
+            requirement['operands'][1]]}
+        final = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [len(state['steps']) + 1]},
+                                         *plan['items'][1:]], evidence_requirements=[new_requirement]),
+            action('write_artifact', filename='result.md', content='總份數 21，獨立數量 5。'),
+            action('deliver', report='已交付。', filenames=['result.md']))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [3])
+        self.assertEqual([step['action']['tool'] for step in final['steps'][-4:]],
+                         ['calculate_expression', 'update_plan', 'write_artifact', 'deliver'])
+        validate_database(self.store.path)
+
     def test_reply_cannot_revive_prior_confirmation_after_unverified_scope_change(self):
         parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '門號是多少？', 'items': [2]},
                  {'question': '領用人是誰？', 'items': [3]}]

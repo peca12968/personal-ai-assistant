@@ -344,7 +344,7 @@ def _reply_parts(clauses, parts, fields, cancelled, *, single_followup):
     return parsed
 
 
-def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None):
+def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None, filename_requirement=None):
     plan = work_plan.latest(steps)
     if plan is None or source['ask_sequence'] != len(steps):
         return None
@@ -365,6 +365,9 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
+    if version == artifact_names.FIELD_CHOICE_REPLY_VERSION:
+        return _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery,
+                                             filename_requirement)
     if version in (2, 3, 4, 5):
         return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version, delivery=delivery)
     fields = [_asked_field(part, tasks) for part in parts]
@@ -603,20 +606,20 @@ def _show_waiting(language, tasks):
     return [{**entry['part'], 'question': entry['display']} for entry in language['waiting']]
 
 
-def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, version, delivery):
+def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, version, delivery, filename=None):
     receipt = _scope_receipt(plan)
     follows = plan['sequence'] == len(steps) - 1 and receipt.get('successor') == steps[-1]['action']['args']
     previous = receipt.get('language', {}) if follows else {}
     waiting = previous.get('waiting', [])
     if previous:
         parts = [entry['part'] for entry in waiting]
-    text = source['answer']
+    text = _without_delivery(source['answer'], [filename]) if filename else source['answer']
     if version == 5:
         if (not delivery or prior_scope != plan['goal_conditions_sha256']
                 or not (follows or 'plan_questions' in steps[-1]['action']['args'])):
             return None
         text = _without_delivery(text, delivery['receipt']['plan_parts'])
-    comma = {3: _REVISION_COMMA, 4: _PENDING_COMMA, 5: _PENDING_COMMA}.get(version, _PLAIN_COMMA)
+    comma = _FILENAME_REPLY_COMMA if filename else {3: _REVISION_COMMA, 4: _PENDING_COMMA, 5: _PENDING_COMMA}.get(version, _PLAIN_COMMA)
     clauses = goal_guidance_sources.standalone_clauses(text, comma_before=comma)
     if (not clauses and version != 5) or any(question_mark for _, _, question_mark in clauses):
         return None
@@ -657,6 +660,26 @@ def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks
                            language=language, revisions=revisions)
     if result and version == 5:
         result['scope_reply']['delivery_mode'] = delivery
+    return result
+
+
+def _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery, requirement):
+    language = language_followup(steps) or {}
+    if (prior_scope != plan['goal_conditions_sha256'] or not language.get('pending_revisions')
+            or language.get('cancellation') or not requirement):
+        return None
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_FILENAME_REPLY_COMMA)
+    names = [name for start, clause, question in clauses
+             if not question and (name := artifact_names.followup_declaration(clause, start))]
+    if len(names) != 1 or (bound := artifact_names.deferred_question(steps, requirement)) is None:
+        return None
+    name = names[0]
+    result = _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks,
+                                    version=5 if delivery else 4, delivery=delivery, filename=name)
+    if not result or not result['scope_reply']['language']['revision_resolution']:
+        return None
+    ask, proof = bound
+    result['scope_reply']['filename_choice'] = artifact_names.confirm_filename(steps, ask, proof, name)
     return result
 
 
@@ -938,10 +961,10 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
     return expected
 
 
-def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=False):
+def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5, 6, 7, 8) else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7, 8):
+    keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= artifact_names.FIELD_CHOICE_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -951,6 +974,7 @@ def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=Fals
     previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})
     scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
     delivery = None
+    requirement = None
     if version == 5:
         if not delivery_present:
             raise ValueError('工作清單答覆缺少交付方式紀錄。')
@@ -960,7 +984,15 @@ def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=Fals
             raise ValueError('定稿檔名答覆缺少當時的文件交付設定。')
         if version != artifact_names.REPLY_VERSION and delivery_preference.plan_reply(db, goal['id'], source):
             delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
-    expected = observe_reply(prior, source, scope, previous, version=version, delivery=delivery)
+    if version == artifact_names.FIELD_CHOICE_REPLY_VERSION:
+        if not delivery_present or not delivery_preference.initially_enabled(db, goal['id']):
+            raise ValueError('定稿檔名答覆缺少原文件交付設定。')
+        requirement = artifact_names.requirement({**goal, 'steps': prior,
+            'reply_sources': [row for row in replies if row['notes_start'] < start],
+            'guidance_sources': [row for row in guidance if row['notes_start'] < start]})
+        if delivery_preference.plan_reply(db, goal['id'], source):
+            delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
+    expected = observe_reply(prior, source, scope, previous, version=version, delivery=delivery, filename_requirement=requirement)
     if expected is None:
         raise ValueError('工作清單答覆與原問題或保存來源不一致。')
     successor = expected['scope_reply']['successor']

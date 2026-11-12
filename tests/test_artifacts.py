@@ -475,6 +475,58 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '缺少接續的定稿檔名問題'):
             validate_database(restored.path)
 
+    def test_combined_field_choice_binds_the_current_field_and_earlier_filename_questions(self):
+        from assistant.goal_stages import digest
+        from scripts.evaluate_artifact_filenames import reply
+        waiting = self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。')
+        raw = '檔名叫「result.md」，用江明洋。'
+        chosen = reply(self.store, self.sid, self.gid, raw)
+        self.assertEqual(chosen['status'], 'paused')
+        self.assertEqual(chosen['artifacts'], waiting['artifacts'])
+        proof = chosen['work_plan']['scope_reply']
+        choice = proof['filename_choice']
+        self.assertEqual(choice['question_sha256'], digest(waiting['steps'][-1]))
+        self.assertEqual(proof['ask_sha256'], digest(pending['steps'][-1]))
+        spans = (choice['selection'], proof['language']['revision_resolution']['evidence'])
+        self.assertEqual([raw[span['start']:span['end']] for span in spans], ['檔名叫「result.md」', '用江明洋'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'combined-choice')
+        restored = Store(self.root / 'combined-choice/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), chosen)
+        step = chosen['steps'][-1]
+        step['observation']['scope_reply']['filename_choice']['question_step'] = pending['steps'][-1]['sequence']
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation']), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_field_choice_does_not_replace_a_filename_that_is_already_confirmed(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。定稿用 result.md。')
+        with self.assertRaisesRegex(ValueError, '待選更正仍未確認'):
+            reply(self.store, self.sid, self.gid, '用江明洋。定稿用 replacement.md。')
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid), pending)
+        validate_database(self.store.path)
+
+    def test_combined_field_choice_and_text_mode_require_the_saved_mode_event(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。')
+        state = reply(self.store, self.sid, self.gid, '用周雅文，改成文字回覆，定稿用 later.md。')
+        self.assertFalse(state['file_delivery'])
+        proof = state['work_plan']['scope_reply']
+        self.assertEqual(proof['filename_choice']['selection']['filename'], 'later.md')
+        self.assertEqual(proof['delivery_mode']['receipt']['quote'], '改成文字回覆')
+        validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM autonomous_delivery_changes WHERE goal_id=? AND citation=?',
+                       (self.gid, proof['citation']))
+        with self.assertRaisesRegex(ValueError, '交付方式'):
+            validate_database(self.store.path)
+
     def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
         for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
             with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:
