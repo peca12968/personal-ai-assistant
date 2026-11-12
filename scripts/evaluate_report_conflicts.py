@@ -40,6 +40,15 @@ def run(suite, seeds, output):
             autonomy.text(case['destination'], 100)
             assert isinstance(case['pending'], list) and all(isinstance(item, str) for item in case['pending'])
             assert re.fullmatch(r'\[D[1-9][0-9]*:L[1-9][0-9]*\]', case['active_rule'])
+        if 'waiting_corrections' in case:
+            assert len(case['clarifications']) == 1 and 1 <= len(case['waiting_corrections']) <= 3
+            for correction in case['waiting_corrections']:
+                autonomy.text(correction, 4000)
+            if 'waiting_reply' in case:
+                waiting_reply = case['waiting_reply']
+                assert waiting_reply.keys() == {'question', 'reply'}
+                autonomy.text(waiting_reply['question'], 800)
+                autonomy.text(waiting_reply['reply'], 4000)
         autonomy.text(case['correction'], 4000)
     if seeds is None:
         print(f'Validated {len(cases)} report conflict fixtures without model calls.')
@@ -98,6 +107,27 @@ def run(suite, seeds, output):
                     goal_replies.save(store, sid, gid, clarification['reply'], expected_fingerprint=observed['fingerprint'])
                     state = autonomy.get_goal(store, sid, gid)
                     row['clarifications'].append(state)
+            if 'waiting_corrections' in case:
+                row['waiting_corrections'] = []
+                for correction in case['waiting_corrections']:
+                    if state['status'] != 'needs_input':
+                        break
+                    observed = goal_guidance.snapshot(store, sid, gid)
+                    entry = {'content': correction}
+                    try:
+                        goal_guidance.save(store, sid, gid, correction, expected_fingerprint=observed['fingerprint'])
+                    except ValueError as exc:
+                        entry['rejected'] = str(exc)
+                        assert autonomy.get_goal(store, sid, gid) == state
+                    state = entry['goal'] = autonomy.get_goal(store, sid, gid)
+                    row['waiting_corrections'].append(entry)
+                waiting_reply = case.get('waiting_reply')
+                if (waiting_reply and len(row['waiting_corrections']) == len(case['waiting_corrections'])
+                        and all('rejected' not in item for item in row['waiting_corrections'])
+                        and state['status'] == 'needs_input' and state['question'] == waiting_reply['question']):
+                    observed = goal_replies.snapshot(store, sid, gid)
+                    goal_replies.save(store, sid, gid, waiting_reply['reply'], expected_fingerprint=observed['fingerprint'])
+                    state = row['after_waiting_reply'] = autonomy.get_goal(store, sid, gid)
             if state['status'] == 'paused':
                 state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6)
             if 'reply' in case:

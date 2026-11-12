@@ -119,15 +119,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--ordered-clarification', action='store_true')
+    parser.add_argument('--waiting-clarification', action='store_true')
     args = parser.parse_args()
     args.output.mkdir(parents=True)
     for name, scope, task in SEEDS:
         with TemporaryDirectory(dir=args.output) as temporary:
             prepare_seed(Path(temporary), args.output / (name + '.paibackup'), name, scope, task)
-    if args.ordered_clarification:
+    if args.ordered_clarification or args.waiting_clarification:
         with TemporaryDirectory(dir=args.output) as temporary:
             prepare_seed(Path(temporary), args.output / 'quantity.paibackup', 'quantity', '橡灣 T4', '校樣交付',
                          fields=('交付份數', '覆核時段'), routes=QUANTITY_ROUTES)
+    if args.waiting_clarification:
+        with TemporaryDirectory(dir=args.output) as temporary:
+            prepare_seed(Path(temporary), args.output / 'handover.paibackup', 'quantity', '霧松 R9', '物資點交',
+                         fields=('備料箱數', '交接門號'), routes=QUANTITY_ROUTES)
 
 
 if __name__ == '__main__':

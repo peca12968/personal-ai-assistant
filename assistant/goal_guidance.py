@@ -110,7 +110,13 @@ def snapshot(store, sid, gid):
 
 def eligibility(value):
     status = value['goal']['status']
-    if 'report_colloquial_question' in value:
+    if question := value.get('report_colloquial_question'):
+        if question.get('ordered', {}).get('answers'):
+            if not value['sources_match']:
+                return False, '參考文件已改變，請以目前文件另建目標。'
+            if value['step_count'] + 2 > MAX_STEPS:
+                return False, '剩餘步數不足以核對正式更正及更新成果，請帶入進度建立下一階段。'
+            return True, '可更正原表的完整欄名，例如「核對班別正式改為晚班」。保存後會重核目前的問題。'
         return False, '請在目前問題保存答覆，或回答「取消這則補充」。'
     conflict = value.get('document_conflict_report', {})
     choice_hint = ''
@@ -378,6 +384,44 @@ def apply_waiting_review(db, current):
     return _snapshot(db, goal['session_id'], goal['id'])
 
 
+def _save_ordered_waiting_correction(db, current, notes):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    steps = _steps(db, gid)
+    sources = goal_guidance_sources.read(db, gid, notes, count)
+    source = sources[-1]
+    replies = goal.get('reply_sources', ())
+    citation = current['report_colloquial_question']['source']
+    args = {'report_colloquial_guidance': citation, 'waiting_correction': source['citation']}
+    observation = decision_table.observe(args, steps, replies, sources)
+    question = observation['report_waiting_correction']['next_question']
+    ordered = observation['field_reference']['report_mixed_guidance']['ordered']
+    needs_clarification = ordered['next'] is not None
+    required = 6 if needs_clarification else 4 if question else 2
+    if count + required > MAX_STEPS:
+        raise ValueError('剩餘步數不足以重核更正及交付，請帶入進度建立下一階段。')
+    options = goal_question_withdrawals.options(db, gid, goal['question'], count, sources)
+    if not options or options['correction_numbers'] != [source['number']]:
+        raise ValueError('正式更正與目前等待的問題不一致。')
+    _append_reference_recheck(db, goal, notes, count + 1, args, observation)
+    goal_question_withdrawals.record(db, gid, options, source)
+    if question:
+        partial, receipt = None, None
+        if needs_clarification:
+            _, partial, receipt = decision_table.prepare_report_colloquial_question(_steps(db, gid), replies, sources, citation)
+        append_followup_question(db, {**goal, 'guidance_sources': sources}, notes, count + 2, question,
+                                 '依正式更正保留仍影響交付的問題', partial_result=partial, colloquial_receipt=receipt)
+    if question == goal['question']:
+        notice = '已核對正式更正。原問題仍會影響成果，請依最新條件回答。'
+    elif question:
+        notice = '已核對正式更正。先前的問題已撤下，只需確認現在顯示的欄名。'
+    else:
+        notice = '已核對正式更正。先前的問題已無須回答，請接續更新成果。'
+    db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (notes, 'needs_input' if question else 'paused', question or '', notice, gid))
+    return _snapshot(db, goal['session_id'], gid)
+
+
 def save(store, sid, gid, content, *, expected_fingerprint):
     content = text(content,4000)
     if not isinstance(expected_fingerprint,str) or not re.fullmatch('[0-9a-f]{64}',expected_fingerprint):
@@ -405,6 +449,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
+        if 'report_colloquial_question' in current:
+            return _save_ordered_waiting_correction(db, current, notes)
         if supplement:
             _save_report_supplement(db, current, notes, content)
         elif current.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'}:

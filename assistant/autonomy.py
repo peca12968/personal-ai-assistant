@@ -647,6 +647,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if mixed_report_guidance and mixed_report_guidance.get('colloquial') and not mixed_report_guidance.get('ordered') else '') +
                 ('\n' + decision_table.REPORT_ORDERED_GUIDANCE
                  if mixed_report_guidance and mixed_report_guidance.get('ordered') else '') +
+                ('\n' + decision_table.REPORT_WAITING_GUIDANCE
+                 if mixed_report_guidance and mixed_report_guidance.get('ordered', {}).get('amendments') else '') +
                 ('\n' + decision_table.WAITING_FIELD_VERSION_GUIDANCE if waiting_field_version else '') +
                 ('\n' + decision_table.POST_REPLY_REFERENCE_GUIDANCE if post_reply_reference or any(
                     s['observation'].get('field_reference', {}).get('post_reply_recheck') for s in payload['steps']) else '') +

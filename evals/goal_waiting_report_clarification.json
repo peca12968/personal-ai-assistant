@@ -1,0 +1,94 @@
+[
+  {
+    "id": "formal_shift_makes_the_second_rule_question_unnecessary",
+    "seed": "archives",
+    "correction": "收件班別早班還是晚班？改採 [D5:L1] 嗎？",
+    "expected": "resolved",
+    "clarifications": [{"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"}],
+    "waiting_corrections": ["核對班別正式改為晚班。"],
+    "destination": "交接席",
+    "pending": ["[D5:L1]"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "named_correction_supplies_the_value_the_second_question_was_asking_for",
+    "seed": "quantity",
+    "correction": "改採 [D5:L1] 嗎？交付份數6還是8？覆核時段照舊。",
+    "expected": "resolved",
+    "clarifications": [{"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "維持原規則"}],
+    "waiting_corrections": ["交付份數正式改為6。"],
+    "destination": "青席",
+    "pending": [],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "formal_time_refreshes_the_second_question_before_a_real_reply",
+    "seed": "quantity",
+    "correction": "改採 [D5:L1] 嗎？交付份數6還是8？覆核時段照舊。",
+    "expected": "resolved",
+    "clarifications": [{"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "維持原規則"}],
+    "waiting_corrections": ["覆核時段正式改為8。"],
+    "waiting_reply": {"question": "「交付份數」要用哪個值？請回答「6」或「8」。", "reply": "8"},
+    "destination": "交接席",
+    "pending": [],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "latest_formal_shift_replaces_the_rule_question_with_the_original_field_question",
+    "seed": "workshop",
+    "correction": "核對班別早班還是晚班？改採 [D5:L2] 嗎？",
+    "expected": "resolved",
+    "clarifications": [{"question": "「核對班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "早班"}],
+    "waiting_corrections": ["核對班別正式改為晚班。"],
+    "waiting_reply": {"question": "第一筆改值指哪個欄位？請回完整欄名「收件班別」、「核對班別」。", "reply": "收件班別"},
+    "destination": "交接席",
+    "pending": ["[D5:L2]"],
+    "active_rule": "[D5:L1]"
+  },
+  {
+    "id": "multiple_formal_corrections_keep_the_first_reply_and_reconsider_the_second_question",
+    "seed": "archives",
+    "correction": "收件班別早班還是晚班？改採 [D5:L1] 嗎？",
+    "expected": "resolved",
+    "clarifications": [{"question": "「收件班別」要用哪個值？請回答「早班」或「晚班」。", "reply": "晚班"}],
+    "waiting_corrections": ["核對班別正式確認為早班。", "收件班別正式改為早班。"],
+    "destination": "集合席",
+    "pending": ["[D5:L1]"],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "cancellation_preserves_a_separately_saved_formal_correction",
+    "seed": "quantity",
+    "correction": "改採 [D5:L1] 嗎？交付份數6還是8？覆核時段照舊。",
+    "expected": "resolved",
+    "clarifications": [{"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "維持原規則"}],
+    "waiting_corrections": ["覆核時段正式改為8。"],
+    "waiting_reply": {"question": "「交付份數」要用哪個值？請回答「6」或「8」。", "reply": "取消這則補充"},
+    "destination": "交接席",
+    "pending": [],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "two_formal_numeric_values_use_the_named_columns_in_a_new_handover",
+    "seed": "handover",
+    "correction": "改採 [D5:L1] 嗎？備料箱數6還是8？交接門號照舊。",
+    "expected": "resolved",
+    "clarifications": [{"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "維持原規則"}],
+    "waiting_corrections": ["交接門號正式改為8。備料箱數正式改為8。"],
+    "destination": "交接席",
+    "pending": [],
+    "active_rule": "[D5:L2]"
+  },
+  {
+    "id": "uncertain_or_unrelated_waiting_corrections_preserve_the_active_question",
+    "seed": "quantity",
+    "correction": "改採 [D5:L1] 嗎？交付份數6還是8？覆核時段照舊。",
+    "expected": "resolved",
+    "clarifications": [{"question": "「[D5:L1]」要正式改採嗎？請回答「改採」或「維持原規則」。", "reply": "維持原規則"}],
+    "waiting_corrections": ["覆核時段大概8。", "預備份數正式改為8。", "覆核時段正式改為8。交付份數正式改為9。"],
+    "waiting_controls": true,
+    "destination": "金席",
+    "pending": ["交付份數"],
+    "active_rule": "[D5:L2]"
+  }
+]
