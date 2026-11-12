@@ -1035,10 +1035,9 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(blocked['steps'][-1]['action']['tool'], 'invalid')
         validate_database(self.store.path)
 
-    def test_unclear_cancellation_and_conflicting_values_do_not_change_plan(self):
+    def test_unresolved_scope_sentences_do_not_change_plan(self):
         question = '入場門號是多少？'
         for answer in ('有人提議「取消安排窗口」，還沒有採用。入場門號是 3 號。',
-                       '取消「安排窗口」。入場門號是 3 號。入場門號是 4 號。',
                        '取消「安排窗口」。入場門號是我晚點回覆。',
                        '取消「安排窗口」。其實窗口還是要做。入場門號是 3 號。'):
             with self.subTest(answer=answer):
@@ -1049,6 +1048,93 @@ class WorkPlanTests(unittest.TestCase):
                 self.assertEqual(state['steps'], original['steps'])
                 self.assertEqual(state['reply_sources'][-1]['answer'], answer)
                 self.assertNotIn('scope_cancelled', state['work_plan'])
+        validate_database(self.store.path)
+
+    def test_same_message_task_mention_cannot_answer_a_scope_question_not_yet_asked(self):
+        parts = [{'question': '收貨窗口是誰？', 'items': [1]}, {'question': '覆核窗口是誰？', 'items': [2]}]
+        original = self.run_actions(action('update_plan', items=[item(1, '確認收貨窗口'), item(2, '確認覆核窗口')]),
+            action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        state = self.save_scope_reply('取消窗口。確認覆核窗口。')
+        self.assertEqual(state['steps'], original['steps'])
+        self.assertNotIn('scope_cancelled', state['work_plan'])
+        validate_database(self.store.path)
+
+    def test_conflicting_field_keeps_independent_confirmations_and_both_original_values(self):
+        parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '入場門號是多少？', 'items': [2]},
+                 {'question': '領用人是誰？', 'items': [3]}]
+        self.run_actions(action('update_plan', verify_delivery=True,
+                                items=[item(1, '安排窗口'), item(2, '確認入場門號'), item(3, '確認領用人')]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        answer = '取消「安排窗口」。入場門號是 3 號。領用人為葉舒禾。入場門號是 4 號。'
+        waiting = self.save_scope_reply(answer)
+        proof = waiting['work_plan']['scope_reply']
+        self.assertEqual(proof['completed_items'], [3])
+        field = proof['parts'][1]
+        self.assertEqual(field['state'], 'conflicting')
+        self.assertEqual([row['value'] for row in field['statements']], ['3 號', '4 號'])
+        for row in field['statements']:
+            evidence = row['evidence']
+            self.assertEqual(answer[evidence['start']:evidence['end']], evidence['quote'])
+        self.assertEqual(waiting['question'], '入場門號要以「3 號」還是「4 號」為準？')
+        final = self.save_scope_reply('就用 4 號。')
+        self.assertEqual(final['reply_sources'][-1]['question'], waiting['question'])
+        self.assertEqual(final['work_plan']['scope_reply']['retained_items'], [3])
+        self.assertEqual(final['work_plan']['scope_reply']['completed_items'], [2])
+        self.assertEqual(final['work_plan']['scope_reply']['parts'][0]['value'], '4 號')
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
+    def wait_on_two_windows(self):
+        parts = [{'question': '收貨窗口是誰？', 'items': [1]}, {'question': '覆核窗口是誰？', 'items': [2]},
+                 {'question': '入場門號是多少？', 'items': [3]}]
+        self.run_actions(action('update_plan', verify_delivery=True,
+                                items=[item(1, '確認收貨窗口'), item(2, '確認覆核窗口'), item(3, '確認入場門號')]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        return self.save_scope_reply('取消窗口。收貨窗口是葉舒禾。入場門號是 6 號。')
+
+    def test_short_cancellation_can_be_declined_after_restore_and_preserves_confirmed_fields(self):
+        state = self.wait_on_two_windows()
+        self.assertEqual(state['work_plan']['scope_reply']['completed_items'], [1, 3])
+        self.assertEqual(state['work_plan']['scope_reply']['language']['cancellation']['items'], [1, 2])
+        self.assertEqual(state['work_plan']['scope_cancelled'], [])
+        self.assertEqual(state['steps'][-1]['observation']['work_plan_question']['parts'][0]['items'], [1, 2])
+        backup = create_backup(self.store.path, self.root / 'ambiguous-scope.paibackup')
+        restore_backup(backup['path'], self.root / 'restored-ambiguous-scope')
+        restored = Store(self.root / 'restored-ambiguous-scope/assistant.sqlite3')
+        after = self.save_scope_reply('都保留。', store=restored)
+        self.assertEqual(after['question'], '覆核窗口是誰？')
+        self.assertEqual(after['work_plan']['scope_reply']['language']['resolution']['items'], [])
+        final = self.save_scope_reply('「林語安」。', store=restored)
+        self.assertEqual(final['work_plan']['scope_reply']['retained_items'], [1, 3])
+        self.assertTrue(final['work_plan']['delivery_review']['ready'])
+        validate_database(restored.path)
+        with restored.connect() as db:
+            broken = copy.deepcopy(state['steps'][2]['observation'])
+            broken['scope_reply']['language']['cancellation']['items'] = [2, 3]
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(broken), self.gid))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_separate_exact_correction_can_resolve_a_pending_short_cancellation(self):
+        self.wait_on_two_windows()
+        after = self.save_scope_guidance('取消「確認覆核窗口」。')
+        self.assertEqual(after['work_plan']['scope_cancelled'], [2])
+        self.assertEqual(after['work_plan']['scope_change']['retained_items'], [1, 3])
+        self.assertEqual(after['status'], 'paused')
+        self.assertTrue(after['work_plan']['delivery_review']['ready'])
+        validate_database(self.store.path)
+
+    def test_repeated_equivalent_numbers_retain_the_literal_but_need_no_extra_question(self):
+        question = '入場門號是多少？'
+        self.run_actions(action('update_plan', verify_delivery=True, items=[item(1, '安排窗口'), item(2, '確認入場門號')]),
+                         action('ask', question=question, plan_questions=[{'question': question, 'items': [2]}]))
+        saved = self.save_scope_reply('窗口先不用了，入場門號是 ３ 號，入場門號是 3號。')
+        proof = saved['work_plan']['scope_reply']
+        self.assertEqual(proof['parts'][0]['value'], '３ 號')
+        self.assertEqual(len(proof['parts'][0]['statements']), 2)
+        self.assertEqual(proof['completed_items'], [2])
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
         validate_database(self.store.path)
 
 

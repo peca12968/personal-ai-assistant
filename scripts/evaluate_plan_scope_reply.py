@@ -24,7 +24,7 @@ def reply(store, sid, gid, answer):
     return autonomy.get_goal(store, sid, gid)
 
 
-def collect(path, case, frozen, *, live=False):
+def collect(path, case, frozen, *, live=False, suite=SUITE):
     store, sid, gid, _ = prepare(path, case)
     parts = case['parts']
     question = '\n'.join(part['question'] for part in parts)
@@ -40,12 +40,17 @@ def collect(path, case, frozen, *, live=False):
         'completion': proof.get('completed_items', []) == case.get('completed', []),
         'waiting': saved['question'] == case.get('remaining', ''),
     }
-    if case['cancelled']:
+    if case.get('scope_receipt', bool(case['cancelled'])):
         checks['receipt'] = (plan['conditions_current'] and proof.get('citation') == latest_source['citation']
                              and proof.get('source_sha256') == latest_source['sha256'])
         checks['retained'] = all(item['state'] == 'done' for item in plan['items'][:len(case['done'])])
     else:
         checks['no_inferred_cancellation'] = saved['steps'] == before['steps']
+    if 'part_states' in case:
+        checks['part_states'] = [part['state'] for part in proof.get('parts', ())] == case['part_states']
+    if 'scope_candidates' in case:
+        unresolved = proof.get('language', {}).get('cancellation') or {}
+        checks['scope_candidates'] = unresolved.get('items', []) == case['scope_candidates']
     if 'remaining_items' in case:
         successor = proof.get('successor') or {}
         checks['successor_items'] = [number for part in successor.get('plan_questions', ())
@@ -55,16 +60,18 @@ def collect(path, case, frozen, *, live=False):
     if 'followup' in case:
         if saved['status'] == 'needs_input' and checks['waiting']:
             state = row['after_followup'] = reply(store, sid, gid, case['followup'])
-        checks['followup'] = ('after_followup' in row and not state['question']
+        checks['followup'] = ('after_followup' in row and state['question'] == case.get('followup_remaining', '')
                               and state['work_plan']['conditions_current']
                               and state['work_plan'].get('scope_reply', {}).get('completed_items') == case['followup_completed']
                               and state['reply_sources'][-1]['question'] == case['remaining'])
+        if 'followup_cancelled' in case:
+            checks['followup_cancelled'] = state['work_plan'].get('scope_cancelled', []) == case['followup_cancelled']
     if live and 'must_include' in case and state['status'] == 'paused' and ('followup' not in case or checks['followup']):
         engine = CodexEngine(path / 'engine')
 
         class Recorded:
             def answer(self, prompt, cancel=None):
-                if fingerprint(SUITE) != frozen:
+                if fingerprint(suite) != frozen:
                     raise ValueError('題庫已變更，停止測量。')
                 call = {'prompt': prompt, 'status': 'calling'}
                 row['calls'].append(call)
@@ -95,13 +102,14 @@ def collect(path, case, frozen, *, live=False):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--suite', type=Path, default=SUITE)
     parser.add_argument('--output', type=Path, help='新建本機實測資料夾；省略時不呼叫模型。')
     parser.add_argument('--save-only', action='store_true', help='只測保存及還原，並在指定資料夾保留證據。')
     args = parser.parse_args()
-    cases = json.loads(SUITE.read_text(encoding='utf-8'))
+    cases = json.loads(args.suite.read_text(encoding='utf-8'))
     if len({case['id'] for case in cases}) != len(cases):
         raise ValueError('合成案例編號重複。')
-    frozen = fingerprint(SUITE)
+    frozen = fingerprint(args.suite)
     if not args.output:
         with TemporaryDirectory() as scratch:
             for index, case in enumerate(cases):
@@ -117,7 +125,7 @@ def main():
     report = {'suite': frozen, 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'cases': [], 'completed': False}
     for index, case in enumerate(cases):
-        row = collect(output / str(index), case, frozen, live=not args.save_only)
+        row = collect(output / str(index), case, frozen, live=not args.save_only, suite=args.suite)
         report['cases'].append(row)
         save_report(output / 'report.json', report)
         print(f"{row['id']} {row['final']['status']} {all(row['checks'].values())} ({len(row['calls'])} model calls)", flush=True)

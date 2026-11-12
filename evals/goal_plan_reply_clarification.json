@@ -1,0 +1,97 @@
+[
+  {
+    "id": "an_unlabelled_value_with_one_surviving_question",
+    "prompt": "朴潭 G7 核對箱數、安排收貨窗口、確認入場門號。只交保留工作。",
+    "document": "朴潭 G7 共 17 箱。\n",
+    "done": ["核對箱數"],
+    "pending": ["安排收貨窗口", "確認入場門號"],
+    "parts": [{"question": "收貨窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}],
+    "reply": "取消「安排收貨窗口」。8 號。",
+    "cancelled": [2], "completed": [3], "part_states": ["cancelled", "confirmed"],
+    "must_include": ["17", "8 號"], "must_omit": ["收貨窗口"]
+  },
+  {
+    "id": "unique_short_title_and_number_without_copula",
+    "prompt": "紅樺 U2 核對袋數、安排接待窗口、確認入場門號。依工作清單交付。",
+    "document": "紅樺 U2 共 13 袋。\n",
+    "done": ["核對袋數"],
+    "pending": ["安排接待窗口", "確認入場門號"],
+    "parts": [{"question": "接待窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}],
+    "reply": "取消接待窗口，入場門號 4 號。",
+    "cancelled": [2], "completed": [3], "part_states": ["cancelled", "confirmed"],
+    "must_include": ["13", "4 號"], "must_omit": ["接待窗口"]
+  },
+  {
+    "id": "postposed_cancellation",
+    "prompt": "南楓 B5 核對原始件數、安排資料窗口、確認留存份數。依目前工作清單交付。",
+    "document": "南楓 B5 共 19 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排資料窗口", "確認留存份數"],
+    "parts": [{"question": "資料窗口是誰？", "items": [2]}, {"question": "留存份數是多少？", "items": [3]}],
+    "reply": "「安排資料窗口」先不用了，留存份數是 2 份。",
+    "cancelled": [2], "completed": [3], "part_states": ["cancelled", "confirmed"],
+    "must_include": ["19", "2 份"], "must_omit": ["資料窗口"]
+  },
+  {
+    "id": "conflicting_gate_does_not_erase_the_confirmed_person",
+    "prompt": "烏坪 Z3 核對箱數、安排送件窗口、確認進場門號及領用人。依清單只交保留項。",
+    "document": "烏坪 Z3 共 23 箱。\n",
+    "done": ["核對箱數"],
+    "pending": ["安排送件窗口", "確認進場門號", "確認領用人"],
+    "parts": [{"question": "送件窗口是誰？", "items": [2]}, {"question": "進場門號是多少？", "items": [3]}, {"question": "領用人是誰？", "items": [4]}],
+    "reply": "取消「安排送件窗口」。進場門號是 3 號。進場門號是 4 號。領用人為蘇怡安。",
+    "cancelled": [2], "completed": [4], "part_states": ["cancelled", "conflicting", "confirmed"],
+    "remaining": "進場門號要以「3 號」還是「4 號」為準？", "remaining_items": [3],
+    "followup": "4 號。", "followup_completed": [3],
+    "must_include": ["23", "4 號", "蘇怡安"], "must_omit": ["送件窗口", "3 號"]
+  },
+  {
+    "id": "ask_which_window_before_asking_its_details",
+    "prompt": "霧枝 K4 核對件數、確認收貨窗口、確認覆核窗口、確認入場門號。依目前清單交付。",
+    "document": "霧枝 K4 共 29 件。\n",
+    "done": ["核對件數"],
+    "pending": ["確認收貨窗口", "確認覆核窗口", "確認入場門號"],
+    "parts": [{"question": "收貨窗口是誰？", "items": [2]}, {"question": "覆核窗口是誰？", "items": [3]}, {"question": "入場門號是多少？", "items": [4]}],
+    "reply": "取消窗口。入場門號是 6 號。",
+    "cancelled": [], "completed": [4], "scope_receipt": true, "scope_candidates": [2, 3],
+    "part_states": ["unanswered", "unanswered", "confirmed"],
+    "remaining": "要取消哪一項？請選「確認收貨窗口」或「確認覆核窗口」，也可回答「都保留」。",
+    "remaining_items": [2, 3],
+    "followup": "確認覆核窗口。收貨窗口是林語安。", "followup_completed": [2], "followup_cancelled": [3],
+    "must_include": ["29", "6 號", "林語安"], "must_omit": ["覆核窗口"]
+  },
+  {
+    "id": "decline_cancellation_and_recover_both_original_questions",
+    "prompt": "小楓 J2 核對件數，確認白桌窗口及藍桌窗口，再確認入場門號。",
+    "document": "小楓 J2 有 31 件。\n",
+    "done": ["核對件數"],
+    "pending": ["確認白桌窗口", "確認藍桌窗口", "確認入場門號"],
+    "parts": [{"question": "白桌窗口是誰？", "items": [2]}, {"question": "藍桌窗口是誰？", "items": [3]}, {"question": "入場門號是多少？", "items": [4]}],
+    "reply": "取消窗口。入場門號是 7 號。",
+    "cancelled": [], "completed": [4], "scope_receipt": true, "scope_candidates": [2, 3],
+    "remaining": "要取消哪一項？請選「確認白桌窗口」或「確認藍桌窗口」，也可回答「都保留」。",
+    "followup": "都保留。", "followup_completed": [], "followup_cancelled": [],
+    "followup_remaining": "白桌窗口是誰？\n藍桌窗口是誰？"
+  },
+  {
+    "id": "unlabelled_value_with_two_possible_fields_is_never_guessed",
+    "prompt": "溪溝 W5 核對袋數、安排作業窗口、確認入場門號與出場門號。",
+    "document": "溪溝 W5 共 37 袋。\n",
+    "done": ["核對袋數"],
+    "pending": ["安排作業窗口", "確認入場門號", "確認出場門號"],
+    "parts": [{"question": "作業窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}, {"question": "出場門號是多少？", "items": [4]}],
+    "reply": "取消「安排作業窗口」。9 號。",
+    "cancelled": [2], "completed": [], "part_states": ["cancelled", "unanswered", "unanswered"],
+    "remaining": "入場門號是多少？\n出場門號是多少？", "remaining_items": [3, 4]
+  },
+  {
+    "id": "a_negated_scope_clause_is_not_applied",
+    "prompt": "泉岸 W8 核對件數、安排窗口、確認入場門號。",
+    "document": "泉岸 W8 共 41 件。\n",
+    "done": ["核對件數"],
+    "pending": ["安排窗口", "確認入場門號"],
+    "parts": [{"question": "窗口是誰？", "items": [2]}, {"question": "入場門號是多少？", "items": [3]}],
+    "reply": "取消「安排窗口」。其實窗口還是要做。入場門號是 3 號。",
+    "cancelled": []
+  }
+]

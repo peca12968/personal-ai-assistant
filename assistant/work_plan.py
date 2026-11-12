@@ -359,6 +359,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     if same_scope and any(by_id[number]['state'] != 'superseded' for number in prior_cancelled):
         raise ValueError('使用者已取消的工作項目須保留取消狀態。')
     cancelled = [number for number in prior_cancelled if by_id[number]['state'] == 'superseded']
+    scope_reviewed = bool(cancelled) or (same_scope and any(
+        step['action']['tool'] == 'update_plan' and 'scope_reply' in step['observation']
+        and step['observation'].get('goal_conditions_sha256') == scope for step in steps))
     sequence = len(steps) + 1
     user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, sequence)
     reusable, rechecks = _calculation_reuse_review(previous, scope, sequence, reply_sources, guidance_sources)
@@ -370,7 +373,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
         item_id = item['id']
         calculation_step = None
         old = previous_items.get(item_id)
-        carried = (same_scope and bool(cancelled) and old is not None and old['state'] == 'done'
+        carried = (same_scope and scope_reviewed and old is not None and old['state'] == 'done'
                    and old['evidence_steps'] == item['evidence_steps']
                    and previous_requirements.get(item_id) == requirements.get(item_id))
         candidate = reusable.get(item_id)
@@ -398,7 +401,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             observed = step['observation']
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
-                if (step['action'].get('args') != {'scope_reply': verified.get('citation')}
+                original = {'scope_reply': verified.get('citation')}
+                if (step['action'].get('args') not in (original, {**original, 'scope_reply_version': 2})
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or

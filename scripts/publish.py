@@ -175,6 +175,7 @@ def main():
     run(sys.executable, "scripts/evaluate_cross_task_boundaries.py")
     run(sys.executable, "scripts/evaluate_plan_scope_cancellation.py")
     run(sys.executable, "scripts/evaluate_plan_scope_reply.py")
+    run(sys.executable, "scripts/evaluate_plan_scope_reply.py", "--suite", "evals/goal_plan_reply_clarification.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_mixed_scope_updates.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")

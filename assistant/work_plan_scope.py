@@ -1,5 +1,6 @@
 """Bind clarification to public plan items and apply explicit scope reductions."""
 import re
+import unicodedata
 
 from . import goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
 
@@ -26,6 +27,9 @@ _NUMBER = re.compile(r'(?:[0-9０-９]+(?:\.[0-9０-９]+)?|[零〇一二兩三�
 _CODE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,23}')
 _SHORT_WORD = re.compile(r'[\u4e00-\u9fff]{1,12}')
 _UNCERTAIN = re.compile(r'待|未|還|不|暫|可能|大概|或|應該|也許|若|如果|請|要|確認|取消|改成|改為|另外|同時|再說|回覆|晚點|等下|稍後')
+_POST_CANCEL = re.compile(r'(.{2,90}?)\s*(?:先不用了|不用了|先不做了|不做了|先取消|取消掉)')
+_PLAIN_COMMA = re.compile(r'\s*(?!\s*「)|\s*「[^」\r\n]+」\s*(?:先不用了|不用了|先不做了|不做了|先取消|取消掉)')
+_KEEP_ALL = {'都保留', '都先保留', '兩項都保留', '都不取消', '不取消'}
 
 
 def validate_questions(args):
@@ -55,6 +59,10 @@ def bind_questions(args, steps):
     if plan is None:
         raise ValueError('須先保存工作清單，才能依工作項目提問。')
     active = {row['id'] for row in plan['items'] if row['state'] not in {'done', 'superseded'}}
+    receipt = _scope_receipt(plan)
+    cancellation = receipt.get('language', {}).get('cancellation')
+    if cancellation and args == receipt['successor']:
+        active.update(cancellation['items'])
     parts = args['plan_questions']
     if any(not set(part['items']) <= active for part in parts):
         raise ValueError('問題只能連到仍需處理的工作項目。')
@@ -146,6 +154,19 @@ def _next_question(parts):
     return None
 
 
+def _scope_receipt(plan):
+    return plan.get('scope_reply') or plan.get('scope_change') or {}
+
+
+def language_followup(steps):
+    plan = work_plan.latest(steps)
+    if plan and plan['sequence'] == len(steps) - 1:
+        receipt = _scope_receipt(plan)
+        if receipt.get('successor') == steps[-1]['action']['args']:
+            return receipt.get('language')
+    return None
+
+
 def _successor(steps, plan, cancelled):
     question, parts = _waiting_parts(steps, plan)
     if not parts:
@@ -168,8 +189,13 @@ def observe(steps, source, scope, prior_scope, *, waiting):
     cancelled = {number for change in changes for number in change['items']}
     result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
     if waiting:
-        proof.update(ask_sequence=steps[-1]['sequence'], ask_sha256=goal_stages.digest(steps[-1]),
-                     successor=_successor(steps, plan, cancelled))
+        successor = _successor(steps, plan, cancelled)
+        if previous := language_followup(steps):
+            language = _retain_language(previous, cancelled)
+            tasks = {item['id']: item['task'] for item in plan['items']}
+            successor = _next_question(_show_waiting(language, tasks))
+            proof['language'] = language
+        proof.update(ask_sequence=steps[-1]['sequence'], ask_sha256=goal_stages.digest(steps[-1]), successor=successor)
     result['scope_change'] = proof
     return result
 
@@ -270,7 +296,7 @@ def _reply_parts(clauses, parts, fields, cancelled, *, single_followup):
     return parsed
 
 
-def observe_reply(steps, source, scope, prior_scope):
+def observe_reply(steps, source, scope, prior_scope, *, version=1):
     plan = work_plan.latest(steps)
     if plan is None or source['ask_sequence'] != len(steps):
         return None
@@ -278,6 +304,8 @@ def observe_reply(steps, source, scope, prior_scope):
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
+    if version == 2:
+        return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     fields = [_asked_field(part, tasks) for part in parts]
     prefixes = '|'.join(re.escape(name) for name in fields if name)
     reply_prefix = rf'|\s*{_REPLY_CONNECTOR}(?:{prefixes})' if prefixes else ''
@@ -296,6 +324,12 @@ def observe_reply(steps, source, scope, prior_scope):
                           single_followup=single_followup)
     if parsed is None:
         return None
+
+    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed)
+
+
+def _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed, *, language=None):
+    cancelled = {number for change in changes for number in change['items']}
 
     result, proof = _scope_update(steps, plan, source, changes, scope, prior_scope)
     remaining, dispositions, complete = [], [], {}
@@ -319,9 +353,209 @@ def observe_reply(steps, source, scope, prior_scope):
             result['items'][index] = {**item, 'state': 'done', 'evidence_steps': [len(steps) + 1], 'note': note}
     proof.update(ask_sequence=len(steps), ask_sha256=goal_stages.digest(steps[-1]), parts=dispositions,
                  completed_items=sorted(complete), successor=_next_question(remaining))
+    if language is not None:
+        waiting = _language_successor(language, remaining, dispositions, fields, tasks)
+        successor = proof['successor'] = _next_question(waiting)
+        if successor and len(successor['question']) > 800:
+            return None
+        if successor:
+            try:
+                validate_questions(successor)
+            except ValueError:
+                return None
+        proof['language'] = language
     result['scope_reply'] = proof
     result['review_note'] = '分開核對原回覆內的範圍變更、確認值與待答分問。'
     return result
+
+
+def _literal_span(start, clause):
+    return {'start': start, 'end': start + len(clause), 'quote': clause}
+
+
+def _cancellation_names(clause):
+    match = _CANCEL.fullmatch(clause) or _POST_CANCEL.fullmatch(clause)
+    if match is None:
+        return []
+    names = match[1].strip()
+    return re.findall(r'「([^「」]+)」', names) if _TITLES.fullmatch(names) else [names]
+
+
+def _candidate_items(name, tasks):
+    exact = [number for number, task in tasks.items() if task == name]
+    if exact or not _FIELD_NAME.fullmatch(name):
+        return exact
+    return [number for number, task in tasks.items() if _target(task).endswith(name)]
+
+
+def _natural_scope(clauses, plan, tasks, pending, source):
+    active = {item['id'] for item in plan['items'] if item['state'] != 'superseded'}
+    fields, changes, used = [], [], set()
+    resolution = None
+    awaiting_choice = pending
+    for start, clause, _ in clauses:
+        evidence = _literal_span(start, clause)
+        names = _cancellation_names(clause)
+        if awaiting_choice and resolution is None:
+            selected = clause.removeprefix('「').removesuffix('」')
+            keep_all = clause in _KEEP_ALL
+            choices = [] if keep_all else [number for number in awaiting_choice['items'] if tasks[number] == selected
+                                           or names == [tasks[number]]]
+            if len(choices) == 1 or keep_all:
+                resolution = {'items': choices, 'evidence': evidence, 'from': awaiting_choice['citation']}
+                if choices:
+                    changes.append({'items': choices, **evidence})
+                    used.update(choices)
+                continue
+        if clause in _UNCHANGED:
+            continue
+        if not names:
+            fields.append((start, clause))
+            continue
+        ids = []
+        for name in names:
+            matches = _candidate_items(name, tasks)
+            if len(matches) > 1:
+                if pending or len(names) != 1 or not set(matches) <= active or len({tasks[n] for n in matches}) != len(matches):
+                    return None
+                pending = {'items': matches, 'evidence': evidence, 'citation': source['citation']}
+            elif len(matches) != 1 or matches[0] in used or matches[0] not in active:
+                return None
+            else:
+                ids.append(matches[0])
+                used.add(matches[0])
+        if ids:
+            changes.append({'items': ids, **evidence})
+    if resolution:
+        if not resolution['items'] and set(awaiting_choice['items']) & used:
+            return None
+        pending = None
+    if pending and set(pending['items']) & used:
+        return None
+    return changes, fields, pending, resolution
+
+
+def _bare_value(clause, *, numeric):
+    literal = clause
+    if numeric:
+        if match := re.fullmatch(r'(?:就用|用|以)\s*(.+?)(?:為準)?', literal):
+            literal = match[1].strip()
+        return _value(literal) if _NUMBER.fullmatch(literal) else None
+    return _value(literal) if clause.startswith('「') else None
+
+
+def _natural_fields(clauses, parts, fields, cancelled):
+    statements, unassigned = {}, []
+    active = [index for index, part in enumerate(parts) if set(part['items']) - cancelled]
+    for start, raw in clauses:
+        clause = re.sub('^' + _REPLY_CONNECTOR, '', raw, count=1)
+        evidence = _literal_span(start, raw)
+        matches = []
+        for index in active:
+            name = fields[index]
+            if not name or not clause.startswith(name):
+                continue
+            rest = clause[len(name):].strip()
+            outcome = _reply_value(rest)
+            numeric = bool(_NUMERIC_QUESTION.search(parts[index]['question']))
+            if outcome is None and numeric and _NUMBER.fullmatch(rest):
+                outcome = ('confirmed', rest)
+            if outcome and (not numeric or outcome[1] is None or _NUMBER.fullmatch(outcome[1])):
+                matches.append((index, outcome))
+        if not matches:
+            for index in active:
+                numeric = bool(_NUMERIC_QUESTION.search(parts[index]['question']))
+                if value := _bare_value(clause, numeric=numeric):
+                    matches.append((index, ('confirmed', value)))
+            if len(matches) > 1:
+                unassigned.append({'evidence': evidence, 'questions': [parts[index]['question'] for index, _ in matches]})
+                continue
+            if not matches and len(active) == 1 and _DEFERRED.fullmatch(clause):
+                matches = [(active[0], ('deferred', None))]
+        if len(matches) != 1:
+            return None
+        index, (state, value) = matches[0]
+        statement = {'state': state, 'evidence': evidence}
+        if value is not None:
+            statement['value'] = value
+        statements.setdefault(index, []).append(statement)
+    parsed = {}
+    for index, rows in statements.items():
+        identities = {(row['state'], _value_identity(row.get('value'))) for row in rows}
+        if len(identities) == 1:
+            parsed[index] = {**rows[0], **({'statements': rows} if len(rows) > 1 else {})}
+        else:
+            parsed[index] = {'state': 'conflicting', 'statements': rows}
+    return parsed, unassigned
+
+
+def _value_identity(value):
+    if value is not None and _NUMBER.fullmatch(value):
+        return ''.join(unicodedata.normalize('NFKC', value).split())
+    return value
+
+
+def _language_successor(language, remaining, dispositions, fields, tasks):
+    by_question = {part['question']: (part, fields[index]) for index, part in enumerate(dispositions)}
+    previous = {entry['part']['question']: entry['display'] for entry in language.pop('previous_waiting')}
+    waiting = []
+    for part in remaining:
+        outcome, field = by_question[part['question']]
+        display = previous.get(part['question'], part['question'])
+        if outcome['state'] == 'conflicting':
+            values = list(dict.fromkeys(row['value'] for row in outcome['statements'] if 'value' in row))
+            if field and len(values) == 2:
+                display = f'{field}要以「{values[0]}」還是「{values[1]}」為準？'
+        waiting.append({'part': part, 'display': display})
+    language['waiting'] = waiting
+    return _show_waiting(language, tasks)
+
+
+def _retain_language(previous, cancelled):
+    waiting = []
+    for entry in previous['waiting']:
+        part = entry['part']
+        ids = [number for number in part['items'] if number not in cancelled]
+        if ids:
+            waiting.append({**entry, 'part': {**part, 'items': ids}})
+    pending = previous['cancellation']
+    if pending and set(pending['items']) & cancelled:
+        pending = None
+    return {'waiting': waiting, 'cancellation': pending}
+
+
+def _show_waiting(language, tasks):
+    if cancellation := language['cancellation']:
+        ids = cancellation['items']
+        choices = '或'.join(f'「{tasks[number]}」' for number in ids)
+        return [{'question': f'要取消哪一項？請選{choices}，也可回答「都保留」。', 'items': ids}]
+    return [{**entry['part'], 'question': entry['display']} for entry in language['waiting']]
+
+
+def _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks):
+    receipt = _scope_receipt(plan)
+    follows = plan['sequence'] == len(steps) - 1 and receipt.get('successor') == steps[-1]['action']['args']
+    previous = receipt.get('language', {}) if follows else {}
+    waiting = previous.get('waiting', [])
+    if previous:
+        parts = [entry['part'] for entry in waiting]
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_PLAIN_COMMA)
+    if not clauses or any(question_mark for _, _, question_mark in clauses):
+        return None
+    scope_parts = _natural_scope(clauses, plan, tasks, previous.get('cancellation'), source)
+    if scope_parts is None:
+        return None
+    changes, field_clauses, pending, resolution = scope_parts
+    if not (changes or pending or resolution or follows):
+        return None
+    cancelled = {number for change in changes for number in change['items']}
+    fields = [_asked_field(part, tasks) for part in parts]
+    replies = _natural_fields(field_clauses, parts, fields, cancelled)
+    if replies is None:
+        return None
+    parsed, unassigned = replies
+    language = {'cancellation': pending, 'resolution': resolution, 'unassigned': unassigned, 'previous_waiting': waiting}
+    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, changes, parsed, language=language)
 
 
 def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
@@ -355,7 +589,9 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present):
 
 
 def replay_reply(args, prior, after, goal, replies):
-    if args.keys() != {'scope_reply'}:
+    version = args.get('scope_reply_version', 1)
+    keys = {'scope_reply', 'scope_reply_version'} if version == 2 else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -364,7 +600,7 @@ def replay_reply(args, prior, after, goal, replies):
     end = start + len(goal_reply_sources.note(source['question'], source['answer']))
     previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})
     scope = work_plan.conditions({**goal, 'notes': goal['notes'][:end]})
-    expected = observe_reply(prior, source, scope, previous)
+    expected = observe_reply(prior, source, scope, previous, version=version)
     if expected is None:
         raise ValueError('工作清單答覆與原問題或保存來源不一致。')
     successor = expected['scope_reply']['successor']
