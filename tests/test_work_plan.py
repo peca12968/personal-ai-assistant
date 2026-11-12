@@ -1212,7 +1212,7 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
-    def test_filename_reply_rechecks_calculation_with_the_actual_revised_operand(self):
+    def _wait_for_filename_with_bound_calculation(self):
         self.gid = a.create_goal(self.store, self.sid,
             '欄位「留存份數」為 2 份。每組倍率為 3。核對留存份數與獨立數量。請交 report.md。', file_delivery=True)
         calculation = {'operation': 'product', 'values': ['2', '3']}
@@ -1233,6 +1233,10 @@ class WorkPlanTests(unittest.TestCase):
         waiting = a.run_goal(self.store, self.sid, self.gid, engine)
         self.assertFalse(engine.prompts)
         self.assertIn('定稿檔名', waiting['question'])
+        return waiting, calculation, requirement
+
+    def test_filename_reply_rechecks_calculation_with_the_actual_revised_operand(self):
+        _, calculation, requirement = self._wait_for_filename_with_bound_calculation()
         state = self.save_scope_reply('定稿用 result.md。留存份數改為 5 份。')
         plan = state['work_plan']
         proof = plan['scope_reply']
@@ -1257,6 +1261,39 @@ class WorkPlanTests(unittest.TestCase):
             action('deliver', report='已交付。', filenames=['result.md']))
         self.assertEqual(final['status'], 'report_ready')
         self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [3])
+        validate_database(self.store.path)
+
+    def test_filename_remains_pending_until_recalculation_uses_the_new_operand(self):
+        waiting, _, requirement = self._wait_for_filename_with_bound_calculation()
+        state = self.save_scope_reply('留存份數改為 5 份。')
+        self.assertEqual(state['status'], 'paused')
+        self.assertEqual(state['artifacts'], waiting['artifacts'])
+        plan = state['work_plan']
+        proof = plan['scope_reply']
+        self.assertEqual(proof['filename_pending']['filename'], 'report.md')
+        self.assertEqual(proof['revisions'][0]['recheck_items'], [1])
+        self.assertEqual(proof['retained_items'], [2])
+        validate_database(self.store.path)
+        expression = {'operation': 'product', 'values': ['5', '3']}
+        new_requirement = {**requirement, 'expression': expression, 'operands': [
+            {**requirement['operands'][0], 'citation': proof['citation'], 'quote': '留存份數改為 5 份'},
+            requirement['operands'][1]]}
+        engine = ScriptedEngine(
+            action('write_artifact', filename='result.md', content='尚未核對'),
+            action('calculate_expression', expression=expression),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [len(state['steps']) + 2]},
+                                         *plan['items'][1:]], evidence_requirements=[new_requirement]))
+        refreshed = a.run_goal(self.store, self.sid, self.gid, engine, max_steps=4)
+        self.assertEqual([step['action']['tool'] for step in refreshed['steps'][-4:]],
+                         ['invalid', 'calculate_expression', 'update_plan', 'ask'])
+        self.assertIn('定稿檔名仍待確認', refreshed['steps'][-4]['observation']['error'])
+        self.assertEqual(refreshed['question'], waiting['question'])
+        self.assertEqual(refreshed['artifacts'], waiting['artifacts'])
+        self.assertEqual(refreshed['work_plan']['items'][1]['evidence_steps'], [3])
+        self.save_scope_reply('result.md。')
+        final = self.run_actions(action('write_artifact', filename='result.md', content='總份數 15，獨立數量 5。'),
+                                 action('deliver', report='已交付。', filenames=['result.md']))
+        self.assertEqual(final['status'], 'report_ready')
         validate_database(self.store.path)
 
     def test_reply_cannot_revive_prior_confirmation_after_unverified_scope_change(self):

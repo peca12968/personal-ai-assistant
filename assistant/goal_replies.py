@@ -100,8 +100,11 @@ def _save_filename_reply(db, current, steps, notes):
     version = artifact_names.MIXED_REPLY_VERSION
     before = _condition_goal(db, goal, goal['notes'])
     scope = work_plan.conditions({**before, 'notes': notes})
-    observation = work_plan_scope.observe_reply(steps, source, scope, work_plan.conditions(before),
-                                                version=version, delivery=delivery)
+    previous = work_plan.conditions(before)
+    observation = work_plan_scope.observe_reply(steps, source, scope, previous, version=version, delivery=delivery)
+    if observation is None and not delivery:
+        version = artifact_names.DEFERRED_REPLY_VERSION
+        observation = work_plan_scope.observe_reply(steps, source, scope, previous, version=version)
     if observation is None:
         raise ValueError('請提供同格式且尚未使用的定稿檔名，或明確改用文字回覆。欄位更正請寫出完整欄名。')
     proof = observation['scope_reply']
@@ -109,9 +112,14 @@ def _save_filename_reply(db, current, steps, notes):
     if choice and any(row['name'].casefold() == choice.casefold() for row in artifacts.inventory(db, gid)):
         raise ValueError('請提供同格式且尚未使用的定稿檔名。')
     successor = proof['successor']
+    deferred = 'filename_pending' in proof
     pending = proof.get('language', {}).get('pending_revisions', ())
     file_delivery = not delivery or delivery['receipt']['file_delivery']
     minimum = max(3 if successor else 2, 2 + 2 * len(pending)) + int(file_delivery)
+    if deferred:
+        minimum += 2  # Refresh the filename question and save the eventual answer.
+        if any(item['state'] not in {'done', 'superseded'} for item in observation['items']):
+            minimum += 2  # Reserve a tool observation and a refreshed plan before asking.
     if count + minimum > MAX_STEPS:
         raise ValueError('剩餘步數不足，請帶入目前進度建立下一階段。')
     if delivery:
@@ -124,14 +132,28 @@ def _save_filename_reply(db, current, steps, notes):
                   else f'若之後恢復文件交付，定稿檔名為「{choice}」。')
     if delivery and delivery['changed']:
         notice = delivery_preference.describe(delivery['receipt']) + notice
+    question = ''
     if successor:
-        append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, successor['question'],
+        question = successor['question']
+        append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, question,
                                  '保留仍需選擇的欄位更正', plan_questions=successor['plan_questions'])
-        notice += '請回答目前的欄位選擇。'
+        notice += '請先回答目前的欄位選擇，定稿檔名稍後確認。' if deferred else '請回答目前的欄位選擇。'
+    elif artifact_names.needs_refreshed_question(observation):
+        context = {**goal, 'notes': notes, 'steps': _steps(db, gid), 'reply_sources': replies,
+                   'artifacts': artifacts.inventory(db, gid), 'file_delivery': True}
+        refreshed = artifact_names.question(context, scope, artifact_names.requirement(context))
+        if not refreshed or artifact_names.question_text(refreshed) != source['question']:
+            raise ValueError('舊草稿或檔名已變更，請重新核對定稿問題。')
+        action, receipt = artifact_names.question_step(refreshed, scope)
+        _append_step(db, goal, notes, count + 2, action, receipt)
+        question = receipt['question']
+        notice = '已保存欄位更正。請在決定後確認定稿檔名。'
+    elif deferred:
+        notice = '已保存欄位更正。接續重核受影響的工作後，再確認定稿檔名。'
     else:
         notice += '可以接續工作。'
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-               (notes, 'needs_input' if successor else 'paused', successor['question'] if successor else '', notice, gid))
+               (notes, 'needs_input' if question else 'paused', question, notice, gid))
 
 
 def save(store, sid, gid, answer, *, expected_fingerprint):

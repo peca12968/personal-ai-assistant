@@ -181,6 +181,7 @@ def main():
     run(sys.executable, "scripts/evaluate_plan_scope_reply.py", "--suite", "evals/goal_plan_reply_delivery.json")
     run(sys.executable, "scripts/evaluate_artifact_filenames.py")
     run(sys.executable, "scripts/evaluate_artifact_filenames.py", "--suite", "evals/goal_artifact_filename_revision.json")
+    run(sys.executable, "scripts/evaluate_artifact_filenames.py", "--suite", "evals/goal_artifact_filename_deferred.json")
     run(sys.executable, "scripts/evaluate_goal_replies.py", "--suite", "evals/goal_mixed_scope_updates.json")
     run(sys.executable, "scripts/evaluate_json_documents.py")
     run(sys.executable, "scripts/evaluate_json_statistics.py")

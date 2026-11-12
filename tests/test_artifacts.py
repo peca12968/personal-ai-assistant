@@ -450,6 +450,31 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual([step['action']['tool'] for step in result['steps'][-3:]], ['invalid', 'write_artifact', 'deliver'])
         validate_database(self.store.path)
 
+    def test_field_only_reply_reopens_the_filename_question_with_a_new_source_binding(self):
+        from scripts.evaluate_artifact_filenames import reply
+        from assistant import artifact_names
+        waiting = self._wait_on_named_draft()
+        old_view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        saved = reply(self.store, self.sid, self.gid, '「領用人」改為周雅文。')
+        self.assertEqual(saved['question'], waiting['question'])
+        self.assertEqual(saved['artifacts'], waiting['artifacts'])
+        old_ask, new_ask = waiting['steps'][-1], saved['steps'][-1]
+        self.assertEqual(new_ask['sequence'], old_ask['sequence'] + 2)
+        self.assertEqual(new_ask['observation'][artifact_names.ASK_MARK]['draft'], old_ask['observation'][artifact_names.ASK_MARK]['draft'])
+        self.assertEqual(saved['reply_sources'][-1]['ask_sequence'], old_ask['sequence'])
+        self.assertEqual(saved['work_plan']['scope_reply']['retained_items'], [2])
+        with self.assertRaisesRegex(ValueError, '尚未保存'):
+            goal_replies.save(self.store, self.sid, self.gid, 'result.md。', expected_fingerprint=old_view['fingerprint'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'refreshed-filename')
+        restored = Store(self.root / 'refreshed-filename/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), saved)
+        with restored.connect() as db:
+            db.execute('DELETE FROM autonomous_steps WHERE goal_id=? AND sequence=?', (self.gid, new_ask['sequence']))
+            db.execute("UPDATE autonomous_goals SET status='paused',question='' WHERE id=?", (self.gid,))
+        with self.assertRaisesRegex(ValueError, '缺少接續的定稿檔名問題'):
+            validate_database(restored.path)
+
     def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
         for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
             with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:

@@ -1,0 +1,54 @@
+[
+  {
+    "id": "field_revision_before_filename", "objective": "核對門號與領用人。若交檔請交 report.md。",
+    "draft": "report.md", "chosen": "final.md", "ask": true,
+    "reply": "領用人改為周雅文。", "revisions": {"領用人": "周雅文"},
+    "followups": [{"answer": "final.md。", "filename": true}],
+    "must_include": ["8 號", "周雅文"], "must_omit": ["宋一珊", "林語安"]
+  },
+  {
+    "id": "two_field_revisions_keep_the_same_draft", "objective": "核對門號與領用人。定稿檔名為交接.md。",
+    "draft": "交接.md", "chosen": "定稿.md", "ask": true, "text_round": true,
+    "reply": "門號改為 9 號。", "revisions": {"門號": "9 號"},
+    "followups": [{"answer": "領用人改為江明洋。", "filename": true, "revisions": {"領用人": "江明洋"}},
+                  {"answer": "定稿.md。", "filename": true}],
+    "must_include": ["9 號", "江明洋"], "must_omit": ["8 號", "林語安", "宋一珊"]
+  },
+  {
+    "id": "choose_field_before_asking_for_filename_again", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": "handoff.md", "ask": true,
+    "reply": "門號改為 9 號。領用人改為周雅文或江明洋。", "revisions": {"門號": "9 號"},
+    "followups": [{"answer": "用江明洋。", "question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？"},
+                  {"answer": "handoff.md。", "filename": true}],
+    "must_include": ["9 號", "江明洋"], "must_omit": ["8 號", "周雅文", "宋一珊", "林語安"]
+  },
+  {
+    "id": "earlier_field_revision_applies_to_later_text_delivery", "objective": "核對門號與領用人。若交檔請交 report.txt。",
+    "draft": "report.txt", "chosen": null, "ask": true, "expect_text": true,
+    "reply": "領用人更正為許玉蘭。", "revisions": {"領用人": "許玉蘭"},
+    "followups": [{"answer": "改成文字回覆。", "filename": true}],
+    "must_include": ["8 號", "許玉蘭"], "must_omit": ["宋一珊", "林語安"]
+  },
+  {
+    "id": "declined_quote_is_not_a_field_revision", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": null, "ask": true, "reject_reply": true,
+    "reply": "有人建議「領用人改為周雅文」，未採用。"
+  },
+  {
+    "id": "unsupported_field_does_not_refresh_the_filename_question", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": null, "ask": true, "reject_reply": true,
+    "reply": "領用人改為周雅文。放行人改為張翔宇。"
+  },
+  {
+    "id": "invalid_filename_does_not_turn_into_a_deferral", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": null, "ask": true, "reject_reply": true,
+    "reply": "領用人改為周雅文。定稿用 report.txt。"
+  },
+  {
+    "id": "explicit_deferral_preserves_the_correction_and_its_wording", "objective": "核對門號與領用人。請交 result.txt。",
+    "draft": "result.txt", "chosen": "核對定稿.txt", "ask": true,
+    "reply": "定稿檔名晚點再決定，領用人更正為許玉蘭。", "revisions": {"領用人": "許玉蘭"},
+    "deferral": "定稿檔名晚點再決定", "followups": [{"answer": "核對定稿.txt。", "filename": true}],
+    "must_include": ["8 號", "許玉蘭"], "must_omit": ["宋一珊", "林語安"]
+  }
+]

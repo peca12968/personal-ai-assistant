@@ -537,16 +537,14 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 break
             conditions_hash = work_plan.conditions(goal)
             required_filename = artifact_names.requirement(goal) if goal['file_delivery'] else None
+            pending_filename = artifact_names.awaiting_confirmation(goal['steps'], required_filename)
             if name_question := artifact_names.question(goal, conditions_hash, required_filename):
                 if len(goal['steps']) + 4 > MAX_STEPS or len(goal['artifacts']) >= artifacts.MAX_FILES:
                     reason = 'goal_limit'
                     update(store, gid, 'paused', notice='定稿需要新檔名。請帶入目前進度建立下一階段，再交付文件。')
                     break
-                question = artifact_names.question_text(name_question)
-                action = {'tool': 'ask', 'args': {'question': question, artifact_names.ASK_MARK: True},
-                          'note': '依原指示核對定稿檔名與舊草稿'}
-                observation = {'question': question, artifact_names.ASK_MARK: name_question,
-                               'goal_conditions_sha256': conditions_hash}
+                action, observation = artifact_names.question_step(name_question, conditions_hash)
+                question = observation['question']
                 sequence = len(goal['steps']) + 1
                 with store.connect() as db:
                     db.execute('INSERT INTO autonomous_steps(goal_id,sequence,action_json,observation_json) VALUES(?,?,?,?)',
@@ -569,7 +567,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
-            if required_filename:
+            if pending_filename:
+                payload['artifact_filename_pending'] = required_filename
+            elif required_filename:
                 payload['artifact_filename_requirement'] = required_filename
             reply_sources = goal.get('reply_sources', ())
             delivery_change = goal.get('delivery_mode_change')
@@ -654,7 +654,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
                 ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +
-                ('\n' + artifact_names.GUIDANCE if required_filename else '') +
+                ('\n' + artifact_names.PENDING_GUIDANCE if pending_filename else
+                 '\n' + artifact_names.GUIDANCE if required_filename else '') +
                 ('\n' + document_ranges.LOOKUP_GUIDANCE if catalog else '') +
                 ('\n' + document_ranges.LOOKUP_EVIDENCE_GUIDANCE
                  if any(step['action']['tool'] == 'find_document_text' for step in payload['steps']) else '') +
@@ -745,7 +746,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 plan_check = None
                 if action['tool'] in work_plan.DELIVERY_TOOLS:
                     if required_filename:
-                        artifact_names.check_action(required_filename, action)
+                        artifact_names.check_action(required_filename, action, pending=pending_filename)
                     plan_check = work_plan.check_delivery(goal['work_plan'], conditions_hash, action, goal['steps'])
                     if declared:
                         check = source_decision.checked_step(goal['steps'], declared, conditions_hash)

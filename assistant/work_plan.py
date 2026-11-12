@@ -433,7 +433,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6, 7)))
+                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6, 7, 8)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -697,14 +697,16 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                    'goal_conditions_sha256', 'evidence_requirements', 'evidence_matches',
                                    'reused_calculations', 'scope_change', 'scope_reply', 'scope_cancelled')):
                     raise ValueError('工作清單與保存動作不一致。')
-                checked_filename = (checked_filename or 'filename_declaration' in args
-                                    or bool(expected.get('scope_reply', {}).get('filename_choice')))
+                reply = expected.get('scope_reply', {})
+                checked_filename = checked_filename or 'filename_declaration' in args or bool(
+                    reply.get('filename_choice') or reply.get('filename_pending'))
             if checked_filename and action['tool'] in {'write_artifact', 'deliver'}:
                 active_name = artifact_names.requirement({**scope_goal, 'steps': prior,
                     'reply_sources': [row for row in replies if row['ask_sequence'] < sequence],
                     'guidance_sources': [row for row in guidance if row['steps_seen'] < sequence]})
                 if active_name:
-                    artifact_names.check_action(active_name, action)
+                    artifact_names.check_action(active_name, action,
+                                                pending=artifact_names.awaiting_confirmation(prior, active_name))
             if action['tool'] in DELIVERY_TOOLS or 'plan_check_step' in observation:
                 scope = observation.get('goal_conditions_sha256')
                 check = check_delivery(latest(prior), scope, action, prior) if action['tool'] in DELIVERY_TOOLS else None

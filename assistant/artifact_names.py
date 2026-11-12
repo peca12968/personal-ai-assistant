@@ -16,7 +16,9 @@ _END = re.compile(r'[。！!]$')
 ASK_MARK = 'artifact_filename_question'
 REPLY_VERSION = 6
 MIXED_REPLY_VERSION = 7
+DEFERRED_REPLY_VERSION = 8
 GUIDANCE = 'artifact_filename_requirement 是使用者已指定的定稿檔名。交付時檔名必須一致。請使用最新欄位及可沿用的核對證據。'
+PENDING_GUIDANCE = '定稿檔名仍待確認。請先完成工作清單中依賴已更正資料的項目。清單完成後由程式確認定稿檔名。'
 
 
 def _parsed(match):
@@ -110,6 +112,18 @@ def question_text(proof):
     return f'「{proof["draft"]["name"]}」已有舊草稿。請確認定稿檔名，例如「{proof["suggested"]}」。'
 
 
+def question_step(proof, scope):
+    question = question_text(proof)
+    return ({'tool': 'ask', 'args': {'question': question, ASK_MARK: True}, 'note': '依原指示核對定稿檔名與舊草稿'},
+            {'question': question, ASK_MARK: proof, 'goal_conditions_sha256': scope})
+
+
+def needs_refreshed_question(observation):
+    proof = observation['scope_reply']
+    return ('filename_pending' in proof and not proof['successor']
+            and all(item['state'] in {'done', 'superseded'} for item in observation['items']))
+
+
 def bound_question(steps, source, prior_scope):
     ask = steps[-1]
     proof = ask['observation'].get(ASK_MARK)
@@ -141,8 +155,16 @@ def selection(steps, source, prior_scope):
     return confirm_filename(steps, ask, proof, reply_filename(source['answer']))
 
 
-def check_action(expected, action):
+def awaiting_confirmation(steps, expected):
+    return bool(expected and any(
+        pending['filename'].casefold() == expected['filename'].casefold()
+        for step in steps if (pending := step['observation'].get('scope_reply', {}).get('filename_pending'))))
+
+
+def check_action(expected, action, *, pending=False):
     name = expected['filename']
+    if pending and action['tool'] in {'write_artifact', 'deliver'}:
+        raise ValueError('定稿檔名仍待確認。請先完成受更正影響的工作清單項目。')
     if action['tool'] == 'deliver' and action['args']['filenames'] != [name]:
         raise ValueError(f'使用者指定定稿檔名為「{name}」。請依目前指定檔名交付。')
     if action['tool'] == 'write_artifact' and expected['citation'].startswith('[補充#') and action['args']['filename'] != name:

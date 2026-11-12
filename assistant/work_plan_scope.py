@@ -40,6 +40,9 @@ _DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:
                                 r'(?:「[^」\r\n]{1,200}」|『[^』\r\n]{1,200}』)\s*[，,、]?\s*' + _DECLINE)
 _PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
 _FILENAME_REPLY_COMMA = re.compile(rf'{_PENDING_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*{_REVISION_VERB}')
+_FILENAME_DEFERRAL = re.compile(r'(?:定稿)?檔名(?:(?:還沒|還未|尚未)(?:想好|決定|確認)|'
+                                r'(?:稍後|之後|晚點)(?:再)?(?:決定|確認)|先不(?:決定|確認)|待定)'
+                                r'|先不(?:決定|確認)(?:定稿)?檔名')
 _KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改', '保持原值'}
 
 
@@ -347,6 +350,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
         return None
     if version == artifact_names.MIXED_REPLY_VERSION:
         return _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery)
+    if version == artifact_names.DEFERRED_REPLY_VERSION:
+        return _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery, defer_filename=True)
     if version == artifact_names.REPLY_VERSION:
         if plan['goal_conditions_sha256'] != prior_scope:
             raise ValueError('定稿檔名問題的條件已改變，請重新核對工作清單。')
@@ -822,7 +827,7 @@ def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, so
                                   'revision_resolution': resolution, 'out_of_scope_revisions': out_of_scope}
 
 
-def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery):
+def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery, *, defer_filename=False):
     ask, question = artifact_names.bound_question(steps, source, prior_scope)
     if plan['goal_conditions_sha256'] != prior_scope:
         raise ValueError('定稿檔名問題的條件已改變，請重新核對工作清單。')
@@ -833,7 +838,11 @@ def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery
     if any(question_mark for _, _, question_mark in clauses):
         return None
     fields, declined, names = [], [], []
+    deferral = None
     for start, clause, _ in clauses:
+        if defer_filename and deferral is None and _FILENAME_DEFERRAL.fullmatch(clause):
+            deferral = _literal_span(start, clause)
+            continue
         if _DECLINED_PROPOSAL.fullmatch(clause):
             declined.append(_literal_span(start, clause))
             continue
@@ -844,7 +853,9 @@ def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery
         else:
             fields.append((start, clause))
     file_mode = not delivery or delivery['receipt']['file_delivery']
-    if len(names) > 1 or (file_mode and not names):
+    if defer_filename and (names or delivery):
+        return None
+    if len(names) > 1 or (file_mode and not names and not defer_filename):
         return None
     choice = artifact_names.confirm_filename(steps, ask, question, names[0]) if names else None
     tasks = {item['id']: item['task'] for item in plan['items']}
@@ -852,6 +863,8 @@ def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery
     if parsed is None or parsed[0]:
         return None
     _, revisions, language = parsed
+    if defer_filename and not (revisions or language['pending_revisions']):
+        return None
     language.update(cancellation=None, resolution=None, unassigned=[], previous_waiting=[])
     result = _reply_result(steps, plan, source, scope, prior_scope, [], [], tasks, [], {}, language=language,
                            revisions=revisions)
@@ -860,6 +873,10 @@ def _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery
             result['scope_reply']['filename_choice'] = choice
         if delivery:
             result['scope_reply']['delivery_mode'] = delivery
+        if defer_filename:
+            result['scope_reply']['filename_pending'] = question['requirement']
+            if deferral:
+                result['scope_reply']['filename_deferral'] = deferral
     return result
 
 
@@ -923,8 +940,8 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
 
 def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
-    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5, 6, 7) else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7):
+    keys = {'scope_reply', 'scope_reply_version'} if version in (2, 3, 4, 5, 6, 7, 8) else {'scope_reply'}
+    if args.keys() != keys or type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7, 8):
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -938,10 +955,10 @@ def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=Fals
         if not delivery_present:
             raise ValueError('工作清單答覆缺少交付方式紀錄。')
         delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
-    if version in (artifact_names.REPLY_VERSION, artifact_names.MIXED_REPLY_VERSION):
+    if version in (artifact_names.REPLY_VERSION, artifact_names.MIXED_REPLY_VERSION, artifact_names.DEFERRED_REPLY_VERSION):
         if not delivery_present or not delivery_preference.enabled_before(db, goal['id'], start):
             raise ValueError('定稿檔名答覆缺少當時的文件交付設定。')
-        if version == artifact_names.MIXED_REPLY_VERSION and delivery_preference.plan_reply(db, goal['id'], source):
+        if version != artifact_names.REPLY_VERSION and delivery_preference.plan_reply(db, goal['id'], source):
             delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
     expected = observe_reply(prior, source, scope, previous, version=version, delivery=delivery)
     if expected is None:
@@ -951,4 +968,9 @@ def replay_reply(db, args, prior, after, goal, replies, *, delivery_present=Fals
                       or after['observation'].get('question') != successor['question']
                       or after['observation'].get('goal_conditions_sha256') != scope):
         raise ValueError('工作清單答覆缺少相符的保留問題。')
+    if artifact_names.needs_refreshed_question(expected) and (
+            not after or not after['observation'].get(artifact_names.ASK_MARK)
+            or after['observation'].get('goal_conditions_sha256') != scope
+            or after['observation'].get('question') != source['question']):
+        raise ValueError('已保存的欄位更正缺少接續的定稿檔名問題。')
     return expected

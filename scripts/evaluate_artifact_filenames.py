@@ -88,9 +88,20 @@ def collect(path, case, frozen, *, live, suite=SUITE):
             checks['verified_choice'] = bool(case.get('reject_reply')) and autonomy.get_goal(store, sid, gid) == state
         else:
             proof = saved['work_plan']['scope_reply']
+            followups = case.get('followups', ())
+            remaining = case.get('remaining', '')
+            if followups:
+                remaining = state['question'] if followups[0].get('filename') else followups[0]['question']
             checks['verified_choice'] = (not case.get('reject_reply') and saved['reply_sources'][-1]['question'] == state['question']
-                                         and saved['question'] == case.get('remaining', '')
-                                         and saved['file_delivery'] == (not case.get('expect_text', False)))
+                                         and saved['question'] == remaining
+                                         and saved['file_delivery'] == (bool(followups) or not case.get('expect_text', False)))
+            if followups:
+                checks['filename_deferred'] = ('filename_pending' in proof and 'filename_choice' not in proof
+                                               and saved['artifacts'] == initial['artifacts'])
+            if 'deferral' in case:
+                span = proof.get('filename_deferral')
+                checks['deferral_words'] = bool(span and span['quote'] == case['deferral']
+                                                and case['reply'][span['start']:span['end']] == span['quote'])
             if 'accepted_name' in case:
                 checks['accepted_name'] = proof.get('filename_choice', {}).get('selection', {}).get('filename') == case['accepted_name']
             if 'revisions' in case:
@@ -99,6 +110,25 @@ def collect(path, case, frozen, *, live, suite=SUITE):
             if case.get('resolution_reply') and saved['status'] == 'needs_input':
                 state = row['resolution'] = reply(store, sid, gid, case['resolution_reply'])
                 checks['resolution'] = state['reply_sources'][-1]['question'] == saved['question'] and not state['question']
+            if followups:
+                history = row['followups'] = []
+                for index, turn in enumerate(followups, 1):
+                    if state['status'] == 'paused' and turn.get('filename'):
+                        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=1)
+                    marker = f'followup_{index}'
+                    expected = row['first']['question'] if turn.get('filename') else turn['question']
+                    checks[marker] = (state['status'] == 'needs_input' and state['question'] == expected
+                                      and state['artifacts'] == initial['artifacts'] and not row['calls']
+                                      and bool(state['steps'][-1]['observation'].get('artifact_filename_question')) == bool(turn.get('filename')))
+                    if not checks[marker]:
+                        break
+                    answer = reply(store, sid, gid, turn['answer'])
+                    history.append({'question': state, 'answer': answer})
+                    checks[marker] = answer['reply_sources'][-1]['question'] == expected
+                    if 'revisions' in turn:
+                        checks[marker] &= ({item['field']: item['value'] for item in
+                                            answer['work_plan']['scope_reply'].get('revisions', ())} == turn['revisions'])
+                    state = answer
             if state['status'] == 'paused':
                 checks['plan_current'] = state['work_plan']['delivery_review']['ready']
                 state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6 if live else 2)
