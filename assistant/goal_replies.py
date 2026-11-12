@@ -92,20 +92,46 @@ def _save_filename_reply(db, current, steps, notes):
     goal = current['goal']
     gid = goal['id']
     count = current['step_count']
-    if not current['sources_match'] or count + 3 > MAX_STEPS or not delivery_preference.enabled(db, gid):
+    if not current['sources_match'] or not delivery_preference.enabled(db, gid):
         raise ValueError('來源、交付方式或可用步數已變更，請重新核對目前工作。')
     replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
+    source = replies[-1]
+    delivery = delivery_preference.plan_reply(db, gid, source)
+    version = artifact_names.MIXED_REPLY_VERSION
     before = _condition_goal(db, goal, goal['notes'])
     scope = work_plan.conditions({**before, 'notes': notes})
-    observation = work_plan_scope.observe_reply(steps, replies[-1], scope, work_plan.conditions(before),
-                                                version=artifact_names.REPLY_VERSION)
-    choice = observation['scope_reply']['filename_choice']['selection']['filename']
-    if any(row['name'].casefold() == choice.casefold() for row in artifacts.inventory(db, gid)):
+    observation = work_plan_scope.observe_reply(steps, source, scope, work_plan.conditions(before),
+                                                version=version, delivery=delivery)
+    if observation is None:
+        raise ValueError('請提供同格式且尚未使用的定稿檔名，或明確改用文字回覆。欄位更正請寫出完整欄名。')
+    proof = observation['scope_reply']
+    choice = proof.get('filename_choice', {}).get('selection', {}).get('filename')
+    if choice and any(row['name'].casefold() == choice.casefold() for row in artifacts.inventory(db, gid)):
         raise ValueError('請提供同格式且尚未使用的定稿檔名。')
-    args = {'scope_reply': replies[-1]['citation'], 'scope_reply_version': artifact_names.REPLY_VERSION}
-    _append_step(db, goal, notes, count + 1, {'tool': 'update_plan', 'args': args, 'note': '保存使用者確認的定稿檔名'}, observation)
-    db.execute("UPDATE autonomous_goals SET notes=?,status='paused',question='',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-               (notes, f'已確認定稿檔名「{choice}」，可以接續交付。', gid))
+    successor = proof['successor']
+    pending = proof.get('language', {}).get('pending_revisions', ())
+    file_delivery = not delivery or delivery['receipt']['file_delivery']
+    minimum = max(3 if successor else 2, 2 + 2 * len(pending)) + int(file_delivery)
+    if count + minimum > MAX_STEPS:
+        raise ValueError('剩餘步數不足，請帶入目前進度建立下一階段。')
+    if delivery:
+        delivery_preference.record_plan_reply(db, gid, source, delivery)
+    args = {'scope_reply': source['citation'], 'scope_reply_version': version}
+    _append_step(db, goal, notes, count + 1, {'tool': 'update_plan', 'args': args, 'note': '保存定稿提問的實際答覆'}, observation)
+    notice = ''
+    if choice:
+        notice = (f'已確認定稿檔名「{choice}」。' if file_delivery
+                  else f'若之後恢復文件交付，定稿檔名為「{choice}」。')
+    if delivery and delivery['changed']:
+        notice = delivery_preference.describe(delivery['receipt']) + notice
+    if successor:
+        append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, successor['question'],
+                                 '保留仍需選擇的欄位更正', plan_questions=successor['plan_questions'])
+        notice += '請回答目前的欄位選擇。'
+    else:
+        notice += '可以接續工作。'
+    db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (notes, 'needs_input' if successor else 'paused', successor['question'] if successor else '', notice, gid))
 
 
 def save(store, sid, gid, answer, *, expected_fingerprint):

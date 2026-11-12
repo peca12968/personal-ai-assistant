@@ -367,6 +367,89 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '定稿檔名問題與原指示或舊草稿不一致'):
             validate_database(restored.path)
 
+    def test_filename_reply_applies_field_revision_and_requires_the_confirmed_name(self):
+        from scripts.evaluate_artifact_filenames import DRAFT, reply
+        waiting = self._wait_on_named_draft()
+        for invalid in ('領用人改為 result.md。', '定稿用 report.md。領用人改為周雅文。'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '同格式且尚未使用'):
+                reply(self.store, self.sid, self.gid, invalid)
+            self.assertEqual(a.get_goal(self.store, self.sid, self.gid), waiting)
+        raw = '定稿用「result.md」，「領用人」改為周雅文。'
+        saved = reply(self.store, self.sid, self.gid, raw)
+        proof = saved['work_plan']['scope_reply']
+        spans = (proof['filename_choice']['selection'], proof['revisions'][0]['evidence'])
+        self.assertEqual([raw[row['start']:row['end']] for row in spans], ['定稿用「result.md」', '「領用人」改為周雅文'])
+        self.assertEqual(proof['retained_items'], [2])
+        self.assertEqual(proof['revisions'][0]['previous']['value'], '宋一珊')
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='other.md', content='錯誤檔名'),
+            action('write_artifact', filename='result.md', content='領用人周雅文，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['result.md'])))
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-3:]], ['invalid', 'write_artifact', 'deliver'])
+        self.assertEqual((f.directory(self.store, self.gid) / 'report.md').read_text(encoding='utf-8'), DRAFT)
+        validate_database(self.store.path)
+
+    def test_filename_reply_can_switch_to_text_and_replays_its_delivery_change(self):
+        from scripts.evaluate_artifact_filenames import reply
+        waiting = self._wait_on_named_draft()
+        with self.assertRaisesRegex(ValueError, '同格式且尚未使用'):
+            reply(self.store, self.sid, self.gid, '若主管同意，改成文字回覆。')
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid), waiting)
+        saved = reply(self.store, self.sid, self.gid, '改成文字回覆。領用人改為周雅文。')
+        self.assertEqual(saved['status'], 'paused')
+        self.assertFalse(saved['file_delivery'])
+        proof = saved['work_plan']['scope_reply']
+        self.assertEqual(proof['delivery_mode']['receipt']['quote'], '改成文字回覆')
+        self.assertEqual(proof['revisions'][0]['value'], '周雅文')
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('finish', report='領用人周雅文，門號 8 號。')))
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['artifacts'], waiting['artifacts'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'text-after-filename')
+        restored = Store(self.root / 'text-after-filename/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), result)
+        with restored.connect() as db:
+            db.execute('DELETE FROM autonomous_delivery_changes WHERE goal_id=? AND citation=?',
+                       (self.gid, proof['citation']))
+        with self.assertRaisesRegex(ValueError, '交付方式'):
+            validate_database(restored.path)
+
+    def test_filename_is_retained_during_a_competing_field_choice(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。定稿檔名改為 result.md。')
+        self.assertEqual(pending['status'], 'needs_input')
+        self.assertEqual(pending['question'], '領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？')
+        self.assertEqual(pending['work_plan']['scope_reply']['retained_items'], [2, 3])
+        saved = reply(self.store, self.sid, self.gid, '用江明洋。')
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='result.md', content='領用人江明洋，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['result.md'])))
+        self.assertEqual(result['status'], 'report_ready')
+        validate_database(self.store.path)
+
+    def test_restoring_file_delivery_keeps_the_chosen_name_and_current_field_evidence(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        text = reply(self.store, self.sid, self.gid, '改成文字回覆，定稿用 later.md，門號改為 9 號。')
+        self.assertFalse(text['file_delivery'])
+        view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '恢復文件交付。', expected_fingerprint=view['fingerprint'])
+        saved = a.get_goal(self.store, self.sid, self.gid)
+        self.assertTrue(saved['file_delivery'])
+        self.assertTrue(saved['work_plan']['delivery_review']['ready'])
+        self.assertEqual(saved['work_plan']['items'], text['work_plan']['items'])
+        result = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='wrong.md', content='錯誤檔名'),
+            action('write_artifact', filename='later.md', content='領用人宋一珊，門號 9 號。'),
+            action('deliver', report='已完成', filenames=['later.md'])))
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-3:]], ['invalid', 'write_artifact', 'deliver'])
+        validate_database(self.store.path)
+
     def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
         for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
             with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:

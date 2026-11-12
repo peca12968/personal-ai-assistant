@@ -50,19 +50,21 @@ def prepare(path, case):
     return store, sid, gid
 
 
-def collect(path, case, frozen, *, live):
+def collect(path, case, frozen, *, live, suite=SUITE):
     store, sid, gid = prepare(path, case)
     initial = autonomy.get_goal(store, sid, gid)
     trace = path / 'trace.json'
     row = {'id': case['id'], 'initial': initial, 'calls': []}
     engine = CodexEngine(path / 'engine') if live else None
     name = case['chosen'] or 'summary.md'
-    default = iter([action('write_artifact', filename=name, content='門號 8 號，領用人宋一珊。'),
+    report_text = '，'.join(case.get('must_include', ())) + '。'
+    default = iter([action('finish', report=report_text)] if case.get('expect_text') else
+                   [action('write_artifact', filename=name, content=report_text),
                     action('deliver', report='已交付', filenames=[name])])
 
     class Recorded:
         def answer(self, prompt, cancel=None):
-            if fingerprint(SUITE) != frozen:
+            if fingerprint(suite) != frozen:
                 raise ValueError('題庫或程式已變更。')
             call = {'prompt': prompt, 'status': 'calling'}
             row['calls'].append(call)
@@ -79,10 +81,27 @@ def collect(path, case, frozen, *, live):
     checks = {'clarification': asked == case['ask']}
     if asked:
         checks['before_model'] = not row['calls'] and state['artifacts'] == initial['artifacts']
-        saved = row['answer'] = reply(store, sid, gid, f'定稿用「{name}」。')
-        checks['verified_choice'] = (saved['reply_sources'][-1]['question'] == state['question']
-                                     and saved['work_plan']['delivery_review']['ready'])
-        state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6 if live else 2)
+        try:
+            saved = row['answer'] = reply(store, sid, gid, case.get('reply', f'定稿用「{name}」。'))
+        except ValueError as exc:
+            row['reply_error'] = str(exc)
+            checks['verified_choice'] = bool(case.get('reject_reply')) and autonomy.get_goal(store, sid, gid) == state
+        else:
+            proof = saved['work_plan']['scope_reply']
+            checks['verified_choice'] = (not case.get('reject_reply') and saved['reply_sources'][-1]['question'] == state['question']
+                                         and saved['question'] == case.get('remaining', '')
+                                         and saved['file_delivery'] == (not case.get('expect_text', False)))
+            if 'accepted_name' in case:
+                checks['accepted_name'] = proof.get('filename_choice', {}).get('selection', {}).get('filename') == case['accepted_name']
+            if 'revisions' in case:
+                checks['revisions'] = {item['field']: item['value'] for item in proof.get('revisions', ())} == case['revisions']
+            state = saved
+            if case.get('resolution_reply') and saved['status'] == 'needs_input':
+                state = row['resolution'] = reply(store, sid, gid, case['resolution_reply'])
+                checks['resolution'] = state['reply_sources'][-1]['question'] == saved['question'] and not state['question']
+            if state['status'] == 'paused':
+                checks['plan_current'] = state['work_plan']['delivery_review']['ready']
+                state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6 if live else 2)
     elif case['ask']:
         checks['verified_choice'] = False
     row['final'] = state
@@ -92,9 +111,17 @@ def collect(path, case, frozen, *, live):
             data = (artifacts.directory(store, gid) / artifacts.filename(receipt['name'])).read_bytes()
             assert hashlib.sha256(data).hexdigest() == receipt['sha256']
             files.append({**receipt, 'content': data.decode('utf-8')})
-    checks['file'] = (len(files) == 1 and (case['chosen'] is None or files[0]['name'] == case['chosen'])
-                      and all(part.replace(' ', '') in files[0]['content'].replace(' ', '') for part in case['must_include'])
-                      and all(part.replace(' ', '') not in files[0]['content'].replace(' ', '') for part in case['must_omit']))
+    if case.get('reject_reply'):
+        checks['no_delivery'] = not files and state['status'] == 'needs_input'
+    else:
+        if case.get('expect_text'):
+            content = state['result'] if state['status'] == 'report_ready' and not state['file_delivery'] else ''
+            checks['text'] = bool(content) and state['artifacts'] == initial['artifacts']
+        else:
+            content = files[0]['content'] if len(files) == 1 else ''
+            checks['file'] = len(files) == 1 and (case['chosen'] is None or files[0]['name'] == case['chosen'])
+        checks['content'] = (all(part.replace(' ', '') in content.replace(' ', '') for part in case['must_include'])
+                             and all(part.replace(' ', '') not in content.replace(' ', '') for part in case['must_omit']))
     checks['historical_bytes'] = all((artifacts.directory(store, gid) / case[key]).read_text(encoding='utf-8') == DRAFT
                                      for key in ('draft', 'also_draft') if case.get(key))
     row['checks'] = checks
@@ -106,14 +133,15 @@ def collect(path, case, frozen, *, live):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--suite', type=Path, default=SUITE)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    cases = json.loads(SUITE.read_text(encoding='utf-8'))
-    frozen = fingerprint(SUITE)
+    cases = json.loads(args.suite.read_text(encoding='utf-8'))
+    frozen = fingerprint(args.suite)
     if args.output is None:
         with TemporaryDirectory() as scratch:
             for index, case in enumerate(cases):
-                row = collect(Path(scratch) / str(index), case, frozen, live=False)
+                row = collect(Path(scratch) / str(index), case, frozen, live=False, suite=args.suite)
                 if not all(row['checks'].values()):
                     raise ValueError(f"{case['id']} {row['checks']}")
         print(f'Validated {len(cases)} artifact filename scenarios without model calls.')
@@ -125,7 +153,7 @@ def main():
     report = {'suite': frozen, 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'cases': [], 'completed': False}
     for index, case in enumerate(cases):
-        row = collect(output / str(index), case, frozen, live=True)
+        row = collect(output / str(index), case, frozen, live=True, suite=args.suite)
         report['cases'].append(row)
         save_report(output / 'report.json', report)
         print(f"{row['id']} {row['final']['status']} {all(row['checks'].values())} ({len(row['calls'])} model calls)", flush=True)

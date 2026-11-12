@@ -433,7 +433,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6)))
+                versions = (original, *({**original, 'scope_reply_version': version} for version in (2, 3, 4, 5, 6, 7)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -698,7 +698,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                    'reused_calculations', 'scope_change', 'scope_reply', 'scope_cancelled')):
                     raise ValueError('工作清單與保存動作不一致。')
                 checked_filename = (checked_filename or 'filename_declaration' in args
-                                    or args.get('scope_reply_version') == artifact_names.REPLY_VERSION)
+                                    or bool(expected.get('scope_reply', {}).get('filename_choice')))
             if checked_filename and action['tool'] in {'write_artifact', 'deliver'}:
                 active_name = artifact_names.requirement({**scope_goal, 'steps': prior,
                     'reply_sources': [row for row in replies if row['ask_sequence'] < sequence],

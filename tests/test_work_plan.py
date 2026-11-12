@@ -1212,6 +1212,53 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_filename_reply_rechecks_calculation_with_the_actual_revised_operand(self):
+        self.gid = a.create_goal(self.store, self.sid,
+            '欄位「留存份數」為 2 份。每組倍率為 3。核對留存份數與獨立數量。請交 report.md。', file_delivery=True)
+        calculation = {'operation': 'product', 'values': ['2', '3']}
+        unrelated = {'operation': 'sum', 'values': ['1', '4']}
+        requirement = {'id': 1, 'expression': calculation, 'operands': [
+            {'path': '/values/0', 'citation': '[目標]', 'quote': '欄位「留存份數」為 2 份', 'field': '留存份數'},
+            {'path': '/values/1', 'citation': '[目標]', 'quote': '每組倍率為 3'}]}
+        parts = [{'question': '窗口是誰？', 'items': [3]}, {'question': '留存份數是多少？', 'items': [4]}]
+        self.run_actions(action('write_artifact', filename='report.md', content='草稿。總份數 6。'),
+                         action('calculate_expression', expression=calculation),
+                         action('calculate_expression', expression=unrelated),
+                         action('update_plan', verify_delivery=True, items=[item(1, '計算總份數', state='done', refs=[2]),
+                                item(2, '計算獨立數量', state='done', refs=[3]), item(3, '安排窗口'), item(4, '確認留存份數')],
+                                evidence_requirements=[requirement, {'id': 2, 'expression': unrelated}]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+        self.save_scope_reply('取消「安排窗口」。留存份數是 2 份。')
+        engine = ScriptedEngine()
+        waiting = a.run_goal(self.store, self.sid, self.gid, engine)
+        self.assertFalse(engine.prompts)
+        self.assertIn('定稿檔名', waiting['question'])
+        state = self.save_scope_reply('定稿用 result.md。留存份數改為 5 份。')
+        plan = state['work_plan']
+        proof = plan['scope_reply']
+        self.assertEqual(proof['retained_items'], [2])
+        self.assertEqual(proof['revisions'][0]['recheck_items'], [1])
+        self.assertEqual(plan['items'][0]['state'], 'pending')
+        self.assertFalse(plan['delivery_review']['ready'])
+        current_ref = len(state['steps']) + 1
+        rejected = self.run_actions(action('calculate_expression', expression=calculation),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [current_ref]},
+                                         *plan['items'][1:]], evidence_requirements=[requirement]))
+        self.assertIn('的「留存份數」已更正', rejected['steps'][-1]['observation']['error'])
+        expression = {'operation': 'product', 'values': ['5', '3']}
+        new_requirement = {**requirement, 'expression': expression, 'operands': [
+            {**requirement['operands'][0], 'citation': proof['citation'], 'quote': '留存份數改為 5 份'},
+            requirement['operands'][1]]}
+        new_ref = len(rejected['steps']) + 1
+        final = self.run_actions(action('calculate_expression', expression=expression),
+            action('update_plan', items=[{**plan['items'][0], 'state': 'done', 'evidence_steps': [new_ref]},
+                                         *plan['items'][1:]], evidence_requirements=[new_requirement]),
+            action('write_artifact', filename='result.md', content='總份數 15，獨立數量 5。'),
+            action('deliver', report='已交付。', filenames=['result.md']))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [3])
+        validate_database(self.store.path)
+
     def test_reply_cannot_revive_prior_confirmation_after_unverified_scope_change(self):
         parts = [{'question': '窗口是誰？', 'items': [1]}, {'question': '門號是多少？', 'items': [2]},
                  {'question': '領用人是誰？', 'items': [3]}]

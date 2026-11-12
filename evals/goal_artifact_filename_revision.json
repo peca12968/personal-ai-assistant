@@ -1,0 +1,42 @@
+[
+  {
+    "id": "filename_and_person_revision_in_one_answer", "objective": "核對門號與領用人。若交檔請交 report.md。",
+    "draft": "report.md", "text_round": true, "chosen": "report-final.md", "ask": true,
+    "reply": "定稿用「report-final.md」，領用人改為周雅文。", "accepted_name": "report-final.md",
+    "revisions": {"領用人": "周雅文"}, "must_include": ["8 號", "周雅文"], "must_omit": ["林語安", "宋一珊"]
+  },
+  {
+    "id": "switch_to_text_while_filename_is_open", "objective": "核對門號與領用人。若交檔請交 summary.txt。",
+    "draft": "summary.txt", "chosen": null, "ask": true, "reply": "改成文字回覆。", "expect_text": true,
+    "accepted_name": null, "revisions": {}, "must_include": ["8 號", "宋一珊"], "must_omit": ["林語安"]
+  },
+  {
+    "id": "text_switch_and_field_revision_need_no_filename", "objective": "核對門號與領用人。定稿檔名為「交接.md」。",
+    "draft": "交接.md", "chosen": null, "ask": true, "expect_text": true,
+    "reply": "領用人改為江明洋。改成文字回覆。", "accepted_name": null,
+    "revisions": {"領用人": "江明洋"}, "must_include": ["8 號", "江明洋"], "must_omit": ["林語安", "宋一珊"]
+  },
+  {
+    "id": "explicit_filename_is_preserved_even_if_delivery_is_text", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": "result.md", "ask": true, "expect_text": true,
+    "reply": "改成文字回覆，定稿用 result.md，門號改為 9 號。", "accepted_name": "result.md",
+    "revisions": {"門號": "9 號"}, "must_include": ["9 號", "宋一珊"], "must_omit": ["8 號", "林語安"]
+  },
+  {
+    "id": "filename_saved_while_field_choice_waits", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": "result.md", "ask": true,
+    "reply": "領用人改為周雅文或江明洋。定稿用 result.md。", "accepted_name": "result.md", "revisions": {},
+    "remaining": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "resolution_reply": "用江明洋。",
+    "must_include": ["8 號", "江明洋"], "must_omit": ["周雅文", "宋一珊", "林語安"]
+  },
+  {
+    "id": "occupied_name_does_not_partially_apply_an_independent_revision", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": null, "ask": true, "reject_reply": true,
+    "reply": "定稿用 report.md。領用人改為周雅文。"
+  },
+  {
+    "id": "conditional_text_instruction_does_not_change_the_mode", "objective": "核對門號與領用人。請交 report.md。",
+    "draft": "report.md", "chosen": null, "ask": true, "reject_reply": true,
+    "reply": "若主管同意，改成文字回覆。"
+  }
+]

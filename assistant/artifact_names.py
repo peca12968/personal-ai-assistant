@@ -15,6 +15,7 @@ _TRAILING = re.compile(r'\s*(?:不要|不用|不必)(?:在|附|把|加|另)')
 _END = re.compile(r'[。！!]$')
 ASK_MARK = 'artifact_filename_question'
 REPLY_VERSION = 6
+MIXED_REPLY_VERSION = 7
 GUIDANCE = 'artifact_filename_requirement 是使用者已指定的定稿檔名。交付時檔名必須一致。請使用最新欄位及可沿用的核對證據。'
 
 
@@ -109,19 +110,35 @@ def question_text(proof):
     return f'「{proof["draft"]["name"]}」已有舊草稿。請確認定稿檔名，例如「{proof["suggested"]}」。'
 
 
-def selection(steps, source, prior_scope):
+def bound_question(steps, source, prior_scope):
     ask = steps[-1]
     proof = ask['observation'].get(ASK_MARK)
     if (not proof or ask['action']['tool'] != 'ask' or ask['action']['args'].get(ASK_MARK) is not True
             or ask['sequence'] != source['ask_sequence'] or ask['observation'].get('goal_conditions_sha256') != prior_scope
             or goal_reply_sources.checked_question(ask['action'], ask['observation']) != source['question']):
         raise ValueError('定稿檔名答覆與當前問題或條件不一致。')
-    literal = _END.sub('', source['answer']).rstrip()
+    return ask, proof
+
+
+def reply_filename(text, *, start=0):
+    literal = _END.sub('', text).rstrip()
     name = _parsed(_ANSWER.fullmatch(literal))
-    if not name or name.casefold() in writes(steps) or name.rsplit('.', 1)[1].casefold() != proof['draft']['name'].rsplit('.', 1)[1].casefold():
+    if name:
+        return {'filename': name, 'start': start, 'end': start + len(literal), 'quote': literal}
+    return None
+
+
+def confirm_filename(steps, ask, proof, span):
+    name = span['filename'] if span else None
+    if (not name or name.casefold() in writes(steps)
+            or name.rsplit('.', 1)[1].casefold() != proof['draft']['name'].rsplit('.', 1)[1].casefold()):
         raise ValueError('請提供同格式且尚未使用的定稿檔名。')
-    return {'selection': {'filename': name, 'start': 0, 'end': len(literal), 'quote': literal},
-            'question_step': ask['sequence'], 'question_sha256': goal_stages.digest(ask)}
+    return {'selection': span, 'question_step': ask['sequence'], 'question_sha256': goal_stages.digest(ask)}
+
+
+def selection(steps, source, prior_scope):
+    ask, proof = bound_question(steps, source, prior_scope)
+    return confirm_filename(steps, ask, proof, reply_filename(source['answer']))
 
 
 def check_action(expected, action):
