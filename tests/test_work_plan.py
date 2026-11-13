@@ -892,6 +892,71 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '原提問撤下紀錄'):
             validate_database(restored.path)
 
+    def test_partial_range_supplement_keeps_read_prefix_and_independent_missing_lines(self):
+        for name, body in [('record.txt', '窗口是北庫\n簽收人青禾'), ('seal.txt', '封條紀錄')]:
+            path = self.root / name
+            path.write_text(body, encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '依工作清單核對交件紀錄和封條。')
+        first = {'document_id': 1, 'start_line': 1, 'end_line': 4}
+        prefix = {**first, 'end_line': 2}
+        shared = {**first, 'start_line': 4}
+        absent = {'document_id': 2, 'start_line': 2, 'end_line': 2}
+        supplied = {'document_id': 3, 'start_line': 1, 'end_line': 2}
+        tasks = [item(1, '交件紀錄'), item(2, '核對期限及封條')]
+        self.run_actions(action('update_plan', items=tasks, verify_delivery=True,
+                                evidence_requirements=[{'id': 1, 'ranges': [first]}, {'id': 2, 'ranges': [shared, absent]}]),
+                         action('read_ranges', ranges=[first, prefix, absent]),
+                         action('ask', question='請提供交件紀錄第 3 至 4 行及封條第 2 行。',
+                                partial_result='北庫與青禾已核對。[D1:L1-L2]'), gid=gid)
+        supplement = self.root / 'supplement.txt'
+        supplement.write_text('門號 G-17\n截止 16:20', encoding='utf-8')
+        self.store.attach_document(self.sid, supplement)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        with self.assertRaisesRegex(ValueError, '可讀原行'):
+            goal_guidance.save(self.store, self.sid, gid, '補件 [D1:L2-L3] 改由 [D3:L1-L2]\n請撤下目前問題。',
+                               expected_fingerprint=view['fingerprint'])
+        self.assertEqual(goal_guidance.snapshot(self.store, self.sid, gid), view)
+        goal_guidance.save(self.store, self.sid, gid, '補件 [D1:L3-L4] 改由 [D3:L1-L2]\n請撤下目前問題。',
+                           expected_fingerprint=view['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'partial-supplement.paibackup')
+        restore_backup(backup['path'], self.root / 'partial-supplement')
+        restored = Store(self.root / 'partial-supplement' / 'assistant.sqlite3')
+        restored_goal = a.get_goal(restored, self.sid, gid)
+        plan = restored_goal['work_plan']
+        self.assertEqual([spec['ranges'] for spec in plan['evidence_requirements']],
+                         [[prefix, supplied], [{**supplied, 'start_line': 2}, absent]])
+        self.assertEqual(plan['delivery_review']['document_read_progress'],
+                         [{'id': 1, 'read_steps': [2, 4], 'missing_ranges': [], 'reuse_document_steps': [2]},
+                          {'id': 2, 'read_steps': [4], 'missing_ranges': [absent], 'reuse_document_steps': [],
+                           'recovery': [{**absent, 'action': 'source_missing'}]}])
+        done = {**tasks[0], 'state': 'done', 'evidence_steps': [2, 4]}
+        engine = ScriptedEngine(action('update_plan', items=[done, tasks[1]], reuse_document_steps=[2]),
+                                action('finish', report='提前定稿。'),
+                                action('ask', question='請補封條第 2 行。',
+                                       partial_result='窗口北庫、簽收人青禾 [D1:L1-L2]。門號 G-17、截止 16:20 [D3:L1-L2]。'))
+        waiting = a.run_goal(restored, self.sid, gid, engine)
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.assertIn('未完成項目 2', waiting['steps'][5]['observation']['error'])
+        self.assertEqual(waiting['work_plan']['items'][0]['state'], 'done')
+        self.assertEqual(waiting['work_plan']['items'][1]['state'], 'pending')
+        validate_database(restored.path)
+
+        seal = self.root / 'seal-supplement.txt'
+        seal.write_text('封條為 F-02', encoding='utf-8')
+        self.assertEqual(restored.attach_document(self.sid, seal), 4)
+        view = goal_guidance.snapshot(restored, self.sid, gid)
+        goal_guidance.save(restored, self.sid, gid, '補件 [D2:L2] 改由 [D4:L1]\n請撤下目前問題。',
+                           expected_fingerprint=view['fingerprint'])
+        both_done = [done, {**tasks[1], 'state': 'done', 'evidence_steps': [4, 8]}]
+        engine = ScriptedEngine(action('update_plan', items=both_done, reuse_document_steps=[2, 4]),
+                                action('finish', report='窗口北庫 [D1:L1]。截止 16:20 [D3:L2]。封條 F-02 [D4:L1]。'))
+        final = a.run_goal(restored, self.sid, gid, engine)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual([row['ask_sequence'] for row in final['withdrawn_questions']], [3, 7])
+        self.assertEqual([row['read_steps'] for row in final['work_plan']['evidence_matches']], [[2, 4], [4, 8]])
+        validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')

@@ -35,7 +35,7 @@ delivery_review.reusable_calculations列出最新原話已以獨立一行「原�
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
 delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
-plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍，沿用仍適用的舊原行，在evidence_steps引用補件步驟及其餘必要讀取。以補件實際文件行號引用新值；不要再問被撤下的問題，也不要把原缺行當作已讀。
+plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -645,6 +645,10 @@ def _observed_missing_ranges(steps):
     return missing
 
 
+def _overlaps_range(first, second):
+    return first[0] == second[0] and first[1] <= second[2] and second[1] <= first[2]
+
+
 def supplement_targets(steps):
     plan = latest(steps)
     if not plan or not plan.get('verify_delivery'):
@@ -652,7 +656,8 @@ def supplement_targets(steps):
     active = {row['id'] for row in plan['items'] if row['state'] not in ('done', 'superseded')}
     missing = _observed_missing_ranges(steps)
     return [row for row in plan.get('evidence_requirements', ()) if row['id'] in active
-            and any(_range_key(request) in missing for request in row.get('ranges', ()))]
+            and any(_overlaps_range(_range_key(request), observed)
+                    for request in row.get('ranges', ()) for observed in missing)]
 
 
 def supplement_receipt(steps, original, source, replacement_read):
@@ -665,29 +670,28 @@ def supplement_receipt(steps, original, source, replacement_read):
             or decision_table.reference_question_for_steps(steps[:-1])):
         raise ValueError('補件須對應目前待答的一般缺行問題。')
     goal_partials.waiting(ask['observation']['question'], ask['action'], ask['observation'])
-    if _range_key(missing) not in _observed_missing_ranges(steps[:-1]):
-        raise ValueError('原範圍須有超出匯入副本行數的查讀紀錄。')
-    reads, pages, _ = _read_evidence({'steps': steps[:-1], 'sources': original}, ask['observation']['goal_conditions_sha256'])
     did, start, end = _range_key(missing)
+    if not any(doc == did and first <= start <= end <= last for doc, first, last in _observed_missing_ranges(steps[:-1])):
+        raise ValueError('補件範圍須在曾超出匯入副本行數的查讀範圍內。')
+    reads, pages, _ = _read_evidence({'steps': steps[:-1], 'sources': original}, ask['observation']['goal_conditions_sha256'])
     original_lines = {(did, number) for number in range(start, end + 1)}
     missing_citations = {f'[D{did}:L{number}]' for _, number in original_lines}
     _, uncovered = _select_reads({'ranges': [missing]}, reads, len(reads))
     completed, _ = _read_page_progress(uncovered, pages)
     if uncovered.difference(completed) != original_lines:
         raise ValueError('原範圍已有讀到的原行，請只補真正缺少的完整範圍。')
+    targets = supplement_targets(steps)
+    required = {number for spec in targets for doc, first, last in map(_range_key, spec['ranges']) if doc == did
+                for number in range(max(start, first), min(end, last) + 1)}
+    if len(required) != end - start + 1:
+        raise ValueError('補件的每一行都須對應未完成項目的指定原文。')
     matches = []
-    for spec in supplement_targets(steps):
-        old = spec['ranges']
-        if missing not in old:
+    for spec in targets:
+        if not any(_overlaps_range(_range_key(row), (did, start, end)) for row in spec['ranges']):
             continue
-        if any(_range_key(row) != _range_key(missing) and row['document_id'] == did
-               and row['start_line'] <= end and start <= row['end_line'] for row in old):
-            raise ValueError('缺行範圍與同一項目其他要求重疊，請先核對原清單。')
         if any(operand['citation'] in missing_citations for operand in spec.get('operands', ())):
             raise ValueError('此缺行同時指定了原算式運算元，請依新來源另建階段重算。')
         matches.append(spec['id'])
-    if not matches:
-        raise ValueError('原缺行範圍須逐字對應未完成項目的指定原文範圍。')
     requested, excerpts = replacement_read['requested_ranges'], replacement_read['excerpts']
     if (len(requested) != 1 or _range_key(requested[0]) != _range_key(replacement)
             or requested[0].get('status') != 'provided'):
@@ -699,8 +703,33 @@ def supplement_receipt(steps, original, source, replacement_read):
 
 
 def supplemented_requirements(steps, receipt, missing, replacement):
-    return [{**row, 'ranges': [replacement if requested == missing else requested for requested in row['ranges']]}
-            if row['id'] in receipt['items'] else row for row in latest(steps)['evidence_requirements']]
+    missing_key = _range_key(missing)
+    _, start, end = missing_key
+    replacement_start = replacement['start_line']
+    updated = []
+    for spec in latest(steps)['evidence_requirements']:
+        if spec['id'] not in receipt['items']:
+            updated.append(spec)
+            continue
+        ranges = {}
+        for row in spec['ranges']:
+            key = _range_key(row)
+            doc, first, last = key
+            if not _overlaps_range(key, missing_key):
+                ranges[key] = row
+                continue
+            low, high = max(first, start), min(last, end)
+            segments = [(doc, first, low - 1),
+                        (replacement['document_id'], replacement_start + low - start, replacement_start + high - start),
+                        (doc, high + 1, last)]
+            for segment in segments:
+                if segment[1] <= segment[2]:
+                    ranges[segment] = dict(zip(RANGE_FIELDS, segment, strict=True))
+        required = list(ranges.values())
+        if len(required) > document_ranges.MAX_RANGES:
+            raise ValueError(f'項目 {spec["id"]} 補件後超過八個指定範圍，請整理清單後另建階段。')
+        updated.append({**spec, 'ranges': required})
+    return updated
 
 
 def _read_recovery(missing, continuing, steps):
