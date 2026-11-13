@@ -1,0 +1,35 @@
+[
+  {
+    "id": "partial_logistics_reply_preserves_confirmed_field", "file_delivery": false,
+    "prompt": "替藍灣工作室寫出借還提醒。固定歸還位置照已匯入規則。領還人與聯絡分機由我提供，請同一則問題列出這兩項。兩項都有確定值才完成。最後列出三欄和各自來源。",
+    "documents": [{"name": "loan-return.txt", "content": "藍灣工作室借還\n固定歸還位置為三號服務桌。\n領還人及聯絡分機以本次確認為準。\n"}],
+    "replies": [{"question_has": ["領還人", "分機"], "answer": "領還人是許映彤，聯絡分機還沒確認。"},
+                {"question_has": ["分機"], "question_excludes": ["領還人(?:是|為)?(?:誰|哪|什麼)|請.{0,6}(?:提供|確認)領還人"], "answer": "聯絡分機是 731。"}],
+    "must_match": ["許映彤", "731", "三號服務桌", "\\[補充#\\d+\\].*", "\\[補充#\\d+\\][\\s\\S]*\\[補充#\\d+\\]"],
+    "source_lines": [{"line": 2, "text": "固定歸還位置為三號服務桌"}]
+  },
+  {
+    "id": "partial_count_reply_and_later_correction", "file_delivery": true,
+    "prompt": "替樺庭站整理封箱備料。請先同一則詢問箱數和每箱所需貼紙數，兩項都要等我確認。依規則算貼紙總數並保存 pack.md，附箱數、每箱貼紙數、總數、獨立配件數及來源。",
+    "documents": [{"name": "pack-rule.txt", "content": "樺庭站備料\n貼紙總數等於箱數乘每箱所需貼紙數。\n本批另外固定準備 6 個緩衝套，與箱數無關。\n"}],
+    "replies": [{"question_has": ["箱數|幾箱", "貼紙"], "answer": "箱數是 4 箱。每箱所需貼紙數還沒確認。"},
+                {"question_has": ["貼紙"], "question_excludes": ["箱數(?:是|為)?(?:多少|幾|什麼)|請.{0,6}(?:提供|確認)箱數"], "answer": "每箱所需貼紙數是 8 張。箱數更正為 5 箱。"}],
+    "artifact": "pack.md", "must_match": ["5\\s*箱", "8\\s*張", "40\\s*張", "6\\s*個", "\\[補充#\\d+\\]"], "must_omit": ["32\\s*張", "4\\s*箱"],
+    "source_lines": [{"line": 2, "text": "貼紙總數等於箱數"}, {"line": 3, "text": "固定準備 6 個緩衝套"}]
+  },
+  {
+    "id": "explicit_csv_execution_after_cutoff_change", "file_delivery": true,
+    "prompt": "請用自主 CSV 分析工具篩選並實際執行計畫，找出服務區為 棕岩、狀態為 已驗、序號不超過 2 的合計分鐘。請交 service.json，只含 zone、cutoff、total 三鍵，後兩個值用整數。",
+    "csv": {"name": "service.csv", "content": "服務區,狀態,序號,分鐘\n棕岩,已驗,1,14\n棕岩,已驗,2,8\n棕岩,已驗,3,19\n棕岩,待驗,3,92\n棕岩,已驗,4,40\n蒲海,已驗,2,71\n"},
+    "first_steps": 1, "guidance": "序號上限更正為 3，服務區與已驗篩選照舊。",
+    "artifact": "service.json", "expected_json": {"zone": "棕岩", "cutoff": 3, "total": 41}, "required_tools": ["execute_csv"]
+  },
+  {
+    "id": "actual_new_value_over_quoted_proposal", "file_delivery": false,
+    "prompt": "用器材交接規則整理翡翠橋組的交接摘要。暫定使用一號台，接收人目前未知，先問我接收人。確認後請列接收人、實際交接台、規則所定的固定憑證，並附來源。",
+    "documents": [{"name": "equipment-receipt.txt", "content": "翡翠橋組交接\n固定憑證碼為 EQ-37。\n交接台與接收人以使用者的最後確認為準。\n"}],
+    "replies": [{"question_has": ["接收人"], "question_excludes": ["憑證(?:碼)?(?:是|為)?(?:什麼|多少|哪)"], "answer": "有人建議「交接改到三號台」，這案未採用。接收人是鍾芷嫻，交接台正式更正為二號台。"}],
+    "must_match": ["鍾芷嫻", "二號台", "EQ-37", "\\[補充#\\d+\\]"], "must_omit": ["一號台", "三號台"],
+    "source_lines": [{"line": 2, "text": "固定憑證碼為 EQ-37"}]
+  }
+]

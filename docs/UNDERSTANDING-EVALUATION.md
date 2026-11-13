@@ -652,3 +652,15 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 數字命題版本為 evidence，命名及逐字引文版本為 evidence-names，來源片段版本為 evidence-indexed。第三版使用可還原原問的 Unicode 位置切片，模型填整數片段編號，程式帶回原文。可能原因保留供評讀，確定規則及明確觀察才限制相容情況。每項追加觀察分開列出成立與不成立的結果，與已有觀察衝突的分支標為不相容。此處的追加觀察是條件推論，沒有執行檢查或改變事實。
 
 評讀逐項核對命題對應、正負方向、規則強度、觀察內容及片段是否支持該項。格式不符、語意抽取不符及機械結論分開保存。來源編號可以核對實際文字，語意仍須評讀。每個版本使用新目錄，舊來源及失敗紀錄留在 F 槽。正式聊天使用既有回覆路徑，條件抽取由實驗指令啟動。
+
+## 新建目標的多輪交付
+
+`scripts/evaluate_multiturn_delivery.py` 使用全新合成目標、匯入副本及正式工具迴圈。題庫定義預先固定的主動更正、與問題相符才送出的實際回覆、交付內容和引用條件。每次保存實際請求、模型原答、使用者答覆位置、工具步驟和交付檔案指紋。模型只收到當時目標資料。完整題庫、來源和評分程式以指紋固定。實測使用新目錄，原始報告及資料庫僅留本機。
+
+```powershell
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_answers.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
+```
+
+省略輸出時只檢查題庫及起始狀態。實測分別統計實際交付、成果文字或 JSON、指定來源行涵蓋、工具路徑及更正／答覆是否保存。另計原文完全相同的重問、超出預設答覆的問題，以及已明定的不必要分問。這些檢查未窮盡語意等同的問法；成果仍需逐案閱讀。流程允許模型自行選擇工具，若評分要求工具但原任務未指明，工具分數單列。兩組首次測量都從同一已發布產品版本開始。題庫入庫後作為已知基準，未來泛化需另備題目。

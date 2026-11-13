@@ -1,0 +1,53 @@
+[
+  {
+    "id": "specimen_dispatch_revision", "file_delivery": false,
+    "prompt": "請根據採樣出貨規則，替玉溪站計算本次可寄出的樣本數和封條數。玉溪站先以 6 箱估算。用短報告交付，列出樣本數、封條數及規則來源。",
+    "documents": [{"name": "specimen-rules.txt", "content": "玉溪站出貨規則\n每箱裝 12 份樣本，其中固定留存 2 份，其餘寄出。\n每箱使用 3 張封條。\n鄰站做法不同，不可套用。\n"}],
+    "first_steps": 1, "guidance": "玉溪站箱數更正為 9 箱。每箱規則照原文件。",
+    "must_match": ["(?:90\\s*份|樣本[^\\n]{0,12}90)", "(?:27\\s*張|封條[^\\n]{0,12}27)", "\\[更正#1\\]"],
+    "must_omit": ["60\\s*份", "18\\s*張"],
+    "source_lines": [{"line": 2, "text": "每箱裝 12 份樣本"}, {"line": 3, "text": "每箱使用 3 張封條"}]
+  },
+  {
+    "id": "gallery_handoff_missing_counter", "file_delivery": true,
+    "prompt": "根據畫冊交接規則整理本批去向，查驗章是紫章。收件櫃號尚未告知，請先問我。答案給齊後交付 gallery.md。定稿包含查驗章、收件櫃號、去向及規則來源。",
+    "documents": [{"name": "gallery-rules.txt", "content": "畫冊交接\n紫章交由南側整理席。\n灰章交由北側回收席。\n收件櫃號只用當批確認的值。\n"}],
+    "replies": [{"question_has": ["櫃號"], "question_excludes": ["查驗章(?:是|為|用)?(?:什麼|哪|多少)", "南側整理席.*嗎"], "answer": "收件櫃號是 K17。"}],
+    "artifact": "gallery.md", "must_match": ["紫章", "K17", "南側整理席", "\\[補充#\\d+\\]"],
+    "must_omit": ["北側回收席"], "source_lines": [{"line": 2, "text": "紫章交由南側整理席"}]
+  },
+  {
+    "id": "fulfillment_csv_current_cutoff", "file_delivery": true,
+    "prompt": "請用已匯入的配送 CSV，計算站點為 松徑、狀態為 已核、批次不晚於 2 的總件數。請交 fulfillment.json，只含 station、cutoff、total 三鍵，station 是原欄位值，cutoff 與 total 是整數。",
+    "csv": {"name": "fulfillment.csv", "content": "站點,狀態,批次,件數\n松徑,已核,1,12\n松徑,已核,2,8\n松徑,已核,3,13\n松徑,待核,3,72\n松徑,已核,4,40\n青巷,已核,2,91\n"},
+    "first_steps": 1, "guidance": "批次上限更正為 3，站點與已核的篩選照舊。",
+    "artifact": "fulfillment.json", "expected_json": {"station": "松徑", "cutoff": 3, "total": 33},
+    "required_tools": ["execute_csv"]
+  },
+  {
+    "id": "labelling_version_comparison", "file_delivery": false,
+    "prompt": "比較舊、新兩份封箱標示規格，列出本次新規格實際改動的兩欄，指出哪一欄照舊。再給我本批標示摘要，使用新版，附兩版來源行號。",
+    "documents": [{"name": "marking-old.txt", "content": "封箱標示舊版\n邊框：點線\n文字：黑色\n貼附處：箱蓋右側\n"},
+                  {"name": "marking-new.txt", "content": "封箱標示新版\n邊框：實線\n文字：黑色\n貼附處：箱身左側\n"}],
+    "must_match": ["點線", "實線", "黑色", "(?:照舊|不變|相同|沿用)", "箱蓋右側", "箱身左側"],
+    "source_lines": [{"doc": 0, "line": 2, "text": "邊框：點線"}, {"doc": 0, "line": 4, "text": "貼附處：箱蓋右側"},
+                     {"doc": 1, "line": 2, "text": "邊框：實線"}, {"doc": 1, "line": 4, "text": "貼附處：箱身左側"}]
+  },
+  {
+    "id": "venue_access_confirm_and_correct", "file_delivery": false,
+    "prompt": "用布展規則寫成進場通知。初步進場時段是 09:20。入口人員姓名要先向我確認，車輛許可使用規則給的固定值。最後通知要列時段、人員與許可代碼，附來源。",
+    "documents": [{"name": "venue-rules.txt", "content": "布展進場作業\n車輛許可代碼固定為 VAN-42。\n時段與入口人員以本場確認為準。\n不得沿用去年的人員。\n"}],
+    "replies": [{"question_has": ["人員|姓名|是誰"], "question_excludes": ["許可(?:代碼)?(?:是|為)?(?:什麼|多少|哪)", "時段(?:是|為)?(?:什麼|多少|哪)"],
+                 "answer": "入口人員是顏昀蓁。進場時段更正為 10:40。"}],
+    "must_match": ["顏昀蓁", "10[:：]40", "VAN-42", "\\[補充#\\d+\\]"], "must_omit": ["09[:：]20"],
+    "source_lines": [{"line": 2, "text": "車輛許可代碼固定為 VAN-42"}]
+  },
+  {
+    "id": "two_independent_shipping_fields", "file_delivery": false,
+    "prompt": "根據退件規則做北徑站的退件通知。批次代碼及領收人都還沒給，請先問我，兩項確認後才完成通知。通知要列批次代碼、領收人、固定交還位置與原規則來源。",
+    "documents": [{"name": "returns-rules.txt", "content": "北徑站退件\n固定交還位置：西翼第二櫃。\n同站各批次代碼與領收人由當次確認。\n"}],
+    "replies": [{"question_has": ["批次|領收人"], "answer": "批次代碼是 BT-61，領收人是戴昕瑜。"}],
+    "must_match": ["BT-61", "戴昕瑜", "西翼第二櫃", "\\[補充#\\d+\\]"],
+    "source_lines": [{"line": 2, "text": "固定交還位置：西翼第二櫃"}]
+  }
+]
