@@ -959,7 +959,7 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual([row['read_steps'] for row in final['work_plan']['evidence_matches']], [[2, 4], [4, 8]])
         validate_database(restored.path)
 
-    def test_supplement_cannot_withdraw_an_unrelated_or_multipart_plan_question(self):
+    def test_supplement_requires_matching_items_and_an_exact_multipart_selection(self):
         for name in ('record.txt', 'seal.txt'):
             path = self.root / name
             path.write_text('原文件標題', encoding='utf-8')
@@ -979,12 +979,37 @@ class WorkPlanTests(unittest.TestCase):
         path.write_text('門號 G-17', encoding='utf-8')
         self.store.attach_document(self.sid, path)
         command = '補件 [D1:L2] 改由 [D3:L1]\n請撤下目前問題。'
-        for gid, message in zip(goals, ('未涵蓋', '無法用這筆補件'), strict=True):
+        for gid, message in zip(goals, ('未涵蓋', '多個分問'), strict=True):
             view = goal_guidance.snapshot(self.store, self.sid, gid)
             with self.assertRaisesRegex(ValueError, message):
                 goal_guidance.save(self.store, self.sid, gid, command, expected_fingerprint=view['fingerprint'])
             self.assertEqual(goal_guidance.snapshot(self.store, self.sid, gid), view)
         validate_database(self.store.path)
+
+        gid = goals[1]
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        old_reply = goal_replies.snapshot(self.store, self.sid, gid)
+        selected = command.replace('目前問題', '分問「請補門號原文。」')
+        wrong = selected.replace('「請補門號原文。」', '「請補封條原文。」')
+        with self.assertRaisesRegex(ValueError, '未涵蓋'):
+            goal_guidance.save(self.store, self.sid, gid, wrong, expected_fingerprint=view['fingerprint'])
+        saved = goal_guidance.save(self.store, self.sid, gid, selected, expected_fingerprint=view['fingerprint'])
+        self.assertEqual(saved['goal']['status'], 'needs_input')
+        self.assertEqual(saved['goal']['question'], questions[1]['question'])
+        with self.assertRaises(goal_replies.StaleReply):
+            goal_replies.save(self.store, self.sid, gid, '封條為 F-02。', expected_fingerprint=old_reply['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'remaining-question.paibackup')
+        restore_backup(backup['path'], self.root / 'remaining-question')
+        restored = Store(self.root / 'remaining-question' / 'assistant.sqlite3')
+        state = a.get_goal(restored, self.sid, gid)
+        self.assertEqual(state['steps'][-1]['action']['args']['plan_questions'], [questions[1]])
+        self.assertEqual(state['steps'][3]['observation']['successor']['question'], questions[1]['question'])
+        self.assertEqual(state['work_plan']['delivery_review']['document_read_progress'][0]['read_steps'], [4])
+        self.assertEqual(state['work_plan']['delivery_review']['document_read_progress'][1]['missing_ranges'], [second])
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_goals SET question=? WHERE id=?', ('變更後問題？', gid))
+        with self.assertRaisesRegex(ValueError, '保留的分問'):
+            validate_database(restored.path)
 
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'

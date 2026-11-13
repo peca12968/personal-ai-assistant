@@ -136,7 +136,8 @@ def snapshot(store, sid, gid, *, include_work_plan=False):
 def eligibility(value):
     status = value['goal']['status']
     if value.get('plan_document_supplement'):
-        return True, '可用「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」保存後回到原目標接續。'
+        return True, ('可用「補件 [D2:L2] 改由 [D3:L1]」。有多個分問時，下一行寫「請撤下分問『原句』」，'
+                      '請以「」括住完整原句。只有一個問題時可寫「請撤下目前問題。」')
     if question := value.get('report_colloquial_question'):
         if question.get('ordered', {}).get('answers'):
             if not value['sources_match']:
@@ -299,7 +300,7 @@ def _save_report_supplement(db, current, notes, content):
 def _save_plan_document_supplement(db, current, notes, content):
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
-    missing, replacement = goal_sources.plan_mapping(content)
+    missing, replacement, _ = goal_sources.plan_mapping(content)
     original = json.loads(goal['sources_json'])
     did = replacement['document_id']
     documents = [dict(row) for row in db.execute(
@@ -322,12 +323,22 @@ def _save_plan_document_supplement(db, current, notes, content):
             'missing': missing, 'replacement': replacement}
     action = {'tool': goal_sources.PLAN_SUPPLEMENT, 'args': args, 'note': '依使用者指定的原文補件'}
     sources_json = json.dumps(merged, ensure_ascii=False)
-    _append_step(db, {**goal, 'sources_json': sources_json}, notes, count + 1, action, observation)
+    merged_goal = {**goal, 'sources_json': sources_json, 'guidance_sources': guidance}
+    _append_step(db, merged_goal, notes, count + 1, action, observation)
     options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
     goal_question_withdrawals.record(db, gid, options, source)
-    db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,question='',status='paused',notice=?,
+    question, status = '', 'paused'
+    notice = '已保存指定補件與原提問，請接續核對及交付。'
+    if successor := observation.get('successor'):
+        if count + 4 + int(artifacts.enabled(db, gid)) > MAX_STEPS:
+            raise ValueError('剩餘步數不足以保存補件、保留分問及交付，請建立下一階段。')
+        question, status = successor['question'], 'needs_input'
+        append_followup_question(db, merged_goal, notes, count + 2, question, '依補件保留尚待回答的工作分問',
+                                 plan_questions=successor['plan_questions'])
+        notice = '已保存指定補件。請處理保留的分問；原暫表與補件可在步驟紀錄核對。'
+    db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,question=?,status=?,notice=?,
                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-               (sources_json, notes, '已保存指定補件與原提問，請接續核對及交付。', gid))
+               (sources_json, notes, question, status, notice, gid))
 
 
 def append_waiting_recheck(db, current, notes):

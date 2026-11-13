@@ -7,7 +7,8 @@ from . import document_ranges
 _RANGE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}(?:-L[1-9][0-9]{0,11})?\]'
 _SUPPLEMENT = re.compile(rf'補件[ \t]+{_RANGE}(?:[ \t]+{_RANGE}){{0,7}}')
 PLAN_SUPPLEMENT = 'plan_document_supplement'
-_PLAN_MAPPING = re.compile(rf'補件[ \t]+{_RANGE}[ \t]+改由[ \t]+{_RANGE}\s*\n請撤下目前問題[。.]?')
+_PLAN_MAPPING = re.compile(rf'補件[ \t]+{_RANGE}[ \t]+改由[ \t]+{_RANGE}\s*\n'
+                           r'請撤下(?:目前問題|分問[ \t]*「(?P<question>[^「」\r\n]{1,400})」)[。.]?')
 
 
 def is_plan_mapping(content):
@@ -15,9 +16,10 @@ def is_plan_mapping(content):
 
 
 def plan_mapping(content):
-    if not is_plan_mapping(content):
-        raise ValueError('請用兩行指定補件，例如「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」')
-    ranges, _ = document_ranges.requested_ranges(content)
+    match = _PLAN_MAPPING.fullmatch(content)
+    if match is None:
+        raise ValueError('請用兩行指定補件及要撤下的問題，例如「補件 [D2:L2] 改由 [D3:L1]」和「請撤下目前問題。」')
+    ranges, _ = document_ranges.requested_ranges(content.splitlines()[0])
     document_ranges.validate_batch({'ranges': ranges})
     if len(ranges) != 2 or ranges[0]['document_id'] == ranges[1]['document_id']:
         raise ValueError('補件須指定原文件與另一份已匯入副本。')
@@ -25,7 +27,7 @@ def plan_mapping(content):
     size = missing['end_line'] - missing['start_line']
     if not 0 <= size < 8 or replacement['end_line'] - replacement['start_line'] != size:
         raise ValueError('原範圍和補件範圍須各有相同的一至八行。')
-    return missing, replacement
+    return missing, replacement, match['question']
 
 
 def supplement_ranges(content):

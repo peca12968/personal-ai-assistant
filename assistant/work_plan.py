@@ -660,7 +660,7 @@ def supplement_targets(steps):
                     for request in row.get('ranges', ()) for observed in missing)]
 
 
-def supplement_question_items(steps):
+def _supplement_question_parts(steps):
     from . import decision_table, work_plan_scope
 
     ask = steps[-1]
@@ -670,11 +670,11 @@ def supplement_question_items(steps):
             or decision_table.reference_question_for_steps(steps[:-1])):
         raise ValueError('補件須對應目前待答的缺行問題。')
     if 'plan_questions' not in args:
-        return set()
+        return []
     binding = work_plan_scope.bind_questions(args, steps[:-1])
-    if observation.get('work_plan_question') != binding or len(binding['parts']) != 1:
-        raise ValueError('此補件須對應一個已核對項目關聯的缺行分問。')
-    return set(binding['parts'][0]['items'])
+    if observation.get('work_plan_question') != binding:
+        raise ValueError('待答分問與工作清單的關聯不一致。')
+    return binding['parts']
 
 
 def can_supplement_question(steps):
@@ -682,19 +682,26 @@ def can_supplement_question(steps):
     if not targets:
         return False
     try:
-        return supplement_question_items(steps) <= targets
+        parts = _supplement_question_parts(steps)
     except ValueError:
         return False
+    return not parts or any(set(part['items']) <= targets for part in parts)
 
 
 def supplement_receipt(steps, original, source, replacement_read):
     from . import goal_partials, goal_question_withdrawals
 
-    missing, replacement = goal_sources.plan_mapping(source['content'])
+    missing, replacement, target = goal_sources.plan_mapping(source['content'])
     ask = steps[-1]
     if ask['sequence'] != source['steps_seen']:
         raise ValueError('補件須對應目前待答的缺行問題。')
-    question_items = supplement_question_items(steps)
+    parts = _supplement_question_parts(steps)
+    if target is None and len(parts) > 1:
+        raise ValueError('目前有多個分問，請逐字指定要撤下的分問。')
+    selected = next((part for part in parts if part['question'] == target), None) if target is not None else next(iter(parts), None)
+    if target is not None and selected is None:
+        raise ValueError('請逐字指定目前工作清單的一個完整分問。')
+    question_items = set(selected['items']) if selected else set()
     goal_partials.waiting(ask['observation']['question'], ask['action'], ask['observation'])
     did, start, end = _range_key(missing)
     if not any(doc == did and first <= start <= end <= last for doc, first, last in _observed_missing_ranges(steps[:-1])):
@@ -724,10 +731,13 @@ def supplement_receipt(steps, original, source, replacement_read):
     if (len(requested) != 1 or _range_key(requested[0]) != _range_key(replacement)
             or requested[0].get('status') != 'provided'):
         raise ValueError('無法完整查讀指定補件，請核對文件與行號。')
-    return {'status': 'provided', 'items': matches, 'requested_ranges': requested, 'excerpts': excerpts,
-            'ask_sequence': ask['sequence'],
-            'ask_sha256': goal_question_withdrawals._receipt(ask['sequence'], ask['action'], ask['observation'])['question_sha256'],
-            'guidance_sha256': source['sha256']}
+    receipt = {'status': 'provided', 'items': matches, 'requested_ranges': requested, 'excerpts': excerpts,
+               'ask_sequence': ask['sequence'],
+               'ask_sha256': goal_question_withdrawals._receipt(ask['sequence'], ask['action'], ask['observation'])['question_sha256'],
+               'guidance_sha256': source['sha256']}
+    if remaining := [part for part in parts if part != selected]:
+        receipt['successor'] = {'question': '\n'.join(part['question'] for part in remaining), 'plan_questions': remaining}
+    return receipt
 
 
 def supplemented_requirements(steps, receipt, missing, replacement):
@@ -993,7 +1003,9 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             sequence, action, observation = step['sequence'], step['action'], step['observation']
             args = action['args']
             if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
-                _verify_saved_supplement(db, scope_goal, prior, step, guidance, documents)
+                successor = steps[index + 1] if index + 1 < len(steps) else None
+                pending = question if status == 'needs_input' and index + 2 == len(steps) else None
+                _verify_saved_supplement(db, scope_goal, prior, step, guidance, documents, successor, pending)
             if artifact_names.ASK_MARK in args or artifact_names.ASK_MARK in observation:
                 if not delivery_present:
                     raise ValueError('定稿檔名問題缺少文件交付紀錄。')
@@ -1042,7 +1054,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
             prior.append(step)
 
 
-def _verify_saved_supplement(db, goal, prior, step, guidance, documents):
+def _verify_saved_supplement(db, goal, prior, step, guidance, documents, successor, pending):
     args, observation = step['action']['args'], step['observation']
     original = args.get('original_sources')
     source = next((row for row in guidance if row['citation'] == args.get('guidance')), None)
@@ -1050,7 +1062,7 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents):
             or args.keys() != {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
             or not goal_sources.valid_source_list(original) or not goal_sources.valid_source_list(args['added_sources'])):
         raise ValueError('清單補件缺少對應的原更正或來源範圍。')
-    missing, replacement = goal_sources.plan_mapping(source['content'])
+    missing, replacement, _ = goal_sources.plan_mapping(source['content'])
     if (args['missing'] != missing or args['replacement'] != replacement
             or [row['document_id'] for row in args['added_sources']] != [replacement['document_id']]):
         raise ValueError('清單補件與更正原話指定的文件範圍不一致。')
@@ -1074,3 +1086,11 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents):
                             'WHERE goal_id=? AND ask_sequence=?', (goal['id'], expected['ask_sequence'])).fetchone()
     if withdrawal != (source['number'], expected['ask_sha256'], source['sha256']):
         raise ValueError('清單補件缺少對應的原提問撤下紀錄。')
+    if retained := expected.get('successor'):
+        if (successor is None or successor['sequence'] != step['sequence'] + 1
+                or successor['action']['tool'] != 'ask' or successor['action']['args'] != retained
+                or successor['observation'].get('question') != retained['question']
+                or successor['observation'].get('goal_conditions_sha256') != expected['goal_conditions_sha256']
+                or successor['observation'].get('partial_result') is not None
+                or (pending is not None and pending != retained['question'])):
+            raise ValueError('補件後保留的分問與原提問不一致。')
