@@ -48,6 +48,10 @@ def validate_cases(cases):
             autonomy.text(waiting['text'], 4000)
             for pattern in waiting['question_has']:
                 re.compile(pattern)
+            if 'remaining_question' in waiting:
+                autonomy.text(waiting['remaining_question'], 800)
+                if not waiting['withdraw']:
+                    raise ValueError('驗收保留的分問時，須同時驗收原問題已撤下。')
         if 'final_file_delivery' in case and type(case['final_file_delivery']) is not bool:
             raise ValueError('最終交付方式須為布林值。')
         if case['file_delivery']:
@@ -198,8 +202,10 @@ def score(case, final, files, turns, calls):
                 for row in withdrawals) if waiting['withdraw'] else (
                     not withdrawals and saved['status'] == 'needs_input' and saved['question'] == before['question'])))
         if waiting['withdraw']:
-            checks['one_step_withdrawal'] = bool(checks['old_question'] and saved['status'] == 'paused'
-                                                 and not saved['question'] and 'after_withdrawal' not in event)
+            remaining = waiting.get('remaining_question', '')
+            status = 'needs_input' if remaining else 'paused'
+            checks['one_step_withdrawal'] = bool(checks['old_question'] and saved['status'] == status
+                                                 and saved['question'] == remaining and 'after_withdrawal' not in event)
     if 'final_file_delivery' in case:
         checks['delivery_mode'] = final['file_delivery'] is file_delivery and (file_delivery or not final['artifacts'])
     if question:

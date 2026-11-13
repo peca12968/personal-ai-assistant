@@ -671,6 +671,7 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_evidence.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_reconfirmation_scope.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_guidance.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_question_withdrawal.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
@@ -689,3 +690,5 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 同一預設答覆加上 `restore_before: true` 時，收集器從該待答資料庫製作備份，還原至新目錄，核對同一目標、暫表及問題指紋，再對還原副本提交答覆與執行。報告記錄實際續作的相對資料庫路徑。原始合成資料庫停留在待答狀態，可核對副本確實完成接續。離線檢查只核對題庫規約與起點。
 
 `waiting_guidance` 從還原副本保存主動更正。題庫可要求撤下原問題，或保留仍需回答的同一問。若舊版需要再操作一次，收集器會走既有撤下入口以比較後續成果，另記錄是否能一次完成。交付由文件改為文字時，同時核對有效交付方式、無產檔，以及實際文字的來源。
+
+若 `waiting_guidance` 明列 `remaining_question`，一次完成的驗收也要求保存後立即顯示完全相同的保留分問。隨後的固定答覆仍透過正常答覆入口保存。

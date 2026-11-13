@@ -307,12 +307,14 @@ def append_answered_revision(db, current, notes):
 
 
 def append_followup_question(db, goal, notes, sequence, question, note, *, partial_result=None, colloquial_receipt=None,
-                             plan_questions=None):
+                             plan_questions=None, question_part_withdrawal=None):
     steps = _steps(db, goal['id'])
     excerpts = [row for step in steps for row in step['observation'].get('excerpts', [])]
     citations = goal_partials.question_citations(question, excerpts, goal.get('reply_sources', ()),
                                                   goal.get('guidance_sources', ()))
     observation = {'question': question}
+    if question_part_withdrawal is not None:
+        observation[goal_question_withdrawals.PART_MARK] = question_part_withdrawal
     if citations:
         observation['question_citations'] = citations
     action = {'tool': 'ask', 'args': {'question': question}, 'note': note}
@@ -595,12 +597,26 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         pending = reviewed['goal']
         if (pending['status'] == 'needs_input' and pending['question'] == goal['question']
                 and not pending.get('reference_review') and not pending.get('answered_reference_review')
-                and (options := reviewed.get('question_withdrawal')) and number in options['correction_numbers']
-                and goal_question_withdrawals.requests_current_dismissal(content)):
+                and (options := reviewed.get('question_withdrawal')) and number in options['correction_numbers']):
             steps = _steps(db, gid)
             if (not steps[-1]['action']['args'].keys() & {artifact_names.ASK_MARK, 'plan_questions',
                                                     'reference_remaining', 'document_version'}
                     and not decision_table.reference_question_for_steps(steps[:-1])):
-                goal_question_withdrawals.dismiss(db, gid, options, pending['guidance_sources'][-1])
-                return _snapshot(db, sid, gid)
+                source = pending['guidance_sources'][-1]
+                remaining = (goal_question_withdrawals.remaining_question(content, pending['question'])
+                             if work_plan.latest(steps) is None else None)
+                if remaining:
+                    required_steps = 2 + int(delivery_preference.enabled(db, gid))
+                    if step_count + required_steps > MAX_STEPS:
+                        raise ValueError('剩餘步數不足以保留分問及交付，請帶入目前進度建立下一階段。')
+                    goal_question_withdrawals.record(db, gid, options, source)
+                    append_followup_question(db, pending, notes, step_count + 1, remaining, '保留未撤下的分問',
+                                             question_part_withdrawal={'ask_sequence': step_count,
+                                                                       'guidance_number': number})
+                    db.execute('UPDATE autonomous_goals SET question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                               (remaining, '已撤下指定分問。請回答仍顯示的問題。', gid))
+                    return _snapshot(db, sid, gid)
+                if goal_question_withdrawals.requests_current_dismissal(content):
+                    goal_question_withdrawals.dismiss(db, gid, options, source)
+                    return _snapshot(db, sid, gid)
         return reviewed

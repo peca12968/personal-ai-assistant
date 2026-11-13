@@ -151,3 +151,40 @@ class GoalQuestionWithdrawalTests(unittest.TestCase):
                 self.assertEqual((saved['status'], saved['question']), ('needs_input', waiting['question']))
                 self.assertNotIn('withdrawn_questions', saved)
         self.assertEqual(self.amend('目前欄位不再需要。撤下這則問題。')['goal']['status'], 'paused')
+
+    def test_cancel_one_part_after_restore_and_bind_answer_to_the_remaining_questions(self):
+        waiting = self.ask('櫃號是多少？簽收人是誰？\n交件時段是什麼？')
+        stale = self.review()['fingerprint']
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        original = self.store
+        self.store = Store(self.root / 'restored' / 'assistant.sqlite3')
+        saved = self.amend('新版免填櫃號。請撤下分問「櫃號是多少？」。')['goal']
+        self.assertEqual(saved['question'], '簽收人是誰？\n交件時段是什麼？')
+        self.assertNotIn('reply_sources', saved)
+        self.assertNotIn('partial_result', saved)
+        self.assertEqual(saved['withdrawn_questions'][0]['question'], waiting['question'])
+        self.assertEqual(autonomy.get_goal(original, self.sid, self.gid), waiting)
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            goal_replies.save(self.store, self.sid, self.gid, '舊答案', expected_fingerprint=stale)
+        state = self.amend('不限制交件時段。撤下分問「交件時段是什麼？」。')['goal']
+        self.assertEqual(state['question'], '簽收人是誰？')
+        answered = goal_replies.save(self.store, self.sid, self.gid, '簽收人是林語安。',
+                                     expected_fingerprint=self.review()['fingerprint'])['goal']
+        self.assertEqual(answered['reply_sources'][-1]['ask_sequence'], 3)
+        validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=? AND ask_sequence=2', (self.gid,))
+        with self.assertRaisesRegex(ValueError, '缺少相符'):
+            validate_database(self.store.path)
+
+    def test_partial_dismissal_rejects_inexact_and_competing_parts_atomically(self):
+        waiting = self.ask('櫃號是多少？簽收人是誰？')
+        for content in ('請撤下分問「櫃號」。', '撤下分問「櫃號是多少？」。撤下分問「簽收人是誰？」。',
+                        '撤下分問「櫃號是多少？」。請撤下目前問題。'):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                self.amend(content)
+            self.assertEqual(autonomy.get_goal(self.store, self.sid, self.gid), waiting)
+        saved = self.amend('有人建議『請撤下分問「櫃號是多少？」』。')['goal']
+        self.assertEqual(saved['question'], waiting['question'])
+        self.assertNotIn('withdrawn_questions', saved)

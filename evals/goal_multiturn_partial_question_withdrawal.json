@@ -1,0 +1,22 @@
+[
+  {
+    "id":"restore_compound_question_cancel_only_old_version_box_number",
+    "file_delivery":false,
+    "prompt":"替松汀點做交還通知。先讀匯入規則，現採 old.txt。只用一則問題逐字詢問『櫃號是多少？簽收人是誰？』，收到必要資料後才交。定稿每項一行，列窗口、簽收人和獨立的核對碼，同行引用實際依據。",
+    "documents":[{"name":"old.txt","content":"松汀點舊版\n窗口為東櫃，須填櫃號。\n"},{"name":"new.txt","content":"松汀點新版\n窗口為南櫃，免填櫃號。\n"},{"name":"shared.txt","content":"松汀點共用欄\n核對碼為 RC-82。\n"}],
+    "waiting_guidance":{"question_has":["櫃號是多少[？?]","簽收人是誰[？?]"],"text":"本次改採 new.txt，新版免填櫃號。請撤下分問「櫃號是多少？」。仍須確認簽收人，核對碼照共用文件。","withdraw":true,"remaining_question":"簽收人是誰？"},
+    "replies":[{"question_has":["簽收人|誰.{0,5}簽收"],"question_excludes":["櫃號是多少|提供.{0,5}櫃號"],"answer":"本批簽收人是高以寧。"}],
+    "must_match":["高以寧","南櫃","RC-82"],"must_omit":["東櫃|待補|尚待"],
+    "claim_sources":[{"claim":"窗口[^\\n]{0,24}南櫃","sources":[{"kind":"document","doc":1,"line":2,"text":"窗口為南櫃"}]},{"claim":"簽收人[^\\n]{0,24}高以寧","sources":[{"kind":"reply","index":0,"text":"本批簽收人是高以寧"}]},{"claim":"核對碼[^\\n]{0,24}RC-82","sources":[{"kind":"document","doc":2,"line":2,"text":"核對碼為 RC-82"}]}]
+  },
+  {
+    "id":"restore_three_parts_preserve_two_and_switch_delivery",
+    "file_delivery":true,"artifact":"handoff.md","final_file_delivery":false,
+    "prompt":"替杉原點做交件通知。先讀規則，在一則問題逐字詢問『接收人是誰？定稿檔名是什麼？交件時段是什麼？』。接收人、時段及檔名確定才交 Markdown。定稿列固定窗口、接收人和交件時段，各項一行附直接來源。",
+    "documents":[{"name":"handoff.txt","content":"杉原點交件\n固定窗口為青台。\n"}],
+    "waiting_guidance":{"question_has":["接收人是誰[？?]","定稿檔名是什麼[？?]","交件時段是什麼[？?]"],"text":"交付方式改為文字。請撤下分問「定稿檔名是什麼？」。接收人及交件時段仍須確認。","withdraw":true,"remaining_question":"接收人是誰？\n交件時段是什麼？"},
+    "replies":[{"question_has":["接收人","時段"],"question_excludes":["檔名是什麼|提供.{0,5}檔名"],"answer":"接收人為莊妍亭。交件時段為 14:20。"}],
+    "must_match":["青台","莊妍亭","14[:：]20"],"must_omit":["已產檔|暫表|待補"],
+    "claim_sources":[{"claim":"窗口[^\\n]{0,24}青台","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口為青台"}]},{"claim":"接收人[^\\n]{0,24}莊妍亭","sources":[{"kind":"reply","index":0,"text":"接收人為莊妍亭"}]},{"claim":"時段[^\\n]{0,24}14[:：]20","sources":[{"kind":"reply","index":0,"text":"交件時段為 14:20"}]}]
+  }
+]
