@@ -82,7 +82,7 @@ documents的line_count是該份文件總行數；read不得超過它，每次最
 工具與精確args欄位：
 search: {"query":"關鍵字"}，在目標文件中搜尋，返回有限片段。
 read: {"document_id":1,"start_line":1,"end_line":20}，完整讀取最多200行、10000字。
-read_ranges: {"ranges":[{"document_id":1,"start_line":2,"end_line":4},{"document_id":2,"start_line":3,"end_line":3}]}。目標已列多個精確文件範圍時，優先按順序用此工具查讀，每批最多8個不同範圍、每個最多200行，全文共10000字。列入使用者明確要求核對的全部範圍，即使目錄顯示其中某行可能不存在，也送入本批取得個別狀態。某範圍缺漏或超出字數時仍提供其餘可讀範圍。只引用已提供的行；用於無法辨認範圍的搜尋另有search。
+read_ranges: {"ranges":[{"document_id":1,"start_line":2,"end_line":4},{"document_id":2,"start_line":3,"end_line":3}]}。目標已列多個精確文件範圍時，優先按順序用此工具查讀，每批最多8個不同範圍、每個最多200行，全文共10000字。首次查讀列入使用者明確要求核對的全部範圍，即使目錄顯示某行可能不存在，也取得個別狀態。某範圍缺漏或超出字數時仍提供其餘可讀範圍。工作清單已列續讀進度時，查讀尚缺的範圍即可。只引用已提供的行；用於無法辨認範圍的搜尋另有search。
 recall: {"query":"相關偏好或事實"}，查找目前有效的長期記憶。
 calculate: {"operation":"sum|difference|product|quotient","values":["1/7","49"]}，精確有理數四則運算，接受整數、有限小數或整數分數字串。
 calculate_expression: {"expression":{"operation":"sum","values":[{"operation":"product","values":["3","125"]},"55"]}}，有界巢狀四則計算，返回各層精確結果；詳細規則見後附說明。

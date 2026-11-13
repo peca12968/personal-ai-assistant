@@ -32,7 +32,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。reusable_calculations列出可沿用的已完成項。兩項即使同引一行或一則回覆，若每段數字原話在該來源中的位置互不重疊，也可能沿用。separate_operand_excerpts表示使用了這項核對。保持可沿用項的原evidence_steps，重算更正項並保存其完整新規約和證據。數字短句用足以辨認欄位的原話，不以整行代替不同欄位的短句。新證據重疊時須重驗相關項目。
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
-delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍；read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
+delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -129,16 +129,26 @@ def _range_key(row):
     return tuple(row.get(field) for field in RANGE_FIELDS) if isinstance(row, dict) else ()
 
 
-def _complete_read(step, sources):
+def _verified_read(step, sources, *, allow_partial=False):
     action, observation = step['action'], step['observation']
     requested = observation.get('requested_ranges')
-    original = [action['args']] if action['tool'] == 'read' else action['args'].get('ranges')
+    args = action.get('args', {})
+    original = [args] if action['tool'] == 'read' else args.get('ranges')
     if not isinstance(requested, list) or not isinstance(original, list) or not original:
         raise ValueError('沿用證據缺少原查讀範圍。')
     ranges = [_range_key(row) for row in original]
     if (ranges != [_range_key(row) for row in requested]
-            or any(len(key) != 3 or any(type(n) is not int or not 1 <= n < 10**12 for n in key) or key[2] < key[1]
-                   for key in ranges)):
+            or any(len(key) != 3 or any(type(n) is not int or not 1 <= n < 10**12 for n in key) for key in ranges)):
+        raise ValueError('沿用證據的原查讀範圍不一致。')
+    statuses = [row.get('status') for row in requested]
+    provided = [key for key, status in zip(ranges, statuses, strict=True) if status == 'provided']
+    partial = len(provided) != len(ranges)
+    if (observation.get('error') or observation.get('status') in ('failed', 'cancelled') or not provided or
+            (partial and (not allow_partial or action['tool'] != 'read_ranges'
+                          or any(not isinstance(status, str) or status not in document_ranges.STATUS_TEXT
+                                 for status in statuses)))):
+        raise ValueError('完成證據失敗或不完整。')
+    if any(not 1 <= end - start + 1 <= document_ranges.MAX_LINES for _, start, end in provided):
         raise ValueError('沿用證據的原查讀範圍不一致。')
     excerpts = observation.get('excerpts')
     if not isinstance(excerpts, list) or not excerpts:
@@ -146,16 +156,21 @@ def _complete_read(step, sources):
     by_id = {row['document_id']: row for row in sources}
     for excerpt in excerpts:
         key = _range_key(excerpt)
-        source = by_id.get(key[0]) if key in ranges else None
+        source = by_id.get(key[0]) if key in provided else None
         if (source is None or any(type(n) is not int for n in key) or not isinstance(excerpt.get('text'), str)
                 or excerpt.get('partial_line') is not False
                 or source['name'] != excerpt.get('name') or source['sha256'] != excerpt.get('sha256')):
             raise ValueError('沿用證據與本目標文件版本或範圍不一致。')
-    tokens = ' '.join(f'[D{did}:L{start}-L{end}]' for did, start, end in ranges)
+        if partial:
+            lines = excerpt['text'].splitlines()
+            if (excerpt.get('requested_range') is not True or len(lines) != key[2] - key[1] + 1 or
+                    any(not line.startswith(f'L{n}: ') for n, line in enumerate(lines, key[1]))):
+                raise ValueError('批次查讀證據缺少完整的原文行。')
+    tokens = ' '.join(f'[D{did}:L{start}-L{end}]' for did, start, end in provided)
     checks = check_citations(tokens, excerpts)
-    if len(checks) != len(ranges) or any(not check['range_valid'] for check in checks):
+    if len(checks) != len(provided) or any(not check['range_valid'] for check in checks):
         raise ValueError('沿用證據沒有完整覆蓋原查讀範圍。')
-    return ranges, excerpts
+    return provided, excerpts, partial
 
 
 def _old_read_scope(step, scope):
@@ -165,12 +180,16 @@ def _old_read_scope(step, scope):
         raise ValueError('沿用證據須為已記錄舊條件的完整文件查讀。')
 
 
-def _read_proof(step, scope, sources):
-    _old_read_scope(step, scope)
-    ranges, _ = _complete_read(step, sources)
+def _read_digest(step):
     raw = json.dumps(step, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _read_proof(step, scope, sources, *, allow_partial=False):
+    _old_read_scope(step, scope)
+    ranges, _, _ = _verified_read(step, sources, allow_partial=allow_partial)
     return {'sequence': step['sequence'], 'document_ids': sorted({key[0] for key in ranges}),
-            'read_sha256': hashlib.sha256(raw).hexdigest()}
+            'read_sha256': _read_digest(step)}
 
 
 def _merge_requirements(rows, previous, scope, sources, items):
@@ -317,7 +336,7 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
         step = steps[ref]
         action = step['action']
         if ranges and action['tool'] in RANGE_READERS:
-            _, actual = _complete_read(step, sources)
+            _, actual, partial = _verified_read(step, sources, allow_partial=True)
             relevant = [row for row in actual if any(
                 row['document_id'] == did and row['start_line'] <= end and start <= row['end_line']
                 for did, start, end in ranges)]
@@ -325,6 +344,8 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
                 raise ValueError(f'項目 {number} 的步驟 {ref} 未查讀指定文件範圍。')
             excerpts.extend(relevant)
             match.setdefault('read_steps', []).append(ref)
+            if partial:
+                match.setdefault('partial_read_proofs', []).append({'sequence': ref, 'read_sha256': _read_digest(step)})
         elif expression is not None and action['tool'] == 'calculate_expression':
             if action['args'].get('expression') != expression['expression'] or 'expression_step' in match:
                 raise ValueError(f'項目 {number} 的步驟 {ref} 與指定算式不符。')
@@ -442,9 +463,11 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
+            typed_ranges = requirements.get(item_id, {}).get('ranges')
+            typed_batch = typed_ranges and step['action']['tool'] == 'read_ranges'
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
                     observed.get('status') in ('failed', 'cancelled') or
-                    any(row['status'] != 'provided' for row in observed.get('requested_ranges', [])) or
+                    (not typed_batch and any(row['status'] != 'provided' for row in observed.get('requested_ranges', []))) or
                     (observed.get('goal_conditions_sha256') != scope and number not in reused and not carried
                      and number != calculation_step)):
                 if (item_id in rechecks and step['action']['tool'] == 'calculate_expression'
@@ -453,13 +476,13 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 raise ValueError('完成證據失敗、不完整或來自舊條件；請重新取得適用證據。')
             if item['state'] == 'done' and number in reused:
                 old = previous_items.get(item['id'])
-                if (not requirements.get(item['id'], {}).get('ranges')
+                if (not typed_ranges
                         and (old is None or old['state'] != 'done' or item['evidence_steps'] != old['evidence_steps']
                              or any(by_sequence.get(ref, {}).get('action', {}).get('tool') not in RANGE_READERS
                                     for ref in old['evidence_steps']))):
                     raise ValueError('只能沿用同一個原已完成且只以文件查讀為依據的項目。')
                 if number not in proofs:
-                    proofs[number] = _read_proof(step, scope, sources)
+                    proofs[number] = _read_proof(step, scope, sources, allow_partial=bool(typed_ranges))
         if item['state'] == 'done' and item['id'] in requirements:
             match = _match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources)
             _check_revised_operands(match, revised_operands)
@@ -523,14 +546,12 @@ def _read_evidence(goal, scope):
     for step in goal['steps']:
         observed = step['observation']
         seen_scope = observed.get('goal_conditions_sha256')
-        if (step['action']['tool'] not in RANGE_READERS or observed.get('error')
-                or observed.get('status') in {'failed', 'cancelled'}
-                or any(row.get('status') != 'provided' for row in observed.get('requested_ranges', ()))):
+        if step['action']['tool'] not in RANGE_READERS:
             continue
         try:
             if seen_scope != scope:
                 _old_read_scope(step, scope)
-            _, excerpts = _complete_read(step, goal['sources'])
+            _, excerpts, _ = _verified_read(step, goal['sources'], allow_partial=True)
         except ValueError:
             continue
         excerpts_by_step[step['sequence']] = excerpts
