@@ -660,15 +660,41 @@ def supplement_targets(steps):
                     for request in row.get('ranges', ()) for observed in missing)]
 
 
+def supplement_question_items(steps):
+    from . import decision_table, work_plan_scope
+
+    ask = steps[-1]
+    action, observation = ask['action'], ask['observation']
+    args = action['args']
+    if (action['tool'] != 'ask' or args.keys() - {'question', 'partial_result', 'plan_questions'}
+            or decision_table.reference_question_for_steps(steps[:-1])):
+        raise ValueError('補件須對應目前待答的缺行問題。')
+    if 'plan_questions' not in args:
+        return set()
+    binding = work_plan_scope.bind_questions(args, steps[:-1])
+    if observation.get('work_plan_question') != binding or len(binding['parts']) != 1:
+        raise ValueError('此補件須對應一個已核對項目關聯的缺行分問。')
+    return set(binding['parts'][0]['items'])
+
+
+def can_supplement_question(steps):
+    targets = {row['id'] for row in supplement_targets(steps)}
+    if not targets:
+        return False
+    try:
+        return supplement_question_items(steps) <= targets
+    except ValueError:
+        return False
+
+
 def supplement_receipt(steps, original, source, replacement_read):
-    from . import decision_table, goal_partials, goal_question_withdrawals
+    from . import goal_partials, goal_question_withdrawals
 
     missing, replacement = goal_sources.plan_mapping(source['content'])
     ask = steps[-1]
-    if (ask['action']['tool'] != 'ask' or ask['sequence'] != source['steps_seen']
-            or ask['action']['args'].keys() - {'question', 'partial_result'}
-            or decision_table.reference_question_for_steps(steps[:-1])):
-        raise ValueError('補件須對應目前待答的一般缺行問題。')
+    if ask['sequence'] != source['steps_seen']:
+        raise ValueError('補件須對應目前待答的缺行問題。')
+    question_items = supplement_question_items(steps)
     goal_partials.waiting(ask['observation']['question'], ask['action'], ask['observation'])
     did, start, end = _range_key(missing)
     if not any(doc == did and first <= start <= end <= last for doc, first, last in _observed_missing_ranges(steps[:-1])):
@@ -692,6 +718,8 @@ def supplement_receipt(steps, original, source, replacement_read):
         if any(operand['citation'] in missing_citations for operand in spec.get('operands', ())):
             raise ValueError('此缺行同時指定了原算式運算元，請依新來源另建階段重算。')
         matches.append(spec['id'])
+    if not question_items <= set(matches):
+        raise ValueError('補件未涵蓋目前提問所列的工作項目。')
     requested, excerpts = replacement_read['requested_ranges'], replacement_read['excerpts']
     if (len(requested) != 1 or _range_key(requested[0]) != _range_key(replacement)
             or requested[0].get('status') != 'provided'):

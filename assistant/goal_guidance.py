@@ -92,10 +92,8 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
         result['report_colloquial_question'] = colloquial_question
     if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(steps):
         result['reference_partial_reply'] = True
-    if (goal['status'] == 'needs_input' and steps and steps[-1]['action']['tool'] == 'ask'
-            and steps[-1]['action']['args'].keys() <= {'question', 'partial_result'}
-            and not colloquial_question and work_plan.supplement_targets(steps)
-            and not decision_table.reference_question_for_steps(steps[:-1])):
+    if (goal['status'] == 'needs_input' and steps and not colloquial_question
+            and work_plan.can_supplement_question(steps)):
         files = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
         original = json.loads(goal['sources_json'])
         if (goal_sources.matching_scope(original, files, scoped=True)
@@ -604,11 +602,13 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
             raise StaleGuidance('目標或來源已有變更，請重新載入並核對；未保存補充。')
+        plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
+        if current['goal']['status'] == 'needs_input' and goal_sources.is_plan_mapping(content) and not plan_supplement:
+            raise ValueError('目前提問無法用這筆補件撤下。請核對提問與清單的缺行項目。')
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
         supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
-        plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
         if current.get('plan_document_supplement') and not current['sources_match'] and not plan_supplement:
             raise ValueError('請先指定缺行與補件的對應範圍。')
         if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):

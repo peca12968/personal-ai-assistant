@@ -934,6 +934,7 @@ class WorkPlanTests(unittest.TestCase):
         engine = ScriptedEngine(action('update_plan', items=[done, tasks[1]], reuse_document_steps=[2]),
                                 action('finish', report='提前定稿。'),
                                 action('ask', question='請補封條第 2 行。',
+                                       plan_questions=[{'question': '請補封條第 2 行。', 'items': [2]}],
                                        partial_result='窗口北庫、簽收人青禾 [D1:L1-L2]。門號 G-17、截止 16:20 [D3:L1-L2]。'))
         waiting = a.run_goal(restored, self.sid, gid, engine)
         self.assertEqual(waiting['status'], 'needs_input')
@@ -946,6 +947,7 @@ class WorkPlanTests(unittest.TestCase):
         seal.write_text('封條為 F-02', encoding='utf-8')
         self.assertEqual(restored.attach_document(self.sid, seal), 4)
         view = goal_guidance.snapshot(restored, self.sid, gid)
+        self.assertTrue(view['plan_document_supplement'])
         goal_guidance.save(restored, self.sid, gid, '補件 [D2:L2] 改由 [D4:L1]\n請撤下目前問題。',
                            expected_fingerprint=view['fingerprint'])
         both_done = [done, {**tasks[1], 'state': 'done', 'evidence_steps': [4, 8]}]
@@ -956,6 +958,33 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual([row['ask_sequence'] for row in final['withdrawn_questions']], [3, 7])
         self.assertEqual([row['read_steps'] for row in final['work_plan']['evidence_matches']], [[2, 4], [4, 8]])
         validate_database(restored.path)
+
+    def test_supplement_cannot_withdraw_an_unrelated_or_multipart_plan_question(self):
+        for name in ('record.txt', 'seal.txt'):
+            path = self.root / name
+            path.write_text('原文件標題', encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        first, second = [dict(document_id=number, start_line=2, end_line=2) for number in (1, 2)]
+        tasks = [item(1, '核對門號'), item(2, '核對封條')]
+        specs = [{'id': 1, 'ranges': [first]}, {'id': 2, 'ranges': [second]}]
+        questions = [{'question': '請補門號原文。', 'items': [1]}, {'question': '請補封條原文。', 'items': [2]}]
+        goals = []
+        for parts in ([questions[1]], questions):
+            gid = a.create_goal(self.store, self.sid, '核對門號與封條。')
+            self.run_actions(action('update_plan', items=tasks, verify_delivery=True, evidence_requirements=specs),
+                             action('read_ranges', ranges=[first, second]),
+                             action('ask', question='\n'.join(row['question'] for row in parts), plan_questions=parts), gid=gid)
+            goals.append(gid)
+        path = self.root / 'door-supplement.txt'
+        path.write_text('門號 G-17', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        command = '補件 [D1:L2] 改由 [D3:L1]\n請撤下目前問題。'
+        for gid, message in zip(goals, ('未涵蓋', '無法用這筆補件'), strict=True):
+            view = goal_guidance.snapshot(self.store, self.sid, gid)
+            with self.assertRaisesRegex(ValueError, message):
+                goal_guidance.save(self.store, self.sid, gid, command, expected_fingerprint=view['fingerprint'])
+            self.assertEqual(goal_guidance.snapshot(self.store, self.sid, gid), view)
+        validate_database(self.store.path)
 
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'

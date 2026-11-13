@@ -10,8 +10,12 @@ PLAN_SUPPLEMENT = 'plan_document_supplement'
 _PLAN_MAPPING = re.compile(rf'補件[ \t]+{_RANGE}[ \t]+改由[ \t]+{_RANGE}\s*\n請撤下目前問題[。.]?')
 
 
+def is_plan_mapping(content):
+    return _PLAN_MAPPING.fullmatch(content) is not None
+
+
 def plan_mapping(content):
-    if not _PLAN_MAPPING.fullmatch(content):
+    if not is_plan_mapping(content):
         raise ValueError('請用兩行指定補件，例如「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」')
     ranges, _ = document_ranges.requested_ranges(content)
     document_ranges.validate_batch({'ranges': ranges})
