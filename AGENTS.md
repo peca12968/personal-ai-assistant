@@ -526,3 +526,5 @@ Private repository: `peca12968/personal-ai-assistant`.
 - Explicit partial withdrawal for an ordinary multipart question binds one complete quoted subquestion to the current ask. Preserve all other subquestions verbatim in order, the original history, and the exact correction. Recheck the successor and withdrawal receipt on backup restore. Bind subsequent replies to the successor and leave specialized work-plan or document questions on their own paths.
 
 - A stale reply editor refreshes its fixed goal and shows the question associated with the preserved draft. The first stale submission neither saves nor resumes. Require a new save against the refreshed fingerprint, and keep unrelated validation failures on the existing error path.
+
+- A stale guidance editor refreshes its fixed goal and preserves its draft until a new explicit save. Show the work plan from the same read transaction as the reviewed goal. Display current and historical plan status using the existing plan formatter. Preserve guarded delivery, retained confirmations and unfinished document evidence through restore.

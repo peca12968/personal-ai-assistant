@@ -781,10 +781,11 @@ class FormGeometryTests(unittest.TestCase):
             editor.content.insert('1.0','更正：改為12人。');editor.save_button.invoke()
             other.content.insert('1.0','再補充：先給總額。')
             with patch('assistant.goal_guidance_ui.messagebox.showerror') as error:other.save_button.invoke()
-            error.assert_called_once()
+            error.assert_not_called()
             self.assertIn('先給總額',other.content.get('1.0','end'))
-            other.reload_button.invoke()
             self.assertIn('12人',other.context.get('1.0','end'))
+            self.assertIn('草稿仍保留', other.notice.get())
+            self.assertNotIn('先給總額', autonomy.get_goal(store, sid, gid)['notes'])
             other.save_button.invoke()
             goal=autonomy.get_goal(store,sid,gid)
             self.assertEqual(goal['status'],'pending');self.assertEqual(goal['steps'],[])
@@ -807,6 +808,80 @@ class FormGeometryTests(unittest.TestCase):
             for widget in (editor.content,editor.save_button,editor.resume_button,editor.reload_button):
                 self.assert_reachable(layout,widget)
             self.assertEqual(str(editor.resume_button['state']),'normal')
+
+    def test_stale_guidance_refreshes_plan_before_preserving_confirmed_work_and_finishing_read(self):
+        from assistant.backup import create_backup, restore_backup, validate_database
+        from assistant.goal_guidance_ui import GoalGuidanceWindow
+        from assistant.goal_reply_ui import GoalReplyWindow
+        from test_autonomy import ScriptedEngine, action
+        from test_work_plan import item
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store(root / 'state.sqlite3')
+            sid = store.new_session()
+            document = root / 'handoff.txt'
+            document.write_text('青櫃負責本批收件。\n檢核碼是 CK-35。\n', encoding='utf-8')
+            did = store.attach_document(sid, document)
+            gid = autonomy.create_goal(store, sid, '確認領用人及入場門號，查讀檢核碼並交文字。')
+            tasks = [item(1, '確認領用人'), item(2, '確認入場門號'), item(3, '查讀檢核碼'), item(4, '安排窗口')]
+            requirement = {'id': 3, 'ranges': [{'document_id': did, 'start_line': 2, 'end_line': 2}]}
+            parts = [{'question': '領用人是誰？', 'items': [1]}, {'question': '入場門號是多少？', 'items': [2]},
+                     {'question': '窗口是誰？', 'items': [4]}]
+            initial = ScriptedEngine(action('update_plan', items=tasks, verify_delivery=True, evidence_requirements=[requirement]),
+                                     action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts))
+            autonomy.run_goal(store, sid, gid, initial)
+            changes = []
+            editor = GoalGuidanceWindow(self.root, store, sid, gid, changed=lambda: changes.append(gid))
+            editor.window.withdraw()
+            draft = '取消「確認入場門號」。  '
+            editor.content.insert('1.0', draft)
+
+            reply = GoalReplyWindow(self.root, store, sid, gid, prepare_resume=lambda: 3, saved=lambda *_: None)
+            reply.window.withdraw()
+            reply.content.insert('1.0', '取消「安排窗口」。領用人是林曉晴。入場門號尚未確認。')
+            reply.save()
+            before = autonomy.get_goal(store, sid, gid)
+            self.assertEqual(before['question'], '入場門號是多少？')
+            self.assertEqual(before['work_plan']['items'][0]['state'], 'done')
+            self.assertEqual(before['work_plan']['items'][2]['state'], 'pending')
+
+            with patch('assistant.goal_guidance_ui.messagebox.showerror') as error:
+                editor.save()
+            error.assert_not_called()
+            self.assertEqual(editor.content.get('1.0', 'end-1c'), draft)
+            self.assertEqual(changes, [])
+            self.assertEqual(autonomy.get_goal(store, sid, gid), before)
+            context = editor.context.get('1.0', 'end')
+            self.assertIn('尚待回答：入場門號是多少？', context)
+            self.assertIn('確認領用人 — 助理回報完成', context)
+            self.assertIn('查讀檢核碼 — 待處理', context)
+            self.assertIn('領用人是林曉晴', context)
+
+            editor.save()
+            self.assertEqual(changes, [gid])
+            revised = autonomy.get_goal(store, sid, gid)
+            self.assertEqual(revised['status'], 'paused')
+            self.assertEqual(revised['work_plan']['items'][0]['evidence_steps'], before['work_plan']['items'][0]['evidence_steps'])
+            self.assertEqual(revised['work_plan']['delivery_review']['open_items'], [3])
+            backup = create_backup(store.path, root / 'before-read.paibackup')
+            restore_backup(backup['path'], root / 'restored')
+            restored = Store(root / 'restored' / 'assistant.sqlite3')
+            self.assertEqual(autonomy.get_goal(restored, sid, gid), revised)
+            ref = len(revised['steps']) + 2
+            items = [dict(row) for row in revised['work_plan']['items']]
+            items[2].update(state='done', evidence_steps=[ref])
+            finish = ScriptedEngine(action('finish', report='已完成。'),
+                                    action('read', document_id=did, start_line=2, end_line=2),
+                                    action('update_plan', items=items, evidence_requirements=[requirement]),
+                                    action('finish', report=f'領用人林曉晴 [補充#2]。檢核碼 CK-35 [D{did}:L2]。'))
+            final = autonomy.run_goal(restored, sid, gid, finish)
+            self.assertEqual(final['status'], 'report_ready')
+            self.assertIn('未完成項目 3', final['steps'][ref - 2]['observation']['error'])
+            self.assertEqual(final['work_plan']['items'][2]['evidence_steps'], [ref])
+            self.assertTrue(final['work_plan']['delivery_review']['ready'])
+            self.assertEqual(autonomy.get_goal(store, sid, gid), revised)
+            validate_database(restored.path)
 
     def test_app_memory_draft_entry_keeps_session_and_close_requests_worker_stop(self):
         import threading

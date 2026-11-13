@@ -12,13 +12,17 @@ from . import (artifact_names, artifacts, conversation_history, decision_table, 
                work_plan_scope)
 
 
+class StaleGuidance(ValueError):
+    """The reviewed goal or its sources changed before saving guidance."""
+
+
 def _steps(db, gid):
     return [{'sequence': number, 'action': json.loads(action), 'observation': json.loads(observation)}
             for number, action, observation in db.execute(
                 'SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
 
 
-def _snapshot(db, sid, gid, *, include_reply_positions=False):
+def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=False):
     goal = db.execute('SELECT * FROM autonomous_goals WHERE id=? AND session_id=?',(gid,sid)).fetchone()
     if goal is None:
         raise ValueError('找不到此對話的自主目標。')
@@ -76,6 +80,12 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
                     fingerprint = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
     result = {'goal':goal, 'fingerprint':fingerprint,
               'step_count':review['step_count'], 'sources_match':review['sources_match']}
+    if include_work_plan and review['step_count']:
+        plan_goal = _condition_goal(db, goal, goal['notes'])
+        plan_goal['steps'] = steps if waiting_step is not None else _steps(db, gid)
+        current_sources = plan_goal['sources'] if review['sources_match'] else None
+        if plan := work_plan.for_goal(plan_goal, current_sources):
+            result['work_plan'] = plan
     if options:
         result['question_withdrawal'] = options
     if colloquial_question:
@@ -109,10 +119,10 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
     return result
 
 
-def snapshot(store, sid, gid):
+def snapshot(store, sid, gid, *, include_work_plan=False):
     with store.connect() as db:
         db.execute('BEGIN')
-        return _snapshot(db,sid,gid)
+        return _snapshot(db, sid, gid, include_work_plan=include_work_plan)
 
 
 def eligibility(value):
@@ -547,7 +557,7 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         db.execute('BEGIN IMMEDIATE')
         current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
-            raise ValueError('目標或來源已有變更，請重新載入並核對；未保存補充。')
+            raise StaleGuidance('目標或來源已有變更，請重新載入並核對；未保存補充。')
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
