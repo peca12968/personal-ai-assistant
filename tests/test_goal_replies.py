@@ -38,7 +38,7 @@ class ReplyTests(unittest.TestCase):
         old = self.token(); self.save('3人', old)
         a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(action('ask', question='人數？')))
         before = a.get_goal(self.store, self.sid, self.gid)
-        with self.assertRaisesRegex(ValueError, '已變更'): self.save('5人', old)
+        with self.assertRaisesRegex(r.StaleReply, '已變更'): self.save('5人', old)
         self.assertEqual(a.get_goal(self.store, self.sid, self.gid), before)
         result = self.save('改成5人')
         self.assertEqual(result['goal']['status'], 'paused')
@@ -130,11 +130,75 @@ class ReplyUiTests(unittest.TestCase):
         r.save(self.store,self.sid,self.ids[0],'3人',expected_fingerprint=self.editor.current['fingerprint'])
         a.run_goal(self.store,self.sid,self.ids[0],ScriptedEngine(action('ask',question='份數？')))
         with patch('assistant.goal_reply_ui.messagebox.showerror') as show: self.editor.save(resume=True)
-        self.assertTrue(show.called); self.assertEqual(self.editor.content.get('1.0','end').strip(),'5人')
-        self.assertFalse(self.view.busy); self.editor.reload()
-        self.assertIn('份數？',self.editor.context.get('1.0','end'))
+        show.assert_not_called()
+        self.assertEqual(self.editor.content.get('1.0','end').strip(),'5人')
+        self.assertFalse(self.view.busy)
+        context = self.editor.context.get('1.0', 'end')
+        self.assertIn('目前問題：份數？', context)
+        self.assertIn('草稿輸入時的問題：\n人數？', context)
         self.assertEqual(self.editor.content.get('1.0','end').strip(),'5人')
         self.assertEqual(a.get_goal(self.store,self.sid,self.ids[0])['status'],'needs_input')
+
+    def test_withdrawn_subquestion_keeps_draft_for_review_and_preserves_prior_work(self):
+        source = self.store.path.parent / 'packing.txt'
+        source.write_text('固定窗口為柳櫃。\n', encoding='utf-8')
+        doc_id = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '整理本批裝箱通知，列總片數、固定窗口及簽收人。')
+        original_question = '櫃號是多少？簽收人是誰？'
+        before = a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=doc_id, start_line=1, end_line=1),
+            action('calculate', operation='product', values=['6', '8']),
+            action('ask', question=original_question, partial_result=f'固定窗口為柳櫃 [D{doc_id}:L1]，總片數 48。')))
+        self.view.refresh(gid)
+        editor = self.view.add_reply(); editor.window.withdraw()
+        draft = '櫃號是 C13。\n簽收人是何雨安。  '
+        editor.content.insert('1.0', draft)
+        goal_guidance.save(self.store, self.sid, gid, '新版免填櫃號，原窗口和片數照舊。撤下分問「櫃號是多少？」。',
+                           expected_fingerprint=editor.current['fingerprint'])
+        changed = a.get_goal(self.store, self.sid, gid)
+
+        with patch('assistant.goal_reply_ui.messagebox.showerror') as show:
+            editor.save(resume=True)
+        show.assert_not_called()
+        context = editor.context.get('1.0', 'end')
+        self.assertIn('目前問題：簽收人是誰？', context)
+        self.assertIn('草稿輸入時的問題：\n' + original_question, context)
+        self.assertEqual(editor.content.get('1.0', 'end-1c'), draft)
+        self.assertIn('刪除已不適用的內容', editor.notice.get())
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), changed)
+        self.assertFalse(self.view.busy)
+        self.assertEqual(self.engine.prompts, [])
+        editor.reload()
+        self.assertIn('草稿輸入時的問題：\n' + original_question, editor.context.get('1.0', 'end'))
+
+        editor.content.delete('1.0', 'end')
+        editor.content.insert('1.0', '簽收人是何雨安。')
+        editor.save()
+        saved = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual(saved['steps'][:len(before['steps'])], before['steps'])
+        self.assertEqual(saved['reply_sources'][-1]['question'], '簽收人是誰？')
+        self.assertEqual(saved['reply_sources'][-1]['answer'], '簽收人是何雨安。')
+        self.assertNotIn('C13', saved['notes'])
+        self.assertNotIn('草稿輸入時的問題', editor.context.get('1.0', 'end'))
+        engine = ScriptedEngine(action('finish', report=f'柳櫃 [D{doc_id}:L1]，總片數 48，簽收人何雨安 [補充#4]。'))
+        final = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(len(engine.prompts), 1)
+        context = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(context['withdrawn_questions'], [{'ask_sequence': 3, 'guidance_citation': '[更正#1]'}])
+        self.assertIn('48', json.dumps(context['steps'][1]['observation']))
+        self.assertEqual(context['reply_sources'][-1]['answer'], '簽收人是何雨安。')
+
+    def test_stale_draft_stays_visible_if_the_entire_question_is_withdrawn(self):
+        self.editor.content.insert('1.0', '還未送出的草稿')
+        goal_guidance.save(self.store, self.sid, self.ids[0], '已取消這項工作。請撤下目前問題。',
+                           expected_fingerprint=self.editor.current['fingerprint'])
+        self.editor.save()
+        self.assertEqual(str(self.editor.save_button['state']), 'disabled')
+        self.assertEqual(str(self.editor.resume_button['state']), 'disabled')
+        self.assertEqual(self.editor.content.get('1.0', 'end-1c'), '還未送出的草稿')
+        self.assertIn('草稿輸入時的問題：\n人數？', self.editor.context.get('1.0', 'end'))
+        self.assertFalse(a.get_goal(self.store, self.sid, self.ids[0]).get('reply_sources'))
 
     def test_save_and_resume_targets_fixed_goal_with_ordinary_budget(self):
         self.editor.content.insert('1.0','3人'); self.view.budget.set('1'); self.view.refresh(self.ids[1])

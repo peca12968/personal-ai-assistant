@@ -12,6 +12,7 @@ class GoalReplyWindow:
         self.store, self.sid, self.gid = store, sid, gid
         self.prepare_resume, self.saved = prepare_resume, saved
         self.current = None
+        self.draft_question = ''
         self.window = tk.Toplevel(parent)
         self.window.title('回答目前問題')
         fit_window(self.window, 820, 680)
@@ -43,12 +44,21 @@ class GoalReplyWindow:
 
     def reload(self):
         try:
-            self.current = goal_replies.snapshot(self.store, self.sid, self.gid)
+            previous = self.current
+            current = goal_replies.snapshot(self.store, self.sid, self.gid)
+            has_draft = bool(self.content.get('1.0', 'end-1c').strip())
+            if not has_draft:
+                self.draft_question = ''
+            elif previous and previous['fingerprint'] != current['fingerprint'] and not self.draft_question:
+                self.draft_question = previous['goal']['question']
+            self.current = current
             goal = self.current['goal']
             waiting = goal['status'] == 'needs_input' and bool(goal['question'])
             resumable = self.current['sources_match'] and self.current['step_count'] < MAX_STEPS
             lines = ['目標：' + goal['objective'], '狀態：' + LABELS.get(goal['status'], goal['status']),
                      '目前問題：' + (goal['question'] or '無'), '先前問題與補充：\n' + (goal['notes'] or '無')]
+            if self.draft_question:
+                lines.insert(-1, '草稿輸入時的問題：\n' + self.draft_question)
             if filename_status := goal.get('artifact_filename_status'):
                 lines.insert(-1, filename_status)
             if goal.get('partial_result'):
@@ -82,7 +92,9 @@ class GoalReplyWindow:
             self.context.configure(state='disabled')
             self.save_button.configure(state='normal' if waiting else 'disabled')
             self.resume_button.configure(state='normal' if waiting and resumable else 'disabled')
-            self.notice.set('請核對目前問題與回答文字，再保存。' if waiting and resumable else
+            self.notice.set('問題或工作條件已更新，草稿仍保留。請核對目前問題、刪除已不適用的內容，再按保存。'
+                            if waiting and resumable and self.draft_question else
+                            '請核對目前問題與回答文字，再保存。' if waiting and resumable else
                             '來源已變更或達步數上限；可保存回答後，帶入所選進度建立下一階段。' if waiting else
                             '目前沒有等待回答的問題；未保存文字仍留在此視窗。')
         except Exception as exc:
@@ -98,6 +110,9 @@ class GoalReplyWindow:
             budget = self.prepare_resume() if resume else None
             outcome = goal_replies.save(self.store, self.sid, self.gid, self.content.get('1.0', 'end'),
                                         expected_fingerprint=self.current['fingerprint'])
+        except goal_replies.StaleReply:
+            self.reload()
+            return
         except Exception as exc:
             messagebox.showerror('回答尚未保存', str(exc), parent=self.window)
             return

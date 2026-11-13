@@ -8,6 +8,10 @@ from .goal_guidance import (_append_step, _condition_goal, _snapshot, _steps, ap
                             append_waiting_field_version, append_waiting_recheck, apply_waiting_review, snapshot)
 
 
+class StaleReply(ValueError):
+    """The reviewed question or its sources changed before saving."""
+
+
 def _save_partial_followup(db, current, notes, kind, review):
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
@@ -186,7 +190,7 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         db.execute('BEGIN IMMEDIATE')
         current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
-            raise ValueError('問題、目標進度或來源已變更；回答尚未保存。請重新載入並核對，草稿仍保留。')
+            raise StaleReply('問題、目標進度或來源已變更；回答尚未保存。請重新載入並核對，草稿仍保留。')
         goal = current['goal']
         if goal['status'] != 'needs_input' or not goal['question']:
             raise ValueError('此目標目前沒有等待補充的問題。')

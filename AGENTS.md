@@ -524,3 +524,5 @@ Private repository: `peca12968/personal-ai-assistant`.
 - Explicit standalone dismissal in goal guidance can withdraw an ordinary current question in the same transaction as the saved correction. Bind the exact old question and the new guidance. Quoted, conditional and interrogative clauses keep the question open. Preserve work-plan, filename and document-reference rechecks and their dedicated question handling.
 
 - Explicit partial withdrawal for an ordinary multipart question binds one complete quoted subquestion to the current ask. Preserve all other subquestions verbatim in order, the original history, and the exact correction. Recheck the successor and withdrawal receipt on backup restore. Bind subsequent replies to the successor and leave specialized work-plan or document questions on their own paths.
+
+- A stale reply editor refreshes its fixed goal and shows the question associated with the preserved draft. The first stale submission neither saves nor resumes. Require a new save against the refreshed fingerprint, and keep unrelated validation failures on the existing error path.
