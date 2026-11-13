@@ -32,6 +32,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。reusable_calculations列出可沿用的已完成項。兩項即使同引一行或一則回覆，若每段數字原話在該來源中的位置互不重疊，也可能沿用。separate_operand_excerpts表示使用了這項核對。保持可沿用項的原evidence_steps，重算更正項並保存其完整新規約和證據。數字短句用足以辨認欄位的原話，不以整行代替不同欄位的短句。新證據重疊時須重驗相關項目。
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
+delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍；read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -157,11 +158,15 @@ def _complete_read(step, sources):
     return ranges, excerpts
 
 
-def _read_proof(step, scope, sources):
+def _old_read_scope(step, scope):
     old_scope = step['observation'].get('goal_conditions_sha256')
     if (step['action']['tool'] not in RANGE_READERS or not isinstance(old_scope, str)
             or not re.fullmatch(r'[a-f0-9]{64}', old_scope) or old_scope == scope):
         raise ValueError('沿用證據須為已記錄舊條件的完整文件查讀。')
+
+
+def _read_proof(step, scope, sources):
+    _old_read_scope(step, scope)
     ranges, _ = _complete_read(step, sources)
     raw = json.dumps(step, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return {'sequence': step['sequence'], 'document_ids': sorted({key[0] for key in ranges}),
@@ -489,16 +494,15 @@ def _open_items(plan):
     return [row['id'] for row in plan['items'] if row['state'] not in ('done', 'superseded')]
 
 
-def _covering_read_steps(requirement, old_excerpts):
+def _select_reads(requirement, excerpts_by_step, limit):
     targets = {(did, line) for did, start, end in map(_range_key, requirement['ranges'])
                for line in range(start, end + 1)}
     coverage = {}
-    for number, excerpts in old_excerpts.items():
+    for number, excerpts in excerpts_by_step.items():
         intervals = [_range_key(row) for row in excerpts]
         coverage[number] = {(did, line) for did, line in targets
                             if any(doc == did and start <= line <= end for doc, start, end in intervals)}
     selected = []
-    limit = 5 if 'expression' in requirement else 6
     while targets and coverage and len(selected) < limit:
         number = max(coverage, key=lambda ref: len(coverage[ref] & targets))
         covered = coverage.pop(number) & targets
@@ -506,7 +510,53 @@ def _covering_read_steps(requirement, old_excerpts):
             break
         selected.append(number)
         targets -= covered
-    return sorted(selected) if not targets else []
+    return sorted(selected), targets
+
+
+def _covering_read_steps(requirement, old_excerpts):
+    steps, missing = _select_reads(requirement, old_excerpts, 5 if 'expression' in requirement else 6)
+    return steps if not missing else []
+
+
+def _read_evidence(goal, scope):
+    excerpts_by_step, old_steps = {}, set()
+    for step in goal['steps']:
+        observed = step['observation']
+        seen_scope = observed.get('goal_conditions_sha256')
+        if (step['action']['tool'] not in RANGE_READERS or observed.get('error')
+                or observed.get('status') in {'failed', 'cancelled'}
+                or any(row.get('status') != 'provided' for row in observed.get('requested_ranges', ()))):
+            continue
+        try:
+            if seen_scope != scope:
+                _old_read_scope(step, scope)
+            _, excerpts = _complete_read(step, goal['sources'])
+        except ValueError:
+            continue
+        excerpts_by_step[step['sequence']] = excerpts
+        if seen_scope != scope:
+            old_steps.add(step['sequence'])
+    # Prefer current observations over equally useful reads that require explicit reuse.
+    reads = dict(sorted(excerpts_by_step.items(), key=lambda row: (row[0] in old_steps, row[0])))
+    return reads, old_steps
+
+
+def _document_read_progress(typed_reads, plan, reads, old_steps):
+    progress = []
+    for item in plan['items']:
+        requirement = typed_reads.get(item['id'])
+        if not requirement or item['state'] == 'superseded' or (plan['conditions_current'] and item['state'] == 'done'):
+            continue
+        steps, missing = _select_reads(requirement, reads, len(reads))
+        ranges = []
+        for did, line in sorted(missing):
+            if ranges and ranges[-1]['document_id'] == did and ranges[-1]['end_line'] + 1 == line:
+                ranges[-1]['end_line'] = line
+            else:
+                ranges.append({'document_id': did, 'start_line': line, 'end_line': line})
+        progress.append({'id': item['id'], 'read_steps': steps, 'missing_ranges': ranges,
+                         'reuse_document_steps': [number for number in steps if number in old_steps]})
+    return progress
 
 
 def _delivery_review(plan, goal, scope, sources_current):
@@ -517,6 +567,13 @@ def _delivery_review(plan, goal, scope, sources_current):
               'recheck_items': [], 'reusable_documents': []}
     if pending_fields:
         review['pending_revision_fields'] = pending_fields
+    typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
+    old_excerpts = {}
+    if typed_reads and sources_current:
+        reads, old_steps = _read_evidence(goal, scope)
+        if progress := _document_read_progress(typed_reads, plan, reads, old_steps):
+            review['document_read_progress'] = progress
+        old_excerpts = {number: excerpts for number, excerpts in reads.items() if number in old_steps}
     if plan['conditions_current']:
         return review
     calculations, rechecks = _calculation_reuse_review(
@@ -528,17 +585,6 @@ def _delivery_review(plan, goal, scope, sources_current):
         review['reusable_calculations'] = [
             {**calculations[row['id']], 'evidence_steps': row['evidence_steps']}
             for row in plan['items'] if row['id'] in calculations]
-    typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
-    old_excerpts = {}
-    if typed_reads and sources_current:
-        for number, step in by_sequence.items():
-            if step['action']['tool'] not in RANGE_READERS:
-                continue
-            try:
-                _read_proof(step, scope, goal['sources'])
-            except ValueError:
-                continue
-            old_excerpts[number] = step['observation']['excerpts']
     for item in plan['items']:
         typed = typed_reads.get(item['id'])
         if typed and item['state'] != 'superseded':
@@ -619,6 +665,14 @@ def describe(value):
         if pending_fields := review.get('pending_revision_fields'):
             lines.append('仍待確認的更正 · ' + '、'.join(pending_fields))
         lines.extend(_calculation_recheck_message(row) for row in review.get('calculation_rechecks', ()))
+        for row in review.get('document_read_progress', ()):
+            if row['missing_ranges']:
+                ranges = '、'.join(f'D{did}:L{start}-L{end}' if start != end else f'D{did}:L{start}'
+                                  for did, start, end in map(_range_key, row['missing_ranges']))
+                lines.append(f'項目 {row["id"]} 待查讀 · {ranges}')
+            if row['read_steps']:
+                numbers = '、'.join(map(str, row['read_steps']))
+                lines.append(f'項目 {row["id"]} 已查讀依據 · 步驟 {numbers}')
     if value.get('evidence_matches'):
         numbers = '、'.join(str(row['id']) for row in value['evidence_matches'])
         lines.append('指定算式或原文已核對 · 項目 ' + numbers)

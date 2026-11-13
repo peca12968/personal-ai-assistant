@@ -528,3 +528,5 @@ Private repository: `peca12968/personal-ai-assistant`.
 - A stale reply editor refreshes its fixed goal and shows the question associated with the preserved draft. The first stale submission neither saves nor resumes. Require a new save against the refreshed fingerprint, and keep unrelated validation failures on the existing error path.
 
 - A stale guidance editor refreshes its fixed goal and preserves its draft until a new explicit save. Show the work plan from the same read transaction as the reviewed goal. Display current and historical plan status using the existing plan formatter. Preserve guarded delivery, retained confirmations and unfinished document evidence through restore.
+
+- For typed document requirements, derive missing line ranges and candidate read steps from complete, eligible saved observations on matching source versions. Distinguish current observations from reads needing explicit reuse. Treat progress as advisory and retain the full delivery and evidence checks.

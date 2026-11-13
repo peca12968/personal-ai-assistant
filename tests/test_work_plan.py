@@ -654,6 +654,55 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(result['steps'][-1]['observation']['plan_check_step'], 7)
         validate_database(self.store.path)
 
+    def test_document_progress_combines_current_and_reusable_reads_across_restore(self):
+        for name, body in [('count.txt', '批次 A\n數量 12\n已封存'), ('handoff.txt', '窗口青櫃\n交還碼 CK-35')]:
+            path = self.root / name
+            path.write_text(body, encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '查讀兩份文件並整理出貨通知。')
+        first = {'document_id': 1, 'start_line': 1, 'end_line': 1}
+        missing = {'document_id': 1, 'start_line': 2, 'end_line': 3}
+        second = {'document_id': 2, 'start_line': 1, 'end_line': 2}
+        requirements = [{'id': 1, 'ranges': [{**first, 'end_line': 3}, second]}]
+        self.run_actions(action('update_plan', items=[item(1, '查讀出貨文件')], verify_delivery=True,
+                                evidence_requirements=requirements), action('read', **first), gid=gid)
+
+        def progress(store):
+            return a.get_goal(store, self.sid, gid)['work_plan']['delivery_review']['document_read_progress']
+
+        self.assertEqual(progress(self.store), [{'id': 1, 'read_steps': [2], 'missing_ranges': [missing, second],
+                                                'reuse_document_steps': []}])
+        review = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '定稿請用條列。', expected_fingerprint=review['fingerprint'])
+        # A failed sibling range prevents the whole read step from being used as completion evidence.
+        self.run_actions(action('read_ranges', ranges=[second, {**first, 'start_line': 9, 'end_line': 9}]), gid=gid)
+        expected = [{'id': 1, 'read_steps': [2], 'missing_ranges': [missing, second], 'reuse_document_steps': [2]}]
+        self.assertEqual(progress(self.store), expected)
+        self.assertIn('D1:L2-L3、D2:L1-L2', p.describe(a.get_goal(self.store, self.sid, gid)['work_plan']))
+
+        backup = create_backup(self.store.path, self.root / 'reading.paibackup')
+        restore_backup(backup['path'], self.root / 'reading')
+        restored = Store(self.root / 'reading' / 'assistant.sqlite3')
+        self.assertEqual(progress(restored), expected)
+        engine = ScriptedEngine(action('read_ranges', ranges=[missing, second]),
+                                action('update_plan', items=[item(1, '查讀出貨文件', 'done', [2, 4])],
+                                       reuse_document_steps=[2], evidence_requirements=requirements),
+                                action('finish', report='批次 A [D1:L1] 共 12 件 [D1:L2]，窗口青櫃 [D2:L1]，交還碼 CK-35 [D2:L2]。'))
+        self.assertEqual(a.run_goal(restored, self.sid, gid, engine, max_steps=1)['status'], 'paused')
+        payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(payload['work_plan']['delivery_review']['document_read_progress'], expected)
+        self.assertEqual(progress(restored), [{'id': 1, 'read_steps': [2, 4], 'missing_ranges': [],
+                                              'reuse_document_steps': [2]}])
+        final = a.run_goal(restored, self.sid, gid, engine)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['evidence_matches'][0]['read_steps'], [2, 4])
+        validate_database(restored.path)
+
+        other = self.root / 'unrelated.txt'
+        other.write_text('不同來源', encoding='utf-8')
+        restored.attach_document(self.sid, other)
+        self.assertNotIn('document_read_progress', a.get_goal(restored, self.sid, gid)['work_plan']['delivery_review'])
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')
