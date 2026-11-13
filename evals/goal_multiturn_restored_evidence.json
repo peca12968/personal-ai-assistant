@@ -1,0 +1,59 @@
+[
+  {
+    "id":"same_code_reconfirmed_as_current_after_withdrawal",
+    "file_delivery":true,
+    "prompt":"替桂原室整理本批收件通知 receipt.md。匯入規則有固定窗口。先一問確認簽收人和有效核准編號。只問尚缺的必要項目。若核准撤回且尚未重新核對，附暫表列窗口、簽收人和放行狀態，等有效核准再產檔。定稿只列現行的簽收人、窗口、核准編號和放行結論，各一行並引用直接支持該項的來源。放行一行也附正式規則。",
+    "documents":[{"name":"receiving.txt","content":"桂原室本批收件\n固定窗口是柳櫃。\n本批放行需有現行有效的核准編號。\n"}],
+    "replies":[
+      {"question_has":["簽收人|誰.{0,4}簽收","核准|編號"],"answer":"核准編號先確認為 RX-36，簽收人尚未確認。"},
+      {"question_has":["簽收人|誰.{0,4}簽收"],"question_excludes":["提供.{0,5}核准"],"answer":"簽收人是游品蓁。先前核准 RX-36 的確認撤回，本批還未重新核對。"},
+      {"question_has":["核准|編號"],"question_excludes":["提供.{0,6}簽收人|誰.{0,4}簽收"],"partial_has":["柳櫃","游品蓁","撤回","(?:暫不|不得|不可|不能|尚未|待).{0,12}放行|放行狀態[^\\n]{0,22}(?:待補|待確認)"],"restore_before":true,"answer":"重新核對完成。本批現行有效核准編號仍是 RX-36，這是本次重新確認的結果。"}
+    ],
+    "artifact":"receipt.md",
+    "must_match":["游品蓁","柳櫃","RX-36","(?:可(?:以|正常)?放行|允許放行|符合放行)"],
+    "must_omit":["暫表|暫定|待補|尚未確認|已撤回|不可放行"],
+    "claim_sources":[
+      {"claim":"簽收人[^\\n]{0,28}游品蓁","sources":[{"kind":"reply","index":1,"text":"簽收人是游品蓁"}]},
+      {"claim":"窗口[^\\n]{0,24}柳櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口是柳櫃"}]},
+      {"claim":"核准(?:編號|號碼)?[^\\n]{0,40}RX-36","sources":[{"kind":"reply","index":2,"text":"現行有效核准編號仍是 RX-36"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"核准編號先確認為 RX-36"}]},
+      {"claim":"(?:可(?:以|正常)?放行|允許放行|符合放行)","sources":[{"kind":"document","doc":0,"line":3,"text":"放行需有現行有效的核准編號"},{"kind":"reply","index":2,"text":"現行有效核准編號仍是 RX-36"}]}
+    ]
+  },
+  {
+    "id":"recount_recomputes_subtotal_and_aggregate",
+    "file_delivery":false,
+    "prompt":"替映杉組做出貨進度。先同問乙批箱數和交接人。兩項都確認才交文字。乙批箱數被撤回而未重點時，附暫表列已確認的甲批片數、固定配件數、乙批與兩批合計狀態，然後只問缺的欄位。定稿每項一行，列甲批、乙批、兩批合計、固定配件及交接人，同行引用直接來源。乙批與合計須附箱數的實際答覆及適用計算規則。",
+    "documents":[{"name":"shipping.txt","content":"映杉組出貨\n甲批已確認 23 片。\n乙批每箱 8 片，乙批片數為箱數乘 8。\n兩批合計為甲批片數加乙批片數。\n固定配件為 4 組，與箱數無關。\n"}],
+    "replies":[
+      {"question_has":["箱數|多少箱|幾箱","交接人|誰.{0,5}交接"],"answer":"乙批箱數先確認為 3 箱，交接人還未確認。"},
+      {"question_has":["交接人|誰.{0,5}交接"],"question_excludes":["提供.{0,6}箱數"],"answer":"交接人確認為江郁棠。乙批 3 箱的確認撤回，還未重點。"},
+      {"question_has":["箱數|多少箱|幾箱|點.{0,8}箱"],"question_excludes":["提供.{0,6}交接人|誰.{0,5}交接"],"partial_has":["23\\s*片","4\\s*組","(?:合計|總片數)[^\\n]{0,55}(?:待補|待確認|未能|無法|不能|待算)"],"partial_omits":["24\\s*片","47\\s*片"],"restore_before":true,"answer":"乙批重點完成，本批正式箱數為 6 箱。甲批片數及固定配件照原規則。"}
+    ],
+    "must_match":["23\\s*片","48\\s*片","71\\s*片","4\\s*組","江郁棠"],
+    "must_omit":["3\\s*箱|24\\s*片|47\\s*片|暫表|待補|尚未確認"],
+    "claim_sources":[
+      {"claim":"甲批[^\\n]{0,25}23\\s*片","sources":[{"kind":"document","doc":0,"line":2,"text":"甲批已確認 23 片"}]},
+      {"claim":"乙批[^\\n]{0,45}48\\s*片","sources":[{"kind":"document","doc":0,"line":3,"text":"乙批片數為箱數乘 8"},{"kind":"reply","index":2,"text":"正式箱數為 6 箱"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"箱數先確認為 3 箱"}]},
+      {"claim":"(?:合計|總片數)[^\\n]{0,56}71\\s*片","sources":[{"kind":"document","doc":0,"line":4,"text":"兩批合計為甲批片數加乙批片數"},{"kind":"reply","index":2,"text":"正式箱數為 6 箱"}]},
+      {"claim":"配件[^\\n]{0,28}4\\s*組","sources":[{"kind":"document","doc":0,"line":5,"text":"固定配件為 4 組"}]},
+      {"claim":"交接人[^\\n]{0,26}江郁棠","sources":[{"kind":"reply","index":1,"text":"交接人確認為江郁棠"}]}
+    ]
+  },
+  {
+    "id":"historical_same_code_does_not_restore_current_approval",
+    "file_delivery":false,
+    "prompt":"替柏楠點交一份當批放行進度。先一起問本批核准及記錄人。收到記錄人後交付，可保留核准待補。每項一行附來源，列記錄人、固定窗口、當批核准狀態及能否放行。只列當批現況。",
+    "documents":[{"name":"release.txt","content":"柏楠點放行規則\n固定窗口是石櫃。\n放行必須有本批有效核准。\n"}],
+    "replies":[
+      {"question_has":["核准","記錄人|誰.{0,4}記錄"],"answer":"本批核准先確認為 PA-61，記錄人待確認。"},
+      {"question_has":["記錄人|誰.{0,4}記錄"],"answer":"記錄人是林可雯。本批核准 PA-61 撤回且無替代。上一批的同碼 PA-61 經重查仍有效，但只適用上一批。"}
+    ],
+    "must_match":["林可雯","石櫃","撤回","(?:不可|不得|不能|暫不|無法)放行"],
+    "must_omit":["PA-61|上一批|可正常放行|目前可以放行"],
+    "claim_sources":[
+      {"claim":"記錄人[^\\n]{0,28}林可雯","sources":[{"kind":"reply","index":1,"text":"記錄人是林可雯"}]},
+      {"claim":"窗口[^\\n]{0,24}石櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口是石櫃"}]},
+      {"claim":"(?:不可|不得|不能|暫不|無法)放行","sources":[{"kind":"document","doc":0,"line":3,"text":"放行必須有本批有效核准"},{"kind":"reply","index":1,"text":"本批核准 PA-61 撤回且無替代"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"本批核准先確認為 PA-61"}]}
+    ]
+  }
+]

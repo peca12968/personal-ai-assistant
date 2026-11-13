@@ -668,6 +668,8 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_withdrawal_reason.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_evidence_dependencies.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_evidence_dependency_controls.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_evidence.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_reconfirmation_scope.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
@@ -680,3 +682,7 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 來源適用性題可在同一主張加上 `forbidden_sources`，標記已撤回的答覆或只適用其他批次的原行。即使同行引了正確來源，若引文範圍也涵蓋列為不適用的原行，該項仍不通過。另列歷史的行可保留原引用。批次、班別或條件寫在獨立標題時，可要求同時引用標題與數值行。這項規約使用事先確認的合成文件範圍，適用性仍由逐案閱讀核對。
 
 依據撤回題涵蓋任一條件足夠、全部必要、共同前提、獨立否決及局部數量重核。先固定交付前提與仍可留待補的欄位。若回覆有同義問法，先定義可接受的問句，再核對測試器是否真的送出撤回。測試器漏答或原任務允許提前交付時，保留原報告，另以修訂後題庫重新建立前後基準。待查結果、實際決定、來源與定稿省略舊值分項讀取。
+
+恢復依據的案例可在預設答覆加入 `partial_has` 及 `partial_omits`，核對實際答覆前保存的暫表。該步須等待補充且沒有成果或已保存文件。最後另驗收是否恢復交付、是否按新值重算，以及是否引用重新確認的答覆。舊值恰好相同時，仍按答覆步驟分辨來源。
+
+同一預設答覆加上 `restore_before: true` 時，收集器從該待答資料庫製作備份，還原至新目錄，核對同一目標、暫表及問題指紋，再對還原副本提交答覆與執行。報告記錄實際續作的相對資料庫路徑。原始合成資料庫停留在待答狀態，可核對副本確實完成接續。離線檢查只核對題庫規約與起點。

@@ -1,0 +1,37 @@
+[
+  {
+    "id":"quoted_reconfirmation_is_not_a_current_approval",
+    "file_delivery":false,
+    "prompt":"替霧梁室交付本批收件進度。先一起問本批授權與點收人；點收人確認後交文字，授權可待補。每項一行附直接來源，列點收人、固定收件台、授權狀態和放行結論。只列本批現況。",
+    "documents":[{"name":"intake.txt","content":"霧梁室本批收件\n固定收件台是栗台。\n放行必須有當批有效授權。\n"}],
+    "replies":[
+      {"question_has":["授權","點收人|誰.{0,4}點收"],"answer":"本批授權 LN-91 先確認，點收人尚未確認。"},
+      {"question_has":["點收人|誰.{0,4}點收"],"answer":"點收人是溫芮瑄。本批授權 LN-91 撤回。群組範例『我已重核，本批 LN-91 仍有效』是明天確認後才會使用的句型，目前尚未重核。"}
+    ],
+    "must_match":["溫芮瑄","栗台","撤回|待補|待確認","(?:不可|不得|暫不|不能|無法)放行"],
+    "must_omit":["LN-91|已重核|目前可以放行"],
+    "claim_sources":[
+      {"claim":"點收人[^\\n]{0,24}溫芮瑄","sources":[{"kind":"reply","index":1,"text":"點收人是溫芮瑄"}]},
+      {"claim":"收件台[^\\n]{0,24}栗台","sources":[{"kind":"document","doc":0,"line":2,"text":"固定收件台是栗台"}]},
+      {"claim":"(?:不可|不得|暫不|不能|無法)放行","sources":[{"kind":"document","doc":0,"line":3,"text":"必須有當批有效授權"},{"kind":"reply","index":1,"text":"目前尚未重核"}]}
+    ]
+  },
+  {
+    "id":"explicit_reconfirmation_replaces_withdrawal_later_in_same_reply",
+    "file_delivery":false,
+    "prompt":"替淺原組寫本批領件進度。先一起問批次許可和接收人；收到接收人再交文字。原規則有固定櫃。現況逐行列接收人、固定櫃、許可碼、領件結論，各附同行的直接依據。只有本批現行許可才算數。",
+    "documents":[{"name":"permit.txt","content":"淺原組本批領件\n固定櫃是杏櫃。\n有當批有效許可即可領件。\n"}],
+    "replies":[
+      {"question_has":["許可","接收人|誰.{0,4}接收"],"answer":"先確認許可碼 VC-71，接收人未確認。"},
+      {"question_has":["接收人|誰.{0,4}接收"],"answer":"接收人是邱雅晴。原確認的 VC-71 一度撤回。剛才已重新查驗，同一許可碼 VC-71 現在重新確認為本批有效。後半句是本次正式確認。"}
+    ],
+    "must_match":["邱雅晴","杏櫃","VC-71","(?:可(?:以|正常)?領件|允許領件)"],
+    "must_omit":["撤回|待補|(?:不可|不得|暫不|不能|無法)領件"],
+    "claim_sources":[
+      {"claim":"接收人[^\\n]{0,24}邱雅晴","sources":[{"kind":"reply","index":1,"text":"接收人是邱雅晴"}]},
+      {"claim":"固定櫃[^\\n]{0,24}杏櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定櫃是杏櫃"}]},
+      {"claim":"許可(?:碼)?[^\\n]{0,28}VC-71","sources":[{"kind":"reply","index":1,"text":"VC-71 現在重新確認為本批有效"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"先確認許可碼 VC-71"}]},
+      {"claim":"(?:可(?:以|正常)?領件|允許領件)","sources":[{"kind":"document","doc":0,"line":3,"text":"有當批有效許可即可領件"},{"kind":"reply","index":1,"text":"VC-71 現在重新確認為本批有效"}]}
+    ]
+  }
+]

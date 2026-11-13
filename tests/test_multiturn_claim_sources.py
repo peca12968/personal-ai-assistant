@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.evaluate_multiturn_delivery import claim_support, validate_cases
+from scripts.evaluate_multiturn_delivery import claim_support, score, validate_cases
 
 
 class MultiturnClaimSourcesTests(unittest.TestCase):
@@ -71,5 +71,27 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
         self.assertEqual(self.support(correct + ' [補充#2]'), [False])
         self.assertEqual(self.support(correct.replace('[D7:L2]', '[D7:L1-L2]')), [False])
         claim['forbidden_sources'][0]['text'] = '不存在的摘錄'
+        with self.assertRaises(ValueError):
+            validate_cases([self.case])
+
+    def test_recovery_requires_the_saved_waiting_checkpoint_before_the_reply(self):
+        self.case['replies'][1].update(partial_has=['箱數待確認'], partial_omits=['32 件'], restore_before=True)
+        self.final.update(status='report_ready', result='總件數 72 件 [D7:L2] [補充#5] [更正#1]',
+                          steps=[{'action': {'tool': 'finish'}}])
+        before = self.turns[1]['before']
+        before.update(status='needs_input', artifacts=[], result='', partial_result='箱數待確認。')
+        self.assertEqual(validate_cases([self.case]), [self.case])
+        checks, _ = score(self.case, self.final, [], self.turns, [])
+        self.assertTrue(checks['intermediate_waiting'])
+        self.assertFalse(checks['restored_waiting'])
+        self.turns[1]['restored'] = True
+        self.assertTrue(score(self.case, self.final, [], self.turns, [])[0]['restored_waiting'])
+        for change in ({'artifacts': ['draft.md']}, {'result': '已交付'}, {'status': 'paused'},
+                       {'partial_result': '箱數待確認。現行總件數 32 件。'}, {'partial_result': ''}):
+            with self.subTest(change=change):
+                candidate = [self.turns[0], {**self.turns[1], 'before': {**before, **change}}]
+                self.assertFalse(score(self.case, self.final, [], candidate, [])[0]['intermediate_waiting'])
+        self.assertFalse(score(self.case, self.final, [], self.turns[:1], [])[0]['intermediate_waiting'])
+        del self.case['replies'][1]['partial_has']
         with self.assertRaises(ValueError):
             validate_cases([self.case])

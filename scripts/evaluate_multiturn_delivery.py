@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from assistant import artifacts, autonomy, goal_guidance, goal_replies
 from assistant.acceptance import strict_json
-from assistant.backup import validate_database
+from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import CodexEngine, EngineError
+from assistant.store import Store
 from scripts.evaluate_cross_task_boundaries import prepare
 from scripts.evaluate_understanding import fingerprint, save_report
 
@@ -61,6 +62,12 @@ def validate_cases(cases):
             if not reply['question_has']:
                 raise ValueError('預設答覆須有可核對的提問條件。')
             for pattern in reply['question_has'] + reply.get('question_excludes', []):
+                re.compile(pattern)
+            if 'partial_has' in reply and not reply['partial_has']:
+                raise ValueError('暫表驗收須明列必要內容。')
+            if 'restore_before' in reply and (reply['restore_before'] is not True or 'partial_has' not in reply):
+                raise ValueError('須指定待答暫表，才能在答覆前驗收備份還原。')
+            for pattern in reply.get('partial_has', []) + reply.get('partial_omits', []):
                 re.compile(pattern)
         for pattern in case.get('must_match', []) + case.get('must_omit', []):
             re.compile(pattern)
@@ -151,6 +158,23 @@ def score(case, final, files, turns, calls):
         claim_report = final.get('partial_result', '') if question else report
         supported = claim_support(case, final, claim_report, turns)
         checks['claim_sources'] = all(supported)
+    reply_events = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
+    checkpoints = [(index, rule) for index, rule in enumerate(case.get('replies', ())) if 'partial_has' in rule]
+    if checkpoints:
+        def checkpoint_passes(index, rule):
+            if index >= len(reply_events):
+                return False
+            before = reply_events[index]['before']
+            partial = before.get('partial_result', '')
+            return (before['status'] == 'needs_input' and not before['artifacts'] and not before['result']
+                    and all(re.search(p, partial) for p in rule['partial_has'])
+                    and not any(re.search(p, partial) for p in rule.get('partial_omits', ())))
+
+        checks['intermediate_waiting'] = all(checkpoint_passes(index, rule) for index, rule in checkpoints)
+    restores = [index for index, rule in checkpoints if rule.get('restore_before')]
+    if restores:
+        checks['restored_waiting'] = all(index < len(reply_events) and reply_events[index].get('restored') is True
+                                         for index in restores)
     if question:
         checks.pop('delivered')
         checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
@@ -219,6 +243,16 @@ def collect(path, case, suite, frozen):
                      [p for p in rule.get('question_excludes', ()) if re.search(p, state['question'])]}
             row['turns'].append(event)
             view = goal_replies.snapshot(store, sid, gid)
+            if rule.get('restore_before'):
+                backup = create_backup(store.path, path / f'waiting-{len(row["turns"])}.paibackup')
+                destination = path / f'restored-{len(row["turns"])}'
+                restore_backup(backup['path'], destination)
+                store = Store(destination / 'assistant.sqlite3')
+                if (autonomy.get_goal(store, sid, gid) != state
+                        or goal_replies.snapshot(store, sid, gid)['fingerprint'] != view['fingerprint']):
+                    raise ValueError('還原後的待答狀態或問題指紋不符。')
+                event['restored'] = True
+                row['database'] = store.path.relative_to(path).as_posix()
             try:
                 goal_replies.save(store, sid, gid, event['text'], expected_fingerprint=view['fingerprint'])
             except ValueError as exc:
