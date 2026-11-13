@@ -732,7 +732,8 @@ class WorkPlanTests(unittest.TestCase):
         restored = Store(self.root / 'mixed' / 'assistant.sqlite3')
         state = a.get_goal(restored, self.sid, gid)
         self.assertEqual(state['work_plan']['delivery_review']['document_read_progress'],
-                         [{'id': 1, 'read_steps': [2], 'missing_ranges': [second], 'reuse_document_steps': [2]}])
+                         [{'id': 1, 'read_steps': [2], 'missing_ranges': [second], 'reuse_document_steps': [2],
+                           'recovery': [{**second, 'action': 'split_range'}]}])
         done = {**task, 'state': 'done', 'evidence_steps': [2, 3]}
         update = {'items': [done], 'reuse_document_steps': [2]}
         engine = ScriptedEngine(action('read', **second), action('update_plan', **update),
@@ -760,6 +761,80 @@ class WorkPlanTests(unittest.TestCase):
                        (json.dumps(forged, ensure_ascii=False), gid))
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作不一致'):
             validate_database(restored.path)
+
+    def test_paged_line_evidence_requires_contiguous_pages_after_restore(self):
+        path = self.root / 'approval.txt'
+        path.write_text('批號 A7。' + '甲' * 8050 + '核准 CK-35。' + '乙' * 2100, encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '完整查讀核准原行後，附來源交付。')
+        wanted = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        task = item(1, '核對核准原行')
+        requirements = [{'id': 1, 'ranges': [wanted]}]
+        self.run_actions(action('update_plan', items=[task], verify_delivery=True, evidence_requirements=requirements),
+                         action('read', **wanted),
+                         action('read_line', document_id=did, line_number=1, start_char=1), gid=gid)
+        review = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '定稿用條列。', expected_fingerprint=review['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'pages.paibackup')
+        restore_backup(backup['path'], self.root / 'pages')
+        restored = Store(self.root / 'pages' / 'assistant.sqlite3')
+
+        def progress():
+            return a.get_goal(restored, self.sid, gid)['work_plan']['delivery_review']['document_read_progress'][0]
+
+        self.assertEqual(progress(), {'id': 1, 'read_steps': [], 'missing_ranges': [wanted], 'reuse_document_steps': [],
+                                     'recovery': [{'document_id': did, 'line_number': 1, 'action': 'read_line',
+                                                   'start_char': 4001}]})
+        incomplete = {**task, 'state': 'done', 'evidence_steps': [3, 4]}
+        attempt = ScriptedEngine(action('read_line', document_id=did, line_number=1, start_char=8001),
+                                 action('update_plan', items=[incomplete], reuse_document_steps=[3]),
+                                 action('finish', report='提早交付。'))
+        rejected = a.run_goal(restored, self.sid, gid, attempt, max_steps=3)
+        self.assertEqual(rejected['status'], 'paused')
+        self.assertIn('缺少完整指定文件範圍', rejected['steps'][4]['observation']['error'])
+        self.assertIn('交付核對', rejected['steps'][5]['observation']['error'])
+        self.assertEqual(progress()['recovery'][0]['start_char'], 4001)
+        a.run_goal(restored, self.sid, gid, ScriptedEngine(
+            action('read_line', document_id=did, line_number=1, start_char=4001)), max_steps=1)
+        self.assertEqual(progress(), {'id': 1, 'read_steps': [3, 4, 7], 'missing_ranges': [],
+                                     'reuse_document_steps': [3]})
+        completed = {**task, 'state': 'done', 'evidence_steps': [3, 4, 7]}
+        engine = ScriptedEngine(action('update_plan', items=[completed], reuse_document_steps=[3]),
+                                action('finish', report=f'核准 CK-35 [D{did}:L1:C8001-C8100]。'))
+        final = a.run_goal(restored, self.sid, gid, engine)
+        self.assertEqual(final['status'], 'report_ready')
+        match, = final['work_plan']['evidence_matches']
+        self.assertEqual([row['sequence'] for row in match['line_page_proofs']], [3, 4, 7])
+        validate_database(restored.path)
+        changed = copy.deepcopy(final['steps'][3]['observation'])
+        changed['excerpts'][0]['text'] = changed['excerpts'][0]['text'].replace('CK-35', 'CK-99')
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                       (json.dumps(changed, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_missing_source_range_keeps_readable_evidence_and_blocks_delivery(self):
+        path = self.root / 'window.txt'
+        path.write_text('窗口是北庫', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對窗口和正式門號。')
+        first = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        absent = {**first, 'start_line': 2, 'end_line': 2}
+        task = item(1, '核對兩行')
+        result = self.run_actions(action('update_plan', items=[task], verify_delivery=True,
+                                         evidence_requirements=[{'id': 1, 'ranges': [first, absent]}]),
+                                  action('read_ranges', ranges=[first, absent]),
+                                  action('finish', report='提前交付。'),
+                                  action('ask', question='請提供第二行門號原文。',
+                                         partial_result=f'已知窗口是北庫 [D{did}:L1]。'), gid=gid)
+        self.assertEqual(result['status'], 'needs_input')
+        self.assertIn('交付核對', result['steps'][2]['observation']['error'])
+        self.assertEqual(result['work_plan']['delivery_review']['document_read_progress'],
+                         [{'id': 1, 'read_steps': [2], 'missing_ranges': [absent], 'reuse_document_steps': [],
+                           'recovery': [{**absent, 'action': 'source_missing'}]}])
+        self.assertIn('北庫', result['steps'][-1]['observation']['partial_result'])
+        validate_database(self.store.path)
 
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'

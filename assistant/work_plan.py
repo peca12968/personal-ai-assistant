@@ -3,12 +3,13 @@ import hashlib
 import json
 import re
 
-from . import document_ranges, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence
+from . import document_lines, document_ranges, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence
 from .documents import check_citations
 
 STATES = {'pending': '待處理', 'working': '處理中', 'done': '助理回報完成',
           'blocked': '受阻', 'superseded': '已調整需求'}
 RANGE_READERS = {'read', 'read_ranges'}
+TYPED_READERS = RANGE_READERS | {'read_line'}
 RANGE_FIELDS = ('document_id', 'start_line', 'end_line')
 DELIVERY_TOOLS = {'finish', 'write_artifact', 'deliver'}
 CALCULATION_RECHECK_REASONS = {
@@ -33,6 +34,7 @@ delivery_review.reusable_calculations列出最新原話已以獨立一行「原�
 最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。reusable_calculations列出可沿用的已完成項。兩項即使同引一行或一則回覆，若每段數字原話在該來源中的位置互不重疊，也可能沿用。separate_operand_excerpts表示使用了這項核對。保持可沿用項的原evidence_steps，重算更正項並保存其完整新規約和證據。數字短句用足以辨認欄位的原話，不以整行代替不同欄位的短句。新證據重疊時須重驗相關項目。
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
 delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
+若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -173,9 +175,9 @@ def _verified_read(step, sources, *, allow_partial=False):
     return provided, excerpts, partial
 
 
-def _old_read_scope(step, scope):
+def _old_read_scope(step, scope, *, typed=False):
     old_scope = step['observation'].get('goal_conditions_sha256')
-    if (step['action']['tool'] not in RANGE_READERS or not isinstance(old_scope, str)
+    if (step['action']['tool'] not in (TYPED_READERS if typed else RANGE_READERS) or not isinstance(old_scope, str)
             or not re.fullmatch(r'[a-f0-9]{64}', old_scope) or old_scope == scope):
         raise ValueError('沿用證據須為已記錄舊條件的完整文件查讀。')
 
@@ -185,10 +187,14 @@ def _read_digest(step):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _read_proof(step, scope, sources, *, allow_partial=False):
-    _old_read_scope(step, scope)
-    ranges, _, _ = _verified_read(step, sources, allow_partial=allow_partial)
-    return {'sequence': step['sequence'], 'document_ids': sorted({key[0] for key in ranges}),
+def _read_proof(step, scope, sources, *, typed=False):
+    _old_read_scope(step, scope, typed=typed)
+    if step['action']['tool'] == 'read_line':
+        document_ids = [document_lines.verified_page(step, sources)['document_id']]
+    else:
+        ranges, _, _ = _verified_read(step, sources, allow_partial=typed)
+        document_ids = sorted({key[0] for key in ranges})
+    return {'sequence': step['sequence'], 'document_ids': document_ids,
             'read_sha256': _read_digest(step)}
 
 
@@ -331,18 +337,27 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
     if expression is not None and requirement['defined_scope'] != scope:
         raise ValueError(f'項目 {number} 的算式要求來自舊條件，請依目前條件重新確認原式。')
     match = {'id': number}
-    excerpts = []
+    excerpts, pages = [], {}
     for ref in item['evidence_steps']:
         step = steps[ref]
         action = step['action']
-        if ranges and action['tool'] in RANGE_READERS:
-            _, actual, partial = _verified_read(step, sources, allow_partial=True)
+        if ranges and action['tool'] in TYPED_READERS:
+            paged = action['tool'] == 'read_line'
+            if paged:
+                actual, partial = [document_lines.verified_page(step, sources)], False
+            else:
+                _, actual, partial = _verified_read(step, sources, allow_partial=True)
             relevant = [row for row in actual if any(
                 row['document_id'] == did and row['start_line'] <= end and start <= row['end_line']
                 for did, start, end in ranges)]
             if not relevant:
                 raise ValueError(f'項目 {number} 的步驟 {ref} 未查讀指定文件範圍。')
-            excerpts.extend(relevant)
+            if paged:
+                row = relevant[0]
+                pages.setdefault((row['document_id'], row['start_line']), {})[ref] = row
+                match.setdefault('line_page_proofs', []).append({'sequence': ref, 'read_sha256': _read_digest(step)})
+            else:
+                excerpts.extend(relevant)
             match.setdefault('read_steps', []).append(ref)
             if partial:
                 match.setdefault('partial_read_proofs', []).append({'sequence': ref, 'read_sha256': _read_digest(step)})
@@ -357,6 +372,10 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
             raise ValueError(f'項目 {number} 的步驟 {ref} 不屬於指定的查讀或算式。')
     if expression is not None and 'expression_step' not in match:
         raise ValueError(f'項目 {number} 缺少指定算式的實際計算。')
+    for line_pages in pages.values():
+        merged, _, _ = document_lines.join_pages(line_pages)
+        if merged is not None:
+            excerpts.append(merged)
     tokens = ' '.join(f'[D{did}:L{start}-L{end}]' for did, start, end in ranges)
     if any(not check['range_valid'] for check in check_citations(tokens, excerpts)):
         raise ValueError(f'項目 {number} 缺少完整指定文件範圍。')
@@ -482,7 +501,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                                     for ref in old['evidence_steps']))):
                     raise ValueError('只能沿用同一個原已完成且只以文件查讀為依據的項目。')
                 if number not in proofs:
-                    proofs[number] = _read_proof(step, scope, sources, allow_partial=bool(typed_ranges))
+                    proofs[number] = _read_proof(step, scope, sources, typed=bool(typed_ranges))
         if item['state'] == 'done' and item['id'] in requirements:
             match = _match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources)
             _check_revised_operands(match, revised_operands)
@@ -536,47 +555,120 @@ def _select_reads(requirement, excerpts_by_step, limit):
     return sorted(selected), targets
 
 
-def _covering_read_steps(requirement, old_excerpts):
-    steps, missing = _select_reads(requirement, old_excerpts, 5 if 'expression' in requirement else 6)
-    return steps if not missing else []
+def _covering_read_steps(requirement, old_excerpts, old_pages):
+    limit = 5 if 'expression' in requirement else 6
+    steps, missing = _select_reads(requirement, old_excerpts, limit)
+    completed, _ = _read_page_progress(missing, old_pages)
+    combined = sorted(set(steps).union(*completed.values()))
+    return combined if not missing.difference(completed) and len(combined) <= limit else []
 
 
 def _read_evidence(goal, scope):
-    excerpts_by_step, old_steps = {}, set()
+    excerpts_by_step, pages, old_steps = {}, {}, set()
     for step in goal['steps']:
         observed = step['observation']
         seen_scope = observed.get('goal_conditions_sha256')
-        if step['action']['tool'] not in RANGE_READERS:
+        tool, sequence = step['action']['tool'], step['sequence']
+        if tool not in TYPED_READERS:
             continue
         try:
             if seen_scope != scope:
-                _old_read_scope(step, scope)
-            _, excerpts, _ = _verified_read(step, goal['sources'], allow_partial=True)
+                _old_read_scope(step, scope, typed=True)
+            if tool == 'read_line':
+                page = document_lines.verified_page(step, goal['sources'])
+                pages.setdefault((page['document_id'], page['start_line']), {})[sequence] = page
+            else:
+                _, excerpts, _ = _verified_read(step, goal['sources'], allow_partial=True)
+                excerpts_by_step[sequence] = excerpts
         except ValueError:
             continue
-        excerpts_by_step[step['sequence']] = excerpts
         if seen_scope != scope:
-            old_steps.add(step['sequence'])
+            old_steps.add(sequence)
     # Prefer current observations over equally useful reads that require explicit reuse.
     reads = dict(sorted(excerpts_by_step.items(), key=lambda row: (row[0] in old_steps, row[0])))
-    return reads, old_steps
+    pages = {location: dict(sorted(refs.items(), key=lambda row: (row[0] in old_steps, row[0])))
+             for location, refs in pages.items()}
+    return reads, pages, old_steps
 
 
-def _document_read_progress(typed_reads, plan, reads, old_steps):
+def _read_page_progress(missing, pages):
+    completed, continuing = {}, {}
+    for location in sorted(missing & pages.keys()):
+        try:
+            _, next_start, refs = document_lines.join_pages(pages[location])
+        except ValueError:
+            continue
+        if next_start is None:
+            completed[location] = refs
+        else:
+            continuing[location] = next_start
+    return completed, continuing
+
+
+def _range_rows(locations):
+    ranges = []
+    for did, line in sorted(locations):
+        if (ranges and ranges[-1]['document_id'] == did and ranges[-1]['end_line'] + 1 == line
+                and line - ranges[-1]['start_line'] < document_ranges.MAX_LINES):
+            ranges[-1]['end_line'] = line
+        else:
+            ranges.append({'document_id': did, 'start_line': line, 'end_line': line})
+    return ranges
+
+
+def _read_recovery(missing, continuing, steps):
+    if not missing:
+        return []
+    hints = {}
+    for step in steps:
+        action, observed = step['action'], step['observation']
+        if action['tool'] not in RANGE_READERS or observed.get('error') or observed.get('status') in ('failed', 'cancelled'):
+            continue
+        args = action['args']
+        requested = [args] if action['tool'] == 'read' else args['ranges']
+        rows = observed.get('requested_ranges', ())
+        if list(map(_range_key, rows)) != list(map(_range_key, requested)):
+            continue
+        for index, row in enumerate(rows):
+            did, start, end = _range_key(row)
+            status = row.get('status')
+            if status in ('line_out_of_bounds', 'document_not_attached'):
+                mode = 'source_missing'
+            elif status == 'character_limit' and start == end and index == 0:
+                mode = 'read_line'
+            elif status in ('character_limit', 'range_too_large', 'excerpt_limit'):
+                mode = 'split_range'
+            else:
+                continue
+            for location in missing:
+                if location[0] == did and start <= location[1] <= end:
+                    hints[location] = mode
+    hints.update(dict.fromkeys(continuing, 'read_line'))
+    recovery = []
+    for mode in ('split_range', 'source_missing'):
+        recovery.extend({**row, 'action': mode} for row in _range_rows(
+            location for location, hint in hints.items() if hint == mode))
+    recovery.extend({'document_id': did, 'line_number': line, 'action': 'read_line',
+                     'start_char': continuing.get((did, line), 1)}
+                    for (did, line), hint in sorted(hints.items()) if hint == 'read_line')
+    return recovery
+
+
+def _document_read_progress(typed_reads, plan, reads, pages, old_steps, saved_steps):
     progress = []
     for item in plan['items']:
         requirement = typed_reads.get(item['id'])
         if not requirement or item['state'] == 'superseded' or (plan['conditions_current'] and item['state'] == 'done'):
             continue
         steps, missing = _select_reads(requirement, reads, len(reads))
-        ranges = []
-        for did, line in sorted(missing):
-            if ranges and ranges[-1]['document_id'] == did and ranges[-1]['end_line'] + 1 == line:
-                ranges[-1]['end_line'] = line
-            else:
-                ranges.append({'document_id': did, 'start_line': line, 'end_line': line})
-        progress.append({'id': item['id'], 'read_steps': steps, 'missing_ranges': ranges,
-                         'reuse_document_steps': [number for number in steps if number in old_steps]})
+        completed, continuing = _read_page_progress(missing, pages)
+        missing.difference_update(completed)
+        steps = sorted(set(steps).union(*completed.values()))
+        row = {'id': item['id'], 'read_steps': steps, 'missing_ranges': _range_rows(missing),
+               'reuse_document_steps': [number for number in steps if number in old_steps]}
+        if recovery := _read_recovery(missing, continuing, saved_steps):
+            row['recovery'] = recovery
+        progress.append(row)
     return progress
 
 
@@ -589,12 +681,15 @@ def _delivery_review(plan, goal, scope, sources_current):
     if pending_fields:
         review['pending_revision_fields'] = pending_fields
     typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
-    old_excerpts = {}
+    old_excerpts, old_pages = {}, {}
     if typed_reads and sources_current:
-        reads, old_steps = _read_evidence(goal, scope)
-        if progress := _document_read_progress(typed_reads, plan, reads, old_steps):
+        reads, pages, old_steps = _read_evidence(goal, scope)
+        if progress := _document_read_progress(typed_reads, plan, reads, pages, old_steps, goal['steps']):
             review['document_read_progress'] = progress
         old_excerpts = {number: excerpts for number, excerpts in reads.items() if number in old_steps}
+        for location, refs in pages.items():
+            if old := {number: page for number, page in refs.items() if number in old_steps}:
+                old_pages[location] = old
     if plan['conditions_current']:
         return review
     calculations, rechecks = _calculation_reuse_review(
@@ -609,7 +704,7 @@ def _delivery_review(plan, goal, scope, sources_current):
     for item in plan['items']:
         typed = typed_reads.get(item['id'])
         if typed and item['state'] != 'superseded':
-            refs = _covering_read_steps(typed, old_excerpts)
+            refs = _covering_read_steps(typed, old_excerpts, old_pages)
             if refs:
                 review['reusable_documents'].append({'id': item['id'], 'evidence_steps': refs})
             if item['state'] == 'done' and (not refs or 'expression' in typed and item['id'] not in calculations):
@@ -694,6 +789,13 @@ def describe(value):
             if row['read_steps']:
                 numbers = '、'.join(map(str, row['read_steps']))
                 lines.append(f'項目 {row["id"]} 已查讀依據 · 步驟 {numbers}')
+            for hint in row.get('recovery', ()):
+                if hint['action'] == 'read_line':
+                    lines.append(f'D{hint["document_id"]}:L{hint["line_number"]} · 從字元 {hint["start_char"]} 續讀')
+                else:
+                    did, start, end = _range_key(hint)
+                    label = '分開或縮小範圍查讀' if hint['action'] == 'split_range' else '匯入副本缺少來源，核對可讀行並補件'
+                    lines.append(f'D{did}:L{start}-L{end} · {label}')
     if value.get('evidence_matches'):
         numbers = '、'.join(str(row['id']) for row in value['evidence_matches'])
         lines.append('指定算式或原文已核對 · 項目 ' + numbers)

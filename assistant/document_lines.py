@@ -46,3 +46,59 @@ def read(documents, args, cancel=None):
             'next_start_char': end + 1 if end < total else None,
             'omitted_before': start - 1, 'omitted_after': total - end,
             'line_complete': complete, 'excerpts': [excerpt]}
+
+
+def verified_page(step, sources):
+    """Bind a saved page to its exact request and source version."""
+    args, observed = step['action']['args'], step['observation']
+    validate(args)
+    did, number, start = (args[key] for key in ('document_id', 'line_number', 'start_char'))
+    source = next((row for row in sources if row['document_id'] == did), None)
+    total = observed.get('total_chars')
+    if (source is None or observed.get('error') or observed.get('status') != 'provided'
+            or type(total) is not int or total < 0 or start > max(1, total)):
+        raise ValueError('指定原行缺少同版本文件的有效分頁。')
+    end = min(total, start - 1 + PAGE_CHARS)
+    complete = start == 1 and end == total
+    expected = {**args, 'end_char': end, 'next_start_char': end + 1 if end < total else None,
+                'omitted_before': start - 1, 'omitted_after': total - end, 'line_complete': complete}
+    rows = observed.get('excerpts')
+    if (any(observed.get(key) != value or type(observed.get(key)) is not type(value)
+            for key, value in expected.items()) or not isinstance(rows, list) or len(rows) != 1):
+        raise ValueError('指定原行的分頁位置與原請求不一致。')
+    row = rows[0]
+    expected = {**source, 'start_line': number, 'end_line': number, 'start_char': start, 'end_char': end,
+                'line_chars': total, 'partial_line': not complete, 'matched_query': False}
+    prefix = f'L{number}: '
+    if (not isinstance(row, dict) or any(row.get(key) != value or type(row.get(key)) is not type(value)
+            for key, value in expected.items()) or not isinstance(row.get('text'), str)
+            or not row['text'].startswith(prefix) or len(row['text']) != len(prefix) + end - start + 1
+            or row['text'].splitlines() != [row['text']]):
+        raise ValueError('指定原行的分頁文字或來源不一致。')
+    return row
+
+
+def join_pages(pages):
+    """Return the contiguous prefix and the saved steps that supplied it."""
+    entries = sorted(pages.items(), key=lambda pair: (pair[1]['start_char'], -pair[1]['end_char']))
+    first = entries[0][1]
+    total = first['line_chars']
+    prefix = f'L{first["start_line"]}: '
+    text, used = '', []
+    for number, page in entries:
+        if page['line_chars'] != total or page['sha256'] != first['sha256']:
+            raise ValueError('同一原行的分頁長度或版本不一致。')
+        start, end = page['start_char'] - 1, page['end_char']
+        if start > len(text):
+            break
+        body = page['text'][len(prefix):]
+        overlap = min(len(text), end) - start
+        if text[start:start + overlap] != body[:overlap]:
+            raise ValueError('同一原行的分頁重疊文字不一致。')
+        if end > len(text) or total == 0:
+            text += body[overlap:]
+            used.append(number)
+    if len(text) < total:
+        return None, len(text) + 1, used
+    row = {key: first[key] for key in ('document_id', 'name', 'sha256', 'start_line', 'end_line')}
+    return {**row, 'text': prefix + text, 'partial_line': False}, None, used
