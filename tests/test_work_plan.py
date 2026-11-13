@@ -1106,6 +1106,56 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作不一致'):
             validate_database(restored.path)
 
+    def test_supplement_preserves_a_verified_reply_given_before_it(self):
+        path = self.root / 'delivery.txt'
+        path.write_text('窗口北庫', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對窗口、門號和接收人。')
+        first = {'document_id': 1, 'start_line': 1, 'end_line': 1}
+        missing = {**first, 'start_line': 2, 'end_line': 2}
+        tasks = [item(1, '核對交件原文'), item(2, '確認接收人')]
+        questions = [{'question': '請提供 D1 第 2 行。', 'items': [1]}, {'question': '接收人是誰？', 'items': [2]}]
+        self.run_actions(action('update_plan', items=tasks, verify_delivery=True,
+                                evidence_requirements=[{'id': 1, 'ranges': [first, missing]}]),
+                         action('read_ranges', ranges=[first, missing]),
+                         action('ask', question='\n'.join(row['question'] for row in questions), plan_questions=questions), gid=gid)
+        reply = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '接收人為林怡安。', expected_fingerprint=reply['fingerprint'])
+        waiting = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual((waiting['status'], waiting['question']), ('needs_input', questions[0]['question']))
+        self.assertEqual(waiting['work_plan']['scope_reply']['completed_items'], [2])
+        self.assertEqual(waiting['work_plan']['items'][1]['evidence_steps'], [4])
+        path = self.root / 'supplement.txt'
+        path.write_text('門號 G-17', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '補件 [D1:L2] 改由 [D2:L1]\n請撤下目前問題。',
+                           expected_fingerprint=view['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'answered-before-supplement.paibackup')
+        restore_backup(backup['path'], self.root / 'answered-before-supplement')
+        restored = Store(self.root / 'answered-before-supplement' / 'assistant.sqlite3')
+        state = a.get_goal(restored, self.sid, gid)
+        self.assertEqual(state['work_plan']['delivery_review']['retained_reply_items'],
+                         [{'id': 2, 'reply_step': 4, 'citation': '[補充#3]'}])
+        self.assertNotIn(2, state['work_plan']['delivery_review']['recheck_items'])
+        completed = [{**tasks[0], 'state': 'done', 'evidence_steps': [2, 6]}, state['work_plan']['items'][1]]
+        engine = ScriptedEngine(action('update_plan', items=[completed[0], tasks[1]], reuse_document_steps=[2]),
+                                action('update_plan', items=completed, reuse_document_steps=[2]),
+                                action('update_plan', items=completed, reuse_document_steps=[2]),
+                                action('finish', report='窗口北庫 [D1:L1]。門號 G-17 [D2:L1]。接收人林怡安 [補充#3]。'))
+        final = a.run_goal(restored, self.sid, gid, engine)
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertIn('原答覆確認', final['steps'][6]['observation']['error'])
+        self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [4])
+        validate_database(restored.path)
+        altered = copy.deepcopy(final['steps'][5]['observation'])
+        altered['retained_reply_items'][0]['reply_step'] = 3
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '清單補件與保存'):
+            validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')

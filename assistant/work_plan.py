@@ -36,6 +36,7 @@ delivery_review.calculation_rechecks列出整組確認後仍須重算的項目�
 delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
 plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。同一工作項目有多個缺行分問時，每問寫出各自的文件編號和確切行號，例如「請提供 D2 第 3 至 4 行的原文。」；補件須涵蓋選定分問所指的全部行。
+delivery_review.retained_reply_items列出本次補件保留的獨立確認項。更新清單時維持其done和原reply_step，這些步驟不用列入reuse_document_steps。定稿引用該項的citation，文件項依本次核對的原行完成。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -114,7 +115,7 @@ def latest(steps):
     supplemented = None
     for step in reversed(steps):
         if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT and supplemented is None:
-            supplemented = step['observation']['evidence_requirements']
+            supplemented = step['observation']
         if step['action']['tool'] == 'update_plan' and step['observation'].get('status') == 'plan_recorded':
             observation = step['observation']
             value = {'sequence': step['sequence'], 'items': observation['items'],
@@ -128,7 +129,9 @@ def latest(steps):
                 if key in observation:
                     value[key] = observation[key]
             if supplemented is not None:
-                value['evidence_requirements'] = supplemented
+                value['evidence_requirements'] = supplemented['evidence_requirements']
+                if retained := supplemented.get('retained_reply_items'):
+                    value['retained_reply_items'] = retained
             return value
     return None
 
@@ -430,7 +433,7 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import SUPPLEMENT_REPLY_VERSION
+    from .work_plan_scope import PARTIAL_DOCUMENT_REPLY_VERSION
 
     validate(args)
     previous = latest(steps)
@@ -462,8 +465,11 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     calculation_proofs = []
     position_checks = {}
     matches = []
+    retained_replies = _retained_replies_for_scope(previous, steps, scope)
     for item in args['items']:
         item_id = item['id']
+        if item_id in retained_replies and (item['state'] != 'done' or item['evidence_steps'] != retained_replies[item_id]):
+            raise ValueError(f'項目 {item_id} 已由原答覆確認，請保留其完成狀態及答覆步驟。')
         calculation_step = None
         old = previous_items.get(item_id)
         carried = (same_scope and scope_reviewed and old is not None and old['state'] == 'done'
@@ -496,7 +502,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, SUPPLEMENT_REPLY_VERSION + 1)))
+                                        for version in range(2, PARTIAL_DOCUMENT_REPLY_VERSION + 1)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -507,6 +513,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                     observed.get('status') in ('failed', 'cancelled') or
                     (not typed_batch and any(row['status'] != 'provided' for row in observed.get('requested_ranges', []))) or
                     (observed.get('goal_conditions_sha256') != scope and number not in reused and not carried
+                     and retained_replies.get(item_id) != item['evidence_steps']
                      and number != calculation_step)):
                 if (item_id in rechecks and step['action']['tool'] == 'calculate_expression'
                         and observed.get('goal_conditions_sha256') != scope):
@@ -553,6 +560,15 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
 
 def _open_items(plan):
     return [row['id'] for row in plan['items'] if row['state'] not in ('done', 'superseded')]
+
+
+def _retained_replies_for_scope(plan, steps, scope):
+    if not plan:
+        return {}
+    supplement = next((step for step in reversed(steps) if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT), None)
+    if not supplement or supplement['observation']['goal_conditions_sha256'] != scope:
+        return {}
+    return {row['id']: [row['reply_step']] for row in supplement['observation'].get('retained_reply_items', ())}
 
 
 def _select_reads(requirement, excerpts_by_step, limit):
@@ -663,6 +679,22 @@ def supplement_targets(steps):
                     for request in row.get('ranges', ()) for observed in missing)]
 
 
+def are_missing_document_questions(steps, parts):
+    targets = {row['id']: row['ranges'] for row in supplement_targets(steps)}
+    missing = _observed_missing_ranges(steps)
+    for part in parts:
+        ranges, limited = document_ranges.requested_ranges(part['question'])
+        if limited or not ranges:
+            return False
+        for doc, first, last in map(_range_key, ranges):
+            if (not any(did == doc and low <= first <= last <= high for did, low, high in missing)
+                    or not all(any(did == doc and low <= first <= last <= high
+                                   for did, low, high in map(_range_key, targets.get(number, ())))
+                               for number in part['items'])):
+                return False
+    return True
+
+
 def _supplement_question_parts(steps):
     from . import decision_table, work_plan_scope
 
@@ -703,8 +735,8 @@ def _verify_supplement_question_ranges(selected, parts, missing):
     return ranges
 
 
-def supplement_receipt(steps, original, source, replacement_read, *, check_question_ranges=True):
-    from . import goal_partials, goal_question_withdrawals
+def supplement_receipt(steps, original, source, replacement_read, *, check_question_ranges=True, retain_replies=False):
+    from . import goal_partials, goal_question_withdrawals, work_plan_scope
 
     missing, replacement, target = goal_sources.plan_mapping(source['content'])
     ask = steps[-1]
@@ -753,6 +785,12 @@ def supplement_receipt(steps, original, source, replacement_read, *, check_quest
                'guidance_sha256': source['sha256']}
     if question_ranges:
         receipt['question_ranges'] = question_ranges
+    if retain_replies and (len(steps) >= 2 and steps[-2]['action']['tool'] == 'update_plan'
+            and steps[-2]['action']['args'].get('scope_reply_version') == work_plan_scope.PARTIAL_DOCUMENT_REPLY_VERSION):
+        reply = steps[-2]['observation']['scope_reply']
+        if reply['successor'] == ask['action']['args']:
+            receipt['retained_reply_items'] = [{'id': number, 'reply_step': steps[-2]['sequence'], 'citation': reply['citation']}
+                                               for number in reply['completed_items']]
     if remaining := [part for part in parts if part != selected]:
         receipt['successor'] = {'question': '\n'.join(part['question'] for part in remaining), 'plan_questions': remaining}
     return receipt
@@ -850,6 +888,9 @@ def _delivery_review(plan, goal, scope, sources_current):
     pending_fields = _pending_revision_fields(plan)
     review = {'ready': plan['conditions_current'] and not open_items and not pending_fields, 'open_items': open_items,
               'recheck_items': [], 'reusable_documents': []}
+    retained_replies = _retained_replies_for_scope(plan, goal['steps'], scope) if sources_current else {}
+    if retained_replies and 'retained_reply_items' in plan:
+        review['retained_reply_items'] = plan['retained_reply_items']
     if pending_fields:
         review['pending_revision_fields'] = pending_fields
     typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
@@ -882,7 +923,7 @@ def _delivery_review(plan, goal, scope, sources_current):
             if item['state'] == 'done' and (not refs or 'expression' in typed and item['id'] not in calculations):
                 review['recheck_items'].append(item['id'])
             continue
-        if item['state'] != 'done':
+        if item['state'] != 'done' or item['id'] in retained_replies:
             continue
         refs = item['evidence_steps']
         reusable = []
@@ -1078,8 +1119,13 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     source = next((row for row in guidance if row['citation'] == args.get('guidance')), None)
     fields = {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
     check_question_ranges = args.get('check_question_ranges') is True
+    retain_replies = args.get('retain_replies') is True
+    if check_question_ranges:
+        fields.add('check_question_ranges')
+    if retain_replies:
+        fields.add('retain_replies')
     if (source is None or not prior or step['sequence'] != source['steps_seen'] + 1
-            or args.keys() != (fields | {'check_question_ranges'} if check_question_ranges else fields)
+            or args.keys() != fields or (retain_replies and not check_question_ranges)
             or not goal_sources.valid_source_list(original) or not goal_sources.valid_source_list(args['added_sources'])):
         raise ValueError('清單補件缺少對應的原更正或來源範圍。')
     missing, replacement, _ = goal_sources.plan_mapping(source['content'])
@@ -1094,7 +1140,8 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     merged = goal_sources.merge_sources(original, args['added_sources'])
     goal_sources.verify_excerpts(observation.get('excerpts'), merged, [replacement])
     _verified_read(step, merged)
-    expected = supplement_receipt(prior, original, source, observation, check_question_ranges=check_question_ranges)
+    expected = supplement_receipt(prior, original, source, observation, check_question_ranges=check_question_ranges,
+                                  retain_replies=retain_replies)
     expected['evidence_requirements'] = supplemented_requirements(prior, expected, missing, replacement)
     notes_end = source['notes_start'] + len(goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at']))
     expected['goal_conditions_sha256'] = conditions({**goal, 'notes': goal['notes'][:notes_end], 'sources': merged})

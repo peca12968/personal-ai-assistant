@@ -48,6 +48,7 @@ _FILENAME_DEFERRAL = re.compile(r'(?:定稿)?檔名(?:(?:還沒|還未|尚未)(?
                                 r'|先不(?:決定|確認)(?:定稿)?檔名')
 _KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改', '保持原值'}
 SUPPLEMENT_REPLY_VERSION = 12
+PARTIAL_DOCUMENT_REPLY_VERSION = 13
 
 
 def validate_questions(args):
@@ -391,6 +392,21 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     tasks = {item['id']: item['task'] for item in plan['items']}
     if version == SUPPLEMENT_REPLY_VERSION:
         return _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+    if version == PARTIAL_DOCUMENT_REPLY_VERSION:
+        if prior_scope != plan['goal_conditions_sha256'] or not plan.get('verify_delivery'):
+            return None
+        result = _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+        if not result:
+            return None
+        proof = result['scope_reply']
+        pending = (proof['successor'] or {}).get('plan_questions', ())
+        completed = set(proof['completed_items'])
+        if (not completed or not pending
+                or any(row['state'] not in ('confirmed', 'unanswered') for row in proof['parts'])
+                or any(not set(row['items']) <= completed for row in proof['parts'] if row['state'] == 'confirmed')
+                or not work_plan.are_missing_document_questions(steps, pending)):
+            return None
+        return result
     if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION,
                    artifact_names.REPLACE_REPLY_VERSION):
         return _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery,
@@ -585,6 +601,13 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True):
 def _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks):
     if (not is_supplement_followup(steps) or prior_scope != steps[-1]['observation']['goal_conditions_sha256']):
         return None
+    result = _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+    if result is not None:
+        result['scope_reply']['supplement_step'] = steps[-2]['sequence']
+    return result
+
+
+def _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, tasks):
     fields = [_asked_field(part, tasks) for part in parts]
     clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_PLAIN_COMMA)
     if not clauses or any(question for _, _, question in clauses):
@@ -595,9 +618,7 @@ def _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, ta
     parsed, unassigned = statements
     if unassigned or not any(row['state'] == 'confirmed' for row in parsed.values()):
         return None
-    result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
-    result['scope_reply']['supplement_step'] = steps[-2]['sequence']
-    return result
+    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
 
 
 def _value_identity(value):
@@ -1064,7 +1085,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= SUPPLEMENT_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= PARTIAL_DOCUMENT_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

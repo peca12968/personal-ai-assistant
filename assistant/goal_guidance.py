@@ -317,10 +317,10 @@ def _save_plan_document_supplement(db, current, notes, content):
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
     read = document_ranges.read_batch(documents, {'ranges': [replacement]})
-    observation = work_plan.supplement_receipt(steps, original, source, read)
+    observation = work_plan.supplement_receipt(steps, original, source, read, retain_replies=True)
     observation['evidence_requirements'] = work_plan.supplemented_requirements(steps, observation, missing, replacement)
     args = {'guidance': source['citation'], 'original_sources': original, 'added_sources': added,
-            'missing': missing, 'replacement': replacement, 'check_question_ranges': True}
+            'missing': missing, 'replacement': replacement, 'check_question_ranges': True, 'retain_replies': True}
     action = {'tool': goal_sources.PLAN_SUPPLEMENT, 'args': args, 'note': '依使用者指定的原文補件'}
     sources_json = json.dumps(merged, ensure_ascii=False)
     merged_goal = {**goal, 'sources_json': sources_json, 'guidance_sources': guidance}
