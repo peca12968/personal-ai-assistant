@@ -1,0 +1,74 @@
+[
+  {
+    "id":"independent_alternative_still_suffices_after_withdrawal",
+    "file_delivery":true,
+    "prompt":"替禾石組做本批器材領取通知 pickup.md。文件是完整領取規則。先一次問我工作單代碼、窗口核准碼、簽收人；簽收人未確認時先追問，收到簽收人後才可產檔。只追問還缺的必要資料。定稿分列簽收人、固定窗口與能否領取，各一行，同行引用直接依據。結論只列仍支持本批決定的規則和證明，不交代失效代碼或其歷史。",
+    "documents":[{"name":"pickup-rule.txt","content":"禾石組本批領取規則\n本批持有效工作單或有效窗口核准，任一即足以領取。\n本批固定窗口為霧櫃。\n"}],
+    "replies":[
+      {"question_has":["工作單","核准","簽收人"],"answer":"有效工作單代碼為 WO-18，有效窗口核准碼為 AA-73。簽收人還未確認。"},
+      {"question_has":["簽收人"],"question_excludes":["提供.{0,5}(?:工作單|核准碼)"],"answer":"簽收人確認為方予禾。窗口核准碼 AA-73 撤回，沒有替代核准。工作單 WO-18 仍然有效。"}
+    ],
+    "artifact":"pickup.md",
+    "must_match":["方予禾","霧櫃","(?:可(?:以|正常)?領取|允許領取)","WO-18"],
+    "must_omit":["AA-73","(?:不可|不能|無法)領取","(?:能否領取|領取狀態)[^\\n]{0,15}待補"],
+    "claim_sources":[
+      {"claim":"簽收人[^\\n]{0,24}方予禾","sources":[{"kind":"reply","index":1,"text":"簽收人確認為方予禾"}]},
+      {"claim":"窗口[^\\n]{0,24}霧櫃","sources":[{"kind":"document","doc":0,"line":3,"text":"固定窗口為霧櫃"}]},
+      {"claim":"(?:可(?:以|正常)?領取|允許領取)[^\\n]{0,48}WO-18|WO-18[^\\n]{0,48}(?:可(?:以|正常)?領取|允許領取)","sources":[{"kind":"document","doc":0,"line":2,"text":"任一即足以領取"},{"kind":"reply","index":1,"text":"工作單 WO-18 仍然有效"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"有效窗口核准碼為 AA-73"}]}
+    ]
+  },
+  {
+    "id":"joint_prerequisites_invalidate_only_dependent_decision",
+    "file_delivery":true,
+    "prompt":"替杉汀點寫交接通知 handover.md。文件有正式放行規則及固定窗口。先一起問工作單、窗口核准、簽收人，不齊時只問缺的必要欄位並附暫表。暫表把簽收人、窗口、仍有效的工作單及放行狀態各列一行，每行有欄名與直接來源。放行前提不齊時不要產檔。",
+    "documents":[{"name":"handover-rule.txt","content":"杉汀點本批交接\n放行必須同時有有效工作單及有效窗口核准。\n固定窗口為杉櫃。\n"}],
+    "replies":[
+      {"question_has":["工作單","核准","簽收人"],"answer":"工作單 WO-62 和窗口核准 NW-35 都有效。簽收人尚未確認。"},
+      {"question_has":["簽收人"],"question_excludes":["提供.{0,5}(?:工作單|核准)"],"answer":"簽收人確認為翁沛容。窗口核准 NW-35 已撤回，尚無替代。工作單 WO-62 仍有效。"}
+    ],
+    "artifact":"handover.md",
+    "expected_question":{"question_has":["窗口核准|核准碼|有效.{0,8}核准"],"question_excludes":["工作單(?:是|為)?(?:哪|什麼)|提供.{0,5}工作單|提供.{0,5}簽收人"]},
+    "must_match":["翁沛容","杉櫃","WO-62","撤回"],
+    "must_omit":["放行狀態[^\\n]{0,12}(?:已放行|可以放行)"],
+    "claim_sources":[
+      {"claim":"簽收人[^\\n]{0,24}翁沛容","sources":[{"kind":"reply","index":1,"text":"簽收人確認為翁沛容"}]},
+      {"claim":"窗口[^\\n]{0,24}杉櫃","sources":[{"kind":"document","doc":0,"line":3,"text":"固定窗口為杉櫃"}]},
+      {"claim":"工作單[^\\n]{0,24}WO-62","sources":[{"kind":"reply","index":1,"text":"工作單 WO-62 仍有效"}]},
+      {"claim":"放行(?:狀態)?[^\\n]{0,44}(?:暫不|不得|不可|尚未|未放行|待|不能|無法)","sources":[{"kind":"document","doc":0,"line":2,"text":"必須同時有有效工作單及有效窗口核准"},{"kind":"reply","index":1,"text":"窗口核准 NW-35 已撤回"}]}
+    ]
+  },
+  {
+    "id":"independent_veto_remains_decisive_without_other_check",
+    "file_delivery":false,
+    "prompt":"用栗晴組規則做器材出借判定。先一起問我接手人和檢點結果。取得接手人後要交文字，逐行列接手人、能否出借及該結論直接依據。若現有證據足以判定就直接交。若有未完成檢點，也另列其狀態，切勿猜測。",
+    "documents":[{"name":"lending-rule.txt","content":"栗晴組器材出借\n外殼破裂或鎖扣故障，任一成立即禁止出借。\n除這兩項外，本次沒有其他檢點要求。\n"}],
+    "replies":[
+      {"question_has":["接手人|誰接手|何人接手","檢點|外殼|鎖扣"],"answer":"先確認外殼已破裂，鎖扣正常。接手人尚未確認。"},
+      {"question_has":["接手人|誰接手|何人接手"],"question_excludes":["提供.{0,5}檢點|外殼(?:是否|有沒有)"],"answer":"接手人確認為夏孟玟。鎖扣正常的記錄撤回，鎖扣尚未重查。外殼仍確認破裂。"}
+    ],
+    "must_match":["夏孟玟","破裂","(?:不可|不得|禁止|不能)出借","鎖扣[^\\n]{0,36}(?:未重查|待查|待確認|尚未|撤回)"],
+    "must_omit":["鎖扣[^\\n]{0,14}已確認正常"],
+    "claim_sources":[
+      {"claim":"接手人[^\\n]{0,24}夏孟玟","sources":[{"kind":"reply","index":1,"text":"接手人確認為夏孟玟"}]},
+      {"claim":"(?:不可|不得|禁止|不能)出借[^\\n]{0,52}破裂|破裂[^\\n]{0,52}(?:不可|不得|禁止|不能)出借","sources":[{"kind":"document","doc":0,"line":2,"text":"任一成立即禁止出借"},{"kind":"reply","index":1,"text":"外殼仍確認破裂"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"鎖扣正常"}]}
+    ]
+  },
+  {
+    "id":"quantity_withdrawal_keeps_known_subtotal_and_independent_total",
+    "file_delivery":false,
+    "prompt":"依澗松點匯入規則整理甲乙兩批裝箱進度。先一問確認乙批箱數、每箱片數及交接人。交接人未確認時先只追問交接人，收到該次答覆後才交付。其他欄位若仍未能確認，可以交付帶待補標記的文字。每項一行列甲批片數、乙批片數、兩批總片數、固定配件數和交接人，附各項直接來源。只有已確認的資料可算入，若合計不能確定需交代原因。",
+    "documents":[{"name":"packing-rule.txt","content":"澗松點裝箱規則\n甲批已點交 24 片。\n乙批片數為乙批箱數乘每箱片數。\n兩批總片數是甲批與乙批片數相加。\n兩批共用固定配件 3 組，不受片數影響。\n"}],
+    "replies":[
+      {"question_has":["箱數|幾箱","每箱","交接人"],"answer":"乙批箱數確認為 5 箱，每箱是 7 片。交接人仍未確認。"},
+      {"question_has":["交接人|誰交接|何人交接"],"question_excludes":["提供.{0,5}(?:箱數|每箱)"],"answer":"交接人確認為嚴宜純。乙批的箱數確認撤回，尚未重點；每箱仍是 7 片。請按目前可核對內容交付。"}
+    ],
+    "must_match":["24\\s*片","3\\s*組","嚴宜純","乙批[^\\n]{0,56}(?:待補|待確認|無法|未確認|不能|未能)","總片數[^\\n]{0,56}(?:待補|待確認|無法|未確認|不能|未能)"],
+    "must_omit":["35\\s*片","59\\s*片","5\\s*箱"],
+    "claim_sources":[
+      {"claim":"甲批[^\\n]{0,30}24\\s*片","sources":[{"kind":"document","doc":0,"line":2,"text":"甲批已點交 24 片"}]},
+      {"claim":"總片數[^\\n]{0,56}(?:待補|待確認|無法|未確認|不能|未能)","sources":[{"kind":"document","doc":0,"line":4,"text":"甲批與乙批片數相加"},{"kind":"reply","index":1,"text":"乙批的箱數確認撤回"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"乙批箱數確認為 5 箱"}]},
+      {"claim":"配件[^\\n]{0,24}3\\s*組","sources":[{"kind":"document","doc":0,"line":5,"text":"固定配件 3 組"}]},
+      {"claim":"交接人[^\\n]{0,24}嚴宜純","sources":[{"kind":"reply","index":1,"text":"交接人確認為嚴宜純"}]}
+    ]
+  }
+]

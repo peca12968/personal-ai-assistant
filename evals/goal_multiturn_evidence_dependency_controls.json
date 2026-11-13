@@ -1,0 +1,51 @@
+[
+  {
+    "id":"one_required_condition_fails_while_other_is_open",
+    "file_delivery":false,
+    "prompt":"替苔湖點做一份內部樣品驗收判定。文件完整規定本批驗收。先一問確認記錄人和兩項檢查結果，收到記錄人後請依已知條件交付。每項各一行且同行附直接依據，列記錄人、驗收判定、重量檢查狀態。如果驗收可以確定，不需等未知的檢查；如果不能確定，就說待查。",
+    "documents":[{"name":"acceptance-rule.txt","content":"苔湖點樣品驗收\n本批只有兩項且都必須合格：外盒完整、重量在區間內。\n任一項不合格即拒收。\n"}],
+    "replies":[
+      {"question_has":["記錄人|誰.{0,4}記錄","檢查|外盒|重量"],"answer":"外盒確定破損，重量先確認在區間內。記錄人未確認。"},
+      {"question_has":["記錄人|誰.{0,4}記錄"],"answer":"記錄人是祝品妍。重量在區間內的確認撤回，還沒重測；外盒仍確定破損。"}
+    ],
+    "must_match":["祝品妍","(?:拒收|不可驗收|不能驗收|不合格)","重量[^\\n]{0,26}(?:待查|待補|尚未|未重測|撤回)"],
+    "claim_sources":[
+      {"claim":"記錄人[^\\n]{0,24}祝品妍","sources":[{"kind":"reply","index":1,"text":"記錄人是祝品妍"}]},
+      {"claim":"(?:拒收|不可驗收|不能驗收)[^\\n]{0,48}破損|破損[^\\n]{0,48}(?:拒收|不可驗收|不能驗收)","sources":[{"kind":"document","doc":0,"line":3,"text":"任一項不合格即拒收"},{"kind":"reply","index":1,"text":"外盒仍確定破損"}]}
+    ]
+  },
+  {
+    "id":"withdrawal_does_not_prove_neither_alternative_is_available",
+    "file_delivery":false,
+    "prompt":"替杉谷資料室交付目前的取件資格檢查摘要。文件為完整規則。先一問確認聯絡人、借單及現場確認；聯絡人確認後即交付，可用待查狀態。每項一行附直接依據。請區分『確定符合』『確定不符合』及『目前無法判定資格』，並列聯絡人和固定窗口。",
+    "documents":[{"name":"counter-rule.txt","content":"杉谷資料室取件\n有效借單或有效現場確認，至少有一項才可取件；任一項有效即符合資格。\n固定窗口為藍櫃。\n"}],
+    "replies":[
+      {"question_has":["聯絡人|聯繫人","借單","現場"],"answer":"借單 BC-63 原已確認有效；現場確認還沒核對。聯絡人也待確認。"},
+      {"question_has":["聯絡人|聯繫人"],"answer":"聯絡人是柯曉薇。借單 BC-63 已撤回且沒有替代；現場確認仍未核對。"}
+    ],
+    "must_match":["柯曉薇","藍櫃","(?:無法判定|尚不能判定|資格待查|資格待確認|資格未定|資格尚未確定)","現場[^\\n]{0,32}(?:未核對|待查|尚未|未確認)"],
+    "must_omit":["BC-63","資格確定不符合|資格確定符合"],
+    "claim_sources":[
+      {"claim":"聯絡人[^\\n]{0,24}柯曉薇","sources":[{"kind":"reply","index":1,"text":"聯絡人是柯曉薇"}]},
+      {"claim":"窗口[^\\n]{0,24}藍櫃","sources":[{"kind":"document","doc":0,"line":3,"text":"固定窗口為藍櫃"}]},
+      {"claim":"(?:無法判定|尚不能判定|資格待查|資格待確認|資格未定|資格尚未確定)","sources":[{"kind":"document","doc":0,"line":2,"text":"任一項有效即符合資格"},{"kind":"reply","index":1,"text":"現場確認仍未核對"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"借單 BC-63 原已確認有效"}]}
+    ]
+  },
+  {
+    "id":"shared_prerequisite_cannot_be_bypassed_by_an_alternative",
+    "file_delivery":false,
+    "prompt":"替浦映點寫本批領取判定。以已匯入的完整規則為準。先一問確認共同核驗、工作單、窗口同意和交接人；交接人確認後要交付可貼出的文字，即使結論仍待查。列交接人、窗口同意、共同核驗和本次能否領取，各一行且附同行直接依據。",
+    "documents":[{"name":"joint-alternatives.txt","content":"浦映點領取規則\n領取須先完成本批共同核驗。\n共同核驗完成後，工作單有效或窗口同意有效，任一即可。\n"}],
+    "replies":[
+      {"question_has":["共同核驗|核驗","工作單","窗口","交接人"],"answer":"共同核驗先確認已完成，工作單 W7 有效，窗口同意 CS-19 有效。交接人待確認。"},
+      {"question_has":["交接人|誰.{0,4}交接"],"answer":"交接人是白宣羽。共同核驗的完成紀錄撤回，需再核對。工作單 W7 和窗口同意 CS-19 均維持有效。"}
+    ],
+    "must_match":["白宣羽","CS-19","共同核驗[^\\n]{0,36}(?:撤回|待核|待查|待確認)","領取[^\\n]{0,44}(?:暫不|不得|不可|待確認|尚不能|未能|不能|無法|尚未|待查)"],
+    "must_omit":["現在可領取|可以正常領取"],
+    "claim_sources":[
+      {"claim":"交接人[^\\n]{0,24}白宣羽","sources":[{"kind":"reply","index":1,"text":"交接人是白宣羽"}]},
+      {"claim":"窗口同意[^\\n]{0,24}CS-19","sources":[{"kind":"reply","index":1,"text":"窗口同意 CS-19 均維持有效"}]},
+      {"claim":"領取[^\\n]{0,44}(?:暫不|不得|不可|待確認|尚不能|未能|不能|無法|尚未|待查)","sources":[{"kind":"document","doc":0,"line":2,"text":"須先完成本批共同核驗"},{"kind":"reply","index":1,"text":"共同核驗的完成紀錄撤回"}]}
+    ]
+  }
+]

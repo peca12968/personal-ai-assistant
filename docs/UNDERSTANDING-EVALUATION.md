@@ -666,6 +666,8 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_current_sources.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_source_scope.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_withdrawal_reason.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_evidence_dependencies.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_evidence_dependency_controls.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
@@ -676,3 +678,5 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 要求同行引用的案例可指定 `claim_sources`。每一項以欄名和值辨認文字行，再核對指定文件行、主動更正或實際答覆的來源編號是否在同行。答覆索引依題庫順序對應真正提出的問題步驟，文件索引依匯入順序對應實際文件編號。複合結論可要求多個來源。待答案例只驗收暫表中的主張，交檔案例驗收交付的文件原文。每筆支持原文由題庫作者先核對，整體來源行涵蓋、欄值正確及同列支持各自計分。此方式能抓到全篇列出正確來源卻放錯欄的情況，適用事先定義了格式、結論與支持原文的案例。
 
 來源適用性題可在同一主張加上 `forbidden_sources`，標記已撤回的答覆或只適用其他批次的原行。即使同行引了正確來源，若引文範圍也涵蓋列為不適用的原行，該項仍不通過。另列歷史的行可保留原引用。批次、班別或條件寫在獨立標題時，可要求同時引用標題與數值行。這項規約使用事先確認的合成文件範圍，適用性仍由逐案閱讀核對。
+
+依據撤回題涵蓋任一條件足夠、全部必要、共同前提、獨立否決及局部數量重核。先固定交付前提與仍可留待補的欄位。若回覆有同義問法，先定義可接受的問句，再核對測試器是否真的送出撤回。測試器漏答或原任務允許提前交付時，保留原報告，另以修訂後題庫重新建立前後基準。待查結果、實際決定、來源與定稿省略舊值分項讀取。
