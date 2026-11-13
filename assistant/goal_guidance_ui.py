@@ -34,6 +34,8 @@ class GoalGuidanceWindow:
             lines=['目標：'+goal['objective'],'狀態：'+LABELS.get(goal['status'],goal['status']),
                    f"已記錄步驟：{self.current['step_count']}", '尚待回答：'+(goal['question'] or '無'),
                    '先前補充（歷史原文）：\n'+(goal['notes'] or '無')]
+            if filename_status := goal.get('artifact_filename_status'):
+                lines.insert(-1, filename_status)
             if 'supplement_documents' in self.current:
                 files = self.current['supplement_documents']
                 lines.append('目前已匯入文件\n' + '\n'.join(f'D{row["document_id"]} · {row["name"]}' for row in files))

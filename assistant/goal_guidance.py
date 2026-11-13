@@ -7,7 +7,7 @@ import re
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
-from . import (artifact_names, conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
+from . import (artifact_names, artifacts, conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
                goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
                work_plan_scope)
 
@@ -45,6 +45,10 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False):
     colloquial_question = None
     if goal['status'] == 'needs_input':
         steps = _steps(db, gid)
+        filename_status = artifact_names.describe({**goal, 'steps': steps, 'reply_sources': sources,
+                                                   'file_delivery': review['file_delivery']})
+        if filename_status:
+            goal['artifact_filename_status'] = filename_status
         if steps:
             colloquial_question = steps[-1]['observation'].get('report_colloquial_question')
             if colloquial_question:
@@ -433,7 +437,7 @@ def _save_ordered_waiting_correction(db, current, notes):
     return _snapshot(db, goal['session_id'], gid)
 
 
-def _save_plan_scope_change(db, current, notes, delivery_change=None):
+def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filename_guidance=None):
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
     if goal['status'] == 'report_ready':
@@ -450,30 +454,34 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
     named = (artifact_names.declaration(source['content'], only=True)
-             if not delivery_change and delivery_preference.initially_enabled(db, gid) else None)
+             if not filename_guidance and not delivery_change and delivery_preference.initially_enabled(db, gid) else None)
     if filename_ask and not (named or delivery_change):
         return None
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
     observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting, delivery=delivery_change,
-                                          filename_declaration=named)
+                                          filename_declaration=named, filename_guidance=filename_guidance)
     if observation is None:
+        if filename_guidance:
+            raise ValueError('工作條件已變更。請先核對目前工作清單與待選欄位。')
         return None
     proof = observation['scope_change']
     successor = proof.get('successor')
     minimum = 3 if successor else 2
-    if delivery_change:
+    if delivery_change or filename_guidance:
         pending = proof.get('language', {}).get('pending_revisions', ())
-        minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_change['file_delivery'])
-    if named:
+        minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_preference.enabled(db, gid))
+    elif named:
         minimum += int(delivery_preference.enabled(db, gid))
     if count + minimum > MAX_STEPS:
         raise ValueError('剩餘步數不足以更新工作清單及交付，請帶入目前進度建立下一階段。')
     args = {'scope_correction': source['citation']}
-    if delivery_change:
+    if delivery_change and not filename_guidance:
         args['delivery_mode'] = True
-    if named:
+    if filename_guidance:
+        args[artifact_names.GUIDANCE_MARK] = True
+    elif named:
         args['filename_declaration'] = True
     if waiting:
         args['ask_sequence'] = proof['ask_sequence']
@@ -482,7 +490,7 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
             raise ValueError('這筆更正與目前等待的問題不一致。')
         goal_question_withdrawals.record(db, gid, options, source)
     note = ('依使用者更正更新交付方式與工作清單' if delivery_change else
-            '依使用者更正更新定稿檔名與工作清單' if named else '依使用者更正取消指定工作項目')
+            '依使用者更正更新定稿檔名與工作清單' if named or filename_guidance else '依使用者更正取消指定工作項目')
     action = {'tool': 'update_plan', 'args': args, 'note': note}
     _append_step(db, goal, notes, count + 1, action, observation)
     if successor:
@@ -493,11 +501,40 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None):
               '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
     if delivery_change:
         notice = delivery_preference.describe(delivery_change) + ('仍請回答目前的問題。' if successor else '工作清單已更新。')
-    if named:
+    if filename_guidance:
+        name = filename_guidance[0]['selection']['filename']
+        message = (f'目前定稿檔名為「{name}」。' if delivery_preference.enabled(db, gid)
+                   else f'若恢復文件交付，定稿檔名為「{name}」。')
+        notice = (delivery_preference.describe(delivery_change) if delivery_change else '') + message + '仍請回答目前的欄位問題。'
+    elif named:
         notice = f'已確認定稿檔名「{named["filename"]}」，可以接續交付。'
     db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                (notes, status, successor['question'] if successor else '', notice, gid))
     return _snapshot(db, goal['session_id'], gid)
+
+
+def _save_filename_guidance(db, current, notes):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    if goal['status'] != 'needs_input' or not delivery_preference.initially_enabled(db, gid):
+        return None
+    steps = _steps(db, gid)
+    language = work_plan_scope.language_followup(steps)
+    if not language or not language.get('pending_revisions') or language.get('cancellation'):
+        return None
+    source = goal_guidance_sources.read(db, gid, notes, count)[-1]
+    requirement = artifact_names.requirement({**goal, 'steps': steps})
+    if not artifact_names.has_guidance_name(source['content']):
+        return None
+    delivery = delivery_preference.filename_guidance_receipt(source)
+    choice = artifact_names.guidance_choice(steps, source['content'], requirement, delivery=delivery)
+    if not choice:
+        return None
+    name = choice[0]['selection']['filename']
+    if any(row['name'].casefold() == name.casefold() for row in artifacts.inventory(db, gid)):
+        raise ValueError('請提供同格式且尚未使用的定稿檔名。')
+    delivery_preference.record_filename_guidance(db, gid, source, delivery)
+    return _save_plan_scope_change(db, current, notes, delivery, filename_guidance=choice)
 
 
 def save(store, sid, gid, content, *, expected_fingerprint):
@@ -527,6 +564,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
+        if named_scope := _save_filename_guidance(db, current, notes):
+            return named_scope
         delivery_change = delivery_preference.capture(db, gid, notes, step_count)
         if 'report_colloquial_question' in current:
             return _save_ordered_waiting_correction(db, current, notes)

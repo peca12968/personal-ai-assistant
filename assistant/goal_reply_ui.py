@@ -49,6 +49,8 @@ class GoalReplyWindow:
             resumable = self.current['sources_match'] and self.current['step_count'] < MAX_STEPS
             lines = ['目標：' + goal['objective'], '狀態：' + LABELS.get(goal['status'], goal['status']),
                      '目前問題：' + (goal['question'] or '無'), '先前問題與補充：\n' + (goal['notes'] or '無')]
+            if filename_status := goal.get('artifact_filename_status'):
+                lines.insert(-1, filename_status)
             if goal.get('partial_result'):
                 label = '更正前的暫表（歷史）' if goal.get('reference_review') else '待補期間的成果（尚待定稿）'
                 lines[2:2] = [label, goal['partial_result']]

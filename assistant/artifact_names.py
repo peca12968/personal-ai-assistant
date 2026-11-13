@@ -12,10 +12,15 @@ _INSTRUCTION = re.compile(
 _USE_TO_DELIVER = re.compile(rf'{_CONDITIONAL}(?:請)?(?:使用|用)\s*{_NAME}\s*交付(?:完整)?(?:結果|成果)')
 _FOLLOWUP_NAME = re.compile(rf'{_CONDITIONAL}(?:定稿)?檔名\s*(?:請用|用|叫|改用|為|是|：|:)\s*{_NAME}')
 _REPLACEMENT_NAME = re.compile(rf'(?:定稿|成果|交付)?檔名\s*(?:改為|改成|改用|更正為|更正成)\s*{_NAME}')
+_GUIDANCE_PREFIX = re.compile(r'(?:(?:若|如果)(?:目前)?(?:需要|要求)?(?:交檔|出檔|交付文件)[，,]?\s*)?'
+                              r'(?:最後\s*)?(?:(?:定稿|成果|交付)?檔名\s*(?:改為|改成|改用|更正為|更正成|為|是|叫|請用|用|：|:)'
+                              r'|定稿(?:請)?(?:使用|用)|請\s*(?:交付|交|另存為)\s*[^。]*\.(?:md|txt|json)\b)', re.I)
+_GUIDANCE_COMMA = re.compile(r'\s*')
 _ANSWER = re.compile(rf'(?:(?:定稿)?(?:請)?(?:改用|使用|用|選擇|選)(?:\s+|(?=[`「])))?{_NAME}')
 _TRAILING = re.compile(r'\s*(?:不要|不用|不必)(?:在|附|把|加|另)')
 _END = re.compile(r'[。！!]$')
 ASK_MARK = 'artifact_filename_question'
+GUIDANCE_MARK = 'filename_guidance'
 REPLY_VERSION = 6
 MIXED_REPLY_VERSION = 7
 DEFERRED_REPLY_VERSION = 8
@@ -55,14 +60,19 @@ def requirement(goal):
     if expected:
         expected = {**expected, 'citation': '[目標]'}
     replies = {row['citation']: row for row in goal.get('reply_sources', ())}
+    guidance = {row['citation']: row for row in goal.get('guidance_sources', ())}
     candidates = []
-    for row in goal.get('guidance_sources', ()):
-        if match := declaration(row['content'], only=True):
-            candidates.append((row['notes_start'], {**match, 'citation': row['citation']}))
+    verified = {}
     for step in goal['steps']:
         proof = step['observation'].get('scope_reply', {})
         if (choice := proof.get('filename_choice')) and (source := replies.get(proof['citation'])):
             candidates.append((source['notes_start'], {**choice['selection'], 'citation': source['citation']}))
+        if step['action']['args'].get(GUIDANCE_MARK) is True:
+            proof = step['observation']['scope_change']
+            verified[proof['citation']] = {**proof['filename_choice']['selection'], 'verified_guidance': True}
+    for citation, row in guidance.items():
+        if match := verified.get(citation) or declaration(row['content'], only=True):
+            candidates.append((row['notes_start'], {**match, 'citation': citation}))
     return max(candidates, key=lambda row: row[0])[1] if candidates else expected
 
 
@@ -187,10 +197,14 @@ def confirmed_choice(steps, expected):
     if expected is None:
         return None
     for step in reversed(steps):
-        reply = step['observation'].get('scope_reply', {})
+        guidance = step['action']['args'].get(GUIDANCE_MARK) is True
+        reply = step['observation'].get('scope_change' if guidance else 'scope_reply', {})
         if reply.get('citation') != expected['citation'] or not (choice := reply.get('filename_choice')):
             continue
-        if {**choice['selection'], 'citation': reply['citation']} != expected:
+        selection = {**choice['selection'], 'citation': reply['citation']}
+        if guidance:
+            selection['verified_guidance'] = True
+        if selection != expected:
             return None
         ask = steps[choice['question_step'] - 1]
         question = ask['observation'].get(ASK_MARK)
@@ -200,6 +214,51 @@ def confirmed_choice(steps, expected):
         return ask, question, {'previous': expected, 'previous_step': step['sequence'],
                                'previous_step_sha256': goal_stages.digest(step), 'previous_source_sha256': reply['source_sha256']}
     return None
+
+
+def has_guidance_name(content):
+    return any(_GUIDANCE_PREFIX.match(clause) for _, clause, _ in
+               goal_guidance_sources.standalone_clauses(content, comma_before=_GUIDANCE_COMMA))
+
+
+def guidance_choice(steps, content, expected, *, delivery=None):
+    if delivery:
+        for span in delivery.get('guidance_parts', (delivery,)):
+            start, end = span['start'], span['end']
+            content = content[:start] + ' ' * (end - start) + content[end:]
+    clauses = goal_guidance_sources.standalone_clauses(content, comma_before=_GUIDANCE_COMMA)
+    names = [(start, clause, question) for start, clause, question in clauses if _GUIDANCE_PREFIX.match(clause)]
+    if not names:
+        return None
+    confirmed = confirmed_choice(steps, expected)
+    bound = confirmed or deferred_question(steps, expected)
+    if not bound:
+        return None
+    if len(clauses) != 1 or names[0][2]:
+        raise ValueError('請單獨提供一個明確的定稿檔名。欄位選擇請回答目前問題。')
+    start, clause, _ = names[0]
+    selection = (replacement_declaration(clause, start) if confirmed else
+                 followup_declaration(clause, start) or replacement_declaration(clause, start))
+    if not selection:
+        raise ValueError('請明確提供同格式且尚未使用的檔名，例如「定稿檔名改為 final.md」。')
+    ask, proof = bound[:2]
+    return confirm_filename(steps, ask, proof, selection), confirmed[2] if confirmed else None
+
+
+def describe(goal):
+    if not goal['file_delivery'] and 'delivery_mode_change' not in goal:
+        return ''
+    name = requirement(goal)
+    if name is None:
+        return ''
+    if not goal['file_delivery']:
+        label = '恢復文件交付時的檔名'
+    elif (goal['steps'] and goal['status'] == 'needs_input' and goal['steps'][-1]['observation'].get(ASK_MARK)
+          or awaiting_confirmation(goal['steps'], name)):
+        label = '原指定檔名（等候新檔名）'
+    else:
+        label = '目前採用的定稿檔名'
+    return f'{label} · {name["filename"]} {name["citation"]}'
 
 
 def confirm_filename(steps, ask, proof, span):
@@ -227,7 +286,8 @@ def check_action(expected, action, *, pending=False):
         raise ValueError('定稿檔名仍待確認。請先完成受更正影響的工作清單項目。')
     if action['tool'] == 'deliver' and action['args']['filenames'] != [name]:
         raise ValueError(f'使用者指定定稿檔名為「{name}」。請依目前指定檔名交付。')
-    if action['tool'] == 'write_artifact' and expected['citation'].startswith('[補充#') and action['args']['filename'] != name:
+    if (action['tool'] == 'write_artifact' and (expected['citation'].startswith('[補充#') or expected.get('verified_guidance'))
+            and action['args']['filename'] != name):
         raise ValueError(f'請用已確認的定稿檔名「{name}」保存文件。')
 
 

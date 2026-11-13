@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from assistant import artifacts, autonomy, goal_guidance
+from assistant import artifact_names, artifacts, autonomy, goal_guidance
 from assistant.backup import validate_database
 from assistant.engine import CodexEngine
 from assistant.store import Store
@@ -127,24 +127,40 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                     event = {'question': state}
                     history.append(event)
                     try:
-                        answer = reply(store, sid, gid, turn['answer'])
+                        if turn.get('guidance'):
+                            view = goal_guidance.snapshot(store, sid, gid)
+                            goal_guidance.save(store, sid, gid, turn['answer'], expected_fingerprint=view['fingerprint'])
+                            answer = autonomy.get_goal(store, sid, gid)
+                        else:
+                            answer = reply(store, sid, gid, turn['answer'])
                     except ValueError as exc:
                         event['error'] = str(exc)
                         checks[marker] = bool(turn.get('reject')) and autonomy.get_goal(store, sid, gid) == state
                         break
                     event['answer'] = answer
-                    next_proof = answer['work_plan']['scope_reply']
-                    checks[marker] = not turn.get('reject') and answer['reply_sources'][-1]['question'] == expected
+                    plan = answer['work_plan']
+                    if turn.get('guidance'):
+                        next_proof = plan.get('scope_change', {})
+                        checks[marker] = (not turn.get('reject') and answer['guidance_sources'][-1]['content'] == turn['answer']
+                                          and answer['reply_sources'] == state['reply_sources'] and plan['conditions_current']
+                                          and len(answer['steps']) == len(state['steps']) + 2)
+                    else:
+                        next_proof = plan['scope_reply']
+                        checks[marker] = not turn.get('reject') and answer['reply_sources'][-1]['question'] == expected
                     if 'selected' in turn:
                         resolution = next_proof.get('language', {}).get('revision_resolution') or {}
                         checks[marker] &= resolution.get('value') == turn['selected']
                     if 'accepted_name' in turn:
                         checks[marker] &= next_proof.get('filename_choice', {}).get('selection', {}).get('filename') == turn['accepted_name']
+                    if turn.get('guidance') and checks[marker] and 'accepted_name' in turn:
+                        view = autonomy.get_goal(store, sid, gid, include_reply_positions=True)
+                        checks[marker] &= f" · {turn['accepted_name']} [更正#" in artifact_names.describe(view)
                     if 'previous_name' in turn:
                         previous_name = next_proof.get('filename_revision', {}).get('previous', {}).get('filename')
                         checks[marker] &= previous_name == turn['previous_name']
                     if turn.get('still_waiting'):
-                        previous = state['work_plan']['scope_reply']['language']['pending_revisions']
+                        previous_plan = state['work_plan']
+                        previous = (previous_plan.get('scope_reply') or previous_plan['scope_change'])['language']['pending_revisions']
                         language = next_proof.get('language', {})
                         checks[marker] &= (answer['status'] == 'needs_input' and answer['question'] == expected
                                            and answer['artifacts'] == state['artifacts'] and not language.get('revision_resolution')
@@ -157,8 +173,10 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                         checks[marker] &= answer['file_delivery'] == turn['file_delivery']
                     if 'revisions' in turn:
                         checks[marker] &= ({item['field']: item['value'] for item in
-                                            answer['work_plan']['scope_reply'].get('revisions', ())} == turn['revisions'])
+                                            next_proof.get('revisions', ())} == turn['revisions'])
                     state = answer
+                    if turn.get('guidance') and not checks[marker]:
+                        break
             if state['status'] == 'paused':
                 checks['plan_current'] = state['work_plan']['delivery_review']['ready']
                 state = autonomy.run_goal(store, sid, gid, Recorded(), max_steps=6 if live else 2)

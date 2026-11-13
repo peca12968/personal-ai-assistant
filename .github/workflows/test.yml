@@ -159,6 +159,7 @@ jobs:
       - run: python scripts/evaluate_artifact_filenames.py --suite evals/goal_artifact_filename_field_choice.json
       - run: python scripts/evaluate_artifact_filenames.py --suite evals/goal_artifact_filename_before_field.json
       - run: python scripts/evaluate_artifact_filenames.py --suite evals/goal_artifact_filename_replace.json
+      - run: python scripts/evaluate_artifact_filenames.py --suite evals/goal_artifact_filename_guidance.json
       - run: python scripts/evaluate_goal_replies.py --suite evals/goal_mixed_scope_updates.json
       - run: python scripts/evaluate_json_documents.py
       - run: python scripts/evaluate_json_statistics.py

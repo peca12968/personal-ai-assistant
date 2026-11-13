@@ -637,6 +637,70 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(final['steps'][-1]['action']['args']['filenames'], ['later.md'])
         validate_database(self.store.path)
 
+    def test_proactive_filename_guidance_rebinds_the_field_and_replays_its_source(self):
+        from assistant import artifact_names
+        from scripts.evaluate_artifact_filenames import reply
+        waiting = self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。定稿用 first.md。')
+        view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        saved = goal_guidance.save(self.store, self.sid, self.gid, '定稿檔名改為 final.md。', expected_fingerprint=view['fingerprint'])
+        self.assertEqual(saved['goal']['question'], pending['question'])
+        self.assertIn('final.md [更正#1]', saved['goal']['artifact_filename_status'])
+        named = a.get_goal(self.store, self.sid, self.gid)
+        self.assertEqual(named['reply_sources'], pending['reply_sources'])
+        self.assertEqual(named['artifacts'], waiting['artifacts'])
+        self.assertTrue(named['work_plan']['conditions_current'])
+        proof = named['work_plan']['scope_change']
+        self.assertEqual(proof['filename_choice']['selection']['quote'], '定稿檔名改為 final.md')
+        self.assertEqual(proof['filename_revision']['previous']['filename'], 'first.md')
+        self.assertEqual(proof['language']['pending_revisions'], pending['work_plan']['scope_reply']['language']['pending_revisions'])
+        self.assertEqual(named['withdrawn_questions'][-1]['ask_sequence'], pending['steps'][-1]['sequence'])
+        with self.assertRaisesRegex(ValueError, '尚未保存'):
+            goal_replies.save(self.store, self.sid, self.gid, '用江明洋。', expected_fingerprint=view['fingerprint'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'filename-guidance')
+        restored = Store(self.root / 'filename-guidance/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), named)
+        reply(restored, self.sid, self.gid, '用江明洋。')
+        final = a.run_goal(restored, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='first.md', content='舊檔名'),
+            action('write_artifact', filename='final.md', content='領用人江明洋，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['final.md'])))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in final['steps'][-3:]], ['invalid', 'write_artifact', 'deliver'])
+        step = named['steps'][-2]
+        self.assertTrue(step['action']['args'][artifact_names.GUIDANCE_MARK])
+        step['observation']['scope_change']['filename_revision']['previous_step_sha256'] = '0' * 64
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(step['observation']), self.gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '清單與保存動作不一致'):
+            validate_database(restored.path)
+
+    def test_proactive_filename_guidance_mode_receipt_is_atomic_and_replayable(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。定稿用 first.md。')
+        view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        for content in ('改成文字回覆，檔名改為 first.txt。', '檔名改為 a.md，檔名改為 b.md。',
+                        '定稿檔名改為 result.md，領用人選周雅文。'):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                goal_guidance.save(self.store, self.sid, self.gid, content, expected_fingerprint=view['fingerprint'])
+            self.assertEqual(a.get_goal(self.store, self.sid, self.gid), pending)
+        content = '改成文字回覆，檔名改為 later.md。'
+        goal_guidance.save(self.store, self.sid, self.gid, content, expected_fingerprint=view['fingerprint'])
+        saved = a.get_goal(self.store, self.sid, self.gid)
+        self.assertFalse(saved['file_delivery'])
+        self.assertEqual(saved['question'], pending['question'])
+        mode = saved['work_plan']['scope_change']['delivery_mode']
+        self.assertEqual(content[mode['start']:mode['end']], '改成文字回覆')
+        validate_database(self.store.path)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM autonomous_delivery_changes WHERE goal_id=? AND citation=?',
+                       (self.gid, mode['citation']))
+        with self.assertRaisesRegex(ValueError, '交付方式'):
+            validate_database(self.store.path)
+
     def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
         for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
             with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:

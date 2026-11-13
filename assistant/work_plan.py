@@ -684,7 +684,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 next_step = steps[index + 1] if index + 1 < len(steps) else None
                 if 'scope_correction' in args:
                     expected = work_plan_scope.replay(db, args, prior, next_step,
-                        {**scope_goal, 'sources': history.get(sequence, sources)}, guidance,
+                        {**scope_goal, 'sources': history.get(sequence, sources)}, guidance, replies,
                         withdrawals_present='autonomous_question_withdrawals' in available, delivery_present=delivery_present)
                 elif 'scope_reply' in args:
                     expected = work_plan_scope.replay_reply(db, args, prior, next_step,
@@ -698,7 +698,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                                    'reused_calculations', 'scope_change', 'scope_reply', 'scope_cancelled')):
                     raise ValueError('工作清單與保存動作不一致。')
                 reply = expected.get('scope_reply', {})
-                checked_filename = checked_filename or 'filename_declaration' in args or bool(
+                checked_filename = checked_filename or 'filename_declaration' in args or artifact_names.GUIDANCE_MARK in args or bool(
                     reply.get('filename_choice') or reply.get('filename_pending'))
             if checked_filename and action['tool'] in {'write_artifact', 'deliver'}:
                 active_name = artifact_names.requirement({**scope_goal, 'steps': prior,

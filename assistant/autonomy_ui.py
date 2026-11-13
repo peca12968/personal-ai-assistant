@@ -11,7 +11,7 @@ from tkinter import messagebox, ttk
 
 from . import autonomy
 from . import continuous
-from . import artifacts
+from . import artifact_names, artifacts
 from . import work_plan
 from . import goal_drafts
 from .goal_conversation import describe as describe_conversation
@@ -300,7 +300,7 @@ class AutonomousWindow:
 
     def select(self, event=None):
         try:
-            goal = autonomy.get_goal(self.store, self.sid, self.selected_id())
+            goal = autonomy.get_goal(self.store, self.sid, self.selected_id(), include_reply_positions=True)
         except ValueError:
             return
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
@@ -341,6 +341,8 @@ class AutonomousWindow:
                 tokens = [f"D{row['document_id']} L{row['start_line']}–L{row['end_line']}" for row in scope[key]]
                 lines += [label + ' · ' + ('、'.join(tokens) or '無')]
         lines += ['交付形式：' + ('本機文件' if goal['file_delivery'] else '視窗文字成果')]
+        if filename_status := artifact_names.describe(goal):
+            lines.append(filename_status)
         if delivery_change := goal.get('delivery_mode_change'):
             lines += [f"交付更正 {delivery_change['citation']} · {delivery_change['quote']}"]
         if goal['continuous_runs']:

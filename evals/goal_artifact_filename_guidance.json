@@ -1,0 +1,53 @@
+[
+  {
+    "id": "proactive_rename_rebinds_the_pending_field", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "chosen": "final.md", "ask": true, "first_filename": "first.md",
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "定稿檔名改為 final.md。", "guidance": true, "accepted_name": "final.md", "previous_name": "first.md", "still_waiting": true},
+                  {"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "用江明洋。", "selected": "江明洋"}],
+    "must_include": ["8 號", "江明洋"], "must_omit": ["宋一珊", "周雅文", "林語安"]
+  },
+  {
+    "id": "proactive_name_then_replacement_in_actual_reply", "objective": "核對門號與領用人。請交 report.txt。", "draft": "report.txt", "chosen": "定稿.txt", "ask": true,
+    "reply": "領用人改為周雅文或江明洋。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "定稿用「交接.txt」。", "guidance": true, "accepted_name": "交接.txt", "still_waiting": true},
+                  {"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "沿用原值，檔名改為定稿.txt。", "accepted_name": "定稿.txt", "previous_name": "交接.txt", "selected": "宋一珊"}],
+    "must_include": ["8 號", "宋一珊"], "must_omit": ["江明洋", "周雅文", "林語安"]
+  },
+  {
+    "id": "two_proactive_renames_keep_both_field_choices", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "chosen": "selected.md", "ask": true,
+    "reply": "門號改為 9 號或 10 號。領用人改為周雅文或江明洋。",
+    "followups": [{"question": "門號要改為「9 號」或「10 號」，還是沿用「8 號」？", "answer": "定稿檔名為 first.md。", "guidance": true, "accepted_name": "first.md", "still_waiting": true},
+                  {"question": "門號要改為「9 號」或「10 號」，還是沿用「8 號」？", "answer": "檔名更正為 selected.md。", "guidance": true, "accepted_name": "selected.md", "previous_name": "first.md", "still_waiting": true},
+                  {"question": "門號要改為「9 號」或「10 號」，還是沿用「8 號」？", "answer": "用 9 號。", "selected": "9 號"},
+                  {"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "用周雅文。", "selected": "周雅文"}],
+    "must_include": ["9 號", "周雅文"], "must_omit": ["8 號", "10 號", "江明洋", "宋一珊", "林語安"]
+  },
+  {
+    "id": "proactive_rename_and_text_mode_preserve_pending_fields", "objective": "核對門號與領用人。若交檔請交 report.md。", "draft": "report.md", "chosen": "later.md", "ask": true, "first_filename": "first.md", "expect_text": true,
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "改成文字回覆，檔名改為 later.md。", "guidance": true, "accepted_name": "later.md", "previous_name": "first.md", "file_delivery": false, "still_waiting": true},
+                  {"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "用江明洋。", "selected": "江明洋"}],
+    "must_include": ["8 號", "江明洋"], "must_omit": ["宋一珊", "周雅文", "林語安"]
+  },
+  {
+    "id": "occupied_proactive_rename_keeps_the_current_state", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "also_draft": "old.md", "chosen": null, "ask": true, "first_filename": "first.md", "expect_wait": true,
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "定稿檔名改為 OLD.md。", "guidance": true, "reject": true}]
+  },
+  {
+    "id": "conflicting_proactive_names_leave_the_original_question", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "chosen": null, "ask": true, "first_filename": "first.md", "expect_wait": true,
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "定稿檔名改為 a.md，定稿檔名改為 b.md。", "guidance": true, "reject": true}]
+  },
+  {
+    "id": "wrong_format_does_not_switch_mode", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "chosen": null, "ask": true, "first_filename": "first.md", "expect_wait": true,
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "檔名改為 other.txt。改成文字回覆。", "guidance": true, "reject": true}]
+  },
+  {
+    "id": "actual_reply_remains_usable", "objective": "核對門號與領用人。請交 report.md。", "draft": "report.md", "chosen": "selected.md", "ask": true, "first_filename": "first.md",
+    "reply": "領用人改為周雅文或江明洋。定稿用 first.md。",
+    "followups": [{"question": "領用人要改為「周雅文」或「江明洋」，還是沿用「宋一珊」？", "answer": "用江明洋，定稿檔名改為 selected.md。", "selected": "江明洋", "accepted_name": "selected.md", "previous_name": "first.md"}],
+    "must_include": ["8 號", "江明洋"], "must_omit": ["周雅文", "宋一珊", "林語安"]
+  }
+]

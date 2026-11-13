@@ -204,12 +204,18 @@ def _without_delivery(text, spans):
     return text
 
 
-def observe(steps, source, scope, prior_scope, *, waiting, delivery=None, filename_declaration=None):
+def observe(steps, source, scope, prior_scope, *, waiting, delivery=None, filename_declaration=None, filename_guidance=None):
     plan = work_plan.latest(steps)
     if plan is None or source['steps_seen'] != len(steps):
         return None
     filename_ask = waiting and steps[-1]['observation'].get(artifact_names.ASK_MARK)
-    if filename_declaration:
+    if filename_guidance:
+        previous = language_followup(steps) if waiting and not filename_ask else None
+        if (not previous or previous.get('cancellation') or not previous.get('pending_revisions')
+                or prior_scope != plan['goal_conditions_sha256'] or not _waiting_parts(steps, plan)[1]):
+            return None
+        changes = []
+    elif filename_declaration:
         if prior_scope != plan['goal_conditions_sha256'] or waiting and not filename_ask:
             return None
         if filename_ask:
@@ -239,6 +245,11 @@ def observe(steps, source, scope, prior_scope, *, waiting, delivery=None, filena
         proof['delivery_mode'] = delivery
     if filename_declaration:
         proof['filename_declaration'] = filename_declaration
+    if filename_guidance:
+        choice, revision = filename_guidance
+        proof['filename_choice'] = choice
+        if revision:
+            proof['filename_revision'] = revision
     if waiting:
         successor = None if filename_ask else _successor(steps, plan, cancelled)
         if previous := language_followup(steps):
@@ -969,11 +980,12 @@ def _apply_revisions(result, proof, complete, plan, revisions, source):
     proof['revisions'] = revisions
 
 
-def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, delivery_present=False):
-    keys = args.keys() - {'delivery_mode', 'filename_declaration'}
+def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_present, delivery_present=False):
+    special = args.keys() & {'delivery_mode', 'filename_declaration', artifact_names.GUIDANCE_MARK}
+    keys = args.keys() - special
     if (keys not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'})
             or any(args[key] is not True or not delivery_present for key in args.keys() - keys)
-            or {'delivery_mode', 'filename_declaration'} <= args.keys()):
+            or len(special) > 1):
         raise ValueError('已保存的工作範圍更正格式不符。')
     source = next((item for item in guidance if item['citation'] == args['scope_correction']), None)
     if source is None:
@@ -989,7 +1001,17 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
         named = artifact_names.declaration(source['content'], only=True)
         if not named or not delivery_preference.initially_enabled(db, goal['id']):
             raise ValueError('定稿檔名補充缺少可核對的來源。')
-    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named)
+    filename_guidance = None
+    if artifact_names.GUIDANCE_MARK in args:
+        delivery = delivery_preference.verify_filename_guidance(db, goal['id'], source)
+        requirement = artifact_names.requirement({**goal, 'steps': prior,
+            'reply_sources': [row for row in replies if row['notes_start'] < start],
+            'guidance_sources': [row for row in guidance if row['notes_start'] < start]})
+        filename_guidance = artifact_names.guidance_choice(prior, source['content'], requirement, delivery=delivery)
+        if not waiting or not filename_guidance or not delivery_preference.initially_enabled(db, goal['id']):
+            raise ValueError('定稿檔名更正缺少原問題或已保存的來源。')
+    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named,
+                       filename_guidance=filename_guidance)
     if expected is None:
         raise ValueError('工作範圍更正與原清單或保存步驟不一致。')
     if waiting:
@@ -1004,7 +1026,7 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
         successor = proof['successor']
         if successor and (not after or after['action']['tool'] != 'ask' or after['action']['args'] != successor
                           or after['observation'].get('question') != successor['question']
-                          or (delivery and after['observation'].get('goal_conditions_sha256') != scope)):
+                          or ((delivery or filename_guidance) and after['observation'].get('goal_conditions_sha256') != scope)):
             raise ValueError('工作範圍更正缺少相符的保留問題。')
     return expected
 
