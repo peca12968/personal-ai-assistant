@@ -19,6 +19,7 @@ from scripts.evaluate_understanding import fingerprint, save_report
 SUITE = ROOT / 'evals/goal_multiturn_delivery.json'
 CONTEXT = '\n\n目標與已觀察資料：\n'
 CITATION = re.compile(r'\[D(\d+):L(\d+)(?:-L?(\d+))?\]')
+USER_CITATION = re.compile(r'\[(?:補充|更正)#\d+\]')
 MAX_GOAL_STEPS = 24
 
 
@@ -67,11 +68,61 @@ def validate_cases(cases):
             document = case['documents'][source.get('doc', 0)]
             if not source['text'] or source['text'] not in document['content'].splitlines()[source['line'] - 1]:
                 raise ValueError('核對條件未指向合成文件的指定行。')
+        for claim in case.get('claim_sources', ()):
+            re.compile(claim['claim'])
+            if not claim['claim'] or not claim['sources'] or 'expected_json' in case:
+                raise ValueError('同列引用驗收須明列主張及其支持來源，並使用文字成果。')
+            for source in claim['sources']:
+                kind = source['kind']
+                if kind == 'document':
+                    if not 0 <= source['doc'] < len(case.get('documents', ())):
+                        raise ValueError('主張的文件編號超出題庫範圍。')
+                    document = case['documents'][source['doc']]['content'].splitlines()
+                    if not 1 <= source['line'] <= len(document):
+                        raise ValueError('主張的文件行號超出題庫範圍。')
+                    original = document[source['line'] - 1]
+                elif kind == 'reply':
+                    if not 0 <= source['index'] < len(replies):
+                        raise ValueError('主張的答覆序號超出題庫範圍。')
+                    original = replies[source['index']]['answer']
+                elif kind == 'guidance':
+                    original = case['guidance']
+                else:
+                    raise ValueError('主張支持來源類型不符。')
+                if not source['text'] or source['text'] not in original:
+                    raise ValueError('主張支持內容不在指定合成來源中。')
     return cases
 
 
 def question_matches(question, rule):
     return all(re.search(pattern, question) for pattern in rule['question_has'])
+
+
+def claim_support(case, final, report, turns):
+    replies = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
+
+    def supports(source, line):
+        if source['kind'] == 'document':
+            source_id = final['sources'][source['doc']]['document_id']
+            return any(int(doc) == source_id and int(start) <= source['line'] <= int(end or start)
+                       for doc, start, end in CITATION.findall(line))
+        if source['kind'] == 'guidance':
+            return any(note['content'] == case['guidance'] and note['citation'] in line
+                       for note in final.get('guidance_sources', ()))
+        index = source['index']
+        if index >= len(replies):
+            return False
+        sequence = replies[index]['before']['steps'][-1]['sequence']
+        return any(reply['ask_sequence'] == sequence and reply['answer'] == case['replies'][index]['answer']
+                   and reply['citation'] in line for reply in final.get('reply_sources', ()))
+
+    result = []
+    for claim in case.get('claim_sources', ()):
+        matching = [line for line in report.splitlines()
+                    if re.search(claim['claim'], USER_CITATION.sub('', CITATION.sub('', line)))]
+        result.append(bool(matching) and all(all(supports(source, line) for source in claim['sources'])
+                                             for line in matching))
+    return result
 
 
 def score(case, final, files, turns, calls):
@@ -94,6 +145,10 @@ def score(case, final, files, turns, calls):
         'applied_turns': len([turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]) == len(case.get('replies', ()))
                          and ('guidance' not in case or any(turn['kind'] == 'guidance' and turn.get('saved') for turn in turns)),
     }
+    if case.get('claim_sources'):
+        claim_report = final.get('partial_result', '') if question else report
+        supported = claim_support(case, final, claim_report, turns)
+        checks['claim_sources'] = all(supported)
     if question:
         checks.pop('delivered')
         checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
@@ -110,6 +165,8 @@ def score(case, final, files, turns, calls):
     metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - len(case.get('replies', ())) - int(bool(question))),
                'repeated_questions': len(asks) - len(set(asks)), 'sources_retained': sum(coverage), 'sources_required': len(coverage),
                'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
+    if case.get('claim_sources'):
+        metrics.update(claim_sources_supported=sum(supported), claim_sources_required=len(supported))
     return checks, metrics
 
 

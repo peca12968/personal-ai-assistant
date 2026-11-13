@@ -1,0 +1,81 @@
+[
+  {
+    "id": "revised_batch_uses_new_capacity_and_original_safety_rule",
+    "file_delivery": false,
+    "prompt": "替澄湖倉寫裝箱交接。先以舊容量表、6 箱做第一步規劃。定稿要有每箱容量、箱數、總件數、固定防護墊數。固定防護墊依獨立安全規則。每項各列一行，同行附直接支持該項的來源。總件數一行要能查到容量和箱數的依據。若我改採新版，重算再定稿。",
+    "documents": [
+      {"name":"capacity-old.txt","content":"澄湖倉容量舊版\n每箱可裝 7 件。\n"},
+      {"name":"capacity-new.txt","content":"澄湖倉容量新版\n每箱可裝 9 件。\n"},
+      {"name":"padding-rule.txt","content":"澄湖倉安全規則\n本批固定備 12 片防護墊，與箱數無關。\n每箱件數乘箱數即為總件數。\n"}
+    ],
+    "first_steps": 1,
+    "guidance": "正式改採 capacity-new.txt。箱數更正為 8 箱。防護墊數仍依獨立安全規則。",
+    "must_match": ["9\\s*件", "8\\s*箱", "72\\s*件", "12\\s*片"],
+    "must_omit": ["7\\s*件", "6\\s*箱", "42\\s*件"],
+    "claim_sources": [
+      {"claim":"每箱[^\\n]{0,24}9\\s*件", "sources":[{"kind":"document","doc":1,"line":2,"text":"每箱可裝 9 件"}]},
+      {"claim":"箱數[^\\n]{0,24}8\\s*箱", "sources":[{"kind":"guidance","text":"箱數更正為 8 箱"}]},
+      {"claim":"總件數[^\\n]{0,64}72\\s*件", "sources":[{"kind":"document","doc":1,"line":2,"text":"每箱可裝 9 件"},{"kind":"guidance","text":"箱數更正為 8 箱"}]},
+      {"claim":"(?:防護墊[^\\n]{0,24}12\\s*片|12\\s*片[^\\n]{0,10}防護墊)", "sources":[{"kind":"document","doc":2,"line":2,"text":"固定備 12 片防護墊"}]}
+    ]
+  },
+  {
+    "id": "three_replies_replace_old_counter_without_replacing_owner",
+    "file_delivery": true,
+    "prompt": "依匯入的竹濱點作業文件做交接通知。請同一問詢問收件人、交件櫃號和入場時段，答覆有缺漏就只接著問缺的欄位。每次依最新確認值更新。三項齊全後才定稿 handoff.md。另列原文指定的固定核對碼。四項各一行，每行附支持該值的來源。",
+    "documents": [
+      {"name":"check-code.txt","content":"竹濱點交接\n固定核對碼是 QC-64。\n交件櫃號及人員須由本批確認。\n"},
+      {"name":"archived-example.txt","content":"已結束的練習案例\n範例櫃號 K19，練習核對碼 QC-27。\n"}
+    ],
+    "replies": [
+      {"question_has":["收件人","櫃號","時段"],"answer":"收件人確認是何芊羽。交件櫃號和入場時段都還沒確定。"},
+      {"question_has":["櫃號","時段"],"question_excludes":["收件人(?:是|為)?(?:誰|哪)|提供.{0,5}收件人"],"answer":"交件櫃號先確認 K22。入場時段仍未確定。"},
+      {"question_has":["時段"],"question_excludes":["櫃號(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}櫃號"],"answer":"入場時段確認為 14:20。交件櫃號正式改為 K34。練習表的 K19 只是舊例。"}
+    ],
+    "artifact":"handoff.md",
+    "must_match":["何芊羽","K34","14[:：]20","QC-64"],
+    "must_omit":["K22","K19","QC-27"],
+    "claim_sources":[
+      {"claim":"收件人[^\\n]{0,24}何芊羽","sources":[{"kind":"reply","index":0,"text":"收件人確認是何芊羽"}]},
+      {"claim":"櫃號[^\\n]{0,24}K34","sources":[{"kind":"reply","index":2,"text":"交件櫃號正式改為 K34"}]},
+      {"claim":"時段[^\\n]{0,24}14[:：]20","sources":[{"kind":"reply","index":2,"text":"入場時段確認為 14:20"}]},
+      {"claim":"核對碼[^\\n]{0,24}QC-64","sources":[{"kind":"document","doc":0,"line":2,"text":"固定核對碼是 QC-64"}]}
+    ]
+  },
+  {
+    "id": "override_one_manual_value_and_keep_other_document_facts",
+    "file_delivery": false,
+    "prompt": "做一份枋寧點本次設備回收提醒。窗口與封存袋數看正式手冊，固定貼標碼看另外一份標示規則。收件班別尚未提供，先問我。最後列窗口、袋數、貼標碼、班別，每項一行並在該行引用來源。",
+    "documents": [
+      {"name":"return-manual.txt","content":"枋寧點正式手冊\n回收窗口為北台。\n封存袋標準為 5 個。\n"},
+      {"name":"label-policy.txt","content":"枋寧點標示規則\n貼標碼固定為 LB-42。\n"}
+    ],
+    "replies":[{"question_has":["班別"],"answer":"收件班別為午班。封存袋數本次正式更正為 7 個，窗口與貼標照原規則。"}],
+    "must_match":["北台","7\\s*個","LB-42","午班"],
+    "must_omit":["5\\s*個"],
+    "claim_sources":[
+      {"claim":"窗口[^\\n]{0,24}北台","sources":[{"kind":"document","doc":0,"line":2,"text":"回收窗口為北台"}]},
+      {"claim":"袋(?:數|數量)?[^\\n]{0,24}7\\s*個","sources":[{"kind":"reply","index":0,"text":"封存袋數本次正式更正為 7 個"}]},
+      {"claim":"貼標碼[^\\n]{0,24}LB-42","sources":[{"kind":"document","doc":1,"line":2,"text":"貼標碼固定為 LB-42"}]},
+      {"claim":"班別[^\\n]{0,24}午班","sources":[{"kind":"reply","index":0,"text":"收件班別為午班"}]}
+    ]
+  },
+  {
+    "id": "pending_approval_with_cited_independent_partial_facts",
+    "file_delivery": false,
+    "prompt": "依灣秋場資料做場地交接通知。先問值班代碼和核准編號。若只收到代碼，先附暫表，列固定門口、載重上限、值班代碼及核准編號狀態。每項一行，行內附支持來源。核准編號沒有就只問該欄，不交定稿。",
+    "documents":[
+      {"name":"entry.txt","content":"灣秋場進場單\n固定門口是石門二。\n"},
+      {"name":"load.txt","content":"灣秋場載重規則\n本批載重上限 18 公斤。\n舊批上限為 26 公斤。\n"}
+    ],
+    "replies":[{"question_has":["值班代碼","核准編號"],"answer":"值班代碼確認是 DT-86。核准編號尚未核發。"}],
+    "expected_question":{"question_has":["核准編號"],"question_excludes":["值班代碼(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}值班代碼"]},
+    "must_match":["石門二","18\\s*公斤","DT-86","待確認|未核發|尚未"],
+    "must_omit":["26\\s*公斤"],
+    "claim_sources":[
+      {"claim":"門口[^\\n]{0,24}石門二","sources":[{"kind":"document","doc":0,"line":2,"text":"固定門口是石門二"}]},
+      {"claim":"載重上限[^\\n]{0,24}18\\s*公斤","sources":[{"kind":"document","doc":1,"line":2,"text":"載重上限 18 公斤"}]},
+      {"claim":"值班代碼[^\\n]{0,24}DT-86","sources":[{"kind":"reply","index":0,"text":"值班代碼確認是 DT-86"}]}
+    ]
+  }
+]

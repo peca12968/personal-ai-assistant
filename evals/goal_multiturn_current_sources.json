@@ -1,0 +1,57 @@
+[
+  {
+    "id":"current_only_after_three_confirmations_and_two_replacements",
+    "file_delivery":true,
+    "prompt":"替川泉點做可直接貼出的交接通知。先一次詢問接收人、核准碼和交接台。每次只問未確認的欄位。文件的固定校驗碼需保留。待三欄齊全才交 notice.md。通知每欄一行並同行附直接來源。只列目前生效的值，舊值、未採用提議及原手冊的通用範例一律不可出現在通知，即使是括號或附註也不列。",
+    "documents":[{"name":"handoff-manual.txt","content":"川泉點交接規則\n本批校驗碼為 CK-84。\n以下為舊批範例：丙台，核准碼 AP-14。\n當批交接台、核准碼、接收人以最新確認為準。\n"}],
+    "replies":[
+      {"question_has":["接收人","核准碼","交接台"],"answer":"接收人確認是沈宜庭。核准碼和交接台還沒確定。"},
+      {"question_has":["核准碼","交接台"],"question_excludes":["接收人(?:是|為)?(?:誰|哪)|提供.{0,5}接收人"],"answer":"核准碼先確認 AP-38，交接台仍待定。接收人修正為柯嘉瑜。"},
+      {"question_has":["交接台"],"question_excludes":["核准碼(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}核准碼"],"answer":"交接台確認是甲台。有人提議沿用丙台，未採用。核准碼正式更正為 AP-57。"}
+    ],
+    "artifact":"notice.md",
+    "must_match":["柯嘉瑜","AP-57","甲台","CK-84"],
+    "must_omit":["沈宜庭","AP-14","AP-38","丙台"],
+    "claim_sources":[
+      {"claim":"接收人[^\\n]{0,24}柯嘉瑜","sources":[{"kind":"reply","index":1,"text":"接收人修正為柯嘉瑜"}]},
+      {"claim":"核准碼[^\\n]{0,24}AP-57","sources":[{"kind":"reply","index":2,"text":"核准碼正式更正為 AP-57"}]},
+      {"claim":"交接台[^\\n]{0,24}甲台","sources":[{"kind":"reply","index":2,"text":"交接台確認是甲台"}]},
+      {"claim":"校驗碼[^\\n]{0,24}CK-84","sources":[{"kind":"document","doc":0,"line":2,"text":"本批校驗碼為 CK-84"}]}
+    ]
+  },
+  {
+    "id":"explicit_current_only_keeps_source_metadata_and_distinct_limits",
+    "file_delivery":false,
+    "prompt":"照煙棠站兩份文件製作目前有效的工作提醒。暫採舊作業版第一步，另讀獨立安全條款。定稿只列本批允許的在場人數、車輛限速與採用版名，各自同行附來源。舊版數字與過時上限不得出現在定稿。",
+    "documents":[
+      {"name":"operating-old.txt","content":"煙棠站春季作業版\n在場人數最多 12 人。\n車速限制已另行發布。\n"},
+      {"name":"operating-current.txt","content":"煙棠站冬季作業版\n在場人數最多 18 人。\n暫存區標牌字樣為 25。\n"},
+      {"name":"safety.txt","content":"煙棠站安全條款\n車輛限速 9 公里每小時。\n舊車輛限速 15 公里每小時已失效。\n"}
+    ],
+    "first_steps":1,
+    "guidance":"改採 operating-current.txt；依舊保留獨立安全條款。暫存區標牌不列入。",
+    "must_match":["18\\s*人","9\\s*公里","煙棠站冬季作業版"],
+    "must_omit":["12\\s*人","15\\s*公里","暫存區標牌","煙棠站春季作業版"],
+    "claim_sources":[
+      {"claim":"(?:在場|人數)[^\\n]{0,24}18\\s*人","sources":[{"kind":"document","doc":1,"line":2,"text":"在場人數最多 18 人"}]},
+      {"claim":"限速[^\\n]{0,24}9\\s*公里","sources":[{"kind":"document","doc":2,"line":2,"text":"車輛限速 9 公里每小時"}]},
+      {"claim":"煙棠站冬季作業版","sources":[{"kind":"document","doc":1,"line":1,"text":"煙棠站冬季作業版"}]}
+    ]
+  },
+  {
+    "id":"historical_comparison_cites_each_version_and_keeps_latest_choice",
+    "file_delivery":false,
+    "prompt":"把柏芒室兩份窗口公告整理成比較。先問我現在採用哪版。交付要有原方案、修訂方案及本次採用結論，各一行，原方案與修訂方案分別引用各自原文，採用結論一行須同時附採用版的窗口原文與本次選版答覆。兩版都要保留以供查核。",
+    "documents":[
+      {"name":"counter-old.txt","content":"柏芒室原方案\n交還窗口為綠台。\n"},
+      {"name":"counter-new.txt","content":"柏芒室修訂方案\n交還窗口為紅台。\n"}
+    ],
+    "replies":[{"question_has":["採用|哪.*版|為準"],"answer":"本次採用修訂方案。原方案照你的比較要求保留。"}],
+    "must_match":["原方案","修訂方案","綠台","紅台"],
+    "claim_sources":[
+      {"claim":"原方案[^\\n]{0,28}綠台","sources":[{"kind":"document","doc":0,"line":2,"text":"交還窗口為綠台"}]},
+      {"claim":"修訂方案[^\\n]{0,28}紅台","sources":[{"kind":"document","doc":1,"line":2,"text":"交還窗口為紅台"}]},
+      {"claim":"(?:本次|採用結論)[^\\n]{0,40}紅台","sources":[{"kind":"document","doc":1,"line":2,"text":"交還窗口為紅台"},{"kind":"reply","index":0,"text":"本次採用修訂方案"}]}
+    ]
+  }
+]

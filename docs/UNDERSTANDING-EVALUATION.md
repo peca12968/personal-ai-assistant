@@ -662,9 +662,13 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_answers.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_uncertain_sources.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_version_attribution.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_claim_sources.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_current_sources.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
 省略輸出時只檢查題庫及起始狀態。實測分別統計實際交付、成果文字或 JSON、指定來源行涵蓋、工具路徑及更正／答覆是否保存。另計原文完全相同的重問、超出預設答覆的問題，以及已明定的不必要分問。這些檢查未窮盡語意等同的問法；成果仍需逐案閱讀。流程允許模型自行選擇工具，若評分要求工具但原任務未指明，工具分數單列。兩組首次測量都從同一已發布產品版本開始。題庫入庫後作為已知基準，未來泛化需另備題目。
 
 等待補充案例可明列 `expected_question`。核對助理停在待答狀態，且尚未產檔或交付。按固定條件檢查必要分問、暫表及引用，把正確等待與完成交付分開。對照組須固定同一套輸入與評分規約，逐案記錄錯誤及來源，不將單次模型生成結果視為必然行為。
+
+要求同行引用的案例可指定 `claim_sources`。每一項以欄名和值辨認文字行，再核對指定文件行、主動更正或實際答覆的來源編號是否在同行。答覆索引依題庫順序對應真正提出的問題步驟，文件索引依匯入順序對應實際文件編號。複合結論可要求多個來源。待答案例只驗收暫表中的主張，交檔案例驗收交付的文件原文。每筆支持原文由題庫作者先核對，整體來源行涵蓋、欄值正確及同列支持各自計分。此方式能抓到全篇列出正確來源卻放錯欄的情況，適用事先定義了格式、結論與支持原文的案例。
