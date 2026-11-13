@@ -660,7 +660,11 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 ```powershell
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_answers.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_uncertain_sources.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_version_attribution.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
 省略輸出時只檢查題庫及起始狀態。實測分別統計實際交付、成果文字或 JSON、指定來源行涵蓋、工具路徑及更正／答覆是否保存。另計原文完全相同的重問、超出預設答覆的問題，以及已明定的不必要分問。這些檢查未窮盡語意等同的問法；成果仍需逐案閱讀。流程允許模型自行選擇工具，若評分要求工具但原任務未指明，工具分數單列。兩組首次測量都從同一已發布產品版本開始。題庫入庫後作為已知基準，未來泛化需另備題目。
+
+等待補充案例可明列 `expected_question`。核對助理停在待答狀態，且尚未產檔或交付。按固定條件檢查必要分問、暫表及引用，把正確等待與完成交付分開。對照組須固定同一套輸入與評分規約，逐案記錄錯誤及來源，不將單次模型生成結果視為必然行為。

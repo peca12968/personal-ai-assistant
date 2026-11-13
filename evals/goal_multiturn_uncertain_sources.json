@@ -1,0 +1,48 @@
+[
+  {
+    "id": "explicit_new_version_after_reading_old_rule", "file_delivery": false,
+    "prompt": "替杉岸場整理借用交件通知。先採用舊版規則，列保證金、交回地點及所採版本與來源。若我更正版本，用新規則重核，不沿用舊值。",
+    "documents": [{"name":"loan-previous.txt","content":"杉岸場借用規則舊版\n保證金 160 元。\n交回地點為東服務桌。\n"},{"name":"loan-current.txt","content":"杉岸場借用規則新版\n保證金 230 元。\n交回地點為西服務桌。\n"}],
+    "first_steps": 1, "guidance": "本次正式改採 loan-current.txt 新版。定稿只列目前生效的保證金和交回地點。",
+    "must_match": ["230\\s*元", "西服務桌", "新版", "\\[更正#1\\]"], "must_omit": ["160\\s*元", "東服務桌"],
+    "source_lines": [{"doc":1,"line":2,"text":"230 元"},{"doc":1,"line":3,"text":"西服務桌"}]
+  },
+  {
+    "id": "same_name_two_conflicting_sources_resolved_by_actual_reply", "file_delivery": false,
+    "prompt": "比較榕溪工作室兩份互相衝突的同批交收紀錄。沒有指定優先順序。先問我本批採用哪一份，再用該份製作交收通知。正式通知只列採用的交收台和應收件數，並附所採來源。",
+    "documents": [{"name":"receive-morning.txt","content":"榕溪工作室同批交收，甲表\n交收台為石桌一。\n應收 14 件。\n"},{"name":"receive-evening.txt","content":"榕溪工作室同批交收，乙表\n交收台為松桌三。\n應收 19 件。\n"}],
+    "replies": [{"question_has":["採用|為準|以哪|哪一份"],"answer":"本批採用乙表 receive-evening.txt；其他照原要求。"}],
+    "must_match": ["松桌三", "19\\s*件", "\\[補充#\\d+\\]"], "must_omit": ["石桌一", "14\\s*件"],
+    "source_lines": [{"doc":1,"line":2,"text":"松桌三"},{"doc":1,"line":3,"text":"19 件"}]
+  },
+  {
+    "id": "unavailable_calculation_operand_stays_unresolved", "file_delivery": true,
+    "prompt": "替石港棚算本批燈具總瓦數，定稿 power.md。每組燈具的瓦數依匯入規則，燈具組數沒提供。請只問缺少的組數，先不要產出文件或猜數值。",
+    "documents": [{"name":"lighting-rule.txt","content":"石港棚燈具配置\n每組燈具耗電 75 瓦。\n組數以本批確認值為準，舊棚配額不適用。\n"}],
+    "artifact": "power.md", "expected_question": {"question_has":["組數|幾組|多少組"],"question_excludes":["每組.{0,10}(?:是多少|幾瓦|多少瓦)[？?]", "電壓"]},
+    "must_match": ["組數|幾組|多少組"], "must_omit": ["總瓦數為\\s*\\d+", "已交付"]
+  },
+  {
+    "id": "partial_reply_no_second_value_and_no_final", "file_delivery": false,
+    "prompt": "請寫雲沙場寄存通知，先問我寄存區和領取碼。放行窗口依匯入規則。若我只確認一欄，附上含已知欄位的暫表，下一問只問仍缺的欄位。領取碼缺少時保持等待，不交定稿。",
+    "documents": [{"name":"storage-rule.txt","content":"雲沙場寄存規則\n放行窗口為青櫃。\n寄存區與領取碼由本場提供。\n"}],
+    "replies": [{"question_has":["寄存區","領取碼"],"answer":"寄存區是 B12。領取碼還沒確認。"}],
+    "expected_question": {"question_has":["領取碼"],"question_excludes":["寄存區(?:是|為)?(?:哪|多少|什麼)","窗口(?:是|為)?(?:哪|多少|什麼)"]},
+    "must_match": ["B12","青櫃","\\[補充#\\d+\\]","\\[D1:L(?:1-L)?2(?:-L3)?\\]","待確認|尚未確認|未提供"], "must_omit": ["已交付"]
+  },
+  {
+    "id": "replace_csv_filter_scope_after_first_plan", "file_delivery": true,
+    "prompt": "請用自主 CSV 工具執行分析。統計站點 橋外 的已核工時，輸出 work.json，只含 site、hours，hours 用整數。",
+    "csv": {"name":"shift.csv","content":"站點,狀態,時數\n橋外,已核,5\n橋外,已核,8\n橋外,待核,30\n竹岸,已核,6\n竹岸,已核,4\n竹岸,待核,50\n"},
+    "first_steps": 1, "guidance":"站點更正為竹岸。狀態仍只算已核，交付檔名和格式照舊。",
+    "artifact":"work.json", "expected_json":{"site":"竹岸","hours":10}, "required_tools":["execute_csv"]
+  },
+  {
+    "id": "keep_current_source_when_an_old_rule_is_only_quoted", "file_delivery": false,
+    "prompt":"依杏壇站兩份規則出一份本批收件通知。採用新版對照表，已知章色是橙章，收件人要先問我。定稿列收件人、橙章去向及採用的規則來源。",
+    "documents":[{"name":"stamp-archive.txt","content":"杏壇站舊版\n橙章交影櫃。\n灰章交西櫃。\n"},{"name":"stamp-active.txt","content":"杏壇站新版\n橙章交松櫃。\n灰章交東櫃。\n"}],
+    "replies":[{"question_has":["收件人"],"answer":"收件人是蔡念慈。舊表有寫『橙章交影櫃』，我只是提醒有不同版本，仍照新版。"}],
+    "must_match":["蔡念慈","橙章","松櫃","\\[補充#\\d+\\]"],"must_omit":["影櫃"],
+    "source_lines":[{"doc":1,"line":2,"text":"橙章交松櫃"}]
+  }
+]

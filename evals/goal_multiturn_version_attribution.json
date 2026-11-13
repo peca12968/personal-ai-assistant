@@ -1,0 +1,26 @@
+[
+  {
+    "id": "retain_named_version_in_source_after_switch", "file_delivery": false,
+    "prompt": "替木渡社做租箱通知，先按舊規範。成果須有押金、回收窗口，並寫出採用的規範版本名稱及來源行號。若我改採另一份，請更新數值與來源，版本名稱仍須寫出。",
+    "documents": [{"name":"crate-old.txt","content":"木渡社租箱規範｜初版\n押金 70 元。\n回收窗口為南桌。\n"},{"name":"crate-new.txt","content":"木渡社租箱規範｜霜橋版\n押金 110 元。\n回收窗口為北桌。\n"}],
+    "first_steps": 1, "guidance":"改採 crate-new.txt。定稿只需要押金、回收窗口兩個資料欄。兩欄的來源處照原要求標明版本名稱及原行。",
+    "must_match":["110\\s*元","北桌","霜橋版","\\[更正#1\\]"],"must_omit":["70\\s*元","南桌"],
+    "source_lines":[{"doc":1,"line":2,"text":"110 元"},{"doc":1,"line":3,"text":"北桌"}]
+  },
+  {
+    "id": "preserve_both_version_names_for_comparison", "file_delivery": false,
+    "prompt":"比較迴灣工坊兩份設備領用規則。先準備按原規則領用，若我選另一版，說明兩版的領用台及目前採用者。比較時要寫出各版標題上的版本名稱與行號。",
+    "documents":[{"name":"tooling-a.txt","content":"迴灣工坊設備領用規則：石青版\n領用台為 G4。\n"},{"name":"tooling-b.txt","content":"迴灣工坊設備領用規則：赤陶版\n領用台為 P8。\n"}],
+    "first_steps":1,"guidance":"本次改採 tooling-b.txt。兩份都要留在對照中，交付時標明現行領用台。",
+    "must_match":["石青版","赤陶版","G4","P8","(?:目前|本次|現行)[\\s\\S]{0,80}P8","\\[更正#1\\]"],
+    "source_lines":[{"doc":0,"line":2,"text":"G4"},{"doc":1,"line":2,"text":"P8"}]
+  },
+  {
+    "id": "omit_version_name_when_explicitly_withdrawn", "file_delivery": false,
+    "prompt":"替日禾室寫交運摘要，原先使用季初版。請列接運點與採用的版本名稱，附規則行號。",
+    "documents":[{"name":"cart-first.txt","content":"日禾室交運｜季初版\n接運點為紅台。\n"},{"name":"cart-next.txt","content":"日禾室交運｜梅雨版\n接運點為靛台。\n"}],
+    "first_steps":1,"guidance":"改用 cart-next.txt。這次不用寫任何版本名稱，只列現在的接運點與來源行號。",
+    "must_match":["靛台"],"must_omit":["紅台","季初版","梅雨版"],
+    "source_lines":[{"doc":1,"line":2,"text":"靛台"}]
+  }
+]

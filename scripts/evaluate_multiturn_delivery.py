@@ -19,6 +19,7 @@ from scripts.evaluate_understanding import fingerprint, save_report
 SUITE = ROOT / 'evals/goal_multiturn_delivery.json'
 CONTEXT = '\n\n目標與已觀察資料：\n'
 CITATION = re.compile(r'\[D(\d+):L(\d+)(?:-L?(\d+))?\]')
+MAX_GOAL_STEPS = 24
 
 
 def signature(suite):
@@ -27,6 +28,8 @@ def signature(suite):
 
 
 def validate_cases(cases):
+    if not isinstance(cases, list) or not cases:
+        raise ValueError('多輪任務題庫不能為空。')
     ids = set()
     for case in cases:
         if case['id'] in ids or not re.fullmatch('[a-z][a-z0-9_]+', case['id']):
@@ -39,9 +42,20 @@ def validate_cases(cases):
                 raise ValueError('分段更正必須設定前置步數。')
         if case['file_delivery']:
             artifacts.filename(case['artifact'])
+        if 'expected_question' in case:
+            if case.get('expected_json') is not None or case.get('source_lines'):
+                raise ValueError('等待補充案例應直接核對問題與暫表文字。')
+            question = case['expected_question']
+            if not question['question_has']:
+                raise ValueError('等待補充案例須明列必要的問題內容。')
+            for pattern in question['question_has'] + question.get('question_excludes', []):
+                re.compile(pattern)
         if not (case.get('must_match') or 'expected_json' in case):
             raise ValueError('每案須有可核對的交付條件。')
-        for reply in case.get('replies', ()):
+        replies = case.get('replies', ())
+        if len(replies) > 6:
+            raise ValueError('每案最多六次固定答覆。')
+        for reply in replies:
             autonomy.text(reply['answer'], 4000)
             if not reply['question_has']:
                 raise ValueError('預設答覆須有可核對的提問條件。')
@@ -63,6 +77,9 @@ def question_matches(question, rule):
 def score(case, final, files, turns, calls):
     delivery = final['steps'][-1] if final['status'] == 'report_ready' else None
     report = (files[0]['content'] if len(files) == 1 else '') if case['file_delivery'] else final['result']
+    question = case.get('expected_question')
+    if question:
+        report = '\n'.join((final['question'], final.get('partial_result', '')))
     cited = [(int(doc), int(start), int(end or start)) for doc, start, end in CITATION.findall(report)]
     sources = final['sources']
     coverage = [any(doc == sources[row.get('doc', 0)]['document_id'] and start <= row['line'] <= end
@@ -77,6 +94,11 @@ def score(case, final, files, turns, calls):
         'applied_turns': len([turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]) == len(case.get('replies', ()))
                          and ('guidance' not in case or any(turn['kind'] == 'guidance' and turn.get('saved') for turn in turns)),
     }
+    if question:
+        checks.pop('delivered')
+        checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
+                                               and question_matches(final['question'], question)
+                                               and not any(re.search(p, final['question']) for p in question.get('question_excludes', ())))
     if 'expected_json' in case:
         try:
             actual = strict_json(report)
@@ -85,7 +107,7 @@ def score(case, final, files, turns, calls):
         except (TypeError, ValueError):
             checks['content'] = False
     asks = [step['observation']['question'] for step in final['steps'] if step['action']['tool'] == 'ask']
-    metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - len(case.get('replies', ()))),
+    metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - len(case.get('replies', ())) - int(bool(question))),
                'repeated_questions': len(asks) - len(set(asks)), 'sources_retained': sum(coverage), 'sources_required': len(coverage),
                'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
     return checks, metrics
@@ -129,7 +151,7 @@ def collect(path, case, suite, frozen):
         else:
             state = event['saved'] = autonomy.get_goal(store, sid, gid)
     replies = iter(case.get('replies', ()))
-    for _ in range(4):
+    while len(state['steps']) < MAX_GOAL_STEPS:
         if state['status'] == 'needs_input':
             rule = next(replies, None)
             if not rule or not question_matches(state['question'], rule):
@@ -144,8 +166,11 @@ def collect(path, case, suite, frozen):
                 event['error'] = str(exc)
                 break
             state = event['saved'] = autonomy.get_goal(store, sid, gid)
-        elif state['status'] == 'paused' and len(state['steps']) < 24:
-            state = autonomy.run_goal(store, sid, gid, recorded, max_steps=min(8, 24 - len(state['steps'])))
+        elif state['status'] == 'paused':
+            previous_steps = len(state['steps'])
+            state = autonomy.run_goal(store, sid, gid, recorded, max_steps=min(8, MAX_GOAL_STEPS - previous_steps))
+            if len(state['steps']) == previous_steps and state['status'] == 'paused':
+                break
         else:
             break
     row['final'] = state

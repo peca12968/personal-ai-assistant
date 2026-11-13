@@ -149,6 +149,8 @@ jobs:
       - run: python scripts/evaluate_cross_task_boundaries.py
       - run: python scripts/evaluate_multiturn_delivery.py
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_answers.json
+      - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_uncertain_sources.json
+      - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_version_attribution.json
       - run: python scripts/evaluate_plan_scope_cancellation.py
       - run: python scripts/evaluate_plan_scope_reply.py
       - run: python scripts/evaluate_plan_scope_reply.py --suite evals/goal_plan_reply_clarification.json
