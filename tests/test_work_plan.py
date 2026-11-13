@@ -1055,6 +1055,57 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '保存的查讀或原提問'):
             validate_database(restored.path)
 
+    def test_reply_after_supplement_completes_only_its_confirmation_item(self):
+        path = self.root / 'delivery.txt'
+        path.write_text('窗口北庫', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對窗口、門號與接收人，齊全才交付。')
+        first = {'document_id': 1, 'start_line': 1, 'end_line': 1}
+        missing = {**first, 'start_line': 2, 'end_line': 2}
+        tasks = [item(1, '核對交件原文'), item(2, '確認接收人')]
+        questions = [{'question': '請提供 D1 第 2 行。', 'items': [1]}, {'question': '接收人是誰？', 'items': [2]}]
+        self.run_actions(action('update_plan', items=tasks, verify_delivery=True,
+                                evidence_requirements=[{'id': 1, 'ranges': [first, missing]}]),
+                         action('read_ranges', ranges=[first, missing]),
+                         action('ask', question='\n'.join(row['question'] for row in questions), plan_questions=questions,
+                                partial_result='窗口北庫 [D1:L1]。'), gid=gid)
+        path = self.root / 'new.txt'
+        path.write_text('門號 G-17', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '補件 [D1:L2] 改由 [D2:L1]\n請撤下分問「請提供 D1 第 2 行。」',
+                           expected_fingerprint=view['fingerprint'])
+        backup = create_backup(self.store.path, self.root / 'reply-after-supplement.paibackup')
+        restore_backup(backup['path'], self.root / 'reply-after-supplement')
+        restored = Store(self.root / 'reply-after-supplement' / 'assistant.sqlite3')
+        current = goal_replies.snapshot(restored, self.sid, gid)
+        self.assertEqual(current['goal']['question'], questions[1]['question'])
+        goal_replies.save(restored, self.sid, gid, '接收人為林怡安。', expected_fingerprint=current['fingerprint'])
+        state = a.get_goal(restored, self.sid, gid)
+        proof = state['work_plan']['scope_reply']
+        self.assertEqual((proof['supplement_step'], proof['ask_sequence'], proof['citation'], proof['completed_items']),
+                         (4, 5, '[補充#5]', [2]))
+        self.assertEqual(proof['parts'][0]['value'], '林怡安')
+        self.assertEqual([row['state'] for row in state['work_plan']['items']], ['pending', 'done'])
+        self.assertEqual(state['work_plan']['delivery_review']['open_items'], [1])
+        validate_database(restored.path)
+        done = [{**tasks[0], 'state': 'done', 'evidence_steps': [2, 4]}, state['work_plan']['items'][1]]
+        final = a.run_goal(restored, self.sid, gid, ScriptedEngine(
+            action('finish', report='提前定稿。'),
+            action('update_plan', items=done, reuse_document_steps=[2, 4]),
+            action('finish', report='窗口北庫 [D1:L1]。門號 G-17 [D2:L1]。接收人林怡安 [補充#5]。')))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertIn('未完成項目 1', final['steps'][6]['observation']['error'])
+        self.assertEqual(final['work_plan']['items'][1]['evidence_steps'], [6])
+        validate_database(restored.path)
+        altered = copy.deepcopy(state['steps'][5]['observation'])
+        altered['scope_reply']['supplement_step'] = 2
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作不一致'):
+            validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')

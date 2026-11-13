@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import artifact_names, delivery_preference, goal_guidance_sources, goal_reply_sources, goal_stages, work_plan
+from . import artifact_names, delivery_preference, goal_guidance_sources, goal_reply_sources, goal_sources, goal_stages, work_plan
 
 
 GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項目，提問使用 plan_questions，例如
@@ -47,6 +47,7 @@ _FILENAME_DEFERRAL = re.compile(r'(?:定稿)?檔名(?:(?:還沒|還未|尚未)(?
                                 r'(?:稍後|之後|晚點)(?:再)?(?:決定|確認)|先不(?:決定|確認)|待定)'
                                 r'|先不(?:決定|確認)(?:定稿)?檔名')
 _KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改', '保持原值'}
+SUPPLEMENT_REPLY_VERSION = 12
 
 
 def validate_questions(args):
@@ -183,6 +184,15 @@ def language_followup(steps):
         if receipt.get('successor') == steps[-1]['action']['args']:
             return receipt.get('language')
     return None
+
+
+def is_supplement_followup(steps):
+    if len(steps) < 2:
+        return False
+    supplement, ask = steps[-2:]
+    return (supplement['action']['tool'] == goal_sources.PLAN_SUPPLEMENT and ask['action']['tool'] == 'ask'
+            and supplement['observation'].get('successor') == ask['action']['args']
+            and supplement['observation'].get('goal_conditions_sha256') == ask['observation'].get('goal_conditions_sha256'))
 
 
 def _successor(steps, plan, cancelled):
@@ -379,6 +389,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
+    if version == SUPPLEMENT_REPLY_VERSION:
+        return _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION,
                    artifact_names.REPLACE_REPLY_VERSION):
         return _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery,
@@ -568,6 +580,24 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True):
         else:
             parsed[index] = {'state': 'conflicting', 'statements': rows}
     return parsed, unassigned
+
+
+def _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks):
+    if (not is_supplement_followup(steps) or prior_scope != steps[-1]['observation']['goal_conditions_sha256']):
+        return None
+    fields = [_asked_field(part, tasks) for part in parts]
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_PLAIN_COMMA)
+    if not clauses or any(question for _, _, question in clauses):
+        return None
+    statements = _natural_fields([(start, clause) for start, clause, _ in clauses], parts, fields, set())
+    if statements is None:
+        return None
+    parsed, unassigned = statements
+    if unassigned or not any(row['state'] == 'confirmed' for row in parsed.values()):
+        return None
+    result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
+    result['scope_reply']['supplement_step'] = steps[-2]['sequence']
+    return result
 
 
 def _value_identity(value):
@@ -1034,7 +1064,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= artifact_names.REPLACE_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= SUPPLEMENT_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

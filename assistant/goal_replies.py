@@ -65,6 +65,8 @@ def _save_scope_reply(db, current, steps, notes):
             versions = (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION, *versions)
         elif requirement:
             versions = (artifact_names.REPLACE_REPLY_VERSION, *versions)
+    if not delivery and work_plan_scope.is_supplement_followup(steps):
+        versions = (*versions, work_plan_scope.SUPPLEMENT_REPLY_VERSION)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)

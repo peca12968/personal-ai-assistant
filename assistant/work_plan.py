@@ -430,6 +430,8 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
+    from .work_plan_scope import SUPPLEMENT_REPLY_VERSION
+
     validate(args)
     previous = latest(steps)
     by_id = {row['id']: row for row in args['items']}
@@ -493,7 +495,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             if step['action']['tool'] == 'update_plan':
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
-                versions = (original, *({**original, 'scope_reply_version': version} for version in range(2, 12)))
+                versions = (original, *({**original, 'scope_reply_version': version}
+                                        for version in range(2, SUPPLEMENT_REPLY_VERSION + 1)))
                 if (step['action'].get('args') not in versions
                         or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
