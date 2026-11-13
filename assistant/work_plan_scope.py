@@ -368,9 +368,10 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION):
+    if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION,
+                   artifact_names.REPLACE_REPLY_VERSION):
         return _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery,
-                                             filename_requirement, defer_field=version == artifact_names.FILENAME_FIRST_REPLY_VERSION)
+                                             filename_requirement, version=version)
     if version in (2, 3, 4, 5):
         return _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks, version=version, delivery=delivery)
     fields = [_asked_field(part, tasks) for part in parts]
@@ -672,32 +673,40 @@ def _field_deferral(clause, field):
     return re.fullmatch(rf'{subject}\s*{_FIELD_DELAY}|先不(?:決定|選擇|確認)\s*{subject}', clause)
 
 
-def _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery, requirement, *, defer_field):
+def _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts, tasks, delivery, requirement, *, version):
     language = language_followup(steps) or {}
     if (prior_scope != plan['goal_conditions_sha256'] or not language.get('pending_revisions')
             or language.get('cancellation') or not requirement):
         return None
+    replace = version == artifact_names.REPLACE_REPLY_VERSION
+    defer_field = version == artifact_names.FILENAME_FIRST_REPLY_VERSION
     text = source['answer']
-    if defer_field and delivery:
+    if (defer_field or replace) and delivery:
         text = _without_delivery(text, delivery['receipt']['plan_parts'])
-    comma = _FILENAME_FIRST_COMMA if defer_field else _FILENAME_REPLY_COMMA
+    comma = _FILENAME_FIRST_COMMA if defer_field or replace else _FILENAME_REPLY_COMMA
     clauses = goal_guidance_sources.standalone_clauses(text, comma_before=comma)
     names, deferral = [], None
     field = language['pending_revisions'][0]['field']
     for start, clause, question in clauses:
         if not question:
-            name = artifact_names.followup_declaration(clause, start)
+            name = (artifact_names.replacement_declaration(clause, start) if replace
+                    else artifact_names.followup_declaration(clause, start))
             if not name and defer_field:
                 name = artifact_names.bare_filename(clause, start)
             if name:
                 names.append(name)
                 continue
-            if defer_field and deferral is None and _field_deferral(clause, field):
+            if (defer_field or replace) and deferral is None and _field_deferral(clause, field):
                 deferral = _literal_span(start, clause)
                 continue
+        if replace and (question or artifact_names.followup_declaration(clause, start) or artifact_names.bare_filename(clause, start)):
+            return None
         if defer_field:
             return None
-    if len(names) != 1 or (bound := artifact_names.deferred_question(steps, requirement)) is None:
+    if len(names) != 1:
+        return None
+    bound = artifact_names.confirmed_choice(steps, requirement) if replace else artifact_names.deferred_question(steps, requirement)
+    if bound is None:
         return None
     name = names[0]
     result = _observe_natural_reply(steps, plan, source, scope, prior_scope, parts, tasks,
@@ -705,16 +714,20 @@ def _observe_choice_with_filename(steps, plan, source, scope, prior_scope, parts
     if not result:
         return None
     reply = result['scope_reply']
-    if defer_field:
+    resolved = reply['language']['revision_resolution']
+    if defer_field or (replace and not resolved):
         if (reply['successor'] != steps[-1]['action']['args']
+                or reply.get('revisions') or reply['changes'] or reply['language']['waiting'] != language['waiting']
                 or reply['language']['pending_revisions'] != language['pending_revisions']):
             return None
         if deferral:
             reply['field_deferral'] = {'field': field, 'evidence': deferral}
-    elif not reply['language']['revision_resolution']:
+    elif not resolved or deferral:
         return None
-    ask, proof = bound
+    ask, proof = bound[:2]
     reply['filename_choice'] = artifact_names.confirm_filename(steps, ask, proof, name)
+    if replace:
+        reply['filename_revision'] = bound[2]
     return result
 
 
@@ -999,7 +1012,7 @@ def replay(db, args, prior, after, goal, guidance, *, withdrawals_present, deliv
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= artifact_names.FILENAME_FIRST_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= artifact_names.REPLACE_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -1019,7 +1032,8 @@ def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_pr
             raise ValueError('定稿檔名答覆缺少當時的文件交付設定。')
         if version != artifact_names.REPLY_VERSION and delivery_preference.plan_reply(db, goal['id'], source):
             delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
-    if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION):
+    if version in (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION,
+                   artifact_names.REPLACE_REPLY_VERSION):
         if not delivery_present or not delivery_preference.initially_enabled(db, goal['id']):
             raise ValueError('定稿檔名答覆缺少原文件交付設定。')
         requirement = artifact_names.requirement({**goal, 'steps': prior,

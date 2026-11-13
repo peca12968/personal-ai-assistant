@@ -11,6 +11,7 @@ _INSTRUCTION = re.compile(
     rf'請\s*(?:交付|交|另存為)|定稿(?:請)?(?:使用|用))\s*{_NAME}')
 _USE_TO_DELIVER = re.compile(rf'{_CONDITIONAL}(?:請)?(?:使用|用)\s*{_NAME}\s*交付(?:完整)?(?:結果|成果)')
 _FOLLOWUP_NAME = re.compile(rf'{_CONDITIONAL}(?:定稿)?檔名\s*(?:請用|用|叫|改用|為|是|：|:)\s*{_NAME}')
+_REPLACEMENT_NAME = re.compile(rf'(?:定稿|成果|交付)?檔名\s*(?:改為|改成|改用|更正為|更正成)\s*{_NAME}')
 _ANSWER = re.compile(rf'(?:(?:定稿)?(?:請)?(?:改用|使用|用|選擇|選)(?:\s+|(?=[`「])))?{_NAME}')
 _TRAILING = re.compile(r'\s*(?:不要|不用|不必)(?:在|附|把|加|另)')
 _END = re.compile(r'[。！!]$')
@@ -20,6 +21,7 @@ MIXED_REPLY_VERSION = 7
 DEFERRED_REPLY_VERSION = 8
 FIELD_CHOICE_REPLY_VERSION = 9
 FILENAME_FIRST_REPLY_VERSION = 10
+REPLACE_REPLY_VERSION = 11
 GUIDANCE = 'artifact_filename_requirement 是使用者已指定的定稿檔名。交付時檔名必須一致。請使用最新欄位及可沿用的核對證據。'
 PENDING_GUIDANCE = '定稿檔名仍待確認。請先完成工作清單中依賴已更正資料的項目。清單完成後由程式確認定稿檔名。'
 
@@ -150,6 +152,12 @@ def followup_declaration(clause, start):
     return {'filename': name, 'start': start, 'end': start + len(clause), 'quote': clause} if name else None
 
 
+def replacement_declaration(clause, start):
+    if name := _parsed(_REPLACEMENT_NAME.fullmatch(clause)):
+        return {'filename': name, 'start': start, 'end': start + len(clause), 'quote': clause}
+    return None
+
+
 def bare_filename(clause, start):
     literal = reply_filename(clause, start=start)
     if literal:
@@ -172,6 +180,25 @@ def deferred_question(steps, expected):
                 or writes(steps).get(expected['filename'].casefold()) != question['draft']):
             raise ValueError('待確認檔名與原問題或草稿不一致。')
         return ask, question
+    return None
+
+
+def confirmed_choice(steps, expected):
+    if expected is None:
+        return None
+    for step in reversed(steps):
+        reply = step['observation'].get('scope_reply', {})
+        if reply.get('citation') != expected['citation'] or not (choice := reply.get('filename_choice')):
+            continue
+        if {**choice['selection'], 'citation': reply['citation']} != expected:
+            return None
+        ask = steps[choice['question_step'] - 1]
+        question = ask['observation'].get(ASK_MARK)
+        if (not question or goal_stages.digest(ask) != choice['question_sha256']
+                or writes(steps).get(question['draft']['name'].casefold()) != question['draft']):
+            raise ValueError('已確認的檔名與原問題或草稿不一致。')
+        return ask, question, {'previous': expected, 'previous_step': step['sequence'],
+                               'previous_step_sha256': goal_stages.digest(step), 'previous_source_sha256': reply['source_sha256']}
     return None
 
 

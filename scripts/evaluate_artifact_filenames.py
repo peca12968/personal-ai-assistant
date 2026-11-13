@@ -96,8 +96,10 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                                          and saved['question'] == remaining
                                          and saved['file_delivery'] == (bool(followups) or not case.get('expect_text', False)))
             if followups:
-                checks['filename_deferred'] = ('filename_pending' in proof and 'filename_choice' not in proof
-                                               and saved['artifacts'] == initial['artifacts'])
+                choice = proof.get('filename_choice', {}).get('selection', {}).get('filename')
+                checks['initial_filename_state'] = (saved['artifacts'] == initial['artifacts']
+                    and (choice == case['first_filename'] if 'first_filename' in case
+                         else 'filename_pending' in proof and choice is None))
             if 'deferral' in case:
                 span = proof.get('filename_deferral')
                 checks['deferral_words'] = bool(span and span['quote'] == case['deferral']
@@ -138,6 +140,9 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                         checks[marker] &= resolution.get('value') == turn['selected']
                     if 'accepted_name' in turn:
                         checks[marker] &= next_proof.get('filename_choice', {}).get('selection', {}).get('filename') == turn['accepted_name']
+                    if 'previous_name' in turn:
+                        previous_name = next_proof.get('filename_revision', {}).get('previous', {}).get('filename')
+                        checks[marker] &= previous_name == turn['previous_name']
                     if turn.get('still_waiting'):
                         previous = state['work_plan']['scope_reply']['language']['pending_revisions']
                         language = next_proof.get('language', {})

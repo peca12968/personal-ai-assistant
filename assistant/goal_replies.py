@@ -59,6 +59,8 @@ def _save_scope_reply(db, current, steps, notes):
         requirement = artifact_names.requirement({**goal, 'steps': steps, 'reply_sources': replies[:-1]})
         if artifact_names.awaiting_confirmation(steps, requirement):
             versions = (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION, *versions)
+        elif requirement:
+            versions = (artifact_names.REPLACE_REPLY_VERSION, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
@@ -94,7 +96,12 @@ def _save_scope_reply(db, current, steps, notes):
                                  '保留目前仍需回答的工作分問', plan_questions=successor['plan_questions'])
     notice = '已更新工作清單。只需回答目前保留的問題。' if successor else '已保存答覆並更新工作清單，可接續工作。'
     if choice:
-        named = f'已確認定稿檔名「{choice}」。' if file_delivery else f'若之後恢復文件交付，定稿檔名為「{choice}」。'
+        if not file_delivery:
+            named = f'若之後恢復文件交付，定稿檔名為「{choice}」。'
+        elif 'filename_revision' in proof:
+            named = f'已將定稿檔名改為「{choice}」。'
+        else:
+            named = f'已確認定稿檔名「{choice}」。'
         notice = named + notice
     if delivery and delivery['changed']:
         notice = delivery_preference.describe(delivery['receipt']) + notice
