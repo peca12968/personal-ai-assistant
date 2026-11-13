@@ -35,7 +35,7 @@ delivery_review.reusable_calculations列出最新原話已以獨立一行「原�
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
 delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
-plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。
+plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。同一工作項目有多個缺行分問時，每問寫出各自的文件編號和確切行號，例如「請提供 D2 第 3 至 4 行的原文。」；補件須涵蓋選定分問所指的全部行。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -688,7 +688,19 @@ def can_supplement_question(steps):
     return not parts or any(set(part['items']) <= targets for part in parts)
 
 
-def supplement_receipt(steps, original, source, replacement_read):
+def _verify_supplement_question_ranges(selected, parts, missing):
+    ranges, limited = document_ranges.requested_ranges(selected['question'])
+    items = set(selected['items'])
+    if not ranges and any(part != selected and items.intersection(part['items']) for part in parts):
+        raise ValueError('同一工作項目的分問須寫明所選分問的文件編號與行號。')
+    doc, first, last = _range_key(missing)
+    if limited or any(did != doc or not first <= start <= end <= last
+                      for did, start, end in map(_range_key, ranges)):
+        raise ValueError('補件未涵蓋所選分問要求的全部文件行。')
+    return ranges
+
+
+def supplement_receipt(steps, original, source, replacement_read, *, check_question_ranges=True):
     from . import goal_partials, goal_question_withdrawals
 
     missing, replacement, target = goal_sources.plan_mapping(source['content'])
@@ -727,6 +739,7 @@ def supplement_receipt(steps, original, source, replacement_read):
         matches.append(spec['id'])
     if not question_items <= set(matches):
         raise ValueError('補件未涵蓋目前提問所列的工作項目。')
+    question_ranges = _verify_supplement_question_ranges(selected, parts, missing) if selected and check_question_ranges else []
     requested, excerpts = replacement_read['requested_ranges'], replacement_read['excerpts']
     if (len(requested) != 1 or _range_key(requested[0]) != _range_key(replacement)
             or requested[0].get('status') != 'provided'):
@@ -735,6 +748,8 @@ def supplement_receipt(steps, original, source, replacement_read):
                'ask_sequence': ask['sequence'],
                'ask_sha256': goal_question_withdrawals._receipt(ask['sequence'], ask['action'], ask['observation'])['question_sha256'],
                'guidance_sha256': source['sha256']}
+    if question_ranges:
+        receipt['question_ranges'] = question_ranges
     if remaining := [part for part in parts if part != selected]:
         receipt['successor'] = {'question': '\n'.join(part['question'] for part in remaining), 'plan_questions': remaining}
     return receipt
@@ -1058,8 +1073,10 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     args, observation = step['action']['args'], step['observation']
     original = args.get('original_sources')
     source = next((row for row in guidance if row['citation'] == args.get('guidance')), None)
+    fields = {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
+    check_question_ranges = args.get('check_question_ranges') is True
     if (source is None or not prior or step['sequence'] != source['steps_seen'] + 1
-            or args.keys() != {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
+            or args.keys() != (fields | {'check_question_ranges'} if check_question_ranges else fields)
             or not goal_sources.valid_source_list(original) or not goal_sources.valid_source_list(args['added_sources'])):
         raise ValueError('清單補件缺少對應的原更正或來源範圍。')
     missing, replacement, _ = goal_sources.plan_mapping(source['content'])
@@ -1074,7 +1091,7 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     merged = goal_sources.merge_sources(original, args['added_sources'])
     goal_sources.verify_excerpts(observation.get('excerpts'), merged, [replacement])
     _verified_read(step, merged)
-    expected = supplement_receipt(prior, original, source, observation)
+    expected = supplement_receipt(prior, original, source, observation, check_question_ranges=check_question_ranges)
     expected['evidence_requirements'] = supplemented_requirements(prior, expected, missing, replacement)
     notes_end = source['notes_start'] + len(goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at']))
     expected['goal_conditions_sha256'] = conditions({**goal, 'notes': goal['notes'][:notes_end], 'sources': merged})

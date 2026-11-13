@@ -1011,6 +1011,50 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '保留的分問'):
             validate_database(restored.path)
 
+    def test_supplement_binds_questions_for_the_same_item_to_their_document_ranges(self):
+        for name, body in [('delivery.txt', '交件標題'), ('seal.txt', '封條標題')]:
+            path = self.root / name
+            path.write_text(body, encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        delivery = {'document_id': 1, 'start_line': 2, 'end_line': 3}
+        seal = {'document_id': 2, 'start_line': 2, 'end_line': 2}
+        task = item(1, '核對交件及封條')
+        parts = [{'question': '請提供 D1 第 2 至 3 行。', 'items': [1]},
+                 {'question': '請補 D2 第 2 行。', 'items': [1]},
+                 {'question': '請確認是否需要紙本？', 'items': [1]}]
+        gid = a.create_goal(self.store, self.sid, '依清單核對交件及封條。')
+        self.run_actions(action('update_plan', items=[task], verify_delivery=True,
+                                evidence_requirements=[{'id': 1, 'ranges': [delivery, seal]}]),
+                         action('read_ranges', ranges=[delivery, seal]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts), gid=gid)
+        path = self.root / 'delivery-supplement.txt'
+        path.write_text('門號 G-17\n截止 16:20', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        complete = '補件 [D1:L2-L3] 改由 [D3:L1-L2]'
+        for mapping, target, message in ((complete, parts[1], '全部文件行'),
+                                         ('補件 [D1:L2] 改由 [D3:L1]', parts[0], '全部文件行'),
+                                         (complete, parts[2], '文件編號與行號')):
+            with self.subTest(target=target['question']), self.assertRaisesRegex(ValueError, message):
+                goal_guidance.save(self.store, self.sid, gid, mapping + f'\n請撤下分問「{target["question"]}」',
+                                   expected_fingerprint=view['fingerprint'])
+            self.assertEqual(goal_guidance.snapshot(self.store, self.sid, gid), view)
+        saved = goal_guidance.save(self.store, self.sid, gid, complete + f'\n請撤下分問「{parts[0]["question"]}」',
+                                   expected_fingerprint=view['fingerprint'])
+        self.assertEqual(saved['goal']['question'], '\n'.join(part['question'] for part in parts[1:]))
+        backup = create_backup(self.store.path, self.root / 'bound-range.paibackup')
+        restore_backup(backup['path'], self.root / 'bound-range')
+        restored = Store(self.root / 'bound-range' / 'assistant.sqlite3')
+        state = a.get_goal(restored, self.sid, gid)
+        self.assertEqual(state['steps'][3]['observation']['question_ranges'], [delivery])
+        self.assertEqual(state['steps'][-1]['action']['args']['plan_questions'], parts[1:])
+        altered = {**state['steps'][3]['observation'], 'question_ranges': [seal]}
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=4',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '保存的查讀或原提問'):
+            validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')
