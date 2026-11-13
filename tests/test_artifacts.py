@@ -527,6 +527,61 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '交付方式'):
             validate_database(self.store.path)
 
+    def test_filename_only_refreshes_the_field_question_and_survives_backup(self):
+        from scripts.evaluate_artifact_filenames import DRAFT, reply
+        waiting = self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。')
+        old_view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        raw = '定稿用「result.md」，「領用人」晚點再決定。'
+        named = reply(self.store, self.sid, self.gid, raw)
+        self.assertEqual(named['status'], 'needs_input')
+        self.assertEqual(named['question'], pending['question'])
+        self.assertEqual(named['artifacts'], waiting['artifacts'])
+        proof = named['work_plan']['scope_reply']
+        self.assertEqual(proof['filename_choice']['question_step'], waiting['steps'][-1]['sequence'])
+        self.assertEqual(named['reply_sources'][-1]['ask_sequence'], pending['steps'][-1]['sequence'])
+        self.assertEqual(proof['language']['pending_revisions'], pending['work_plan']['scope_reply']['language']['pending_revisions'])
+        self.assertIsNone(proof['language']['revision_resolution'])
+        span = proof['field_deferral']['evidence']
+        self.assertEqual(raw[span['start']:span['end']], '「領用人」晚點再決定')
+        with self.assertRaisesRegex(ValueError, '尚未保存'):
+            goal_replies.save(self.store, self.sid, self.gid, '用江明洋。', expected_fingerprint=old_view['fingerprint'])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'name-before-field')
+        restored = Store(self.root / 'name-before-field/assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, self.gid), named)
+        chosen = reply(restored, self.sid, self.gid, '用江明洋。')
+        self.assertEqual(chosen['reply_sources'][-1]['ask_sequence'], named['steps'][-1]['sequence'])
+        final = a.run_goal(restored, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='other.md', content='錯誤檔名'),
+            action('write_artifact', filename='result.md', content='領用人江明洋，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['result.md'])))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in final['steps'][-3:]], ['invalid', 'write_artifact', 'deliver'])
+        f.rebuild(restored, self.sid, self.gid)
+        self.assertEqual((f.directory(restored, self.gid) / 'report.md').read_text(encoding='utf-8'), DRAFT)
+        validate_database(restored.path)
+
+    def test_filename_saved_in_text_mode_remains_active_when_files_resume_before_field_choice(self):
+        from scripts.evaluate_artifact_filenames import reply
+        self._wait_on_named_draft()
+        pending = reply(self.store, self.sid, self.gid, '領用人改為周雅文或江明洋。')
+        named = reply(self.store, self.sid, self.gid, '改成文字回覆，「later.md」。')
+        self.assertFalse(named['file_delivery'])
+        self.assertEqual(named['question'], pending['question'])
+        view = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '恢復文件交付。', expected_fingerprint=view['fingerprint'])
+        restored_mode = a.get_goal(self.store, self.sid, self.gid)
+        self.assertTrue(restored_mode['file_delivery'])
+        self.assertEqual(restored_mode['question'], pending['question'])
+        reply(self.store, self.sid, self.gid, '用周雅文。')
+        final = a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('write_artifact', filename='later.md', content='領用人周雅文，門號 8 號。'),
+            action('deliver', report='已完成', filenames=['later.md'])))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['steps'][-1]['action']['args']['filenames'], ['later.md'])
+        validate_database(self.store.path)
+
     def test_separate_filename_or_text_guidance_can_resolve_filename_question(self):
         for statement, expected in [('定稿檔名改為 selected.md。', True), ('改成文字回覆。', False)]:
             with self.subTest(statement=statement), tempfile.TemporaryDirectory() as scratch:

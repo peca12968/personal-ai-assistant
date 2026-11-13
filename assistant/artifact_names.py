@@ -19,6 +19,7 @@ REPLY_VERSION = 6
 MIXED_REPLY_VERSION = 7
 DEFERRED_REPLY_VERSION = 8
 FIELD_CHOICE_REPLY_VERSION = 9
+FILENAME_FIRST_REPLY_VERSION = 10
 GUIDANCE = 'artifact_filename_requirement 是使用者已指定的定稿檔名。交付時檔名必須一致。請使用最新欄位及可沿用的核對證據。'
 PENDING_GUIDANCE = '定稿檔名仍待確認。請先完成工作清單中依賴已更正資料的項目。清單完成後由程式確認定稿檔名。'
 
@@ -147,6 +148,15 @@ def reply_filename(text, *, start=0):
 def followup_declaration(clause, start):
     name = _parsed(_INSTRUCTION.fullmatch(clause) or _USE_TO_DELIVER.fullmatch(clause) or _FOLLOWUP_NAME.fullmatch(clause))
     return {'filename': name, 'start': start, 'end': start + len(clause), 'quote': clause} if name else None
+
+
+def bare_filename(clause, start):
+    literal = reply_filename(clause, start=start)
+    if literal:
+        name = literal['filename']
+        if clause in (f'「{name}」', f'`{name}`') or (clause == name and not any(char.isspace() for char in clause)):
+            return literal
+    return None
 
 
 def deferred_question(steps, expected):

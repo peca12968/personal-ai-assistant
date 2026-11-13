@@ -138,6 +138,18 @@ def collect(path, case, frozen, *, live, suite=SUITE):
                         checks[marker] &= resolution.get('value') == turn['selected']
                     if 'accepted_name' in turn:
                         checks[marker] &= next_proof.get('filename_choice', {}).get('selection', {}).get('filename') == turn['accepted_name']
+                    if turn.get('still_waiting'):
+                        previous = state['work_plan']['scope_reply']['language']['pending_revisions']
+                        language = next_proof.get('language', {})
+                        checks[marker] &= (answer['status'] == 'needs_input' and answer['question'] == expected
+                                           and answer['artifacts'] == state['artifacts'] and not language.get('revision_resolution')
+                                           and language.get('pending_revisions') == previous)
+                    if 'field_deferral' in turn:
+                        span = next_proof.get('field_deferral', {}).get('evidence')
+                        checks[marker] &= bool(span and span['quote'] == turn['field_deferral']
+                                               and turn['answer'][span['start']:span['end']] == span['quote'])
+                    if 'file_delivery' in turn:
+                        checks[marker] &= answer['file_delivery'] == turn['file_delivery']
                     if 'revisions' in turn:
                         checks[marker] &= ({item['field']: item['value'] for item in
                                             answer['work_plan']['scope_reply'].get('revisions', ())} == turn['revisions'])

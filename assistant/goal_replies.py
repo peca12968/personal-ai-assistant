@@ -58,7 +58,7 @@ def _save_scope_reply(db, current, steps, notes):
     if pending_revision and delivery_preference.initially_enabled(db, gid):
         requirement = artifact_names.requirement({**goal, 'steps': steps, 'reply_sources': replies[:-1]})
         if artifact_names.awaiting_confirmation(steps, requirement):
-            versions = (artifact_names.FIELD_CHOICE_REPLY_VERSION, *versions)
+            versions = (artifact_names.FIELD_CHOICE_REPLY_VERSION, artifact_names.FILENAME_FIRST_REPLY_VERSION, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
