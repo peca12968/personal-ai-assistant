@@ -49,6 +49,7 @@ _FILENAME_DEFERRAL = re.compile(r'(?:定稿)?檔名(?:(?:還沒|還未|尚未)(?
 _KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改', '保持原值'}
 SUPPLEMENT_REPLY_VERSION = 12
 PARTIAL_DOCUMENT_REPLY_VERSION = 13
+COMBINED_EVIDENCE_REPLY_VERSION = 14
 
 
 def validate_questions(args):
@@ -86,6 +87,12 @@ def bind_questions(args, steps):
     parts = args['plan_questions']
     if any(not set(part['items']) <= active for part in parts):
         raise ValueError('問題只能連到仍需處理的工作項目。')
+    requirements = {row['id']: row['confirmation_question'] for row in plan.get('evidence_requirements', ())
+                    if 'confirmation_question' in row}
+    for part in parts:
+        if part['question'] in requirements.values() and any(
+                requirements.get(number) != part['question'] for number in part['items']):
+            raise ValueError('指定確認問題須綁定同一確認要求的工作項目。')
     anchor = steps[plan['sequence'] - 1]
     return {'plan_step': plan['sequence'], 'plan_sha256': goal_stages.digest(anchor), 'parts': parts}
 
@@ -390,6 +397,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
+    if version == COMBINED_EVIDENCE_REPLY_VERSION:
+        return _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     if version == SUPPLEMENT_REPLY_VERSION:
         return _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     if version == PARTIAL_DOCUMENT_REPLY_VERSION:
@@ -619,6 +628,32 @@ def _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, t
     if unassigned or not any(row['state'] == 'confirmed' for row in parsed.values()):
         return None
     return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
+
+
+def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks):
+    if not plan.get('verify_delivery') or prior_scope != steps[-1]['observation'].get('goal_conditions_sha256'):
+        return None
+    required = {row['id']: row['confirmation_question'] for row in plan.get('evidence_requirements', ())
+                if 'confirmation_question' in row}
+    if not any(required.get(number) == part['question'] for part in parts for number in part['items']):
+        return None
+    result = _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+    if result is None:
+        return None
+    proof = result['scope_reply']
+    confirmations = []
+    for part in proof['parts']:
+        if part['state'] == 'unanswered':
+            continue
+        if part['state'] != 'confirmed' or any(required.get(number) != part['question'] for number in part['items']):
+            return None
+        confirmations.extend({'id': number, 'question': part['question'], 'value': part['value'],
+                              'reply_step': len(steps) + 1, 'citation': source['citation'], 'sha256': source['sha256']}
+                             for number in part['items'])
+    if not confirmations:
+        return None
+    proof['verified_confirmations'] = confirmations
+    return result
 
 
 def _value_identity(value):
@@ -1085,7 +1120,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= PARTIAL_DOCUMENT_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= COMBINED_EVIDENCE_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

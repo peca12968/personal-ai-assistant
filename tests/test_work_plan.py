@@ -1156,6 +1156,65 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '清單補件與保存'):
             validate_database(restored.path)
 
+    def test_one_item_requires_both_source_lines_and_the_bound_confirmation(self):
+        path = self.root / 'delivery.txt'
+        path.write_text('窗口北庫', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        first = {'document_id': 1, 'start_line': 1, 'end_line': 1}
+        missing = {**first, 'start_line': 2, 'end_line': 2}
+        task = item(1, '核對交件及接收人')
+        questions = [{'question': '請提供 D1 第 2 行。', 'items': [1]}, {'question': '接收人是誰？', 'items': [1]}]
+        requirement = {'id': 1, 'ranges': [first, missing], 'confirmation_question': questions[1]['question']}
+        for reply_first in (True, False):
+            with self.subTest(reply_first=reply_first):
+                gid = a.create_goal(self.store, self.sid, '核對窗口、門號及接收人。')
+                self.run_actions(action('update_plan', items=[task], verify_delivery=True, evidence_requirements=[requirement]),
+                                 action('read_ranges', ranges=[first, missing]),
+                                 action('ask', question='\n'.join(row['question'] for row in questions),
+                                        plan_questions=questions), gid=gid)
+                if reply_first:
+                    reply = goal_replies.snapshot(self.store, self.sid, gid)
+                    goal_replies.save(self.store, self.sid, gid, '接收人為林怡安。', expected_fingerprint=reply['fingerprint'])
+                    waiting = a.get_goal(self.store, self.sid, gid)
+                    self.assertEqual(waiting['question'], questions[0]['question'])
+                    self.assertEqual(waiting['work_plan']['items'][0]['state'], 'pending')
+                supplement = self.root / f'supplement-{reply_first}.txt'
+                supplement.write_text('門號 G-17', encoding='utf-8')
+                did = self.store.attach_document(self.sid, supplement)
+                view = goal_guidance.snapshot(self.store, self.sid, gid)
+                dismissal = '請撤下目前問題。' if reply_first else '請撤下分問「請提供 D1 第 2 行。」'
+                goal_guidance.save(self.store, self.sid, gid, f'補件 [D1:L2] 改由 [D{did}:L1]\n{dismissal}',
+                                   expected_fingerprint=view['fingerprint'])
+                if not reply_first:
+                    waiting = a.get_goal(self.store, self.sid, gid)
+                    self.assertEqual(waiting['question'], questions[1]['question'])
+                    self.assertEqual(waiting['work_plan']['items'][0]['state'], 'pending')
+                    reply = goal_replies.snapshot(self.store, self.sid, gid)
+                    goal_replies.save(self.store, self.sid, gid, '接收人為林怡安。', expected_fingerprint=reply['fingerprint'])
+                backup = create_backup(self.store.path, self.root / f'combined-{reply_first}.paibackup')
+                destination = self.root / f'combined-{reply_first}'
+                restore_backup(backup['path'], destination)
+                restored = Store(destination / 'assistant.sqlite3')
+                state = a.get_goal(restored, self.sid, gid)
+                confirmation, = state['work_plan']['delivery_review']['verified_confirmations']
+                self.assertEqual(confirmation['value'], '林怡安')
+                self.assertEqual(state['work_plan']['items'][0]['state'], 'pending')
+                read = 6 if reply_first else 4
+                reused = [2] if reply_first else [2, read]
+                ref = confirmation['reply_step']
+                actions = [action('update_plan', items=[{**task, 'state': 'done', 'evidence_steps': [2, read]}],
+                                  reuse_document_steps=reused),
+                           action('update_plan', items=[{**task, 'state': 'done', 'evidence_steps': [ref]}]),
+                           action('update_plan', items=[{**task, 'state': 'done', 'evidence_steps': [2, read, ref]}],
+                                  reuse_document_steps=reused),
+                           action('finish', report=f'北庫 [D1:L1]。門號 G-17 [D{did}:L1]。林怡安 {confirmation["citation"]}。')]
+                final = a.run_goal(restored, self.sid, gid, ScriptedEngine(*actions))
+                self.assertEqual(final['status'], 'report_ready')
+                self.assertIn('已核對答覆', final['steps'][6]['observation']['error'])
+                self.assertIn('完整指定文件範圍', final['steps'][7]['observation']['error'])
+                self.assertEqual(final['work_plan']['evidence_matches'][0]['confirmation'], confirmation)
+                validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')

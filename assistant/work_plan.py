@@ -37,6 +37,7 @@ delivery_review.document_read_progress列出有指定原文範圍的待辦項目
 若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
 plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。同一工作項目有多個缺行分問時，每問寫出各自的文件編號和確切行號，例如「請提供 D2 第 3 至 4 行的原文。」；補件須涵蓋選定分問所指的全部行。
 delivery_review.retained_reply_items列出本次補件保留的獨立確認項。更新清單時維持其done和原reply_step，這些步驟不用列入reuse_document_steps。定稿引用該項的citation，文件項依本次核對的原行完成。
+同一項同時需要指定文件原文與使用者明確答覆時，在該項evidence_requirements附上confirmation_question，內容須等於之後plan_questions的單一確認問句，例如「接收人是誰？」。delivery_review.verified_confirmations列出已核對的答覆；完成該項須同時引用reply_step與所需文件步驟。答覆步驟不用列入reuse_document_steps。定稿各欄引用實際來源。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -94,12 +95,17 @@ def _validate_requirements(requirements, ids):
         raise ValueError('指定證據須對應一項或多項工作。')
     seen = set()
     for row in requirements:
-        if (not isinstance(row, dict) or row.keys() - {'id', 'ranges', 'expression', 'operands'}
+        if (not isinstance(row, dict) or row.keys() - {'id', 'ranges', 'expression', 'operands', 'confirmation_question'}
                 or 'id' not in row or not row.keys() & {'ranges', 'expression'}
                 or ('operands' in row and 'expression' not in row)
                 or type(row['id']) is not int or row['id'] not in ids or row['id'] in seen):
             raise ValueError('指定證據須使用不同的工作項目編號，並提供原文範圍或算式。')
         seen.add(row['id'])
+        if 'confirmation_question' in row:
+            question = row['confirmation_question']
+            if ('ranges' not in row or not isinstance(question, str) or not 1 <= len(question) <= 400
+                    or question != question.strip() or any(char in question for char in '\r\n\0')):
+                raise ValueError('確認問題須和指定文件範圍一併保存，並使用單行原句。')
         if 'ranges' in row:
             document_ranges.validate_batch({'ranges': row['ranges']})
             if any(not 1 <= end - start + 1 <= document_ranges.MAX_LINES
@@ -217,6 +223,8 @@ def _merge_requirements(rows, previous, scope, sources, items, supplemented):
         old = requirements.get(row['id'])
         if old:
             prior = {key: value for key, value in old.items() if key != 'defined_scope'}
+            if 'confirmation_question' in row and prior.get('confirmation_question') != row['confirmation_question']:
+                raise ValueError(f'項目 {row["id"]} 的確認問題已保存，請保留原句。')
             if row['id'] in supplemented and 'ranges' in row and row['ranges'] != prior['ranges']:
                 raise ValueError(f'項目 {row["id"]} 的指定範圍已有正式補件，請沿用核對後的原文範圍。')
             if (items[row['id']]['state'] in ('pending', 'working', 'blocked')
@@ -344,7 +352,7 @@ def _calculation_reuse_review(plan, scope, sequence, replies, guidance):
     return candidates, rechecks
 
 
-def _match_item_evidence(item, requirement, steps, scope, sources, user_sources):
+def _match_item_evidence(item, requirement, steps, scope, sources, user_sources, confirmation):
     number = item['id']
     ranges = list(map(_range_key, requirement.get('ranges', ())))
     expression = {'expression': requirement['expression']} if 'expression' in requirement else None
@@ -355,7 +363,9 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
     for ref in item['evidence_steps']:
         step = steps[ref]
         action = step['action']
-        if ranges and action['tool'] in TYPED_READERS:
+        if confirmation and ref == confirmation['reply_step']:
+            match['confirmation'] = confirmation
+        elif ranges and action['tool'] in TYPED_READERS:
             paged = action['tool'] == 'read_line'
             if paged:
                 actual, partial = [document_lines.verified_page(step, sources)], False
@@ -388,6 +398,8 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
             raise ValueError(f'項目 {number} 的步驟 {ref} 不屬於指定的查讀或算式。')
     if expression is not None and 'expression_step' not in match:
         raise ValueError(f'項目 {number} 缺少指定算式的實際計算。')
+    if 'confirmation_question' in requirement and 'confirmation' not in match:
+        raise ValueError(f'項目 {number} 缺少指定問題的已核對答覆。')
     for line_pages in pages.values():
         merged, _, _ = document_lines.join_pages(line_pages)
         if merged is not None:
@@ -433,7 +445,7 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import PARTIAL_DOCUMENT_REPLY_VERSION
+    from .work_plan_scope import COMBINED_EVIDENCE_REPLY_VERSION
 
     validate(args)
     previous = latest(steps)
@@ -447,6 +459,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     supplemented = {item for step in steps if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT
                     for item in step['observation']['items']}
     requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources, by_id, supplemented)
+    if any('confirmation_question' in row for row in requirements.values()) and not (
+            args.get('verify_delivery') or (previous and previous.get('verify_delivery'))):
+        raise ValueError('同時指定文件及答覆時，須開啟交付核對。')
     same_scope = previous is not None and previous['goal_conditions_sha256'] == scope
     if same_scope and _pending_revision_fields(previous):
         raise ValueError('須先保存待選更正的實際答覆。')
@@ -466,8 +481,11 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     position_checks = {}
     matches = []
     retained_replies = _retained_replies_for_scope(previous, steps, scope)
+    confirmations = _current_confirmations(requirements, steps, scope)
     for item in args['items']:
         item_id = item['id']
+        confirmation = confirmations.get(item_id)
+        confirmation_step = confirmation['reply_step'] if confirmation else None
         if item_id in retained_replies and (item['state'] != 'done' or item['evidence_steps'] != retained_replies[item_id]):
             raise ValueError(f'項目 {item_id} 已由原答覆確認，請保留其完成狀態及答覆步驟。')
         calculation_step = None
@@ -502,9 +520,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, PARTIAL_DOCUMENT_REPLY_VERSION + 1)))
+                                        for version in range(2, COMBINED_EVIDENCE_REPLY_VERSION + 1)))
                 if (step['action'].get('args') not in versions
-                        or item_id not in verified.get('completed_items', ())):
+                        or (item_id not in verified.get('completed_items', ()) and number != confirmation_step)):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             typed_ranges = requirements.get(item_id, {}).get('ranges')
             typed_batch = typed_ranges and step['action']['tool'] == 'read_ranges'
@@ -514,7 +532,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                     (not typed_batch and any(row['status'] != 'provided' for row in observed.get('requested_ranges', []))) or
                     (observed.get('goal_conditions_sha256') != scope and number not in reused and not carried
                      and retained_replies.get(item_id) != item['evidence_steps']
-                     and number != calculation_step)):
+                     and number not in (calculation_step, confirmation_step))):
                 if (item_id in rechecks and step['action']['tool'] == 'calculate_expression'
                         and observed.get('goal_conditions_sha256') != scope):
                     raise ValueError(_calculation_recheck_message(rechecks[item_id]) + '。請按目前條件重算。')
@@ -529,7 +547,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 if number not in proofs:
                     proofs[number] = _read_proof(step, scope, sources, typed=bool(typed_ranges))
         if item['state'] == 'done' and item['id'] in requirements:
-            match = _match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources)
+            match = _match_item_evidence(item, requirements[item['id']], by_sequence, scope, sources, user_sources,
+                                         confirmation)
             _check_revised_operands(match, revised_operands)
             matches.append(match)
     if position_checks:
@@ -569,6 +588,30 @@ def _retained_replies_for_scope(plan, steps, scope):
     if not supplement or supplement['observation']['goal_conditions_sha256'] != scope:
         return {}
     return {row['id']: [row['reply_step']] for row in supplement['observation'].get('retained_reply_items', ())}
+
+
+def _current_confirmations(requirements, steps, scope):
+    from .work_plan_scope import COMBINED_EVIDENCE_REPLY_VERSION
+
+    if not any('confirmation_question' in row for row in requirements.values()):
+        return {}
+    confirmed = {}
+    for step in steps:
+        observation = step['observation']
+        if observation.get('goal_conditions_sha256') != scope:
+            continue
+        action = step['action']
+        if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
+            rows = observation.get('retained_confirmations', ())
+        elif (action['tool'] == 'update_plan'
+              and action.get('args', {}).get('scope_reply_version') == COMBINED_EVIDENCE_REPLY_VERSION):
+            rows = observation.get('scope_reply', {}).get('verified_confirmations', ())
+        else:
+            continue
+        for row in rows:
+            if requirements.get(row['id'], {}).get('confirmation_question') == row['question']:
+                confirmed[row['id']] = row
+    return confirmed
 
 
 def _select_reads(requirement, excerpts_by_step, limit):
@@ -791,6 +834,14 @@ def supplement_receipt(steps, original, source, replacement_read, *, check_quest
         if reply['successor'] == ask['action']['args']:
             receipt['retained_reply_items'] = [{'id': number, 'reply_step': steps[-2]['sequence'], 'citation': reply['citation']}
                                                for number in reply['completed_items']]
+    if retain_replies:
+        plan = latest(steps)
+        requirements = {row['id']: row for row in plan['evidence_requirements']}
+        scope = ask['observation']['goal_conditions_sha256']
+        confirmations = _current_confirmations(requirements, steps, scope)
+        active = {row['id'] for row in plan['items'] if row['state'] != 'superseded'}
+        if retained := [row for number, row in confirmations.items() if number in active]:
+            receipt['retained_confirmations'] = retained
     if remaining := [part for part in parts if part != selected]:
         receipt['successor'] = {'question': '\n'.join(part['question'] for part in remaining), 'plan_questions': remaining}
     return receipt
@@ -893,6 +944,9 @@ def _delivery_review(plan, goal, scope, sources_current):
         review['retained_reply_items'] = plan['retained_reply_items']
     if pending_fields:
         review['pending_revision_fields'] = pending_fields
+    requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
+    if sources_current and (confirmations := _current_confirmations(requirements, goal['steps'], scope)):
+        review['verified_confirmations'] = list(confirmations.values())
     typed_reads = {row['id']: row for row in plan.get('evidence_requirements', ()) if 'ranges' in row}
     old_excerpts, old_pages = {}, {}
     if typed_reads and sources_current:

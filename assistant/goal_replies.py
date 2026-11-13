@@ -69,6 +69,8 @@ def _save_scope_reply(db, current, steps, notes):
         versions = (*versions, work_plan_scope.SUPPLEMENT_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (*versions, work_plan_scope.PARTIAL_DOCUMENT_REPLY_VERSION)
+    if not delivery and 'plan_questions' in steps[-1]['action']['args']:
+        versions = (work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
