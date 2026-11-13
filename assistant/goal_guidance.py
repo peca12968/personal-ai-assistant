@@ -591,4 +591,16 @@ def save(store, sid, gid, content, *, expected_fingerprint):
             required = 3 if revision['item'] == 'remaining' and not revision.get('withdraws_question') else 2
             if step_count + required > MAX_STEPS:
                 raise ValueError('剩餘步數不足以保存更正及完成成果，請帶入目前進度建立下一階段。')
-        return apply_waiting_review(db, saved)
+        reviewed = apply_waiting_review(db, saved)
+        pending = reviewed['goal']
+        if (pending['status'] == 'needs_input' and pending['question'] == goal['question']
+                and not pending.get('reference_review') and not pending.get('answered_reference_review')
+                and (options := reviewed.get('question_withdrawal')) and number in options['correction_numbers']
+                and goal_question_withdrawals.requests_current_dismissal(content)):
+            steps = _steps(db, gid)
+            if (not steps[-1]['action']['args'].keys() & {artifact_names.ASK_MARK, 'plan_questions',
+                                                    'reference_remaining', 'document_version'}
+                    and not decision_table.reference_question_for_steps(steps[:-1])):
+                goal_question_withdrawals.dismiss(db, gid, options, pending['guidance_sources'][-1])
+                return _snapshot(db, sid, gid)
+        return reviewed

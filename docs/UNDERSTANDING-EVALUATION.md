@@ -670,6 +670,7 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_evidence_dependency_controls.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_evidence.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_reconfirmation_scope.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_guidance.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
@@ -686,3 +687,5 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 恢復依據的案例可在預設答覆加入 `partial_has` 及 `partial_omits`，核對實際答覆前保存的暫表。該步須等待補充且沒有成果或已保存文件。最後另驗收是否恢復交付、是否按新值重算，以及是否引用重新確認的答覆。舊值恰好相同時，仍按答覆步驟分辨來源。
 
 同一預設答覆加上 `restore_before: true` 時，收集器從該待答資料庫製作備份，還原至新目錄，核對同一目標、暫表及問題指紋，再對還原副本提交答覆與執行。報告記錄實際續作的相對資料庫路徑。原始合成資料庫停留在待答狀態，可核對副本確實完成接續。離線檢查只核對題庫規約與起點。
+
+`waiting_guidance` 從還原副本保存主動更正。題庫可要求撤下原問題，或保留仍需回答的同一問。若舊版需要再操作一次，收集器會走既有撤下入口以比較後續成果，另記錄是否能一次完成。交付由文件改為文字時，同時核對有效交付方式、無產檔，以及實際文字的來源。

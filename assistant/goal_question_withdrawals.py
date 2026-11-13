@@ -1,13 +1,20 @@
 """Checked history for a user's explicit withdrawal of one saved question."""
 import json
+import re
 
-from . import goal_partials, goal_reply_sources, goal_stages
+from . import goal_guidance_sources, goal_partials, goal_reply_sources, goal_stages
 
 
 GUIDANCE = ('withdrawn_questions列出依使用者主動更正撤下的舊提問步驟。'
             '這些提問仍可查看，但沒有使用者答覆，不能當作目前仍待回答或已有答案。'
             '依相連的更正原話與目前工作範圍核對：保留仍適用的已確認資料，'
             '只對仍會影響成果的缺漏提出新問題。資料已足夠就完成成果。')
+_DISMISS_CURRENT = re.compile(r'(?:請\s*)?撤下(?:目前|這個|這則)(?:的)?問題')
+
+
+def requests_current_dismissal(content):
+    return any(not question and _DISMISS_CURRENT.fullmatch(clause)
+               for _, clause, question in goal_guidance_sources.standalone_clauses(content))
 
 
 def _receipt(sequence, action, observation):
@@ -35,6 +42,12 @@ def record(db, gid, options, source):
     db.execute('INSERT INTO autonomous_question_withdrawals(goal_id,ask_sequence,guidance_number,question_sha256,guidance_sha256) '
                'VALUES(?,?,?,?,?)', (gid, options['ask_sequence'], source['number'],
                                     options['question_sha256'], source['sha256']))
+
+
+def dismiss(db, gid, options, source):
+    record(db, gid, options, source)
+    db.execute("UPDATE autonomous_goals SET question='',status='paused',notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               ('已依所選更正撤下問題，可開始／接續。', gid))
 
 
 def read(db, gid, guidance, replies, *, waiting_step=None):

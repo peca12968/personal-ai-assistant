@@ -1,0 +1,37 @@
+[
+  {
+    "id":"restored_old_version_question_replaced_by_current_rules",
+    "file_delivery":false,
+    "prompt":"替嶺灣點寫本批交還通知。先按 old-desk.txt 和 shared.txt。先讀兩份資料，附暫表並只問舊版所需櫃號，未確認前不定稿。定稿列適用窗口、交還條件、固定核對碼，各一行附來源。",
+    "documents":[{"name":"old-desk.txt","content":"嶺灣點舊規則\n交還窗口為東台。\n交還前須先提供櫃號。\n"},{"name":"new-desk.txt","content":"嶺灣點新規則\n交還窗口為西台。\n本批現場直接交還，免填櫃號。\n"},{"name":"shared.txt","content":"嶺灣點兩版共用資料\n固定核對碼為 CK-51。\n"}],
+    "waiting_guidance":{"question_has":["櫃號|櫃編號"],"text":"本批正式改採 new-desk.txt，新版免填櫃號。請撤下目前問題。固定核對碼照 shared.txt。請交付新版通知。","withdraw":true},
+    "must_match":["西台","CK-51","免填|無須.{0,8}櫃號|不必.{0,8}櫃號|不需.{0,8}櫃號"],
+    "must_omit":["東台|暫表|待補|尚待"],
+    "claim_sources":[{"claim":"窗口[^\\n]{0,24}西台","sources":[{"kind":"document","doc":1,"line":2,"text":"交還窗口為西台"}],"forbidden_sources":[{"kind":"document","doc":0,"line":2,"text":"交還窗口為東台"}]},{"claim":"核對碼[^\\n]{0,24}CK-51","sources":[{"kind":"document","doc":2,"line":2,"text":"固定核對碼為 CK-51"}]}]
+  },
+  {
+    "id":"restored_filename_question_disappears_when_switching_to_text",
+    "file_delivery":true,
+    "artifact":"notice.md",
+    "final_file_delivery":false,
+    "prompt":"用丹荷室規則做本批交接通知。讀文件及核對固定窗口、檢核碼後，先問我定稿檔名，得到檔名才寫 Markdown。定稿逐行列固定窗口與檢核碼，同行附來源。",
+    "documents":[{"name":"handoff.txt","content":"丹荷室交接規則\n固定窗口為南櫃。\n檢核碼為 HP-27。\n"}],
+    "waiting_guidance":{"question_has":["檔名|文件名稱"],"text":"交付方式改為文字。請撤下目前問題。照原規則把交接通知直接貼在對話。","withdraw":true},
+    "must_match":["南櫃","HP-27"],
+    "must_omit":["暫表|尚待|待補|已產檔"],
+    "claim_sources":[{"claim":"窗口[^\\n]{0,24}南櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口為南櫃"}]},{"claim":"檢核碼[^\\n]{0,24}HP-27","sources":[{"kind":"document","doc":0,"line":3,"text":"檢核碼為 HP-27"}]}]
+  },
+  {
+    "id":"restored_required_recipient_survives_switch_to_text",
+    "file_delivery":true,
+    "artifact":"pickup.md",
+    "final_file_delivery":false,
+    "prompt":"用竹帆點規則做本批交付通知 pickup.md。先只問本批接收人，收到確定姓名後才定稿。定稿逐行列接收人、固定交付台和校驗碼，同行附直接來源。",
+    "documents":[{"name":"pickup.txt","content":"竹帆點本批交付\n固定交付台為青台。\n校驗碼為 FC-74。\n"}],
+    "waiting_guidance":{"question_has":["接收人|誰.{0,5}接收"],"text":"交付方式改為文字。仍需先確認接收人，其他欄位照原文件。","withdraw":false},
+    "replies":[{"question_has":["接收人|誰.{0,5}接收"],"answer":"接收人是曾語帆。"}],
+    "must_match":["曾語帆","青台","FC-74"],
+    "must_omit":["暫表|待確認|已產檔"],
+    "claim_sources":[{"claim":"接收人[^\\n]{0,24}曾語帆","sources":[{"kind":"reply","index":0,"text":"接收人是曾語帆"}]},{"claim":"交付台[^\\n]{0,24}青台","sources":[{"kind":"document","doc":0,"line":2,"text":"固定交付台為青台"}]},{"claim":"校驗碼[^\\n]{0,24}FC-74","sources":[{"kind":"document","doc":0,"line":3,"text":"校驗碼為 FC-74"}]}]
+  }
+]

@@ -280,7 +280,5 @@ def withdraw(store, sid, gid, correction_number, *, expected_fingerprint):
                 and review['field_reference']['status'] != 'needs_field' and current['step_count'] + 2 <= MAX_STEPS
                 and source['citation'] == review['field_reference']['recheck']['evidence']['citation']):
             return apply_waiting_review(db, current)
-        goal_question_withdrawals.record(db, gid, options, source)
-        db.execute("UPDATE autonomous_goals SET question='',status='paused',notice=?,updated_at=CURRENT_TIMESTAMP "
-                   "WHERE id=? AND session_id=?", ('已依所選更正撤下問題，可開始／接續。', gid, sid))
+        goal_question_withdrawals.dismiss(db, gid, options, source)
         return _snapshot(db, sid, gid)

@@ -42,6 +42,14 @@ def validate_cases(cases):
             autonomy.text(case['guidance'], 4000)
             if not 1 <= case['first_steps'] <= 6:
                 raise ValueError('分段更正必須設定前置步數。')
+        if waiting := case.get('waiting_guidance'):
+            if 'guidance' in case or not waiting['question_has'] or type(waiting['withdraw']) is not bool:
+                raise ValueError('待答更正須指定原問題及是否撤下。')
+            autonomy.text(waiting['text'], 4000)
+            for pattern in waiting['question_has']:
+                re.compile(pattern)
+        if 'final_file_delivery' in case and type(case['final_file_delivery']) is not bool:
+            raise ValueError('最終交付方式須為布林值。')
         if case['file_delivery']:
             artifacts.filename(case['artifact'])
         if 'expected_question' in case:
@@ -93,7 +101,7 @@ def validate_cases(cases):
                         raise ValueError('主張的答覆序號超出題庫範圍。')
                     original = replies[source['index']]['answer']
                 elif kind == 'guidance':
-                    original = case['guidance']
+                    original = case['guidance'] if 'guidance' in case else case['waiting_guidance']['text']
                 else:
                     raise ValueError('主張支持來源類型不符。')
                 if not source['text'] or source['text'] not in original:
@@ -114,7 +122,8 @@ def claim_support(case, final, report, turns):
             return any(int(doc) == source_id and int(start) <= source['line'] <= int(end or start)
                        for doc, start, end in CITATION.findall(line))
         if source['kind'] == 'guidance':
-            return any(note['content'] == case['guidance'] and note['citation'] in line
+            guidance = case['guidance'] if 'guidance' in case else case['waiting_guidance']['text']
+            return any(note['content'] == guidance and note['citation'] in line
                        for note in final.get('guidance_sources', ()))
         index = source['index']
         if index >= len(replies):
@@ -136,7 +145,8 @@ def claim_support(case, final, report, turns):
 
 def score(case, final, files, turns, calls):
     delivery = final['steps'][-1] if final['status'] == 'report_ready' else None
-    report = (files[0]['content'] if len(files) == 1 else '') if case['file_delivery'] else final['result']
+    file_delivery = case.get('final_file_delivery', case['file_delivery'])
+    report = (files[0]['content'] if len(files) == 1 else '') if file_delivery else final['result']
     question = case.get('expected_question')
     if question:
         report = '\n'.join((final['question'], final.get('partial_result', '')))
@@ -146,7 +156,7 @@ def score(case, final, files, turns, calls):
                     for doc, start, end in cited) for row in case.get('source_lines', ())]
     checks = {
         'delivered': bool(delivery and report and (len(files) == 1 and files[0]['name'] == case['artifact']
-                           if case['file_delivery'] else delivery['action']['tool'] == 'finish')),
+                           if file_delivery else delivery['action']['tool'] == 'finish')),
         'content': bool(report and all(re.search(p, report) for p in case.get('must_match', ()))
                         and not any(re.search(p, report) for p in case.get('must_omit', ()))),
         'sources': all(coverage),
@@ -175,6 +185,23 @@ def score(case, final, files, turns, calls):
     if restores:
         checks['restored_waiting'] = all(index < len(reply_events) and reply_events[index].get('restored') is True
                                          for index in restores)
+    if waiting := case.get('waiting_guidance'):
+        event = next((turn for turn in turns if turn['kind'] == 'waiting_guidance'), {})
+        saved = event.get('saved')
+        checks['restored_guidance'] = bool(event.get('restored') and saved
+                                         and saved['guidance_sources'][-1]['content'] == waiting['text'])
+        before = event.get('before')
+        withdrawals = final.get('withdrawn_questions', ())
+        checks['old_question'] = bool(before and saved and (
+            any(row['ask_sequence'] == before['steps'][-1]['sequence'] and row['question'] == before['question']
+                and row['guidance_citation'] == saved['guidance_sources'][-1]['citation']
+                for row in withdrawals) if waiting['withdraw'] else (
+                    not withdrawals and saved['status'] == 'needs_input' and saved['question'] == before['question'])))
+        if waiting['withdraw']:
+            checks['one_step_withdrawal'] = bool(checks['old_question'] and saved['status'] == 'paused'
+                                                 and not saved['question'] and 'after_withdrawal' not in event)
+    if 'final_file_delivery' in case:
+        checks['delivery_mode'] = final['file_delivery'] is file_delivery and (file_delivery or not final['artifacts'])
     if question:
         checks.pop('delivered')
         checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
@@ -188,7 +215,8 @@ def score(case, final, files, turns, calls):
         except (TypeError, ValueError):
             checks['content'] = False
     asks = [step['observation']['question'] for step in final['steps'] if step['action']['tool'] == 'ask']
-    metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - len(case.get('replies', ())) - int(bool(question))),
+    allowed_asks = len(case.get('replies', ())) + bool(question) + bool(case.get('waiting_guidance', {}).get('withdraw'))
+    metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - allowed_asks),
                'repeated_questions': len(asks) - len(set(asks)), 'sources_retained': sum(coverage), 'sources_required': len(coverage),
                'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
     if case.get('claim_sources'):
@@ -222,6 +250,22 @@ def collect(path, case, suite, frozen):
             return call['raw']
 
     recorded = Recorded()
+
+    def restore_waiting(event):
+        nonlocal store
+        before = event['before']
+        fingerprint = goal_replies.snapshot(store, sid, gid)['fingerprint']
+        ordinal = len(row['turns'])
+        backup = create_backup(store.path, path / f'waiting-{ordinal}.paibackup')
+        destination = path / f'restored-{ordinal}'
+        restore_backup(backup['path'], destination)
+        store = Store(destination / 'assistant.sqlite3')
+        if (autonomy.get_goal(store, sid, gid) != before
+                or goal_replies.snapshot(store, sid, gid)['fingerprint'] != fingerprint):
+            raise ValueError('還原後的待答狀態或問題指紋不符。')
+        event['restored'] = True
+        row['database'] = store.path.relative_to(path).as_posix()
+
     state = row['initial'] = autonomy.run_goal(store, sid, gid, recorded, max_steps=case.get('first_steps', 8))
     if case.get('guidance') and state['status'] in ('paused', 'needs_input'):
         view = goal_guidance.snapshot(store, sid, gid)
@@ -233,6 +277,19 @@ def collect(path, case, suite, frozen):
             event['error'] = str(exc)
         else:
             state = event['saved'] = autonomy.get_goal(store, sid, gid)
+    waiting = case.get('waiting_guidance')
+    if waiting and state['status'] == 'needs_input' and question_matches(state['question'], waiting):
+        event = {'kind': 'waiting_guidance', 'text': waiting['text'], 'before': state}
+        row['turns'].append(event)
+        restore_waiting(event)
+        view = goal_guidance.snapshot(store, sid, gid)
+        goal_guidance.save(store, sid, gid, waiting['text'], expected_fingerprint=view['fingerprint'])
+        state = event['saved'] = autonomy.get_goal(store, sid, gid)
+        if waiting['withdraw'] and state['status'] == 'needs_input' and state['question'] == event['before']['question']:
+            view = goal_replies.snapshot(store, sid, gid)
+            number = state['guidance_sources'][-1]['number']
+            goal_replies.withdraw(store, sid, gid, number, expected_fingerprint=view['fingerprint'])
+            state = event['after_withdrawal'] = autonomy.get_goal(store, sid, gid)
     replies = iter(case.get('replies', ()))
     while len(state['steps']) < MAX_GOAL_STEPS:
         if state['status'] == 'needs_input':
@@ -242,17 +299,9 @@ def collect(path, case, suite, frozen):
             event = {'kind': 'reply', 'text': rule['answer'], 'before': state, 'extra_parts':
                      [p for p in rule.get('question_excludes', ()) if re.search(p, state['question'])]}
             row['turns'].append(event)
-            view = goal_replies.snapshot(store, sid, gid)
             if rule.get('restore_before'):
-                backup = create_backup(store.path, path / f'waiting-{len(row["turns"])}.paibackup')
-                destination = path / f'restored-{len(row["turns"])}'
-                restore_backup(backup['path'], destination)
-                store = Store(destination / 'assistant.sqlite3')
-                if (autonomy.get_goal(store, sid, gid) != state
-                        or goal_replies.snapshot(store, sid, gid)['fingerprint'] != view['fingerprint']):
-                    raise ValueError('還原後的待答狀態或問題指紋不符。')
-                event['restored'] = True
-                row['database'] = store.path.relative_to(path).as_posix()
+                restore_waiting(event)
+            view = goal_replies.snapshot(store, sid, gid)
             try:
                 goal_replies.save(store, sid, gid, event['text'], expected_fingerprint=view['fingerprint'])
             except ValueError as exc:

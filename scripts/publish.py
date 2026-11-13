@@ -185,6 +185,7 @@ def main():
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_evidence_dependency_controls.json")
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_restored_evidence.json")
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_reconfirmation_scope.json")
+    run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_restored_guidance.json")
     run(sys.executable, "scripts/evaluate_plan_scope_cancellation.py")
     run(sys.executable, "scripts/evaluate_plan_scope_reply.py")
     run(sys.executable, "scripts/evaluate_plan_scope_reply.py", "--suite", "evals/goal_plan_reply_clarification.json")

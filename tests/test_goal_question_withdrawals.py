@@ -123,3 +123,31 @@ class GoalQuestionWithdrawalTests(unittest.TestCase):
                        (json.dumps(ask, ensure_ascii=False), self.gid))
         with self.assertRaisesRegex(ValueError, '原提問步驟指紋'):
             validate_database(path)
+
+    def test_restored_correction_can_dismiss_current_ask_without_saving_an_answer(self):
+        waiting = self.ask()
+        fingerprint = self.review()['fingerprint']
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'restored')
+        original = self.store
+        self.store = Store(self.root / 'restored' / 'assistant.sqlite3')
+        self.assertEqual(self.review()['fingerprint'], fingerprint)
+        saved = self.amend('本批改為新版，同行人不再需要。請撤下目前問題。')['goal']
+        self.assertEqual((saved['status'], saved['question']), ('paused', ''))
+        self.assertNotIn('reply_sources', saved)
+        self.assertNotIn('partial_result', saved)
+        self.assertEqual(saved['withdrawn_questions'][0]['question'], waiting['question'])
+        self.assertEqual(saved['withdrawn_questions'][0]['guidance_citation'], '[更正#1]')
+        self.assertEqual(autonomy.get_goal(original, self.sid, self.gid), waiting)
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            goal_replies.save(self.store, self.sid, self.gid, '過期回答', expected_fingerprint=fingerprint)
+        validate_database(self.store.path)
+
+    def test_only_explicit_standalone_dismissal_changes_waiting_state(self):
+        waiting = self.ask()
+        for content in ('同事提議「請撤下目前問題」。', '請撤下目前問題？', '若欄位不適用，請撤下目前問題。'):
+            with self.subTest(content=content):
+                saved = self.amend(content)['goal']
+                self.assertEqual((saved['status'], saved['question']), ('needs_input', waiting['question']))
+                self.assertNotIn('withdrawn_questions', saved)
+        self.assertEqual(self.amend('目前欄位不再需要。撤下這則問題。')['goal']['status'], 'paused')
