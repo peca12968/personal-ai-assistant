@@ -3,13 +3,13 @@ import hashlib
 import json
 import re
 
-from . import document_lines, document_ranges, expression_math, goal_guidance_sources, goal_reply_sources, operand_evidence
+from . import document_lines, document_ranges, expression_math, goal_guidance_sources, goal_reply_sources, goal_sources, operand_evidence
 from .documents import check_citations
 
 STATES = {'pending': '待處理', 'working': '處理中', 'done': '助理回報完成',
           'blocked': '受阻', 'superseded': '已調整需求'}
 RANGE_READERS = {'read', 'read_ranges'}
-TYPED_READERS = RANGE_READERS | {'read_line'}
+TYPED_READERS = RANGE_READERS | {'read_line', goal_sources.PLAN_SUPPLEMENT}
 RANGE_FIELDS = ('document_id', 'start_line', 'end_line')
 DELIVERY_TOOLS = {'finish', 'write_artifact', 'deliver'}
 CALCULATION_RECHECK_REASONS = {
@@ -35,6 +35,7 @@ delivery_review.reusable_calculations列出最新原話已以獨立一行「原�
 delivery_review.calculation_rechecks列出整組確認後仍須重算的項目。id是待重算項，changed_item是更正項，reason指出共用明列欄位、共用文件範圍、共用運算元來源或缺少分開核對的來源規約。數值已知時直接依適用的原文和補充重算，再更新清單，不要先嘗試提交舊算式或要求使用者再次確認照舊。reusable_documents仍可用於沿用已完整查讀的原行。若只缺更正項的必要數字，先完成仍可核對的項目，再只問缺項。
 delivery_review.document_read_progress列出有指定原文範圍的待辦項目。missing_ranges是尚缺的完整原行，優先查讀這些範圍。批次有缺漏時，已完整提供的其他範圍仍可作為指定原文的證據；超出本次字數的範圍可分開補讀。read_steps是可覆蓋已查讀部分的步驟，reuse_document_steps是其中屬於舊條件且可沿用的步驟。證據數仍受每項六步上限約束，必要時合併查讀。沒有缺行時，仍須完成該項其他核對並更新清單後才可交付。
 若該項有recovery，依其範圍補讀。split_range先把尚缺範圍分開或縮小；read_line依start_char續讀同一原行的字元，已讀分頁不用重讀。原行各字元無缺口時，分頁步驟會出現在read_steps，可連同其他步驟更新該項；報告引用分頁原文仍使用字元範圍。source_missing表示指定範圍含匯入副本缺少的行，或文件不存在。用目錄的line_count判斷哪幾行確實缺少；仍未讀且存在的行才補讀。已取得的其他原行可直接引用於暫表，只請使用者補缺少的來源。
+plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍，沿用仍適用的舊原行，在evidence_steps引用補件步驟及其餘必要讀取。以補件實際文件行號引用新值；不要再問被撤下的問題，也不要把原缺行當作已讀。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -110,7 +111,10 @@ def _validate_requirements(requirements, ids):
 
 
 def latest(steps):
+    supplemented = None
     for step in reversed(steps):
+        if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT and supplemented is None:
+            supplemented = step['observation']['evidence_requirements']
         if step['action']['tool'] == 'update_plan' and step['observation'].get('status') == 'plan_recorded':
             observation = step['observation']
             value = {'sequence': step['sequence'], 'items': observation['items'],
@@ -123,6 +127,8 @@ def latest(steps):
                         'scope_cancelled'):
                 if key in observation:
                     value[key] = observation[key]
+            if supplemented is not None:
+                value['evidence_requirements'] = supplemented
             return value
     return None
 
@@ -135,7 +141,10 @@ def _verified_read(step, sources, *, allow_partial=False):
     action, observation = step['action'], step['observation']
     requested = observation.get('requested_ranges')
     args = action.get('args', {})
-    original = [args] if action['tool'] == 'read' else args.get('ranges')
+    if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
+        original = [args['replacement']]
+    else:
+        original = [args] if action['tool'] == 'read' else args.get('ranges')
     if not isinstance(requested, list) or not isinstance(original, list) or not original:
         raise ValueError('沿用證據缺少原查讀範圍。')
     ranges = [_range_key(row) for row in original]
@@ -198,13 +207,15 @@ def _read_proof(step, scope, sources, *, typed=False):
             'read_sha256': _read_digest(step)}
 
 
-def _merge_requirements(rows, previous, scope, sources, items):
+def _merge_requirements(rows, previous, scope, sources, items, supplemented):
     requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
     document_ids = {source['document_id'] for source in sources}
     for row in rows:
         old = requirements.get(row['id'])
         if old:
             prior = {key: value for key, value in old.items() if key != 'defined_scope'}
+            if row['id'] in supplemented and 'ranges' in row and row['ranges'] != prior['ranges']:
+                raise ValueError(f'項目 {row["id"]} 的指定範圍已有正式補件，請沿用核對後的原文範圍。')
             if (items[row['id']]['state'] in ('pending', 'working', 'blocked')
                     and row.keys() < prior.keys() and all(prior[key] == value for key, value in row.items())):
                 continue  # Retain the complete requirement and its original condition fingerprint.
@@ -361,6 +372,8 @@ def _match_item_evidence(item, requirement, steps, scope, sources, user_sources)
             match.setdefault('read_steps', []).append(ref)
             if partial:
                 match.setdefault('partial_read_proofs', []).append({'sequence': ref, 'read_sha256': _read_digest(step)})
+            if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
+                match.setdefault('supplement_read_proofs', []).append({'sequence': ref, 'read_sha256': _read_digest(step)})
         elif expression is not None and action['tool'] == 'calculate_expression':
             if action['args'].get('expression') != expression['expression'] or 'expression_step' in match:
                 raise ValueError(f'項目 {number} 的步驟 {ref} 與指定算式不符。')
@@ -426,7 +439,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
     reused = args.get('reuse_document_steps', [])
     previous_items = {row['id']: row for row in previous['items']} if previous else {}
     previous_requirements = {row['id']: row for row in (previous or {}).get('evidence_requirements', ())}
-    requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources, by_id)
+    supplemented = {item for step in steps if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT
+                    for item in step['observation']['items']}
+    requirements = _merge_requirements(args.get('evidence_requirements', ()), previous, scope, sources, by_id, supplemented)
     same_scope = previous is not None and previous['goal_conditions_sha256'] == scope
     if same_scope and _pending_revision_fields(previous):
         raise ValueError('須先保存待選更正的實際答覆。')
@@ -485,6 +500,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
             typed_ranges = requirements.get(item_id, {}).get('ranges')
             typed_batch = typed_ranges and step['action']['tool'] == 'read_ranges'
             if item['state'] == 'done' and (step['action']['tool'] == 'invalid' or observed.get('error') or
+                    (step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT and not typed_ranges) or
                     observed.get('status') in ('failed', 'cancelled') or
                     (not typed_batch and any(row['status'] != 'provided' for row in observed.get('requested_ranges', []))) or
                     (observed.get('goal_conditions_sha256') != scope and number not in reused and not carried
@@ -614,6 +630,77 @@ def _range_rows(locations):
         else:
             ranges.append({'document_id': did, 'start_line': line, 'end_line': line})
     return ranges
+
+
+def _observed_missing_ranges(steps):
+    missing = set()
+    for step in steps:
+        action, observation = step['action'], step['observation']
+        if action['tool'] not in RANGE_READERS or observation.get('error') or observation.get('status') in ('failed', 'cancelled'):
+            continue
+        requested = [action['args']] if action['tool'] == 'read' else action['args']['ranges']
+        observed = observation.get('requested_ranges', ())
+        if list(map(_range_key, requested)) == list(map(_range_key, observed)):
+            missing.update(_range_key(row) for row in observed if row.get('status') == 'line_out_of_bounds')
+    return missing
+
+
+def supplement_targets(steps):
+    plan = latest(steps)
+    if not plan or not plan.get('verify_delivery'):
+        return []
+    active = {row['id'] for row in plan['items'] if row['state'] not in ('done', 'superseded')}
+    missing = _observed_missing_ranges(steps)
+    return [row for row in plan.get('evidence_requirements', ()) if row['id'] in active
+            and any(_range_key(request) in missing for request in row.get('ranges', ()))]
+
+
+def supplement_receipt(steps, original, source, replacement_read):
+    from . import decision_table, goal_partials, goal_question_withdrawals
+
+    missing, replacement = goal_sources.plan_mapping(source['content'])
+    ask = steps[-1]
+    if (ask['action']['tool'] != 'ask' or ask['sequence'] != source['steps_seen']
+            or ask['action']['args'].keys() - {'question', 'partial_result'}
+            or decision_table.reference_question_for_steps(steps[:-1])):
+        raise ValueError('補件須對應目前待答的一般缺行問題。')
+    goal_partials.waiting(ask['observation']['question'], ask['action'], ask['observation'])
+    if _range_key(missing) not in _observed_missing_ranges(steps[:-1]):
+        raise ValueError('原範圍須有超出匯入副本行數的查讀紀錄。')
+    reads, pages, _ = _read_evidence({'steps': steps[:-1], 'sources': original}, ask['observation']['goal_conditions_sha256'])
+    did, start, end = _range_key(missing)
+    original_lines = {(did, number) for number in range(start, end + 1)}
+    missing_citations = {f'[D{did}:L{number}]' for _, number in original_lines}
+    _, uncovered = _select_reads({'ranges': [missing]}, reads, len(reads))
+    completed, _ = _read_page_progress(uncovered, pages)
+    if uncovered.difference(completed) != original_lines:
+        raise ValueError('原範圍已有讀到的原行，請只補真正缺少的完整範圍。')
+    matches = []
+    for spec in supplement_targets(steps):
+        old = spec['ranges']
+        if missing not in old:
+            continue
+        if any(_range_key(row) != _range_key(missing) and row['document_id'] == did
+               and row['start_line'] <= end and start <= row['end_line'] for row in old):
+            raise ValueError('缺行範圍與同一項目其他要求重疊，請先核對原清單。')
+        if any(operand['citation'] in missing_citations for operand in spec.get('operands', ())):
+            raise ValueError('此缺行同時指定了原算式運算元，請依新來源另建階段重算。')
+        matches.append(spec['id'])
+    if not matches:
+        raise ValueError('原缺行範圍須逐字對應未完成項目的指定原文範圍。')
+    requested, excerpts = replacement_read['requested_ranges'], replacement_read['excerpts']
+    if (len(requested) != 1 or _range_key(requested[0]) != _range_key(replacement)
+            or requested[0].get('status') != 'provided'):
+        raise ValueError('無法完整查讀指定補件，請核對文件與行號。')
+    return {'status': 'provided', 'items': matches, 'requested_ranges': requested, 'excerpts': excerpts,
+            'ask_sequence': ask['sequence'],
+            'ask_sha256': goal_question_withdrawals._receipt(ask['sequence'], ask['action'], ask['observation'])['question_sha256'],
+            'guidance_sha256': source['sha256']}
+
+
+def supplemented_requirements(steps, receipt, missing, replacement):
+    return [{**row, 'ranges': [replacement if requested == missing else requested for requested in row['ranges']]}
+            if row['id'] in receipt['items'] else row for row in latest(steps)['evidence_requirements']]
 
 
 def _read_recovery(missing, continuing, steps):
@@ -815,7 +902,8 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
     goals = db.execute("SELECT DISTINCT g.id,g.session_id,g.sources_json,g.objective,g.notes,g.status,g.question FROM autonomous_goals g JOIN autonomous_steps s "
                        "ON s.goal_id=g.id WHERE s.action_json LIKE '%update_plan%' "
                        "OR s.observation_json LIKE '%\"plan_check_step\"%' OR s.action_json LIKE '%\"artifact_filename_question\"%' "
-                       "OR s.observation_json LIKE '%\"artifact_filename_question\"%'")
+                       "OR s.observation_json LIKE '%\"artifact_filename_question\"%' "
+                       "OR json_extract(s.action_json, '$.tool')=?", (goal_sources.PLAN_SUPPLEMENT,))
     for gid, sid, source_json, objective, notes, status, question in goals:
         sources = json.loads(source_json)
         rows = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
@@ -826,14 +914,16 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
         has_scope_change = has_scope_reply or has_filename_question or any('"scope_correction"' in row[1] for row in rows)
         replies = (goal_reply_sources.read(db, gid, notes, include_positions=has_scope_reply or has_filename_question)
                    if (has_operands or has_scope_reply or has_filename_question) and replies_present else [])
-        guidance = goal_guidance_sources.read(db, gid, notes, len(rows)) if (has_operands or has_scope_change) and guidance_present else []
         steps = [{'sequence': sequence, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for sequence, action, observation in rows]
+        has_plan_supplement = any(step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT for step in steps)
+        guidance = (goal_guidance_sources.read(db, gid, notes, len(rows))
+                    if (has_operands or has_scope_change or has_plan_supplement) and guidance_present else [])
         if status == 'needs_input' and steps[-1]['observation'].get(artifact_names.ASK_MARK) and question != steps[-1]['observation'].get('question'):
             raise ValueError('目前定稿檔名問題與已保存提問不一致。')
         scope_goal = {'id': gid, 'objective': objective, 'notes': notes, 'sources': sources}
         history = {}
-        if has_scope_change:
+        if has_scope_change or has_plan_supplement:
             if 'autonomous_conversation_history' in available and (sha := conversation_history.saved_fingerprint(db, gid)):
                 scope_goal['conversation_history'] = {'sha256': sha}
             if goal_sources.has_supplement(steps):
@@ -845,6 +935,8 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
         for index, step in enumerate(steps):
             sequence, action, observation = step['sequence'], step['action'], step['observation']
             args = action['args']
+            if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
+                _verify_saved_supplement(db, scope_goal, prior, step, guidance, documents)
             if artifact_names.ASK_MARK in args or artifact_names.ASK_MARK in observation:
                 if not delivery_present:
                     raise ValueError('定稿檔名問題缺少文件交付紀錄。')
@@ -867,7 +959,7 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                     expected = work_plan_scope.replay_reply(db, args, prior, next_step,
                         {**scope_goal, 'sources': history.get(sequence, sources)}, replies, guidance, delivery_present=delivery_present)
                 else:
-                    expected = observe(args, prior, scope, sources, objective=objective,
+                    expected = observe(args, prior, scope, history.get(sequence, sources), objective=objective,
                                        reply_sources=replies, guidance_sources=guidance)
                 if any(observation.get(key) != expected.get(key)
                        for key in ('status', 'items', 'reused_document_steps', 'verify_delivery',
@@ -891,3 +983,37 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                         type(observation.get('plan_check_step')) is not int or observation['plan_check_step'] != check):
                     raise ValueError('交付步驟與保存的清單核對不一致。')
             prior.append(step)
+
+
+def _verify_saved_supplement(db, goal, prior, step, guidance, documents):
+    args, observation = step['action']['args'], step['observation']
+    original = args.get('original_sources')
+    source = next((row for row in guidance if row['citation'] == args.get('guidance')), None)
+    if (source is None or not prior or step['sequence'] != source['steps_seen'] + 1
+            or args.keys() != {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
+            or not goal_sources.valid_source_list(original) or not goal_sources.valid_source_list(args['added_sources'])):
+        raise ValueError('清單補件缺少對應的原更正或來源範圍。')
+    missing, replacement = goal_sources.plan_mapping(source['content'])
+    if (args['missing'] != missing or args['replacement'] != replacement
+            or [row['document_id'] for row in args['added_sources']] != [replacement['document_id']]):
+        raise ValueError('清單補件與更正原話指定的文件範圍不一致。')
+    imported = documents.get(missing['document_id'])
+    if (imported is not None and any(row['document_id'] == imported['id'] and row['sha256'] == imported['sha256']
+                                     for row in original)
+            and missing['start_line'] <= len(imported['content'].splitlines())):
+        raise ValueError('保存的清單補件取代了原副本可讀的行。')
+    merged = goal_sources.merge_sources(original, args['added_sources'])
+    goal_sources.verify_excerpts(observation.get('excerpts'), merged, [replacement])
+    _verified_read(step, merged)
+    expected = supplement_receipt(prior, original, source, observation)
+    expected['evidence_requirements'] = supplemented_requirements(prior, expected, missing, replacement)
+    notes_end = source['notes_start'] + len(goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at']))
+    expected['goal_conditions_sha256'] = conditions({**goal, 'notes': goal['notes'][:notes_end], 'sources': merged})
+    if observation != expected:
+        raise ValueError('清單補件與保存的查讀或原提問不一致。')
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='autonomous_question_withdrawals'").fetchone() is None:
+        raise ValueError('清單補件缺少原提問撤下資料表。')
+    withdrawal = db.execute('SELECT guidance_number,question_sha256,guidance_sha256 FROM autonomous_question_withdrawals '
+                            'WHERE goal_id=? AND ask_sequence=?', (goal['id'], expected['ask_sequence'])).fetchone()
+    if withdrawal != (source['number'], expected['ask_sha256'], source['sha256']):
+        raise ValueError('清單補件缺少對應的原提問撤下紀錄。')

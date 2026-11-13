@@ -836,6 +836,62 @@ class WorkPlanTests(unittest.TestCase):
         self.assertIn('北庫', result['steps'][-1]['observation']['partial_result'])
         validate_database(self.store.path)
 
+    def test_explicit_missing_line_supplement_resumes_original_plan_after_restore(self):
+        for name, body in [('window.txt', '窗口是北庫'), ('gate.txt', '交件紀錄')]:
+            path = self.root / name
+            path.write_text(body, encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對窗口與門號，附來源交付。')
+        original, missing, replacement = [dict(document_id=did, start_line=line, end_line=line)
+                                         for did, line in ((1, 1), (2, 2), (3, 1))]
+        task = item(1, '核對窗口與門號')
+        requirements = [{'id': 1, 'ranges': [original, missing]}]
+        self.run_actions(action('update_plan', items=[task], verify_delivery=True, evidence_requirements=requirements),
+                         action('read_ranges', ranges=[original, missing]),
+                         action('ask', question='請提供 D2 第 2 行。', partial_result='窗口是北庫 [D1:L1]。'), gid=gid)
+        old_view = goal_guidance.snapshot(self.store, self.sid, gid)
+        for name, body in [('new.txt', '正式門號為 G-17'), ('other.txt', '另一批門號為 G-90')]:
+            path = self.root / name
+            path.write_text(body, encoding='utf-8')
+            self.store.attach_document(self.sid, path)
+        command = '補件 [D2:L2] 改由 [D3:L1]\n請撤下目前問題。'
+        with self.assertRaises(goal_guidance.StaleGuidance):
+            goal_guidance.save(self.store, self.sid, gid, command, expected_fingerprint=old_view['fingerprint'])
+        current = goal_guidance.snapshot(self.store, self.sid, gid)
+        self.assertTrue(current['plan_document_supplement'])
+        for bad in ('補件 [D2:L2] 改由 [D3:L1]', command.replace('D2:L2', 'D1:L1'),
+                    command.replace('D3:L1', 'D3:L2'), command.replace('D3:L1', 'D2:L1')):
+            with self.subTest(command=bad), self.assertRaises(ValueError):
+                goal_guidance.save(self.store, self.sid, gid, bad, expected_fingerprint=current['fingerprint'])
+            self.assertEqual(goal_guidance.snapshot(self.store, self.sid, gid), current)
+        saved = goal_guidance.save(self.store, self.sid, gid, command, expected_fingerprint=current['fingerprint'])
+        self.assertEqual(saved['goal']['status'], 'paused')
+        self.assertTrue(saved['sources_match'])
+        self.assertEqual(saved['goal']['withdrawn_questions'][0]['question'], '請提供 D2 第 2 行。')
+        backup = create_backup(self.store.path, self.root / 'supplemented.paibackup')
+        restore_backup(backup['path'], self.root / 'supplemented')
+        restored = Store(self.root / 'supplemented' / 'assistant.sqlite3')
+        state = a.get_goal(restored, self.sid, gid)
+        self.assertEqual([row['document_id'] for row in state['sources']], [1, 2, 3])
+        self.assertFalse(state.get('reply_sources'))
+        self.assertEqual(state['steps'][2]['observation']['partial_result'], '窗口是北庫 [D1:L1]。')
+        self.assertEqual(state['work_plan']['evidence_requirements'][0]['ranges'], [original, replacement])
+        self.assertEqual(state['work_plan']['delivery_review']['document_read_progress'],
+                         [{'id': 1, 'read_steps': [2, 4], 'missing_ranges': [], 'reuse_document_steps': [2]}])
+        done = {**task, 'state': 'done', 'evidence_steps': [2, 4]}
+        engine = ScriptedEngine(action('update_plan', items=[done], reuse_document_steps=[2], evidence_requirements=requirements),
+                                action('update_plan', items=[done], reuse_document_steps=[2]),
+                                action('finish', report='窗口北庫 [D1:L1]。正式門號 G-17 [D3:L1] [更正#1]。'))
+        final = a.run_goal(restored, self.sid, gid, engine)
+        self.assertIn('正式補件', final['steps'][4]['observation']['error'])
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertEqual(final['work_plan']['evidence_matches'][0]['supplement_read_proofs'][0]['sequence'], 4)
+        validate_database(restored.path)
+        with restored.connect() as db:
+            db.execute('DELETE FROM autonomous_question_withdrawals WHERE goal_id=?', (gid,))
+        with self.assertRaisesRegex(ValueError, '原提問撤下紀錄'):
+            validate_database(restored.path)
+
     def test_operand_proofs_bind_document_reply_and_objective_and_restore(self):
         path = self.root / 'lengths.txt'
         path.write_text('📍本批有 8 片，每片長 1/2 公尺。\n另批每片長 0.5 公尺。', encoding='utf-8')

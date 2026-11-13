@@ -6,6 +6,22 @@ from . import document_ranges
 
 _RANGE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}(?:-L[1-9][0-9]{0,11})?\]'
 _SUPPLEMENT = re.compile(rf'補件[ \t]+{_RANGE}(?:[ \t]+{_RANGE}){{0,7}}')
+PLAN_SUPPLEMENT = 'plan_document_supplement'
+_PLAN_MAPPING = re.compile(rf'補件[ \t]+{_RANGE}[ \t]+改由[ \t]+{_RANGE}\s*\n請撤下目前問題[。.]?')
+
+
+def plan_mapping(content):
+    if not _PLAN_MAPPING.fullmatch(content):
+        raise ValueError('請用兩行指定補件，例如「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」')
+    ranges, _ = document_ranges.requested_ranges(content)
+    document_ranges.validate_batch({'ranges': ranges})
+    if len(ranges) != 2 or ranges[0]['document_id'] == ranges[1]['document_id']:
+        raise ValueError('補件須指定原文件與另一份已匯入副本。')
+    missing, replacement = ranges
+    size = missing['end_line'] - missing['start_line']
+    if not 0 <= size < 8 or replacement['end_line'] - replacement['start_line'] != size:
+        raise ValueError('原範圍和補件範圍須各有相同的一至八行。')
+    return missing, replacement
 
 
 def supplement_ranges(content):
@@ -28,7 +44,8 @@ def supplement_ranges(content):
 
 
 def _supplement_step(step):
-    return step['action']['tool'] == 'check_decision' and 'report_supplement' in step['action']['args']
+    action = step['action']
+    return action['tool'] == PLAN_SUPPLEMENT or (action['tool'] == 'check_decision' and 'report_supplement' in action['args'])
 
 
 def has_supplement(steps):
@@ -37,8 +54,8 @@ def has_supplement(steps):
 
 def saved_supplement(db, goal_id):
     return db.execute("""SELECT 1 FROM autonomous_steps WHERE goal_id=?
-        AND json_extract(action_json, '$.tool')='check_decision'
-        AND json_extract(action_json, '$.args.report_supplement') IS NOT NULL LIMIT 1""", (goal_id,)).fetchone() is not None
+        AND (json_extract(action_json, '$.tool')=? OR (json_extract(action_json, '$.tool')='check_decision'
+        AND json_extract(action_json, '$.args.report_supplement') IS NOT NULL)) LIMIT 1""", (goal_id, PLAN_SUPPLEMENT)).fetchone() is not None
 
 
 def matching_scope(stored, current, *, scoped=False):
@@ -91,15 +108,20 @@ def verify_history(steps, final_scope, documents):
     first = next((step for step in steps if _supplement_step(step)), None)
     if first is None:
         return {}
-    current = first['action']['args']['original_sources']
+    current = first['action']['args'].get('original_sources')
     by_sequence = {}
     for step in steps:
         args = step['action']['args']
         if _supplement_step(step):
-            if args['original_sources'] != current:
+            if (args.get('original_sources') != current or not valid_source_list(current)
+                    or not valid_source_list(args.get('added_sources'))):
                 raise ValueError('保存的補件前後文件範圍不一致。')
             current = merge_sources(current, args['added_sources'])
-            for excerpt in step['observation']['excerpts']:
+            excerpts = step['observation'].get('excerpts')
+            if not isinstance(excerpts, list) or not excerpts or any(not isinstance(row, dict)
+                    or not {*document_ranges.BATCH_FIELDS, 'sha256', 'name'} <= row.keys() for row in excerpts):
+                raise ValueError('保存的補件缺少原行。')
+            for excerpt in excerpts:
                 imported = documents.get(excerpt['document_id'])
                 if imported is None or (imported['sha256'], imported['name']) != (excerpt['sha256'], excerpt['name']):
                     continue

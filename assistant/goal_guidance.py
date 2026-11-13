@@ -92,6 +92,16 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
         result['report_colloquial_question'] = colloquial_question
     if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(steps):
         result['reference_partial_reply'] = True
+    if (goal['status'] == 'needs_input' and steps and steps[-1]['action']['tool'] == 'ask'
+            and steps[-1]['action']['args'].keys() <= {'question', 'partial_result'}
+            and not colloquial_question and work_plan.supplement_targets(steps)
+            and not decision_table.reference_question_for_steps(steps[:-1])):
+        files = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
+        original = json.loads(goal['sources_json'])
+        if (goal_sources.matching_scope(original, files, scoped=True)
+                and any(row not in original for row in files) and waiting_step + 3 + review['file_delivery'] <= MAX_STEPS):
+            result['plan_document_supplement'] = True
+            result['supplement_documents'] = files
     if goal['status'] == 'report_ready' and not review['file_delivery']:
         steps = _steps(db, gid)
         reference = decision_table.reference_report(steps, goal['result'])
@@ -127,6 +137,8 @@ def snapshot(store, sid, gid, *, include_work_plan=False):
 
 def eligibility(value):
     status = value['goal']['status']
+    if value.get('plan_document_supplement'):
+        return True, '可用「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」保存後回到原目標接續。'
     if question := value.get('report_colloquial_question'):
         if question.get('ordered', {}).get('answers'):
             if not value['sources_match']:
@@ -284,6 +296,40 @@ def _save_report_supplement(db, current, notes, content):
     db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,status='paused',result='',notice=?,
                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                (sources_json, notes, '已核對指定補件，先前成果保留在步驟紀錄，請接續更新成果。', gid))
+
+
+def _save_plan_document_supplement(db, current, notes, content):
+    goal, count = current['goal'], current['step_count']
+    gid = goal['id']
+    missing, replacement = goal_sources.plan_mapping(content)
+    original = json.loads(goal['sources_json'])
+    did = replacement['document_id']
+    documents = [dict(row) for row in db.execute(
+        'SELECT id,name,sha256,content FROM documents WHERE session_id=? AND id=?', (goal['session_id'], did))]
+    added = signature(documents)
+    if not added:
+        raise ValueError('請指定目前對話中已匯入的新補件副本。')
+    merged = goal_sources.merge_sources(original, added)
+    original_doc = db.execute('SELECT content FROM documents WHERE session_id=? AND id=?',
+                              (goal['session_id'], missing['document_id'])).fetchone()
+    if original_doc is None or missing['start_line'] <= len(original_doc[0].splitlines()):
+        raise ValueError('原指定範圍含有可讀原行，請保留它們。')
+    steps = _steps(db, gid)
+    guidance = goal_guidance_sources.read(db, gid, notes, count)
+    source = guidance[-1]
+    read = document_ranges.read_batch(documents, {'ranges': [replacement]})
+    observation = work_plan.supplement_receipt(steps, original, source, read)
+    observation['evidence_requirements'] = work_plan.supplemented_requirements(steps, observation, missing, replacement)
+    args = {'guidance': source['citation'], 'original_sources': original, 'added_sources': added,
+            'missing': missing, 'replacement': replacement}
+    action = {'tool': goal_sources.PLAN_SUPPLEMENT, 'args': args, 'note': '依使用者指定的原文補件'}
+    sources_json = json.dumps(merged, ensure_ascii=False)
+    _append_step(db, {**goal, 'sources_json': sources_json}, notes, count + 1, action, observation)
+    options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
+    goal_question_withdrawals.record(db, gid, options, source)
+    db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,question='',status='paused',notice=?,
+                  updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+               (sources_json, notes, '已保存指定補件與原提問，請接續核對及交付。', gid))
 
 
 def append_waiting_recheck(db, current, notes):
@@ -562,6 +608,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         if not allowed:
             raise ValueError(reason)
         supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
+        plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
+        if current.get('plan_document_supplement') and not current['sources_match'] and not plan_supplement:
+            raise ValueError('請先指定缺行與補件的對應範圍。')
         if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):
             raise ValueError(reason)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -576,6 +625,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         number = len(goal.get('guidance_sources', ())) + 1
         db.execute('INSERT INTO autonomous_guidance_sources(goal_id,number,notes_start,steps_seen,stamp,content) '
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
+        if plan_supplement:
+            _save_plan_document_supplement(db, current, notes, content)
+            return _snapshot(db, sid, gid)
         if named_scope := _save_filename_guidance(db, current, notes):
             return named_scope
         delivery_change = delivery_preference.capture(db, gid, notes, step_count)
