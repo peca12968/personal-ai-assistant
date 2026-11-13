@@ -1,0 +1,36 @@
+[
+  {
+    "id":"status_distinguishes_withdrawal_from_never_confirmed",
+    "file_delivery":false,
+    "prompt":"用湖丘站交件文件整理可以直接貼出的本批進度。先問簽收人及交件許可，資料不齊就只追問缺的欄位。兩次答覆後可用文字交付，沒有有效許可就保留待補。逐行列簽收人、收件台、許可狀態與能否交件。許可狀態必須交代未確認的原因；若是已確認後被撤回，要寫出曾撤回的原因類別，不能只寫待補。只列現行值，來源同行引用。",
+    "documents":[{"name":"dropoff.txt","content":"湖丘站交件規則\n固定收件台為青台。\n交件前需有當批有效許可。\n"}],
+    "replies":[
+      {"question_has":["簽收人","許可"],"answer":"交件許可確認為 DR-36，簽收人還未確認。"},
+      {"question_has":["簽收人"],"question_excludes":["許可(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}許可"],"answer":"簽收人確認為譚沛晴。交件許可 DR-36 已撤回，沒有替代許可。"}
+    ],
+    "must_match":["譚沛晴","青台","撤回"],
+    "must_omit":["DR-36","可正常交件|目前可以交件"],
+    "claim_sources":[
+      {"claim":"簽收人[^\\n]{0,24}譚沛晴","sources":[{"kind":"reply","index":1,"text":"簽收人確認為譚沛晴"}]},
+      {"claim":"收件台[^\\n]{0,24}青台","sources":[{"kind":"document","doc":0,"line":2,"text":"固定收件台為青台"}]},
+      {"claim":"許可(?:狀態)?[^\\n]{0,32}撤回","sources":[{"kind":"reply","index":1,"text":"交件許可 DR-36 已撤回"}]}
+    ]
+  },
+  {
+    "id":"withdrawal_for_other_batch_leaves_current_clearance_valid",
+    "file_delivery":false,
+    "prompt":"用嶺松點的規則做 M8 批交接通知。先問聯絡人和本批通行碼，沒確認的欄位再問。定稿只列聯絡人、仍有效的本批通行碼、固定窗口，每項一行，同行引用直接依據。",
+    "documents":[{"name":"contact-rule.txt","content":"嶺松點本日交接\n固定窗口為橙櫃。\n碼的有效性依每一批獨立確認。\n"}],
+    "replies":[
+      {"question_has":["聯絡人","通行碼"],"answer":"M8 批通行碼確認為 MC-82。聯絡人尚未確認。"},
+      {"question_has":["聯絡人"],"question_excludes":["通行碼(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}通行碼"],"answer":"聯絡人確認為唐茵葶。M7 批通行碼 MC-28 已撤回；M8 批照前一次確認。"}
+    ],
+    "must_match":["唐茵葶","MC-82","橙櫃"],
+    "must_omit":["MC-28|M7"],
+    "claim_sources":[
+      {"claim":"聯絡人[^\\n]{0,24}唐茵葶","sources":[{"kind":"reply","index":1,"text":"聯絡人確認為唐茵葶"}]},
+      {"claim":"通行碼[^\\n]{0,24}MC-82","sources":[{"kind":"reply","index":0,"text":"M8 批通行碼確認為 MC-82"}]},
+      {"claim":"窗口[^\\n]{0,24}橙櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口為橙櫃"}]}
+    ]
+  }
+]

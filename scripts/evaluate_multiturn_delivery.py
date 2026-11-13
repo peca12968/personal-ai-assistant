@@ -72,7 +72,7 @@ def validate_cases(cases):
             re.compile(claim['claim'])
             if not claim['claim'] or not claim['sources'] or 'expected_json' in case:
                 raise ValueError('同列引用驗收須明列主張及其支持來源，並使用文字成果。')
-            for source in claim['sources']:
+            for source in [*claim['sources'], *claim.get('forbidden_sources', ())]:
                 kind = source['kind']
                 if kind == 'document':
                     if not 0 <= source['doc'] < len(case.get('documents', ())):
@@ -120,8 +120,10 @@ def claim_support(case, final, report, turns):
     for claim in case.get('claim_sources', ()):
         matching = [line for line in report.splitlines()
                     if re.search(claim['claim'], USER_CITATION.sub('', CITATION.sub('', line)))]
-        result.append(bool(matching) and all(all(supports(source, line) for source in claim['sources'])
-                                             for line in matching))
+        result.append(bool(matching) and all(
+            all(supports(source, line) for source in claim['sources'])
+            and not any(supports(source, line) for source in claim.get('forbidden_sources', ()))
+            for line in matching))
     return result
 
 

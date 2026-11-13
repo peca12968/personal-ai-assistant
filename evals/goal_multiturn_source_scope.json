@@ -1,0 +1,74 @@
+[
+  {
+    "id":"current_batch_uses_scoped_multiplier_not_previous_exception",
+    "file_delivery":false,
+    "prompt":"替白篁點做封裝交接通知。先以 P21 批和 4 箱作第一步，之後等我更正。文件同時列多批規則。定稿每項一行，只列本批每箱片數、箱數、應備總片數及獨立的校驗碼。各行附直接來源。每箱片數及總片數都要附能確認批次適用的行號，總數也要附實際箱數的來源。",
+    "documents":[
+      {"name":"pack-spec.txt","content":"白篁點封裝規則\n以下段落只適用 P21 批。\n每箱 11 片。\n以下段落只適用 P22 批。\n每箱 6 片。\n"},
+      {"name":"seal-register.txt","content":"各批通用的核對欄\n校驗碼為 WK-53。\n"}
+    ],
+    "first_steps":1,
+    "guidance":"本次改為 P22 批，箱數改為 7 箱。校驗碼仍照通用文件。",
+    "must_match":["6\\s*片","7\\s*箱","42\\s*片","WK-53"],
+    "must_omit":["11\\s*片","44\\s*片","77\\s*片"],
+    "claim_sources":[
+      {"claim":"每箱[^\\n]{0,28}6\\s*片","sources":[{"kind":"document","doc":0,"line":4,"text":"只適用 P22 批"},{"kind":"document","doc":0,"line":5,"text":"每箱 6 片"}],"forbidden_sources":[{"kind":"document","doc":0,"line":3,"text":"每箱 11 片"}]},
+      {"claim":"(?:總片數|應備)[^\\n]{0,42}42\\s*片","sources":[{"kind":"document","doc":0,"line":4,"text":"只適用 P22 批"},{"kind":"document","doc":0,"line":5,"text":"每箱 6 片"},{"kind":"guidance","text":"箱數改為 7 箱"}],"forbidden_sources":[{"kind":"document","doc":0,"line":3,"text":"每箱 11 片"}]},
+      {"claim":"校驗碼[^\\n]{0,24}WK-53","sources":[{"kind":"document","doc":1,"line":2,"text":"校驗碼為 WK-53"}]}
+    ]
+  },
+  {
+    "id":"withdrawn_batch_approval_leaves_only_dependent_result_open",
+    "file_delivery":true,
+    "prompt":"替丹汀組做收件通知 receipt.md。需知道簽收人及核准編號，先一起問我，沒齊就只問仍缺的必要項目。匯入表有固定窗口及前批紀錄。若先給一部分資料，附暫表。窗口、簽收人、核准編號與放行狀態分列並同行引直接來源。沒有本批有效核准就不放行，也先不產檔。",
+    "documents":[{"name":"release-table.txt","content":"丹汀組收件欄\n固定窗口為青櫃。\n本批放行須有仍有效的當批核准編號。\n上一批的核准編號 PA-09，僅適用上一批。\n"}],
+    "replies":[
+      {"question_has":["簽收人","核准編號"],"answer":"核准編號先確認為 PA-42，簽收人還沒確認。"},
+      {"question_has":["簽收人"],"question_excludes":["核准編號(?:是|為)?(?:哪|多少|什麼)|提供.{0,5}核准編號"],"answer":"簽收人確認是呂容萱。剛才的核准編號 PA-42 已撤回，目前沒有替代號碼。請等有效號碼再放行。"}
+    ],
+    "artifact":"receipt.md",
+    "expected_question":{"question_has":["核准編號|核准號碼|有效.{0,6}號碼"],"question_excludes":["簽收人(?:是|為)?(?:誰|哪)|提供.{0,5}簽收人|窗口(?:是|為)?(?:哪|什麼)"]},
+    "must_match":["青櫃","呂容萱","撤回|待確認|未確認|尚無"],
+    "must_omit":["PA-09","放行狀態[^\\n]{0,12}(?:已放行|可放行)"],
+    "claim_sources":[
+      {"claim":"窗口[^\\n]{0,24}青櫃","sources":[{"kind":"document","doc":0,"line":2,"text":"固定窗口為青櫃"}]},
+      {"claim":"簽收人[^\\n]{0,24}呂容萱","sources":[{"kind":"reply","index":1,"text":"簽收人確認是呂容萱"}]},
+      {"claim":"核准(?:編號|號碼)[^\\n]{0,42}(?:撤回|待確認|未確認|未提供|尚無|缺少|待補)","sources":[{"kind":"reply","index":1,"text":"核准編號 PA-42 已撤回"}],"forbidden_sources":[{"kind":"document","doc":0,"line":4,"text":"上一批的核准編號 PA-09"}]},
+      {"claim":"放行(?:狀態)?[^\\n]{0,40}(?:暫停|暫不|不得|不可|不放行|待確認|尚未|未放行|未達|不能)","sources":[{"kind":"document","doc":0,"line":3,"text":"須有仍有效的當批核准編號"},{"kind":"reply","index":1,"text":"請等有效號碼再放行"}]}
+    ]
+  },
+  {
+    "id":"reported_value_is_valid_only_with_current_role_scope",
+    "file_delivery":false,
+    "prompt":"替皓芽室製作本週晚班領件提醒。先問我本次領件區，再查文件。本批要列領件區、晚班領件窗口、共用驗收碼，各一行並附直接來源。窗口一行的引用要能核對適用班別。",
+    "documents":[
+      {"name":"desk-roster.txt","content":"皓芽室窗口紀錄\n本週早班專用\n領件窗口為山台。\n本週晚班專用\n領件窗口為谷台。\n"},
+      {"name":"check-id.txt","content":"皓芽室共用欄\n共用驗收碼為 VC-76。\n"}
+    ],
+    "replies":[{"question_has":["領件區"],"answer":"本次領件區是 C06。舊群組說『早班用山台』，只是轉述，仍照本週晚班規則。"}],
+    "must_match":["C06","谷台","VC-76"],
+    "must_omit":["山台"],
+    "claim_sources":[
+      {"claim":"領件區[^\\n]{0,24}C06","sources":[{"kind":"reply","index":0,"text":"本次領件區是 C06"}]},
+      {"claim":"窗口[^\\n]{0,24}谷台","sources":[{"kind":"document","doc":0,"line":4,"text":"本週晚班專用"},{"kind":"document","doc":0,"line":5,"text":"領件窗口為谷台"}],"forbidden_sources":[{"kind":"document","doc":0,"line":3,"text":"領件窗口為山台"}]},
+      {"claim":"驗收碼[^\\n]{0,24}VC-76","sources":[{"kind":"document","doc":1,"line":2,"text":"共用驗收碼為 VC-76"}]}
+    ]
+  },
+  {
+    "id":"replacement_after_withdrawal_preserves_independent_value",
+    "file_delivery":false,
+    "prompt":"替竹栞組整理本次收件通知。先一問確認收件人和批號，缺欄再補。規則文件有固定窗口。通知只列目前收件人、批號及窗口，各一行，同行引用實際支持該欄的來源。",
+    "documents":[{"name":"collection.txt","content":"竹栞組固定窗口\n收件窗口為砂台。\n"}],
+    "replies":[
+      {"question_has":["收件人","批號"],"answer":"收件人確認為廖安禾，批號尚未確定。"},
+      {"question_has":["批號"],"question_excludes":["收件人(?:是|為)?(?:誰|哪)|提供.{0,5}收件人"],"answer":"批號確認為 B46。原收件人廖安禾撤回，現由鄧怡君接任。"}
+    ],
+    "must_match":["B46","鄧怡君","砂台"],
+    "must_omit":["廖安禾"],
+    "claim_sources":[
+      {"claim":"收件人[^\\n]{0,24}鄧怡君","sources":[{"kind":"reply","index":1,"text":"現由鄧怡君接任"}],"forbidden_sources":[{"kind":"reply","index":0,"text":"收件人確認為廖安禾"}]},
+      {"claim":"批號[^\\n]{0,24}B46","sources":[{"kind":"reply","index":1,"text":"批號確認為 B46"}]},
+      {"claim":"窗口[^\\n]{0,24}砂台","sources":[{"kind":"document","doc":0,"line":2,"text":"收件窗口為砂台"}]}
+    ]
+  }
+]

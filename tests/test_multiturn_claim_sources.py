@@ -58,3 +58,18 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
         source.update(text='箱數更正為 8 箱', index=-1)
         with self.assertRaises(ValueError):
             validate_cases([self.case])
+
+    def test_old_evidence_cannot_be_mixed_into_the_current_claim(self):
+        claim = self.case['claim_sources'][0]
+        claim['forbidden_sources'] = [
+            {'kind': 'document', 'doc': 0, 'line': 1, 'text': '新版'},
+            {'kind': 'reply', 'index': 0, 'text': '先確認 4 箱'},
+        ]
+        self.assertEqual(validate_cases([self.case]), [self.case])
+        correct = '總件數 72 件 [D7:L2] [補充#5] [更正#1]'
+        self.assertEqual(self.support(correct + '\n先前值僅供歷史核對 [補充#2]'), [True])
+        self.assertEqual(self.support(correct + ' [補充#2]'), [False])
+        self.assertEqual(self.support(correct.replace('[D7:L2]', '[D7:L1-L2]')), [False])
+        claim['forbidden_sources'][0]['text'] = '不存在的摘錄'
+        with self.assertRaises(ValueError):
+            validate_cases([self.case])
