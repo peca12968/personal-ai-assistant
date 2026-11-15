@@ -21,6 +21,7 @@ _COLLECT_FIELD = re.compile(r'^(?:確認|記錄|登記|填寫)')
 _ASK_FIELD = re.compile(r'(?:是誰|為誰|是哪位|是什麼|是多少|有多少|要用哪個|是哪一個|是哪個)[？?]$')
 _NUMERIC_QUESTION = re.compile(r'(?:是|有)多少[？?]$')
 _PERSON_QUESTION = re.compile(r'(?:是誰|為誰|是哪位)[？?]$')
+_COLLOQUIAL_PERSON_QUESTION = re.compile(r'(?:是哪一位|是何人)[？?]$')
 _TEXT_QUESTION = re.compile(r'(?:是什麼|是哪個|是哪一個|要用哪個|是哪種|要用哪種|用哪種|在哪裡|在哪兒|在何處)[？?]$')
 _PLACE_QUESTION = re.compile(r'(?:在哪裡|在哪兒|在何處)[？?]$')
 _PLACE_FIELD = re.compile(r'(?:地點|位置|集合點|會場|場地)$')
@@ -49,6 +50,9 @@ _AMOUNT = r'(?:[0-9０-９]+(?:\.[0-9０-９]+)?|[零〇一二兩三四五六七
 _NUMBER = re.compile(rf'{_AMOUNT}\s*(?:[號号份件箱袋組張位人個座樓層班]|分鐘|小時)?')
 _ADDITIONAL_COUNT_UNITS = '盤盒冊株瓶罐枚束片包套本杯卷'
 _COUNT_UNITS = '份件箱袋組張位人個座樓層班' + _ADDITIONAL_COUNT_UNITS
+_COLLOQUIAL_COUNT_QUESTION = re.compile(
+    rf'(?:^(?:請問\s*)?|總共|還剩下?|剩下?|需要(?:準備)?|應準備|要(?:準備|用|發)?|需(?:準備)?|有|共|合計)'
+    rf'(?:幾|多少)\s*(?P<unit>[{_COUNT_UNITS}])[？?]$')
 _COUNT_NUMBER = re.compile(rf'(?P<amount>{_AMOUNT})\s*(?P<unit>[號号{_COUNT_UNITS}]|分鐘|小時)?')
 _COUNT_FIELD_UNIT = re.compile(rf'([{_COUNT_UNITS}])數$')
 _ADDITIONAL_COUNT = re.compile(rf'{_AMOUNT}\s*[{_ADDITIONAL_COUNT_UNITS}]')
@@ -105,10 +109,14 @@ PERSON_REPLY_VERSION = 23
 PERSON_CORRECTION_REPLY_VERSION = 24
 TEXT_REPLY_VERSION = 25
 TEXT_CORRECTION_REPLY_VERSION = 26
-CORRECTION_REPLY_VERSIONS = (TEXT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION,
+COLLOQUIAL_REPLY_VERSION = 27
+COLLOQUIAL_CORRECTION_REPLY_VERSION = 28
+CORRECTION_REPLY_VERSIONS = (COLLOQUIAL_CORRECTION_REPLY_VERSION, TEXT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION,
                              COUNT_CORRECTION_REPLY_VERSION, NUMERIC_CORRECTION_REPLY_VERSION,
                              QUALIFIED_CORRECTION_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION)
 CONFIRMATION_CORRECTION = 'confirmation_correction'
+CONFIRMATION_CORRECTION_VERSION = 'confirmation_correction_version'
+TYPED_GUIDANCE_VERSION = 2
 
 
 def validate_questions(args):
@@ -398,25 +406,25 @@ def confirmation_targets(steps, scope):
     return targets
 
 
-def _confirmation_field_matches(field, targets, *, qualified, text_literals=False):
+def _confirmation_field_matches(field, targets, *, qualified, text_literals=False, colloquial=False):
     return [question for question, target in targets.items() if field == target['field'] or (
         qualified and _FIELD_NAME.fullmatch(field)
-        and field in _bound_field_names(question, target['field'], text_literals=text_literals))]
+        and field in _bound_field_names(question, target['field'], text_literals=text_literals, colloquial=colloquial))]
 
 
-def _confirmation_literal(literal, questions, number, *, person_names, text_literals):
+def _confirmation_literal(literal, questions, number, *, person_names, text_literals, colloquial):
     if literal is None:
         return None
     literal = literal.strip()
     if text_literals and all(_TEXT_QUESTION.search(question) for question in questions):
         return _text_literal(literal)
-    if person_names and all(_PERSON_QUESTION.search(question) for question in questions):
+    if person_names and all(_person_question(question, colloquial=colloquial) for question in questions):
         return _person_literal(literal)
     return _value(literal, number=number)
 
 
 def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False, number=_NUMBER,
-                           person_names=False, text_literals=False):
+                           person_names=False, text_literals=False, colloquial=False):
     requested = {}
     remaining = []
     choice = None
@@ -426,14 +434,20 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             continue
         withdrawal = allow_withdrawal and _CONFIRMATION_WITHDRAWAL.fullmatch(clause)
         if withdrawal:
-            matches = ([withdrawal[1]] if withdrawal[1] in targets else
-                       [question for question, target in targets.items() if target['field'] in withdrawal.groups()])
+            if withdrawal[1] in targets:
+                matches = [withdrawal[1]]
+            elif qualified:
+                matches = _confirmation_field_matches((withdrawal[1] or withdrawal[2]).strip(), targets,
+                                                       qualified=True, text_literals=text_literals, colloquial=colloquial)
+            else:
+                matches = [question for question, target in targets.items() if target['field'] in withdrawal.groups()]
             literal = None
         elif match := _CONFIRMATION_QUESTION_REVISION.fullmatch(clause):
             matches, literal = ([match[1]] if match[1] in targets else []), match[2]
         elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
             field = (match[1] or match[2]).strip()
-            matches = _confirmation_field_matches(field, targets, qualified=qualified, text_literals=text_literals)
+            matches = _confirmation_field_matches(field, targets, qualified=qualified,
+                                                  text_literals=text_literals, colloquial=colloquial)
             literal = match[3]
         else:
             remaining.append((start, clause))
@@ -441,11 +455,13 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
         if not matches:
             remaining.append((start, clause))
             continue
-        value = _confirmation_literal(literal, matches, number, person_names=person_names, text_literals=text_literals)
+        value = _confirmation_literal(literal, matches, number, person_names=person_names,
+                                      text_literals=text_literals, colloquial=colloquial)
         if len(matches) != 1:
             if (not qualified or withdrawal or choice or value is None
                     or not all(targets[question]['confirmed'] for question in matches)
-                    or any(_NUMERIC_QUESTION.search(question) and not _number_matches(value, question, number)
+                    or any(_numeric_question(question, colloquial=colloquial)
+                           and not _number_matches(value, question, number, colloquial=colloquial)
                            for question in matches)):
                 raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
             choice = {'field': field, 'questions': matches, 'value': value, 'evidence': _literal_span(start, clause),
@@ -453,14 +469,15 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             continue
         question = matches[0]
         if (question in requested or (not withdrawal and (
-                value is None or (_NUMERIC_QUESTION.search(question) and not _number_matches(value, question, number))))):
+                value is None or (_numeric_question(question, colloquial=colloquial)
+                                  and not _number_matches(value, question, number, colloquial=colloquial))))):
             raise ValueError('請為每個原問句提供一個明確的新值。')
         requested[question] = (value, _literal_span(start, clause))
     return requested, remaining, choice
 
 
 def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False, bind_numeric=False,
-                            number=_NUMBER, person_names=False, text_literals=False):
+                            number=_NUMBER, person_names=False, text_literals=False, colloquial=False):
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
     result = []
     for question, (value, evidence) in requested.items():
@@ -475,8 +492,8 @@ def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False,
                      if part['question'] == question and part.get('value') == rows[0]['value']]
             if not {row['id'] for row in rows} <= {number for part in parts for number in part['items']}:
                 raise ValueError('更正缺少相符的原始確認證據。')
-            labels = _bound_field_names(question, target['field'], text_literals=text_literals)
-            field = target['field'] or (next(iter(labels), '') if text_literals else '')
+            labels = _bound_field_names(question, target['field'], text_literals=text_literals, colloquial=colloquial)
+            field = target['field'] or (next(iter(labels), '') if text_literals or colloquial else '')
             prior = {'field': field, 'items': [row['id'] for row in rows], 'collected_items': [],
                      'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
                      'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
@@ -485,12 +502,13 @@ def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False,
             fields = None
             if qualified:
                 fields = {label for label in labels if label and _confirmation_field_matches(
-                    label, targets, qualified=True, text_literals=text_literals) == [question]}
+                    label, targets, qualified=True, text_literals=text_literals, colloquial=colloquial) == [question]}
             revision = _revision_entry(plan, active, field, question, prior, value, evidence,
                                        dependency_fields=fields)
             revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
             if value is not None and ((bind_numeric and number.fullmatch(value))
-                                      or _language_field(question, person_names=person_names, text_literals=text_literals)):
+                                      or _language_field(question, person_names=person_names, text_literals=text_literals,
+                                                         colloquial=colloquial)):
                 revision['value_evidence'] = _accepted_value_span(value, evidence)
             result.append(revision)
     return result
@@ -509,14 +527,19 @@ def _updated_confirmations(targets, revisions, source, sequence):
     return current
 
 
-def observe_confirmation_correction(steps, source, scope, prior_scope, *, waiting):
+def observe_confirmation_correction(steps, source, scope, prior_scope, *, waiting, version=1):
     if source['steps_seen'] != len(steps):
         return None
     targets = confirmation_targets(steps, prior_scope)
     if not any(target['confirmed'] for target in targets.values()):
         return None
     clauses = goal_guidance_sources.standalone_clauses(source['content'])
-    requested, remaining, _ = _confirmation_requests(clauses, targets, allow_withdrawal=True)
+    typed = version == TYPED_GUIDANCE_VERSION
+    requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=True, qualified=typed,
+                                                           number=_COUNT_NUMBER if typed else _NUMBER,
+                                                           person_names=typed, text_literals=typed, colloquial=typed)
+    if choice:
+        raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
     if not requested:
         return None
     if remaining or any(not targets[question]['confirmed'] for question in requested):
@@ -545,7 +568,9 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
         if len(successor['question']) > 800:
             raise ValueError('待答問題過長，請分開撤回及重新確認。')
         validate_questions(successor)
-    changes = _confirmation_revisions(steps, plan, targets, requested)
+    changes = _confirmation_revisions(steps, plan, targets, requested, qualified=typed, bind_numeric=typed,
+                                      number=_COUNT_NUMBER if typed else _NUMBER, person_names=typed,
+                                      text_literals=typed, colloquial=typed)
     revisions = [row for row in changes if row['value'] is not None]
     withdrawals = [row for row in changes if row['value'] is None]
     current = _updated_confirmations(targets, changes, source, len(steps) + 1)
@@ -567,8 +592,15 @@ def _question_field_name(question):
     return question[:match.start()].removeprefix('請問').strip() if match else ''
 
 
-def _bound_field_names(question, legacy_name, *, text_literals=False):
-    if text_literals and (match := _TEXT_QUESTION.search(question)):
+def _bound_field_names(question, legacy_name, *, text_literals=False, colloquial=False):
+    if colloquial and (match := _COLLOQUIAL_COUNT_QUESTION.search(question)):
+        label = f'{match["unit"]}數'
+        prefix = question[:match.start()].removeprefix('請問').strip()
+        complete = prefix + ('數' if prefix.endswith(match['unit']) else label)
+        return dict.fromkeys((complete, legacy_name, label))
+    match = (_COLLOQUIAL_PERSON_QUESTION.search(question) if colloquial else None) or (
+        _TEXT_QUESTION.search(question) if text_literals else None)
+    if match:
         complete = question[:match.start()].removeprefix('請問').strip()
         if re.fullmatch(r'「[^「」]+」', complete):
             complete = complete[1:-1]
@@ -576,8 +608,24 @@ def _bound_field_names(question, legacy_name, *, text_literals=False):
     return dict.fromkeys((_question_field_name(question), legacy_name))
 
 
-def _language_field(question, *, person_names, text_literals):
-    return ((person_names and _PERSON_QUESTION.search(question))
+def _numeric_question(question, *, colloquial=False):
+    return _NUMERIC_QUESTION.search(question) or (colloquial and _COLLOQUIAL_COUNT_QUESTION.search(question))
+
+
+def _person_question(question, *, colloquial=False):
+    return _PERSON_QUESTION.search(question) or (colloquial and _COLLOQUIAL_PERSON_QUESTION.search(question))
+
+
+def _focus_question(question, *, person_names, text_literals, colloquial):
+    if colloquial:
+        return _COLLOQUIAL_COUNT_QUESTION.search(question) or _COLLOQUIAL_PERSON_QUESTION.search(question)
+    if text_literals:
+        return _TEXT_QUESTION.search(question)
+    return _PERSON_QUESTION.search(question) if person_names else _NUMERIC_QUESTION.search(question)
+
+
+def _language_field(question, *, person_names, text_literals, colloquial=False):
+    return ((person_names and _person_question(question, colloquial=colloquial))
             or (text_literals and _TEXT_QUESTION.search(question)))
 
 
@@ -686,10 +734,12 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
                                             bind_numeric=version >= NUMERIC_CORRECTION_REPLY_VERSION,
                                             count_units=version >= COUNT_CORRECTION_REPLY_VERSION,
                                             person_names=version >= PERSON_CORRECTION_REPLY_VERSION,
-                                            text_literals=version == TEXT_CORRECTION_REPLY_VERSION)
-    if version in (COUNT_REPLY_VERSION, PERSON_REPLY_VERSION, TEXT_REPLY_VERSION):
+                                            text_literals=version >= TEXT_CORRECTION_REPLY_VERSION,
+                                            colloquial=version == COLLOQUIAL_CORRECTION_REPLY_VERSION)
+    if version in (COUNT_REPLY_VERSION, PERSON_REPLY_VERSION, TEXT_REPLY_VERSION, COLLOQUIAL_REPLY_VERSION):
         return _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks,
-                                    person_names=version >= PERSON_REPLY_VERSION, text_literals=version == TEXT_REPLY_VERSION)
+                                    person_names=version >= PERSON_REPLY_VERSION, text_literals=version >= TEXT_REPLY_VERSION,
+                                    colloquial=version == COLLOQUIAL_REPLY_VERSION)
     if version == RECONFIRMATION_REPLY_VERSION:
         targets = _pending_confirmation_targets(steps, parts)
         if not targets:
@@ -871,18 +921,28 @@ def _bare_value(clause, *, numeric):
     return _value(literal) if clause.startswith('「') else None
 
 
-def _number_matches(value, question, number):
+def _expected_count_unit(question, *, colloquial):
+    if colloquial:
+        if asked := _COLLOQUIAL_COUNT_QUESTION.search(question):
+            return asked['unit']
+        if _question_field_name(question).endswith('號'):
+            return '號'
+    expected = _COUNT_FIELD_UNIT.search(_question_field_name(question))
+    return expected[1] if expected else None
+
+
+def _number_matches(value, question, number, *, colloquial=False):
     match = number.fullmatch(value)
     if match is None or number is _NUMBER:
         return match is not None
     unit = match['unit']
-    expected = _COUNT_FIELD_UNIT.search(_question_field_name(question))
-    if (expected or (unit and unit in _COUNT_UNITS)) and _ADJACENT_DIGITS.search(match['amount']):
+    expected = _expected_count_unit(question, colloquial=colloquial)
+    if ((expected and expected in _COUNT_UNITS) or (unit and unit in _COUNT_UNITS)) and _ADJACENT_DIGITS.search(match['amount']):
         return False
-    return not unit or not expected or unit == expected[1] or {unit, expected[1]} == {'人', '位'}
+    return not unit or not expected or unit == expected or {unit, expected} in ({'人', '位'}, {'號', '号'})
 
 
-def _count_reply_value(text, question, *, bare=False):
+def _count_reply_value(text, question, *, bare=False, colloquial=False):
     if match := _ASSIGN.fullmatch(text):
         literal = match[1].strip()
     elif bare and (match := re.fullmatch(r'(?:就用|用|以)\s*(.+?)(?:為準)?', text)):
@@ -893,7 +953,8 @@ def _count_reply_value(text, question, *, bare=False):
         return 'deferred', None
     if value := _value(literal, number=_COUNT_NUMBER):
         if _COUNT_NUMBER.fullmatch(value):
-            return ('confirmed', value) if _number_matches(value, question, _COUNT_NUMBER) else ('ambiguous', None)
+            return ('confirmed', value) if _number_matches(
+                value, question, _COUNT_NUMBER, colloquial=colloquial) else ('ambiguous', None)
     choices = re.split(r'\s*(?:或者|或是|或)\s*', literal)
     numeric_choices = len(choices) > 1 and all(
         _COUNT_NUMBER.fullmatch(_value(item, number=_COUNT_NUMBER) or '') for item in choices)
@@ -959,8 +1020,8 @@ def _text_reply_value(text, question, label, *, bare=False, inquiry=False):
     return None
 
 
-def _bound_field_answer(clause, question, name, quoted, *, inquiry, person, literal):
-    for label in filter(None, _bound_field_names(question, name, text_literals=literal)):
+def _bound_field_answer(clause, question, name, quoted, *, inquiry, person, literal, colloquial):
+    for label in filter(None, _bound_field_names(question, name, text_literals=literal, colloquial=colloquial)):
         if (person or literal) and quoted and quoted[1].startswith(label):
             rest = quoted[1][len(label):].strip()
             if (_person_reply_value(rest) if person else _text_reply_value(rest, question, label)):
@@ -975,14 +1036,14 @@ def _bound_field_answer(clause, question, name, quoted, *, inquiry, person, lite
         elif literal:
             outcome = _text_reply_value(rest, question, label, inquiry=inquiry)
         else:
-            outcome = _count_reply_value(rest, question)
+            outcome = _count_reply_value(rest, question, colloquial=colloquial)
         if outcome:
             return outcome
     return None
 
 
 def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count_units=False,
-                    person_names=False, text_literals=False, question_offsets=()):
+                    person_names=False, text_literals=False, colloquial=False, question_offsets=()):
     statements, unassigned = {}, []
     active = [index for index, part in enumerate(parts) if set(part['items']) - cancelled]
     for start, raw in clauses:
@@ -992,13 +1053,13 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count
         quoted = _PERSON_QUOTE.fullmatch(clause) if person_names or text_literals else None
         for index in active:
             question = parts[index]['question']
-            numeric = bool(_NUMERIC_QUESTION.search(question))
-            person = person_names and _PERSON_QUESTION.search(question)
+            numeric = bool(_numeric_question(question, colloquial=colloquial))
+            person = person_names and _person_question(question, colloquial=colloquial)
             literal = text_literals and _TEXT_QUESTION.search(question)
             name = fields[index]
             if person or literal or (count_units and numeric and start not in question_offsets):
                 outcome = _bound_field_answer(clause, question, name, quoted, inquiry=start in question_offsets,
-                                              person=person, literal=literal)
+                                              person=person, literal=literal, colloquial=colloquial)
                 if outcome:
                     matches.append((index, outcome))
             elif start not in question_offsets and name and clause.startswith(name):
@@ -1009,10 +1070,13 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count
                 if outcome and (not numeric or outcome[1] is None or _NUMBER.fullmatch(outcome[1])):
                     matches.append((index, outcome))
         if not matches and allow_bare:
+            mismatched = set()
+            bare_literal = _value(clause, number=_COUNT_NUMBER) if colloquial else None
+            supplied_unit = _COUNT_NUMBER.fullmatch(bare_literal or '')
             for index in active:
                 question = parts[index]['question']
-                numeric = bool(_NUMERIC_QUESTION.search(question))
-                if person_names and _PERSON_QUESTION.search(question):
+                numeric = bool(_numeric_question(question, colloquial=colloquial))
+                if person_names and _person_question(question, colloquial=colloquial):
                     if len(active) == 1 and (outcome := _person_reply_value(
                             clause, bare=True, question=start in question_offsets)):
                         matches.append((index, outcome))
@@ -1023,18 +1087,25 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count
                 elif start in question_offsets:
                     continue
                 elif count_units and numeric:
-                    if (outcome := _count_reply_value(clause, question, bare=True)) and outcome[0] != 'deferred':
+                    if (outcome := _count_reply_value(clause, question, bare=True, colloquial=colloquial)) and outcome[0] != 'deferred':
                         matches.append((index, outcome))
+                        if supplied_unit and supplied_unit['unit'] and outcome[0] == 'ambiguous':
+                            mismatched.add(index)
                 elif value := _bare_value(clause, numeric=numeric):
                     matches.append((index, ('confirmed', value)))
+            if mismatched and any(
+                    outcome[0] == 'confirmed' and _expected_count_unit(parts[index]['question'], colloquial=True)
+                    for index, outcome in matches):
+                matches = [(index, outcome) for index, outcome in matches if index not in mismatched]
             if len(matches) > 1:
                 unassigned.append({'evidence': evidence, 'questions': [parts[index]['question'] for index, _ in matches]})
                 continue
             if not matches and len(active) == 1 and _DEFERRED.fullmatch(clause):
                 matches = [(active[0], ('deferred', None))]
         if count_units and len(matches) > 1 and all(
-                _NUMERIC_QUESTION.search(parts[index]['question'])
-                or _language_field(parts[index]['question'], person_names=person_names, text_literals=text_literals)
+                _numeric_question(parts[index]['question'], colloquial=colloquial)
+                or _language_field(parts[index]['question'], person_names=person_names, text_literals=text_literals,
+                                   colloquial=colloquial)
                 for index, _ in matches):
             unassigned.append({'evidence': evidence, 'questions': [parts[index]['question'] for index, _ in matches]})
             continue
@@ -1126,7 +1197,8 @@ def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, pa
     return result
 
 
-def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, person_names=False, text_literals=False):
+def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, *,
+                         person_names=False, text_literals=False, colloquial=False):
     if (not plan.get('verify_delivery') or 'plan_questions' not in steps[-1]['action']['args']
             or prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or language_followup(steps) or pending_confirmation_target(steps)):
@@ -1134,9 +1206,10 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
     requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
     required = {number: row['confirmation_question'] for number, row in requirements.items()
                 if 'confirmation_question' in row}
-    question_type = _TEXT_QUESTION if text_literals else _PERSON_QUESTION if person_names else _NUMERIC_QUESTION
-    selected_questions = {part['question'] for part in parts if question_type.search(part['question'])
-                          and all(required.get(number) == part['question'] for number in part['items'])}
+    selected_questions = {
+        part['question'] for part in parts if _focus_question(
+            part['question'], person_names=person_names, text_literals=text_literals, colloquial=colloquial)
+        and all(required.get(number) == part['question'] for number in part['items'])}
     if not selected_questions:
         return None
     fields = [_asked_field(part, tasks) for part in parts]
@@ -1147,7 +1220,7 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
         return None
     statements = _natural_fields([(start, clause) for start, clause, _ in clauses], parts, fields, set(),
                                  count_units=True, person_names=person_names, text_literals=text_literals,
-                                 question_offsets=question_offsets)
+                                 colloquial=colloquial, question_offsets=question_offsets)
     if statements is None:
         return None
     parsed, unassigned = statements
@@ -1155,7 +1228,9 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
     if person_names:
         allowed_questions = selected_questions | {
             part['question'] for part in parts if (
-                _NUMERIC_QUESTION.search(part['question']) or (text_literals and _PERSON_QUESTION.search(part['question'])))
+                _numeric_question(part['question'], colloquial=colloquial)
+                or (text_literals and _person_question(part['question'], colloquial=colloquial))
+                or (colloquial and _TEXT_QUESTION.search(part['question'])))
             and all(required.get(number) == part['question'] for number in part['items'])}
     if any(not set(row['questions']) <= allowed_questions for row in unassigned):
         return None
@@ -1179,11 +1254,12 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
     sequence = len(steps) + 1
     if not _verify_reply_parts(proof, required, confirmations, source, sequence,
                                carry=True, keep_counts_pending=True, keep_people_pending=person_names,
-                               keep_text_pending=text_literals):
+                               keep_text_pending=text_literals, colloquial=colloquial):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
     if unassigned:
-        numeric_unassigned = [row for row in unassigned if all(_NUMERIC_QUESTION.search(question) for question in row['questions'])]
+        numeric_unassigned = [row for row in unassigned if all(
+            _numeric_question(question, colloquial=colloquial) for question in row['questions'])]
         if numeric_unassigned:
             proof['unassigned_counts'] = numeric_unassigned
         if text_literals:
@@ -1200,14 +1276,14 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
 
 
 def _verify_reply_parts(proof, required, confirmations, source, sequence, *, carry,
-                        keep_counts_pending=False, keep_people_pending=False, keep_text_pending=False):
+                        keep_counts_pending=False, keep_people_pending=False, keep_text_pending=False, colloquial=False):
     for part in proof['parts']:
         if part['state'] == 'unanswered':
             continue
         typed = all(required.get(number) == part['question'] for number in part['items'])
-        recognized = typed and ((keep_counts_pending and _NUMERIC_QUESTION.search(part['question']))
+        recognized = typed and ((keep_counts_pending and _numeric_question(part['question'], colloquial=colloquial))
                                 or _language_field(part['question'], person_names=keep_people_pending,
-                                                   text_literals=keep_text_pending))
+                                                   text_literals=keep_text_pending, colloquial=colloquial))
         if part['state'] != 'confirmed':
             if recognized:
                 continue
@@ -1255,7 +1331,7 @@ def _resolve_confirmation_target(pending, requested, remaining):
 
 def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *,
                                  qualified=False, bind_numeric=False, count_units=False,
-                                 person_names=False, text_literals=False):
+                                 person_names=False, text_literals=False, colloquial=False):
     if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or 'plan_questions' not in steps[-1]['action']['args']
             or (language_followup(steps) or {}).get('cancellation')):
@@ -1266,12 +1342,16 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     pending = pending_confirmation_target(steps) if qualified else None
     if pending:
         parts = parts[1:]  # The generated target question is separate from the original open fields.
-    question_type = _TEXT_QUESTION if text_literals else _PERSON_QUESTION if person_names else None
-    if question_type and not any(
-            question_type.search(question) and (
+    def focused(question):
+        return _focus_question(question, person_names=person_names, text_literals=text_literals, colloquial=colloquial)
+
+    needs_focus = person_names or text_literals or colloquial
+    focus_in_current_parts = colloquial and any(focused(part['question']) for part in parts)
+    if needs_focus and not focus_in_current_parts and not any(
+            focused(question) and (
                 question in (pending or {}).get('questions', ())
                 or any(label and label in source['answer'] for label in
-                       _bound_field_names(question, target['field'], text_literals=text_literals)))
+                       _bound_field_names(question, target['field'], text_literals=text_literals, colloquial=colloquial)))
             for question, target in targets.items()):
         return None
     if count_units and not person_names and not _ADDITIONAL_COUNT.search(source['answer']):
@@ -1295,7 +1375,7 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     try:
         requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=False,
                                                                qualified=qualified, number=number, person_names=person_names,
-                                                               text_literals=text_literals)
+                                                               text_literals=text_literals, colloquial=colloquial)
     except ValueError:
         if qualified:
             raise
@@ -1321,7 +1401,7 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     fields = [_asked_field(part, tasks) for part in parts]
     if count_units:
         statements = _natural_fields(remaining, parts, fields, set(), count_units=True, person_names=person_names,
-                                     text_literals=text_literals)
+                                     text_literals=text_literals, colloquial=colloquial)
         parsed = statements[0] if statements is not None and not statements[1] else None
     else:
         parsed = _direct_reply_fields(remaining, parts, fields) if remaining else {}
@@ -1329,13 +1409,13 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         if pending or choice:
             raise ValueError('請分開寫明要回答的欄位。待選更正可指定完整欄名及新值，或回答「都不改」。')
         return None
-    if question_type and not any(question_type.search(question) for question in (
+    if needs_focus and not any(focused(question) for question in (
             *requested, *(choice or {}).get('questions', ()), *(pending or {}).get('questions', ()),
             *(parts[index]['question'] for index in parsed))):
         return None
     revisions = _confirmation_revisions(steps, plan, targets, requested,
                                          qualified=qualified, bind_numeric=bind_numeric, number=number,
-                                         person_names=person_names, text_literals=text_literals)
+                                         person_names=person_names, text_literals=text_literals, colloquial=colloquial)
     result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed, revisions=revisions)
     proof = result['scope_reply']
     sequence = len(steps) + 1
@@ -1343,7 +1423,7 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     required = {number: question for question, target in targets.items() for number in target['items']}
     if not _verify_reply_parts(proof, required, confirmations, source, sequence,
                                 carry=True, keep_counts_pending=count_units, keep_people_pending=person_names,
-                                keep_text_pending=text_literals):
+                                keep_text_pending=text_literals, colloquial=colloquial):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
     if choice:
@@ -1774,8 +1854,12 @@ def _apply_revisions(result, proof, complete, plan, revisions, source):
 
 def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_present, delivery_present=False, pending=None):
     confirmation = args.get(CONFIRMATION_CORRECTION)
+    version = args.get(CONFIRMATION_CORRECTION_VERSION, 1)
+    if CONFIRMATION_CORRECTION_VERSION in args and (confirmation is not True or type(version) is not int
+                                                   or version != TYPED_GUIDANCE_VERSION):
+        raise ValueError('已保存的確認更正版本不符。')
     special = args.keys() & {'delivery_mode', 'filename_declaration', artifact_names.GUIDANCE_MARK}
-    keys = args.keys() - special - {CONFIRMATION_CORRECTION}
+    keys = args.keys() - special - {CONFIRMATION_CORRECTION, CONFIRMATION_CORRECTION_VERSION}
     if (keys not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'})
             or any(args[key] is not True or not delivery_present for key in special)
             or len(special) > 1 or (CONFIRMATION_CORRECTION in args and (confirmation is not True or special))):
@@ -1803,7 +1887,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
         filename_guidance = artifact_names.guidance_choice(prior, source['content'], requirement, delivery=delivery)
         if not waiting or not filename_guidance or not delivery_preference.initially_enabled(db, goal['id']):
             raise ValueError('定稿檔名更正缺少原問題或已保存的來源。')
-    expected = (observe_confirmation_correction(prior, source, scope, previous, waiting=waiting) if confirmation else
+    expected = (observe_confirmation_correction(prior, source, scope, previous, waiting=waiting, version=version) if confirmation else
                 observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named,
                         filename_guidance=filename_guidance))
     if expected is None:
@@ -1830,7 +1914,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= TEXT_CORRECTION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= COLLOQUIAL_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

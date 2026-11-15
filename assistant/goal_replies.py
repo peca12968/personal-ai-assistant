@@ -77,11 +77,12 @@ def _save_scope_reply(db, current, steps, notes):
     elif work_plan.waiting_for_reconfirmation(steps):
         if delivery:
             raise ValueError('請先回答待重新確認的欄位，交付方式可另從目標補充更正。')
-        versions = (*work_plan_scope.CORRECTION_REPLY_VERSIONS, work_plan_scope.TEXT_REPLY_VERSION,
+        versions = (*work_plan_scope.CORRECTION_REPLY_VERSIONS, work_plan_scope.COLLOQUIAL_REPLY_VERSION,
+                    work_plan_scope.TEXT_REPLY_VERSION,
                     work_plan_scope.PERSON_REPLY_VERSION, work_plan_scope.COUNT_REPLY_VERSION,
                     work_plan_scope.RECONFIRMATION_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
-        versions = (work_plan_scope.TEXT_REPLY_VERSION, work_plan_scope.PERSON_REPLY_VERSION,
+        versions = (work_plan_scope.COLLOQUIAL_REPLY_VERSION, work_plan_scope.TEXT_REPLY_VERSION, work_plan_scope.PERSON_REPLY_VERSION,
                     work_plan_scope.COUNT_REPLY_VERSION, work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION,
                     work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION, *versions)
         if '改' in answer or '更正' in answer:

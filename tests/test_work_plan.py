@@ -1402,6 +1402,150 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(final_store.path)
 
+    def test_colloquial_questions_bind_counts_units_and_people_to_the_original_parts(self):
+        source = self.root / 'colloquial-plan.txt'
+        source.write_text('本批外殼待確認。\n每盤依本批清單。\n架號以本輪為準。\n由當輪稽核員核對。\n封條由本輪指定。',
+                          encoding='utf-8')
+        did = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '核對外殼、育苗盤數、架號、稽核員和封條號。')
+        questions = ['外殼材料是什麼？', '育苗要準備幾盤？', '架號是多少？', '稽核員是哪一位？', '封條號是多少？']
+        names = ('外殼材料', '育苗盤數', '架號', '稽核員', '封條號')
+        rows = [item(n, '核對' + name) for n, name in enumerate(names, 1)]
+        parts = [{'question': q, 'items': [n]} for n, q in enumerate(questions, 1)]
+        ranges = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 6)]
+        required = [{'id': n, 'confirmation_question': q, 'ranges': [ranges[n - 1]]} for n, q in enumerate(questions, 1)]
+
+        def ask(*numbers):
+            selected = [parts[n - 1] for n in numbers]
+            return action('ask', question='\n'.join(row['question'] for row in selected), plan_questions=selected)
+
+        def reply(store, text):
+            current = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, text, expected_fingerprint=current['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def checked(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def restore(store, label):
+            snapshot = a.get_goal(store, self.sid, gid)
+            target = self.root / label
+            archive = create_backup(store.path, target.with_suffix('.paibackup'))
+            restore_backup(archive['path'], target)
+            cloned = Store(target / 'assistant.sqlite3')
+            self.assertEqual(a.get_goal(cloned, self.sid, gid), snapshot)
+            return cloned
+
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=ranges), ask(1), gid=gid)
+        original = checked(reply(self.store, '外殼材料為不鏽鋼。'))[1]
+        self.run_actions(ask(2, 3), gid=gid)
+        bare = restore(self.store, 'bare-colloquial-answer')
+        complete = reply(bare, '6 盤。架號為 8 號。')
+        self.assertEqual(complete['status'], 'paused')
+        self.assertEqual({n: row['value'] for n, row in checked(complete).items()},
+                         {1: '不鏽鋼', 2: '6 盤', 3: '8 號'})
+        validate_database(bare.path)
+
+        for index, raw in enumerate(('育苗盤數為 6 盤或 7 盤。', '6 盒。', '育苗盤數為 6 盤 2 盒。'), 1):
+            with self.subTest(raw=raw):
+                store = restore(self.store, f'uncertain-colloquial-{index}')
+                waiting = reply(store, raw + '架號為 8 號。')
+                known = checked(waiting)
+                self.assertEqual(known[1], original)
+                self.assertEqual(known[3]['value'], '8 號')
+                self.assertNotIn(2, known)
+                self.assertEqual(waiting['question'], questions[1])
+                self.assertEqual(waiting['steps'][-1]['action']['args']['plan_questions'], [parts[1]])
+                validate_database(store.path)
+
+        resumed = restore(Store(self.root / 'uncertain-colloquial-1' / 'assistant.sqlite3'), 'resolved-colloquial-answer')
+        accepted = reply(resumed, '育苗盤數為 6 盤。')
+        accepted_values = checked(accepted)
+        self.assertEqual(accepted['status'], 'paused')
+        self.assertEqual(accepted_values[2]['value'], '6 盤')
+        a.run_goal(resumed, self.sid, gid, ScriptedEngine(ask(4)), max_steps=1)
+        person = reply(resumed, '稽核員為黃未晴。')
+        self.assertEqual(checked(person)[4]['value'], '黃未晴')
+        a.run_goal(resumed, self.sid, gid, ScriptedEngine(ask(5)), max_steps=1)
+        correction = '封條號為 9 號。育苗盤數正式改為 7 盤。'
+        corrected = reply(resumed, correction)
+        current = checked(corrected)
+        self.assertEqual(current[1], original)
+        self.assertEqual(current[3], accepted_values[3])
+        self.assertEqual(current[2]['value'], '7 盤')
+        self.assertEqual(current[5]['value'], '9 號')
+        change, = corrected['work_plan']['scope_reply']['revisions']
+        self.assertEqual(change['previous']['step'], accepted_values[2]['reply_step'])
+        span = change['value_evidence']
+        self.assertEqual(correction[span['start']:span['end']], '7 盤')
+        validate_database(resumed.path)
+        restore(resumed, 'corrected-colloquial-answer')
+
+    def test_standalone_text_correction_reopens_only_the_edited_completed_item(self):
+        document = self.root / 'closed-work-plan.txt'
+        document.write_text('外殼位於甲線。\n盒數依答覆。\n集合點依答覆。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, document)
+        gid = a.create_goal(self.store, self.sid, '定稿外殼材料、盒數及集合點。')
+        questions = ['外殼材料是什麼？', '盒數是多少？', '集合點在哪裡？']
+        rows = [item(n, '核對' + label) for n, label in enumerate(('外殼材料', '盒數', '集合點'), 1)]
+        ranges = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 4)]
+        parts = [{'question': q, 'items': [n]} for n, q in enumerate(questions, 1)]
+        required = [{'id': n, 'confirmation_question': q, 'ranges': [ranges[n - 1]]} for n, q in enumerate(questions, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=ranges),
+                         action('ask', question='\n'.join(questions), plan_questions=parts), gid=gid)
+        reply = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '外殼材料為鋁合金。盒數為 6 盒。集合點在未央館。',
+                          expected_fingerprint=reply['fingerprint'])
+
+        def checked(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        values = checked(a.get_goal(self.store, self.sid, gid))
+        done = [{**row, 'state': 'done', 'evidence_steps': [2, values[row['id']]['reply_step']]} for row in rows]
+        report = '\n'.join(f'{row["value"]} {row["citation"]} [D1:L{n}]' for n, row in sorted(values.items()))
+        old = self.run_actions(action('update_plan', items=done, reuse_document_steps=[2]),
+                               action('finish', report=report), gid=gid)
+        self.assertEqual(old['status'], 'report_ready')
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        with self.assertRaisesRegex(ValueError, '明確的新值'):
+            goal_guidance.save(self.store, self.sid, gid, '外殼材料正式改為可能是不鏽鋼。',
+                               expected_fingerprint=view['fingerprint'])
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), old)
+        raw = '外殼材料正式改為「不鏽鋼」。'
+        goal_guidance.save(self.store, self.sid, gid, raw, expected_fingerprint=view['fingerprint'])
+        state = a.get_goal(self.store, self.sid, gid)
+        current = checked(state)
+        self.assertEqual(state['status'], 'paused')
+        self.assertEqual(state['steps'][:-1], old['steps'])
+        self.assertEqual(state['work_plan']['items'][1:], old['work_plan']['items'][1:])
+        self.assertEqual(current[2], values[2])
+        self.assertEqual(current[3], values[3])
+        self.assertEqual(current[1]['value'], '不鏽鋼')
+        step = state['steps'][-1]
+        self.assertEqual(step['action']['args']['confirmation_correction_version'], 2)
+        change, = step['observation']['scope_change']['revisions']
+        span = change['value_evidence']
+        self.assertEqual(raw[span['start']:span['end']], '不鏽鋼')
+        self.assertEqual(change['previous']['value_evidence']['quote'], '鋁合金')
+        self.assertEqual(change['recheck_items'], [1])
+
+        archive = create_backup(self.store.path, self.root / 'text-guidance.paibackup')
+        target = self.root / 'after-text-guidance'
+        restore_backup(archive['path'], target)
+        resumed = Store(target / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(resumed, self.sid, gid), state)
+        done[0]['evidence_steps'] = [2, current[1]['reply_step']]
+        corrected_report = '\n'.join(f'{row["value"]} {row["citation"]} [D1:L{n}]' for n, row in sorted(current.items()))
+        final = a.run_goal(resumed, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=done, reuse_document_steps=[2]),
+            action('finish', report=report),
+            action('finish', report=corrected_report)), max_steps=3)
+        self.assertIn('現行已核對的答覆', final['steps'][-2]['observation']['error'])
+        self.assertEqual(final['status'], 'report_ready')
+        validate_database(resumed.path)
+
     def test_bound_text_reply_preserves_material_location_and_version_with_literal_sources(self):
         document = self.root / 'label-proof.txt'
         document.write_text('盒數依使用者確認。\n外殼材料待填。\n集合點待填。\n版本名稱待填。\n台號待填。',

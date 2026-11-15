@@ -545,7 +545,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
-    observation = (work_plan_scope.observe_confirmation_correction(steps, source, scope, prior_scope, waiting=waiting)
+    version = work_plan_scope.TYPED_GUIDANCE_VERSION
+    observation = (work_plan_scope.observe_confirmation_correction(steps, source, scope, prior_scope,
+                                                                    waiting=waiting, version=version)
                    if confirmation else work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting,
                        delivery=delivery_change, filename_declaration=named, filename_guidance=filename_guidance))
     if observation is None:
@@ -569,6 +571,7 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     args = {'scope_correction': source['citation']}
     if confirmation:
         args[work_plan_scope.CONFIRMATION_CORRECTION] = True
+        args[work_plan_scope.CONFIRMATION_CORRECTION_VERSION] = version
     elif delivery_change and not filename_guidance:
         args['delivery_mode'] = True
     if filename_guidance:
