@@ -1277,6 +1277,118 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(restored.path)
 
+    def test_scoped_correction_and_target_choice_preserve_independent_answers(self):
+        path = self.root / 'handoff.txt'
+        path.write_text('北廊青檯\n南廊桂台\n門號石門\n封條木箱', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對兩廊接收人、門號與封條編號。')
+        rows = [item(number, task) for number, task in enumerate(
+            ['核對北廊交接', '核對南廊交接', '核對門號', '核對封條'], 1)]
+        questions = ['北廊的接收人是誰？', '南廊的接收人是誰？', '門號是多少？', '封條編號是什麼？']
+        parts = [{'question': question, 'items': [number]} for number, question in enumerate(questions, 1)]
+        ranges = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 5)]
+        requirements = [{'id': n, 'ranges': [ranges[n - 1]], 'confirmation_question': question}
+                        for n, question in enumerate(questions, 1)]
+
+        def ask(*numbers):
+            return action('ask', question='\n'.join(questions[n - 1] for n in numbers),
+                          plan_questions=[parts[n - 1] for n in numbers])
+
+        def reply(store, answer):
+            view = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, answer, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def restored(store, label):
+            before = a.get_goal(store, self.sid, gid)
+            backup = create_backup(store.path, self.root / f'{label}.paibackup')
+            destination = self.root / label
+            restore_backup(backup['path'], destination)
+            cloned = Store(destination / 'assistant.sqlite3')
+            self.assertEqual(a.get_goal(cloned, self.sid, gid), before)
+            return cloned
+
+        def confirmations(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=requirements),
+                         action('read_ranges', ranges=ranges), ask(1), gid=gid)
+        reply(self.store, '接收人為蕭明琪。')
+        self.run_actions(ask(2), gid=gid)
+        previous = confirmations(reply(self.store, '接收人為林晴川。'))
+        completed = [{**row, 'state': 'done', 'evidence_steps': [2, previous[row['id']]['reply_step']]}
+                     for row in rows[:2]]
+        before = self.run_actions(action('update_plan', items=[*completed, *rows[2:]], reuse_document_steps=[2]),
+                                  ask(3, 4), gid=gid)
+
+        qualified = restored(self.store, 'qualified')
+        direct = reply(qualified, '門號為 8 號，「北廊的接收人」正式改為王昕琪。')
+        direct_confirmations = confirmations(direct)
+        self.assertEqual(direct['question'], questions[3])
+        self.assertEqual(direct_confirmations[1]['value'], '王昕琪')
+        self.assertEqual(direct_confirmations[2], previous[2])
+        self.assertEqual(direct_confirmations[3]['value'], '8 號')
+        self.assertEqual(direct['work_plan']['items'][1], before['work_plan']['items'][1])
+        revision, = direct['steps'][-2]['observation']['scope_reply']['revisions']
+        self.assertEqual(revision['recheck_items'], [1])
+        self.assertEqual(revision['previous']['step'], previous[1]['reply_step'])
+        validate_database(qualified.path)
+
+        pending = reply(self.store, '門號為 8 號。接收人改為王昕琪。')
+        known = confirmations(pending)
+        self.assertEqual({key: known[key] for key in (1, 2)}, previous)
+        self.assertEqual(known[3]['value'], '8 號')
+        first, remaining = pending['steps'][-1]['action']['args']['plan_questions']
+        self.assertEqual(first['items'], [1, 2])
+        self.assertTrue(all(question in first['question'] for question in questions[:2]))
+        self.assertEqual(remaining, parts[3])
+        with self.assertRaisesRegex(ValueError, '待選更正'):
+            plan = p.latest(pending['steps'])
+            p.check_delivery(plan, plan['goal_conditions_sha256'], {'tool': 'finish', 'args': {'report': '交付'}},
+                             pending['steps'])
+        with self.assertRaisesRegex(ValueError, '多個工作分問'):
+            reply(self.store, '接收人改為王昕琪。')
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), pending)
+
+        kept = restored(self.store, 'kept')
+        keep_result = reply(kept, '都不改。封條編號為Q-99。')
+        self.assertEqual(keep_result['status'], 'paused')
+        self.assertEqual({key: confirmations(keep_result)[key] for key in known}, known)
+        self.assertEqual(confirmations(keep_result)[4]['value'], 'Q-99')
+        validate_database(kept.path)
+
+        resumed = restored(self.store, 'resumed')
+        partial = reply(resumed, '封條編號為Q-99。')
+        self.assertEqual(partial['question'], first['question'])
+        self.assertEqual({key: confirmations(partial)[key] for key in known}, known)
+        current = reply(resumed, '「南廊的接收人」改為王昕琪。')
+        checked = confirmations(current)
+        self.assertEqual(current['status'], 'paused')
+        self.assertEqual(checked[1], previous[1])
+        self.assertEqual(checked[2]['value'], '王昕琪')
+        self.assertEqual(checked[3], known[3])
+        self.assertEqual(checked[4]['value'], 'Q-99')
+        self.assertEqual(current['work_plan']['items'][0], completed[0])
+        self.assertEqual(current['steps'][-1]['observation']['scope_reply']['confirmation_target_resolution'],
+                         {'step': pending['steps'][-2]['sequence'], 'decision': 'correct', 'question': questions[1]})
+
+        final_store = restored(resumed, 'resolved')
+        done = [{**row, 'state': 'done', 'evidence_steps': [2, checked[row['id']]['reply_step']]} for row in rows]
+        report = '\n'.join(f'{value["value"]} {value["citation"]} [D1:L{number}]' for number, value in sorted(checked.items()))
+        final = a.run_goal(final_store, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=done, reuse_document_steps=[2]), action('finish', report=report)), max_steps=2)
+        self.assertEqual(final['status'], 'report_ready', final['steps'][-2:])
+        validate_database(final_store.path)
+
+        origin = pending['steps'][-2]
+        altered = copy.deepcopy(origin['observation'])
+        altered['scope_reply']['confirmation_target_choice']['questions'].reverse()
+        with final_store.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(altered, ensure_ascii=False), gid, origin['sequence']))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
+            validate_database(final_store.path)
+
     def test_corrected_confirmation_reopens_delivered_item_and_reuses_unchanged_evidence(self):
         path = self.root / 'delivery.txt'
         path.write_text('窗口 北庫\n門號 G-17', encoding='utf-8')

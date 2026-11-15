@@ -43,6 +43,7 @@ _REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern}
 _DECLINE = r'(?:(?:目前|本輪|這次)\s*)?(?:未採用|尚未採用|沒有採用|不採用|先不採用|維持原值)'
 _DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:提議|建議)\s*'
                                 r'(?:「[^」\r\n]{1,200}」|『[^』\r\n]{1,200}』)\s*[，,、]?\s*' + _DECLINE)
+_QUALIFIED_REVISION_COMMA = re.compile(rf'{_REVISION_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*(?:正式\s*)?{_REVISION_VERB}')
 _PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
 _FILENAME_REPLY_COMMA = re.compile(rf'{_PENDING_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*{_REVISION_VERB}')
 _FIELD_DELAY = r'(?:(?:晚點|稍後|之後)(?:再)?(?:決定|選擇|確認)|先不(?:決定|選擇|確認)|還沒決定)'
@@ -59,6 +60,7 @@ CARRY_CONFIRMATIONS_REPLY_VERSION = 15
 CONFIRMATION_FILENAME_REPLY_VERSION = 16
 RECONFIRMATION_REPLY_VERSION = 17
 COMBINED_CORRECTION_REPLY_VERSION = 18
+QUALIFIED_CORRECTION_REPLY_VERSION = 19
 CONFIRMATION_CORRECTION = 'confirmation_correction'
 
 
@@ -92,8 +94,11 @@ def bind_questions(args, steps):
     receipt = _scope_receipt(plan)
     language = receipt.get('language', {})
     choice = language.get('cancellation') or next(iter(language.get('pending_revisions', ())), None)
-    if choice and args == receipt['successor']:
-        active.update(choice['items'])
+    if args == receipt.get('successor'):
+        if choice:
+            active.update(choice['items'])
+        if target := receipt.get('confirmation_target_choice'):
+            active.update(target['items'])
     parts = args['plan_questions']
     if any(not set(part['items']) <= active for part in parts):
         raise ValueError('問題只能連到仍需處理的工作項目。')
@@ -346,9 +351,15 @@ def confirmation_targets(steps, scope):
     return targets
 
 
-def _confirmation_requests(clauses, targets, *, allow_withdrawal):
+def _confirmation_field_matches(field, targets, *, qualified):
+    return [question for question, target in targets.items() if field == target['field'] or (
+        qualified and _FIELD_NAME.fullmatch(field) and field == _question_field_name(question))]
+
+
+def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False):
     requested = {}
     remaining = []
+    choice = None
     for start, clause, is_question in clauses:
         if is_question:
             remaining.append((start, clause))
@@ -362,7 +373,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal):
             matches, literal = ([match[1]] if match[1] in targets else []), match[2]
         elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
             field = (match[1] or match[2]).strip()
-            matches = [question for question, target in targets.items() if target['field'] == field]
+            matches = _confirmation_field_matches(field, targets, qualified=qualified)
             literal = match[3]
         else:
             remaining.append((start, clause))
@@ -371,17 +382,24 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal):
             remaining.append((start, clause))
             continue
         if len(matches) != 1:
-            raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
+            value = _value(literal.strip()) if literal is not None else None
+            if (not qualified or withdrawal or choice or value is None
+                    or not all(targets[question]['confirmed'] for question in matches)
+                    or any(_NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value) for question in matches)):
+                raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
+            choice = {'field': field, 'questions': matches, 'value': value, 'evidence': _literal_span(start, clause),
+                      'items': sorted({number for question in matches for number in targets[question]['items']})}
+            continue
         question = matches[0]
         value = _value(literal.strip()) if literal is not None else None
         if (question in requested or (not withdrawal and (
                 value is None or (_NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value))))):
             raise ValueError('請為每個原問句提供一個明確的新值。')
         requested[question] = (value, _literal_span(start, clause))
-    return requested, remaining
+    return requested, remaining, choice
 
 
-def _confirmation_revisions(steps, plan, targets, requested):
+def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False):
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
     result = []
     for question, (value, evidence) in requested.items():
@@ -399,7 +417,12 @@ def _confirmation_revisions(steps, plan, targets, requested):
             prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
                      'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
                      'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
-            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence)
+            fields = None
+            if qualified:
+                fields = {field for field in {_question_field_name(question), target['field']}
+                          if field and _confirmation_field_matches(field, targets, qualified=True) == [question]}
+            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence,
+                                       dependency_fields=fields)
             revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
             result.append(revision)
     return result
@@ -425,7 +448,7 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
     if not any(target['confirmed'] for target in targets.values()):
         return None
     clauses = goal_guidance_sources.standalone_clauses(source['content'])
-    requested, remaining = _confirmation_requests(clauses, targets, allow_withdrawal=True)
+    requested, remaining, _ = _confirmation_requests(clauses, targets, allow_withdrawal=True)
     if not requested:
         return None
     if remaining or any(not targets[question]['confirmed'] for question in requested):
@@ -471,11 +494,14 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
     return result
 
 
+def _question_field_name(question):
+    match = _ASK_FIELD.search(question)
+    return question[:match.start()].removeprefix('請問').strip() if match else ''
+
+
 def _asked_field(part, tasks):
-    match = _ASK_FIELD.search(part['question'])
-    if match is None:
+    if not (name := _question_field_name(part['question'])):
         return ''
-    name = part['question'][:match.start()].removeprefix('請問').strip()
     candidates = {_target(tasks[number]).removeprefix('登記') for number in part['items']}
     candidates = {item for item in candidates if name == item or name.endswith(('的' + item, '的正式' + item))}
     if len(candidates) == 1:
@@ -572,8 +598,9 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version == COMBINED_CORRECTION_REPLY_VERSION:
-        return _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks)
+    if version in (COMBINED_CORRECTION_REPLY_VERSION, QUALIFIED_CORRECTION_REPLY_VERSION):
+        return _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks,
+                                            qualified=version == QUALIFIED_CORRECTION_REPLY_VERSION)
     if version == RECONFIRMATION_REPLY_VERSION:
         targets = _pending_confirmation_targets(steps, parts)
         if not targets:
@@ -879,7 +906,37 @@ def _verify_reply_parts(proof, required, confirmations, source, sequence, *, car
     return True
 
 
-def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks):
+def pending_confirmation_target(steps):
+    plan = work_plan.latest(steps)
+    if plan and plan['sequence'] == len(steps) - 1:
+        receipt = _scope_receipt(plan)
+        ask = steps[-1]['action']
+        if ask['tool'] == 'ask' and receipt.get('successor') == ask['args']:
+            return receipt.get('confirmation_target_choice')
+    return None
+
+
+def _target_choice_part(choice):
+    names = '、'.join(f'「{question}」' for question in choice['questions'])
+    return {'question': (f'「{choice["field"]}」指的是哪一欄？可選 {names}。'
+                         f'請用完整欄名加上「改為{choice["value"]}」回覆，或回答「都不改」。'),
+            'items': choice['items']}
+
+
+def _resolve_confirmation_target(pending, requested, remaining):
+    keep = [(start, clause) for start, clause in remaining if clause in _KEEP_VALUE]
+    if len(keep) == 1 and not requested:
+        start, clause = keep[0]
+        remaining.remove(keep[0])
+        return {'step': pending['step'], 'decision': 'keep', 'evidence': _literal_span(start, clause)}
+    if not keep and len(requested) == 1 and (question := next(iter(requested))) in pending['questions']:
+        return {'step': pending['step'], 'decision': 'correct', 'question': question}
+    if keep or requested:
+        raise ValueError('請指定目前列出的一個完整欄名及明確新值，或回答「都不改」。')
+    return None
+
+
+def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *, qualified=False):
     if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or 'plan_questions' not in steps[-1]['action']['args']
             or (language_followup(steps) or {}).get('cancellation')):
@@ -887,24 +944,47 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     targets = confirmation_targets(steps, prior_scope)
     if not any(target['confirmed'] for target in targets.values()):
         return None
-    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_REVISION_COMMA)
+    pending = pending_confirmation_target(steps) if qualified else None
+    if pending:
+        parts = parts[1:]  # The generated target question is separate from the original open fields.
+    if qualified and not pending and all(
+            _question_field_name(question) == target['field']
+            and _confirmation_field_matches(target['field'], targets, qualified=True) == [question]
+            for question, target in targets.items()):
+        return None
+    comma_before = _QUALIFIED_REVISION_COMMA if qualified else _REVISION_COMMA
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before)
     if not clauses or any(question for _, _, question in clauses):
         return None
     try:
-        requested, remaining = _confirmation_requests(clauses, targets, allow_withdrawal=False)
+        requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=False, qualified=qualified)
     except ValueError:
-        # Keep the existing choice and clarification path for ambiguous corrections.
+        if qualified:
+            raise
         return None
-    if not requested:
+    if not (requested or choice or pending):
         return None
-    if any(not targets[question]['confirmed'] for question in requested) or any(
-            part['question'] in requested for part in parts):
+    if qualified and not (choice or pending or any(
+            _question_field_name(question) != targets[question]['field']
+            or len(_confirmation_field_matches(targets[question]['field'], targets, qualified=True)) > 1
+            for question in requested)):
         return None
+
+    open_questions = {part['question'] for part in parts}
+    if any(not targets[question]['confirmed'] or question in open_questions for question in requested):
+        return None
+    if choice and (pending or set(choice['questions']) & (requested.keys() | open_questions)):
+        raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
+    resolution = _resolve_confirmation_target(pending, requested, remaining) if pending else None
+    if pending and not resolution:
+        choice = pending
     fields = [_asked_field(part, tasks) for part in parts]
     parsed = _direct_reply_fields(remaining, parts, fields) if remaining else {}
-    if parsed is None:
+    if parsed is None or (pending and not (resolution or parsed)):
+        if pending or choice:
+            raise ValueError('請分開寫明要回答的欄位。待選更正可指定完整欄名及新值，或回答「都不改」。')
         return None
-    revisions = _confirmation_revisions(steps, plan, targets, requested)
+    revisions = _confirmation_revisions(steps, plan, targets, requested, qualified=qualified)
     result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed, revisions=revisions)
     proof = result['scope_reply']
     sequence = len(steps) + 1
@@ -913,8 +993,18 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     if not _verify_reply_parts(proof, required, confirmations, source, sequence, carry=True):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
-    if pending := _pending_confirmation_targets(steps, parts):
-        _record_reconfirmation(proof, pending, sequence)
+    if choice:
+        choice = {**choice, 'step': choice.get('step', sequence)}
+        next_parts = (proof['successor'] or {}).get('plan_questions', [])
+        successor = _next_question([_target_choice_part(choice), *next_parts])
+        if len(successor['question']) > 800:
+            raise ValueError('待答問題過長，請用完整欄名及新值直接更正。')
+        validate_questions(successor)
+        proof.update(confirmation_target_choice=choice, successor=successor)
+    if resolution:
+        proof['confirmation_target_resolution'] = resolution
+    if withdrawals := _pending_confirmation_targets(steps, parts):
+        _record_reconfirmation(proof, withdrawals, sequence)
     _carry_independent_replies(proof, plan, steps, prior_scope)
     return result
 
@@ -1117,11 +1207,11 @@ def _confirmed_fields(steps, plan, tasks):
     return confirmed
 
 
-def _dependent_operands(plan, previous, field):
+def _dependent_operands(plan, previous, fields):
     paths = {row['id']: set(row['paths']) for row in previous.get('operand_paths', ())}
     for row in plan.get('evidence_requirements', ()):
         for operand in row.get('operands', ()):
-            if operand.get('field') == field:
+            if operand.get('field') in fields:
                 paths.setdefault(row['id'], set()).add(operand['path'])
     evidence = previous['evidence']
     for row in plan.get('evidence_matches', ()):
@@ -1157,12 +1247,12 @@ def _parse_revisions(clauses, steps, plan, tasks, cancelled):
     return remaining, revisions
 
 
-def _revision_entry(plan, active, field, question, previous, value, evidence):
+def _revision_entry(plan, active, field, question, previous, value, evidence, *, dependency_fields=None):
     required = {row['id'] for row in plan.get('evidence_requirements', ())}
     ids = set(previous['items']) & active.keys()
     collected = sorted(number for number in (ids & set(previous['collected_items'])) - required
                        if active[number]['state'] == 'done' and active[number]['evidence_steps'] == [previous['step']])
-    dependent = _dependent_operands(plan, previous, field)
+    dependent = _dependent_operands(plan, previous, {field} if dependency_fields is None else dependency_fields)
     changed = _value_identity(value) != _value_identity(previous['value'])
     recheck = sorted(((ids | dependent.keys()) & active.keys()) - set(collected)) if changed else []
     return {'field': field, 'question': question, 'items': sorted(ids), 'value': value, 'evidence': evidence,
@@ -1234,7 +1324,7 @@ def _parse_revision_choices(clauses, steps, plan, tasks, cancelled, previous, so
         question, old = candidates[0]
         if _NUMERIC_QUESTION.search(question) and any(not _NUMBER.fullmatch(row['value']) for row in options):
             return None
-        items = sorted((set(old['items']) | _dependent_operands(plan, old, field).keys()) & active.keys())
+        items = sorted((set(old['items']) | _dependent_operands(plan, old, {field}).keys()) & active.keys())
         if not items:
             if not set(old['items']) & cancelled:
                 return None
@@ -1387,7 +1477,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= COMBINED_CORRECTION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= QUALIFIED_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

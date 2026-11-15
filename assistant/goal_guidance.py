@@ -647,6 +647,8 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         current = _snapshot(db, sid, gid, include_reply_positions=True)
         if current['fingerprint'] != expected_fingerprint:
             raise StaleGuidance('目標或來源已有變更，請重新載入並核對；未保存補充。')
+        if current['goal']['status'] == 'needs_input' and work_plan_scope.pending_confirmation_target(_steps(db, gid)):
+            raise ValueError('請先在目前問題指定要更正的欄位，或回答「都不改」。')
         plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
         if current['goal']['status'] == 'needs_input' and goal_sources.is_plan_mapping(content) and not plan_supplement:
             raise ValueError('目前提問無法用這筆補件撤下。請核對提問與清單的缺行項目。')

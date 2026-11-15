@@ -69,21 +69,30 @@ def _save_scope_reply(db, current, steps, notes):
         versions = (*versions, work_plan_scope.SUPPLEMENT_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (*versions, work_plan_scope.PARTIAL_DOCUMENT_REPLY_VERSION)
-    if work_plan.waiting_for_reconfirmation(steps):
+    pending_target = work_plan_scope.pending_confirmation_target(steps)
+    if pending_target:
+        if delivery:
+            raise ValueError('請先回答目前待選的更正欄位，交付方式可另從目標補充更正。')
+        versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION,)
+    elif work_plan.waiting_for_reconfirmation(steps):
         if delivery:
             raise ValueError('請先回答待重新確認的欄位，交付方式可另從目標補充更正。')
-        versions = (work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION, work_plan_scope.RECONFIRMATION_REPLY_VERSION)
+        versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION, work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION,
+                    work_plan_scope.RECONFIRMATION_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION, work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION,
                     *versions)
         if '改' in answer or '更正' in answer:
-            versions = (work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION, *versions)
+            versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION, work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION,
+                        *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
         if result is not None:
             break
     else:
+        if pending_target:
+            raise ValueError('請指定目前列出的一個完整欄名及明確新值，或回答「都不改」。')
         if strict_choice:
             raise ValueError('待選更正仍未確認。請明確選擇目前列出的值或沿用原值。')
         return False
@@ -93,8 +102,8 @@ def _save_scope_reply(db, current, steps, notes):
     pending = proof.get('language', {}).get('pending_revisions', ())
     minimum = max(3 if successor else 2, 2 + 2 * len(pending))
     file_delivery = delivery['receipt']['file_delivery'] if delivery else delivery_preference.enabled(db, gid)
-    if version == work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION:
-        minimum += 1 + int(file_delivery)
+    if version in (work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION, work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION):
+        minimum += 1 + int(file_delivery) + int('confirmation_target_choice' in proof)
     if (choice or delivery) and file_delivery:
         minimum += 1
     if choice and any(revision['recheck_items'] for revision in proof.get('revisions', ())):
@@ -114,6 +123,8 @@ def _save_scope_reply(db, current, steps, notes):
         append_followup_question(db, {**goal, 'reply_sources': replies}, notes, count + 2, successor['question'],
                                  '保留目前仍需回答的工作分問', plan_questions=successor['plan_questions'])
     notice = '已更新工作清單。只需回答目前保留的問題。' if successor else '已保存答覆並更新工作清單，可接續工作。'
+    if proof.get('confirmation_target_choice'):
+        notice = '已保存可核對的答覆。請指定要更正的欄位。'
     if choice:
         if not file_delivery:
             named = f'若之後恢復文件交付，定稿檔名為「{choice}」。'
@@ -213,6 +224,7 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if goal['status'] != 'needs_input' or not goal['question']:
             raise ValueError('此目標目前沒有等待補充的問題。')
         steps = _steps(db, gid)
+        pending_target = work_plan_scope.pending_confirmation_target(steps)
         colloquial = current.get('report_colloquial_question')
         combined = decision_table.combined_reply_requested(steps, answer, goal.get('reply_sources', ()),
                                                            goal.get('guidance_sources', ()))
@@ -227,6 +239,8 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             return _snapshot(db, sid, gid)
         if not (colloquial or combined) and _save_scope_reply(db, current, steps, notes):
             return _snapshot(db, sid, gid)
+        if pending_target:
+            raise ValueError('請指定目前列出的一個完整欄名及明確新值，或回答「都不改」。')
         if steps and work_plan.waiting_for_reconfirmation(steps):
             raise ValueError('撤回的欄位仍待確認。請對目前分問提供明確的值。')
         delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)
