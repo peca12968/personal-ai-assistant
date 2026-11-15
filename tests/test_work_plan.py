@@ -1402,6 +1402,112 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(final_store.path)
 
+    def test_count_reply_keeps_other_confirmations_and_asks_only_ambiguous_quantity(self):
+        path = self.root / 'tray-counts.txt'
+        path.write_text('本批稽核員由使用者確認。\n每盤有 8 株。\n架號由本輪指定。\n封條由本輪指定。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對本批稽核員、育苗盤數、架號及封條。')
+        questions = ['稽核員是誰？', '育苗盤數是多少？', '架號是多少？', '封條號是多少？']
+        rows = [item(n, '核對' + label) for n, label in enumerate(('稽核員', '育苗盤數', '架號', '封條號'), 1)]
+        parts = [{'question': q, 'items': [n]} for n, q in enumerate(questions, 1)]
+        spans = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 5)]
+        requirements = [{'id': n, 'confirmation_question': question, 'ranges': [spans[n - 1]]}
+                        for n, question in enumerate(questions, 1)]
+
+        def ask(*numbers):
+            return action('ask', question='\n'.join(questions[n - 1] for n in numbers),
+                          plan_questions=[parts[n - 1] for n in numbers])
+
+        def reply(store, text):
+            view = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def checked(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def copy_checkpoint(store, archive):
+            original = a.get_goal(store, self.sid, gid)
+            path = self.root / archive
+            backup = create_backup(store.path, path.with_suffix('.paibackup'))
+            restore_backup(backup['path'], path)
+            clone = Store(path / 'assistant.sqlite3')
+            self.assertEqual(a.get_goal(clone, self.sid, gid), original)
+            return clone
+
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=requirements),
+                         action('read_ranges', ranges=spans), ask(1), gid=gid)
+        examiner = checked(reply(self.store, '稽核員為林演洲。'))[1]
+        self.run_actions(ask(2, 3), gid=gid)
+        for number, value in enumerate(('6 盤或 7 盤', '6 盤 2 袋', '6 盤，2 袋', '6 盒', '大約 6 盤', '六七盤'), 1):
+            with self.subTest(value=value):
+                clone = copy_checkpoint(self.store, f'pending-{number}')
+                raw = f'育苗盤數為 {value}。架號為 8 號。'
+                state = reply(clone, raw)
+                kept = checked(state)
+                expected_successor = state['steps'][-1]['action']['args']['plan_questions']
+                self.assertEqual(state['status'], 'needs_input')
+                self.assertEqual(expected_successor, [parts[1]])
+                self.assertEqual(kept[1], examiner)
+                self.assertEqual(kept[3]['value'], '8 號')
+                self.assertNotIn(2, kept)
+                proof = state['work_plan']['scope_reply']
+                evidence = proof['parts'][0]['evidence']
+                self.assertEqual(raw[evidence['start']:evidence['end']], f'育苗盤數為 {value}')
+                self.assertEqual(proof['parts'][0]['state'], 'ambiguous')
+                if number == 1:
+                    restored = copy_checkpoint(clone, 'pending-count')
+                    state = reply(restored, '育苗盤數為「６ 盤」。')
+                    self.assertEqual(state['status'], 'paused')
+                    verified = checked(state)
+                    self.assertEqual(verified[2]['value'], '６ 盤')
+                    self.assertEqual({n: verified[n] for n in kept}, kept)
+                    a.run_goal(restored, self.sid, gid, ScriptedEngine(ask(4)), max_steps=1)
+                    correction = '封條號為 6 號。育苗盤數正式改為 7 盤。'
+                    adjusted = reply(restored, correction)
+                    revised = checked(adjusted)
+                    self.assertEqual(revised[1], examiner)
+                    self.assertEqual(revised[3], kept[3])
+                    self.assertEqual(revised[2]['value'], '7 盤')
+                    self.assertEqual(revised[4]['value'], '6 號')
+                    change, = adjusted['work_plan']['scope_reply']['revisions']
+                    span = change['value_evidence']
+                    self.assertEqual(correction[span['start']:span['end']], '7 盤')
+                    self.assertEqual(change['previous']['step'], verified[2]['reply_step'])
+                    self.assertEqual(change['previous']['value_evidence']['quote'], '６ 盤')
+                    validate_database(restored.path)
+                    copy_checkpoint(restored, 'resolved-count')
+                validate_database(clone.path)
+
+    def test_count_reply_binds_complete_scoped_names_and_preserves_shared_alias_ambiguity(self):
+        path = self.root / 'box-counts.txt'
+        path.write_text('北架有紅盒。\n南架有藍盒。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對兩架各自盒數。')
+        rows = [item(1, '核對北架紅盒'), item(2, '核對南架藍盒')]
+        questions = [f'{side}的盒數是多少？' for side in ('北架', '南架')]
+        parts = [{'question': question, 'items': [n]} for n, question in enumerate(questions, 1)]
+        required = [{'id': n, 'confirmation_question': q, 'ranges': [{'document_id': did, 'start_line': n, 'end_line': n}]}
+                    for n, q in enumerate(questions, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('ask', question='\n'.join(questions), plan_questions=parts), gid=gid)
+
+        def reply(text):
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)
+
+        ambiguous = reply('盒數為 6 盒。')
+        self.assertEqual(ambiguous['question'], '\n'.join(questions))
+        choice, = ambiguous['work_plan']['scope_reply']['unassigned_counts']
+        self.assertEqual(choice['questions'], questions)
+        self.assertEqual(ambiguous['work_plan']['scope_reply']['verified_confirmations'], [])
+        state = reply('北架的盒數為 ６ 盒。北架的盒數為 6盒。南架的盒數為八盒。')
+        self.assertEqual(state['status'], 'paused')
+        self.assertEqual({row['question']: row['value'] for row in state['work_plan']['delivery_review']['verified_confirmations']},
+                         {questions[0]: '６ 盒', questions[1]: '八盒'})
+        validate_database(self.store.path)
+
     def test_formal_quantity_correction_recalculates_only_the_bound_items_and_total(self):
         path = self.root / 'packing.txt'
         path.write_text('北4廊每份為 2 件。\n南廊每份為 3 件。\n門號由使用者提供。', encoding='utf-8')
