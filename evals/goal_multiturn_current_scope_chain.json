@@ -1,0 +1,67 @@
+[
+  {
+    "id": "shared_archive_two_editions_and_handoffs",
+    "file_delivery": false,
+    "prompt": "整理北岸館本批藍夾交接。先只問實際採用哪個北岸館版本；等回覆後再只問本批交接時段。兩份文件也有南岸館，接收室依本次正式採用的北岸館規則，接手人以我回覆為準。交付以接收室、接手人、交接時段為各欄名，逐項各佔一行、同行附原行及回覆。接收室附適用館別版名標題和房名原行。只列現行欄位，不交代歷史或他館。",
+    "documents": [
+      {"name": "archive-spring.txt", "content": "北岸館／松版\n藍夾接收室：梯室。\n南岸館／松版\n藍夾接收室：側廳。"},
+      {"name": "archive-summer.txt", "content": "北岸館／杉版\n藍夾接收室：浮窗室。\n南岸館／杉版\n藍夾接收室：杉房。"}
+    ],
+    "replies": [
+      {"question_has": ["版|松|杉"], "question_excludes": ["(?:時段|接手人).{0,12}[？?]"], "answer": "本批北岸館正式採松版，接手人確認為邱映谷。南岸館另改採杉版。"},
+      {"question_has": ["時段|幾點|時間"], "question_excludes": ["(?:接手人|版本).{0,12}[？?]"], "answer": "北岸館交接時段確認是 10:25。同批改採北岸館杉版，接手人沿用。另對南岸館更正接手人為葛育明、時段 12:50。"}
+    ],
+    "must_match": ["浮窗室", "邱映谷", "10[:：]25"],
+    "must_omit": ["梯室|側廳|杉房|葛育明|12[:：]50|南岸館"],
+    "claim_sources": [
+      {"row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?接收室", "claim": "浮窗室",
+       "sources": [{"kind": "document", "doc": 1, "line": 1, "text": "北岸館／杉版"}, {"kind": "document", "doc": 1, "line": 2, "text": "浮窗室"}, {"kind": "reply", "index": 1, "text": "改採北岸館杉版"}],
+       "forbidden_sources": [{"kind": "document", "doc": 1, "line": 4, "text": "杉房"}, {"kind": "reply", "index": 0, "text": "正式採松版"}]},
+      {"row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?接手人", "claim": "邱映谷",
+       "sources": [{"kind": "reply", "index": 0, "text": "邱映谷"}]},
+      {"row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交接時段", "claim": "10[:：]25",
+       "sources": [{"kind": "reply", "index": 1, "text": "10:25"}]}
+    ]
+  },
+  {
+    "id": "binding_different_batch_same_field_names",
+    "file_delivery": false,
+    "prompt": "做 A-19 修復盒交付通知。A-18 是另一批。先只核對本批封盒人，收到後再只問本批交付方式。列現行封盒人、交付方式和已匯入規則中的本批保留份數，三項分行附直接來源。保留份數的同列要引本批標題行與數值行。",
+    "documents": [{"name": "repair-handoff.txt", "content": "A-18 修復盒\n固定保留 5 份。\nA-19 修復盒\n固定保留 8 份。"}],
+    "replies": [
+      {"question_has": ["封盒人|誰封盒"], "question_excludes": ["(?:交付方式|保留份數).{0,12}[？?]"], "answer": "A-19 封盒人為阮季敏。A-18 的封盒人為呂家楷。"},
+      {"question_has": ["交付方式|怎麼交|如何交|方式交"], "question_excludes": ["(?:封盒人|保留份數).{0,12}[？?]"], "answer": "A-19 改用西側桌交付。A-18 的封盒人更正為田予尚、保留份數改為 10 份。"}
+    ],
+    "must_match": ["阮季敏", "西側桌", "8\\s*份"],
+    "must_omit": ["呂家楷|田予尚|5\\s*份|10\\s*份"],
+    "claim_sources": [
+      {"claim": "阮季敏", "sources": [{"kind": "reply", "index": 0, "text": "阮季敏"}],
+       "forbidden_sources": [{"kind": "reply", "index": 1, "text": "田予尚"}]},
+      {"claim": "西側桌", "sources": [{"kind": "reply", "index": 1, "text": "西側桌"}]},
+      {"claim": "8\\s*份", "sources": [{"kind": "document", "doc": 0, "line": 3, "text": "A-19 修復盒"},
+                                         {"kind": "document", "doc": 0, "line": 4, "text": "8 份"}]}
+    ]
+  },
+  {
+    "id": "withdrawal_scoped_document_and_required_hold",
+    "file_delivery": false,
+    "prompt": "核對亮葉室 R-5 的書盒能否移交。先只問本批封套顏色。若用朱紅封套而本批簽收號尚缺，先列當前暫表及其引文，再只問 R-5 簽收號；收到前不能定稿。每個欄位各一行，依序填「封套」「簽收號」「可否移交」。只列本批現行資料。",
+    "documents": [
+      {"name": "bookcase-conditions.txt", "content": "亮葉室移交規則\n朱紅封套需要本批簽收號。藍封套可直接移交。"},
+      {"name": "bookcase-batches.txt", "content": "本輪 R-5 簽收號已撤回，替代號仍未確認。\n前一批 R-4 的簽收號 K-75，只用於 R-4。"}
+    ],
+    "replies": [
+      {"question_has": ["封套|什麼顏色"], "question_excludes": ["簽收號"], "answer": "R-5 封套正式確認為朱紅，先前提到的藍封套不適用。R-4 另確認仍用舊號。"}
+    ],
+    "expected_question": {"question_has": ["簽收號"], "question_excludes": ["封套|顏色|R-4|K-75"],
+                          "partial_has": ["朱紅", "撤回", "尚未|待補|待確認"], "partial_omits": ["藍封套|K-75|R-4"]},
+    "must_match": ["簽收號"],
+    "claim_sources": [
+      {"row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?封套", "claim": "朱紅",
+       "sources": [{"kind": "reply", "index": 0, "text": "確認為朱紅"}]},
+      {"row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?簽收號", "claim": "撤回",
+       "sources": [{"kind": "document", "doc": 1, "line": 1, "text": "簽收號已撤回"}],
+       "forbidden_sources": [{"kind": "document", "doc": 1, "line": 2, "text": "K-75"}]}
+    ]
+  }
+]

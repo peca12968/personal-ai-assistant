@@ -1215,6 +1215,68 @@ class WorkPlanTests(unittest.TestCase):
                 self.assertEqual(final['work_plan']['evidence_matches'][0]['confirmation'], confirmation)
                 validate_database(restored.path)
 
+    def test_one_reply_uses_the_current_answer_and_revises_a_prior_verified_field(self):
+        path = self.root / 'desk.txt'
+        path.write_text('接收點 青檯\n窗口 段映台', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '按指定原行核對接收人、門號及稽核員。')
+        one = {'document_id': did, 'start_line': 1, 'end_line': 1}
+        two = {**one, 'start_line': 2, 'end_line': 2}
+        rows = [item(1, '核對接收人及接收點'), item(2, '核對門號及窗口'), item(3, '核對稽核員及接收點')]
+        parts = [{'question': question, 'items': [number]} for number, question in enumerate(
+            ['接收人是誰？', '門號是多少？', '稽核員是誰？'], 1)]
+        requirements = [{'id': number, 'ranges': [two if number == 2 else one], 'confirmation_question': part['question']}
+                        for number, part in enumerate(parts, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=requirements),
+                         action('read_ranges', ranges=[one, two]),
+                         action('ask', question='\n'.join(part['question'] for part in parts), plan_questions=parts), gid=gid)
+
+        def reply(text):
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)
+
+        original = reply('接收人為何佳靜。稽核員為楊正哲。')
+        self.assertEqual(original['question'], parts[1]['question'])
+        amended = reply('接收人正式改為許庭芳。')
+        self.assertEqual(amended['question'], original['question'])
+        self.assertEqual(amended['steps'][-1]['action']['args']['plan_questions'], [parts[1]])
+        raw = '門號為 7 號。更正「接收人是誰？」為「周明恩」。'
+        state = reply(raw)
+        self.assertEqual(state['status'], 'paused')
+        confirmation = {row['id']: (row['value'], row['reply_step']) for row in
+                        state['work_plan']['delivery_review']['verified_confirmations']}
+        self.assertEqual(confirmation, {1: ('周明恩', 8), 2: ('7 號', 8), 3: ('楊正哲', 4)})
+        proof = state['steps'][7]['observation']['scope_reply']
+        self.assertEqual(proof['revisions'][0]['previous']['step'], 6)
+        for clause in (proof['parts'][0]['evidence'], proof['revisions'][0]['evidence']):
+            self.assertEqual(raw[clause['start']:clause['end']], clause['quote'])
+
+        archive = create_backup(self.store.path, self.root / 'combined-correction.paibackup')
+        destination = self.root / 'combined-correction'
+        restore_backup(archive['path'], destination)
+        restored = Store(destination / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), state)
+        done = [{**row, 'state': 'done', 'evidence_steps': [2, confirmation[row['id']][1]]} for row in rows]
+        stale = [{**done[0], 'evidence_steps': [2, 6]}, *done[1:]]
+        report = '北側青檯 [D1:L1]。窗口段映台 [D1:L2]。周明恩 [補充#7]。7 號 [補充#7]。楊正哲 [補充#3]。'
+        final = a.run_goal(restored, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=stale, reuse_document_steps=[2]),
+            action('update_plan', items=done, reuse_document_steps=[2]),
+            action('finish', report=report.replace('周明恩 [補充#7]', '許庭芳 [補充#5]')),
+            action('finish', report=report)), max_steps=4)
+        self.assertEqual(final['status'], 'report_ready', final['steps'][-4:])
+        self.assertIn('實際使用者答覆', final['steps'][8]['observation']['error'])
+        self.assertIn('現行已核對的答覆', final['steps'][10]['observation']['error'])
+        validate_database(restored.path)
+        altered = copy.deepcopy(state['steps'][7]['observation'])
+        altered['scope_reply']['revisions'][0]['previous']['step_sha256'] = 'a' * 64
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=8',
+                       (json.dumps(altered, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
+            validate_database(restored.path)
+
     def test_corrected_confirmation_reopens_delivered_item_and_reuses_unchanged_evidence(self):
         path = self.root / 'delivery.txt'
         path.write_text('窗口 北庫\n門號 G-17', encoding='utf-8')

@@ -39,6 +39,7 @@ plan_document_supplement是使用者明確指定並已實際查讀的補件。�
 delivery_review.retained_reply_items列出本次補件保留的獨立確認項。更新清單時維持其done和原reply_step，這些步驟不用列入reuse_document_steps。定稿引用該項的citation，文件項依本次核對的原行完成。
 同一項同時需要指定文件原文與使用者明確答覆時，在該項evidence_requirements附上confirmation_question，內容須等於之後plan_questions的單一確認問句，例如「接收人是誰？」。delivery_review.verified_confirmations列出已核對的答覆；完成該項須同時引用reply_step與所需文件步驟。答覆步驟不用列入reuse_document_steps。定稿各欄引用實際來源。
 已核對的答覆被更正時，verified_confirmations使用現行值與[更正#N]。將新的reply_step和仍適用的原文步驟一起核對；舊原文列入reuse_document_steps。只查讀仍缺的原文，定稿在更正欄位旁引用新的citation。舊答覆只在明確要求比較或變更歷程時引用。
+同一則使用者回覆可能回答目前分問並更正先前的確認項。verified_confirmations逐項列出該用的值與引用；更正及新確認可同引本則補充，其他欄沿用各自的舊引用。
 delivery_review.pending_reconfirmations列出已撤回、仍需使用者重新確認的問句。相關項目及仍依賴該值的算式待重核。重新確認後，以新答覆步驟和新引用完成，即使值碰巧相同。其他確認與適用原行可直接沿用。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
@@ -457,10 +458,14 @@ def waiting_for_reconfirmation(steps):
                for part in steps[-1]['action'].get('args', {}).get('plan_questions', ()) for number in part['items'])
 
 
-def is_reconfirmed(steps, confirmation):
+def confirmation_changed(steps, confirmation):
+    if confirmation['citation'].startswith('[更正#'):
+        return True
     reply_step = steps[confirmation['reply_step'] - 1]
-    return any(row['id'] == confirmation['id'] and row['question'] == confirmation['question']
-               for row in reply_step['observation'].get('scope_reply', {}).get('reconfirmed_withdrawals', ()))
+    proof = reply_step['observation'].get('scope_reply', {})
+    question, number = confirmation['question'], confirmation['id']
+    return (any(row['id'] == number and row['question'] == question for row in proof.get('reconfirmed_withdrawals', ()))
+            or any(number in row['items'] and row['question'] == question for row in proof.get('revisions', ())))
 
 
 def _pending_reconfirmations(plan, steps):
@@ -480,7 +485,7 @@ def _reconfirmed_operands(steps, confirmations, revisions):
         step = steps[sequence - 1]
         observation = step['observation']
         proof = observation.get('scope_reply') or observation.get('scope_change')
-        source = next((part for part in (proof.get('parts') or proof.get('revisions', ()))
+        source = next((part for part in (*proof.get('revisions', ()), *proof.get('parts', ()))
                        if part['question'] == row['question'] and number in part['items']), None)
         if source is None:
             raise ValueError('重新確認的算式欄位缺少實際答覆。')
@@ -504,7 +509,7 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import CONFIRMATION_CORRECTION, RECONFIRMATION_REPLY_VERSION
+    from .work_plan_scope import COMBINED_CORRECTION_REPLY_VERSION, CONFIRMATION_CORRECTION
 
     validate(args)
     previous = latest(steps)
@@ -585,7 +590,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, RECONFIRMATION_REPLY_VERSION + 1)))
+                                        for version in range(2, COMBINED_CORRECTION_REPLY_VERSION + 1)))
                 if number != confirmation_step and (step['action'].get('args') not in versions
                                                     or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -675,7 +680,7 @@ def _retained_reply_rows(plan, steps, scope):
 
 
 def _current_confirmations(requirements, steps, scope):
-    from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
+    from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
                                   CONFIRMATION_CORRECTION, CONFIRMATION_FILENAME_REPLY_VERSION,
                                   RECONFIRMATION_REPLY_VERSION)
 
@@ -693,7 +698,7 @@ def _current_confirmations(requirements, steps, scope):
             rows = observation['scope_change']['verified_confirmations']
         elif (action['tool'] == 'update_plan' and action.get('args', {}).get('scope_reply_version') in
               (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION, CONFIRMATION_FILENAME_REPLY_VERSION,
-               RECONFIRMATION_REPLY_VERSION)):
+               RECONFIRMATION_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION)):
             rows = observation['scope_reply']['verified_confirmations']
         else:
             continue
@@ -1115,8 +1120,7 @@ def check_delivery(plan, scope, action, steps):
     if pending:
         raise ValueError('交付核對仍有未完成項目 ' + '、'.join(map(str, pending)) + '。')
     confirmations = [row['confirmation'] for row in plan.get('evidence_matches', ())
-                     if 'confirmation' in row and (row['confirmation']['citation'].startswith('[更正#')
-                                                    or is_reconfirmed(steps, row['confirmation']))]
+                     if 'confirmation' in row and confirmation_changed(steps, row['confirmation'])]
     texts = [action['args'].get('report', '')] if action['tool'] == 'finish' else []
     if action['tool'] == 'deliver':
         checked_files = {step['action']['args']['filename'].casefold(): step['action']['args']['content'] for step in steps

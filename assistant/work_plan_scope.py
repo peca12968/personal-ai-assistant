@@ -58,6 +58,7 @@ COMBINED_EVIDENCE_REPLY_VERSION = 14
 CARRY_CONFIRMATIONS_REPLY_VERSION = 15
 CONFIRMATION_FILENAME_REPLY_VERSION = 16
 RECONFIRMATION_REPLY_VERSION = 17
+COMBINED_CORRECTION_REPLY_VERSION = 18
 CONFIRMATION_CORRECTION = 'confirmation_correction'
 
 
@@ -345,18 +346,14 @@ def confirmation_targets(steps, scope):
     return targets
 
 
-def observe_confirmation_correction(steps, source, scope, prior_scope, *, waiting):
-    if source['steps_seen'] != len(steps):
-        return None
-    targets = confirmation_targets(steps, prior_scope)
-    if not any(target['confirmed'] for target in targets.values()):
-        return None
-    clauses = goal_guidance_sources.standalone_clauses(source['content'])
+def _confirmation_requests(clauses, targets, *, allow_withdrawal):
     requested = {}
+    remaining = []
     for start, clause, is_question in clauses:
         if is_question:
+            remaining.append((start, clause))
             continue
-        withdrawal = _CONFIRMATION_WITHDRAWAL.fullmatch(clause)
+        withdrawal = allow_withdrawal and _CONFIRMATION_WITHDRAWAL.fullmatch(clause)
         if withdrawal:
             matches = ([withdrawal[1]] if withdrawal[1] in targets else
                        [question for question, target in targets.items() if target['field'] in withdrawal.groups()])
@@ -368,8 +365,10 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
             matches = [question for question, target in targets.items() if target['field'] == field]
             literal = match[3]
         else:
+            remaining.append((start, clause))
             continue
         if not matches:
+            remaining.append((start, clause))
             continue
         if len(matches) != 1:
             raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
@@ -379,9 +378,57 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
                 value is None or (_NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value))))):
             raise ValueError('請為每個原問句提供一個明確的新值。')
         requested[question] = (value, _literal_span(start, clause))
+    return requested, remaining
+
+
+def _confirmation_revisions(steps, plan, targets, requested):
+    active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
+    result = []
+    for question, (value, evidence) in requested.items():
+        target = targets[question]
+        by_step = {}
+        for row in target['confirmed']:
+            by_step.setdefault(row['reply_step'], []).append(row)
+        for sequence, rows in by_step.items():
+            step = steps[sequence - 1]
+            proof = _scope_receipt(step['observation'])
+            parts = [part for part in (*proof.get('revisions', ()), *proof.get('parts', ()))
+                     if part['question'] == question and part.get('value') == rows[0]['value']]
+            if not {row['id'] for row in rows} <= {number for part in parts for number in part['items']}:
+                raise ValueError('更正缺少相符的原始確認證據。')
+            prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
+                     'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
+                     'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
+            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence)
+            revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
+            result.append(revision)
+    return result
+
+
+def _updated_confirmations(targets, revisions, source, sequence):
+    current = {row['id']: row for target in targets.values() for row in target['confirmed']}
+    for revision in revisions:
+        for number in revision['items']:
+            value = revision['value']
+            if value is None:
+                del current[number]
+            else:
+                current[number] = {**current[number], 'value': value, 'reply_step': sequence,
+                                   'citation': source['citation'], 'sha256': source['sha256']}
+    return current
+
+
+def observe_confirmation_correction(steps, source, scope, prior_scope, *, waiting):
+    if source['steps_seen'] != len(steps):
+        return None
+    targets = confirmation_targets(steps, prior_scope)
+    if not any(target['confirmed'] for target in targets.values()):
+        return None
+    clauses = goal_guidance_sources.standalone_clauses(source['content'])
+    requested, remaining = _confirmation_requests(clauses, targets, allow_withdrawal=True)
     if not requested:
         return None
-    if len(requested) != len(clauses) or any(not targets[question]['confirmed'] for question in requested):
+    if remaining or any(not targets[question]['confirmed'] for question in requested):
         raise ValueError('這筆更正須指向已核對的答覆。請將其他指示或尚待回答的問題分開保存。')
     plan = work_plan.latest(steps)
     reopened = {question: [row['id'] for row in targets[question]['confirmed']]
@@ -407,37 +454,10 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
         if len(successor['question']) > 800:
             raise ValueError('待答問題過長，請分開撤回及重新確認。')
         validate_questions(successor)
-    active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
-    current = {row['id']: row for target in targets.values() for row in target['confirmed']}
-    revisions = []
-    withdrawals = []
-    for question, (value, evidence) in requested.items():
-        target = targets[question]
-        by_step = {}
-        for row in target['confirmed']:
-            by_step.setdefault(row['reply_step'], []).append(row)
-        for sequence, rows in by_step.items():
-            step = steps[sequence - 1]
-            previous_proof = _scope_receipt(step['observation'])
-            part_key = 'revisions' if CONFIRMATION_CORRECTION in step['action']['args'] else 'parts'
-            parts = [part for part in previous_proof.get(part_key, ())
-                     if part['question'] == question and part.get('value') == rows[0]['value']]
-            if not {row['id'] for row in rows} <= {number for part in parts for number in part['items']}:
-                raise ValueError('更正缺少相符的原始確認證據。')
-            prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
-                     'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
-                     'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
-            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence)
-            revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
-            if value is None:
-                withdrawals.append(revision)
-                for row in rows:
-                    del current[row['id']]
-            else:
-                revisions.append(revision)
-                for row in rows:
-                    current[row['id']] = {**row, 'value': value, 'reply_step': len(steps) + 1,
-                                          'citation': source['citation'], 'sha256': source['sha256']}
+    changes = _confirmation_revisions(steps, plan, targets, requested)
+    revisions = [row for row in changes if row['value'] is not None]
+    withdrawals = [row for row in changes if row['value'] is None]
+    current = _updated_confirmations(targets, changes, source, len(steps) + 1)
     result, proof = _scope_update(steps, plan, source, [], scope, prior_scope)
     _apply_revisions(result, proof, {}, plan, revisions + withdrawals, source)
     if withdrawals:
@@ -526,8 +546,7 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if version == CONFIRMATION_FILENAME_REPLY_VERSION:
         requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
         confirmations = work_plan._current_confirmations(requirements, steps, prior_scope)
-        if not any(row['citation'].startswith('[更正#') or
-                   work_plan.is_reconfirmed(steps, row) for row in confirmations.values()):
+        if not any(work_plan.confirmation_changed(steps, row) for row in confirmations.values()):
             return None
         result = _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery)
         if result is None:
@@ -553,20 +572,16 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
+    if version == COMBINED_CORRECTION_REPLY_VERSION:
+        return _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks)
     if version == RECONFIRMATION_REPLY_VERSION:
-        pending = work_plan.confirmation_withdrawals(steps)
-        targets = {number: pending[number] for part in parts for number in part['items']
-                   if number in pending and pending[number]['question'] == part['question']
-                   and 'reply_step' not in pending[number]}
+        targets = _pending_confirmation_targets(steps, parts)
         if not targets:
             return None
         result = _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks,
                                                  carry=True, reconfirming=True)
         if result is not None:
-            proof = result['scope_reply']
-            proof['reconfirmed_withdrawals'] = [
-                {'id': row['id'], 'question': row['question'], 'withdrawal_step': targets[row['id']]['withdrawal_step']}
-                for row in proof['verified_confirmations'] if row['id'] in targets and row['reply_step'] == len(steps) + 1]
+            _record_reconfirmation(result['scope_reply'], targets, len(steps) + 1)
         return result
     if version in (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION):
         return _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks,
@@ -793,13 +808,32 @@ def _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, t
     clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_PLAIN_COMMA)
     if not clauses or any(question for _, _, question in clauses):
         return None
-    statements = _natural_fields([(start, clause) for start, clause, _ in clauses], parts, fields, set())
+    parsed = _direct_reply_fields([(start, clause) for start, clause, _ in clauses], parts, fields)
+    if parsed is None:
+        return None
+    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
+
+
+def _direct_reply_fields(clauses, parts, fields):
+    statements = _natural_fields(clauses, parts, fields, set())
     if statements is None:
         return None
     parsed, unassigned = statements
     if unassigned or not any(row['state'] == 'confirmed' for row in parsed.values()):
         return None
-    return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
+    return parsed
+
+
+def _pending_confirmation_targets(steps, parts):
+    pending = work_plan.confirmation_withdrawals(steps)
+    return {number: pending[number] for part in parts for number in part['items']
+            if number in pending and pending[number]['question'] == part['question'] and 'reply_step' not in pending[number]}
+
+
+def _record_reconfirmation(proof, targets, sequence):
+    proof['reconfirmed_withdrawals'] = [
+        {'id': row['id'], 'question': row['question'], 'withdrawal_step': targets[row['id']]['withdrawal_step']}
+        for row in proof['verified_confirmations'] if row['id'] in targets and row['reply_step'] == sequence]
 
 
 def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, carry=False, reconfirming=False):
@@ -820,22 +854,68 @@ def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, pa
     proof = result['scope_reply']
     confirmations = {number: row for number, row in prior.items() if any(
         item['id'] == number and item['state'] != 'superseded' for item in plan['items'])}
-    for part in proof['parts']:
-        if part['state'] == 'unanswered':
-            continue
-        if part['state'] != 'confirmed':
-            return None
-        for number in part['items']:
-            if required.get(number) == part['question']:
-                confirmations[number] = {'id': number, 'question': part['question'], 'value': part['value'],
-                                         'reply_step': len(steps) + 1, 'citation': source['citation'], 'sha256': source['sha256']}
-            elif not carry or number not in proof['completed_items']:
-                return None
+    if not _verify_reply_parts(proof, required, confirmations, source, len(steps) + 1, carry=carry):
+        return None
     if not confirmations and not reconfirming:
         return None
     proof['verified_confirmations'] = list(confirmations.values())
     if carry:
         _carry_independent_replies(proof, plan, steps, prior_scope)
+    return result
+
+
+def _verify_reply_parts(proof, required, confirmations, source, sequence, *, carry):
+    for part in proof['parts']:
+        if part['state'] == 'unanswered':
+            continue
+        if part['state'] != 'confirmed':
+            return False
+        for number in part['items']:
+            if required.get(number) == part['question']:
+                confirmations[number] = {'id': number, 'question': part['question'], 'value': part['value'],
+                                         'reply_step': sequence, 'citation': source['citation'], 'sha256': source['sha256']}
+            elif not carry or number not in proof['completed_items']:
+                return False
+    return True
+
+
+def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks):
+    if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
+            or 'plan_questions' not in steps[-1]['action']['args']
+            or (language_followup(steps) or {}).get('cancellation')):
+        return None
+    targets = confirmation_targets(steps, prior_scope)
+    if not any(target['confirmed'] for target in targets.values()):
+        return None
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_REVISION_COMMA)
+    if not clauses or any(question for _, _, question in clauses):
+        return None
+    try:
+        requested, remaining = _confirmation_requests(clauses, targets, allow_withdrawal=False)
+    except ValueError:
+        # Keep the existing choice and clarification path for ambiguous corrections.
+        return None
+    if not requested:
+        return None
+    if any(not targets[question]['confirmed'] for question in requested) or any(
+            part['question'] in requested for part in parts):
+        return None
+    fields = [_asked_field(part, tasks) for part in parts]
+    parsed = _direct_reply_fields(remaining, parts, fields) if remaining else {}
+    if parsed is None:
+        return None
+    revisions = _confirmation_revisions(steps, plan, targets, requested)
+    result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed, revisions=revisions)
+    proof = result['scope_reply']
+    sequence = len(steps) + 1
+    confirmations = _updated_confirmations(targets, revisions, source, sequence)
+    required = {number: question for question, target in targets.items() for number in target['items']}
+    if not _verify_reply_parts(proof, required, confirmations, source, sequence, carry=True):
+        return None
+    proof['verified_confirmations'] = list(confirmations.values())
+    if pending := _pending_confirmation_targets(steps, parts):
+        _record_reconfirmation(proof, pending, sequence)
+    _carry_independent_replies(proof, plan, steps, prior_scope)
     return result
 
 
@@ -1307,7 +1387,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= RECONFIRMATION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= COMBINED_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
