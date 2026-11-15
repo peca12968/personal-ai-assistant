@@ -560,6 +560,19 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual((source[proof['field_start']:proof['field_end']], proof['conversion']['converted_exact']),
                          ('重量', '1/20'))
 
+        formal = {**row, 'field': '西棚的盤數', 'quote': '西棚的盤數正式更正為「6 盤」'}
+        operand_evidence.validate([formal], '6', ())
+        source = f'東棚的盤數為 6 盤。{formal["quote"]}。'
+        bound, = operand_evidence.bind([formal], '6', (), operand_evidence.user_texts(source, (), (), 1))
+        self.assertEqual(source[bound['field_start']:bound['field_end']], '西棚的盤數')
+        self.assertEqual(bound['number_start'], source.rindex('6'))
+        for invalid in ({**formal, 'field': '東棚的盤數'},
+                        {**formal, 'quote': '西棚的盤數可能正式更正為 6 盤'},
+                        {**formal, 'quote': '西棚的盤數正式更正為「6 盤'},
+                        {**formal, 'quote': '「西棚的盤數正式更正為 6 盤」'}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '欄位名'):
+                operand_evidence.validate([invalid], '6', ())
+
     def test_reuse_requires_latest_unconditional_named_confirmation_and_unchanged_evidence(self):
         gid, tasks, requirements = self._two_document_calculations()
         affirmation = '「西架可交量」的數量與算式均照舊。'
@@ -1388,6 +1401,118 @@ class WorkPlanTests(unittest.TestCase):
                        (json.dumps(altered, ensure_ascii=False), gid, origin['sequence']))
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(final_store.path)
+
+    def test_formal_quantity_correction_recalculates_only_the_bound_items_and_total(self):
+        path = self.root / 'packing.txt'
+        path.write_text('北4廊每份為 2 件。\n南廊每份為 3 件。\n門號由使用者提供。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '核對兩廊件數、加總及本輪門號。')
+        rows = [item(n, task) for n, task in enumerate(
+            ('核對北4廊份數', '核對南廊份數', '核對門號', '算北4廊件數', '算南廊件數', '加總兩廊件數'), 1)]
+        questions = ['北4廊的份數是多少？', '南廊的份數是多少？', '門號是多少？']
+        spans = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 4)]
+        required = [{'id': n, 'ranges': [spans[n - 1]], 'confirmation_question': q}
+                    for n, q in enumerate(questions, 1)]
+
+        def ask(n):
+            return action('ask', question=questions[n - 1], plan_questions=[{'question': questions[n - 1], 'items': [n]}])
+
+        def reply(answer):
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, answer, expected_fingerprint=view['fingerprint'])
+            state = a.get_goal(self.store, self.sid, gid)
+            return state, {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def completed(number, refs):
+            return {**rows[number - 1], 'state': 'done', 'evidence_steps': refs}
+
+        def calculations(north, south, nsource, ssource):
+            north_formula = {'operation': 'product', 'values': [north, '2']}
+            south_formula = {'operation': 'product', 'values': [south, '3']}
+            north_leaves = [{'path': '/values/0', **nsource},
+                            {'path': '/values/1', 'citation': '[D1:L1]', 'quote': '北4廊每份為 2 件'}]
+            south_leaves = [{'path': '/values/0', **ssource},
+                            {'path': '/values/1', 'citation': '[D1:L2]', 'quote': '南廊每份為 3 件'}]
+            return [
+                {'id': 4, 'ranges': [spans[0]], 'expression': north_formula, 'operands': north_leaves},
+                {'id': 5, 'ranges': [spans[1]], 'expression': south_formula, 'operands': south_leaves},
+                {'id': 6, 'ranges': spans[:2], 'expression': {'operation': 'sum', 'values': [north_formula, south_formula]},
+                 'operands': [{**op, 'path': f'/values/{index}{op["path"]}'}
+                              for index, ops in enumerate((north_leaves, south_leaves)) for op in ops]},
+            ]
+
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=spans), ask(1), gid=gid)
+        reply('份數為 4 份。')
+        self.run_actions(ask(2), gid=gid)
+        _, original = reply('份數為 6 份。')
+        south = {'citation': original[2]['citation'], 'quote': '份數為 6 份'}
+        earlier = calculations('4', '6', {'citation': original[1]['citation'], 'quote': '份數為 4 份'}, south)
+        initial_calculated = self.run_actions(*(action('calculate_expression', expression=spec['expression'])
+                                               for spec in earlier), gid=gid)
+        old_steps = [step['sequence'] for step in initial_calculated['steps'][-3:]]
+        old_items = [completed(1, [2, original[1]['reply_step']]), completed(2, [2, original[2]['reply_step']]),
+                     rows[2], *(completed(n, [2, ref]) for n, ref in enumerate(old_steps, 4))]
+        before = self.run_actions(action('update_plan', items=old_items, evidence_requirements=earlier,
+                                         reuse_document_steps=[2]), ask(3), gid=gid)
+        south_match = next(row for row in before['work_plan']['evidence_matches'] if row['id'] == 5)
+        revision = '「北4廊的份數」正式改為「6 份」'
+        answer = f'門號為 6 號。{revision}。'
+        state, known = reply(answer)
+        edited, = state['work_plan']['scope_reply']['revisions']
+        value_evidence = edited['value_evidence']
+        self.assertEqual(answer[value_evidence['start']:value_evidence['end']], '6 份')
+        self.assertEqual(edited['recheck_items'], [1, 4, 6])
+        self.assertEqual(edited['operand_paths'], [
+            {'id': 4, 'paths': ['/values/0']}, {'id': 6, 'paths': ['/values/0/values/0']}])
+        self.assertEqual(known[2], original[2])
+        self.assertEqual(state['work_plan']['items'][4], old_items[4])
+
+        archive = create_backup(self.store.path, self.root / 'quantity.paibackup')
+        restore_backup(archive['path'], self.root / 'quantity')
+        saved = Store(self.root / 'quantity' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(saved, self.sid, gid), state)
+        updated = calculations('6', '6', {'citation': known[1]['citation'], 'quote': revision, 'field': '北4廊的份數'}, south)
+        valid_specs = [updated[0], updated[2]]
+        wrong_specs = copy.deepcopy(valid_specs)
+        wrong_specs[0]['operands'][0] = {'path': '/values/0', 'citation': known[3]['citation'], 'quote': '門號為 6 號'}
+        first_new = len(state['steps']) + 1
+        current = [completed(n, [2, known[n]['reply_step']]) for n in (1, 2, 3)] + [
+            completed(4, [2, first_new]), old_items[4], completed(6, [2, first_new + 1])]
+        report = (f'北4廊 6 份 {known[1]["citation"]}，每份 2 件 [D1:L1]，共 12 件。\n'
+                  f'南廊 6 份 {known[2]["citation"]}，每份 3 件 [D1:L2]，共 18 件。\n'
+                  f'兩廊共 30 件。門號 6 號 {known[3]["citation"]}。')
+        field_digit = copy.deepcopy(earlier[0])
+        field_digit['operands'][0] = {'path': '/values/0', 'citation': known[1]['citation'], 'quote': '北4廊的份數'}
+        stale = [*current[:3], completed(4, [2, first_new + 2]), *current[4:]]
+        final = a.run_goal(saved, self.sid, gid, ScriptedEngine(
+            *(action('calculate_expression', expression=row['expression']) for row in valid_specs),
+            action('calculate_expression', expression=field_digit['expression']),
+            action('update_plan', items=stale, evidence_requirements=[field_digit, updated[2]], reuse_document_steps=[2]),
+            action('update_plan', items=current, evidence_requirements=wrong_specs, reuse_document_steps=[2]),
+            action('update_plan', items=current, evidence_requirements=valid_specs, reuse_document_steps=[2]),
+            action('finish', report=report)), max_steps=7)
+        for attempted in final['steps'][-4:-2]:
+            self.assertIn('新值重算並核對運算元', attempted['observation'].get('error', '錯誤依據竟被接受'))
+        self.assertEqual(final['status'], 'report_ready', final['steps'][-3:])
+        matches = {row['id']: row for row in final['work_plan']['evidence_matches']}
+        self.assertEqual(matches[5], south_match)
+        for n in (4, 6):
+            operand = matches[n]['operands'][0]
+            self.assertEqual(answer[operand['field_start']:operand['field_end']], '北4廊的份數')
+            self.assertEqual(operand['number_start'], answer.rindex('6'))
+        validate_database(saved.path)
+        final_archive = create_backup(saved.path, self.root / 'quantity-final.paibackup')
+        restore_backup(final_archive['path'], self.root / 'quantity-final')
+        self.assertEqual(a.get_goal(Store(self.root / 'quantity-final' / 'assistant.sqlite3'), self.sid, gid), final)
+        revision_step = state['steps'][-1]
+        modified = copy.deepcopy(revision_step['observation'])
+        modified['scope_reply']['revisions'][0]['value_evidence']['start'] -= 1
+        with saved.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(modified, ensure_ascii=False), gid, revision_step['sequence']))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
+            validate_database(saved.path)
 
     def test_corrected_confirmation_reopens_delivered_item_and_reuses_unchanged_evidence(self):
         path = self.root / 'delivery.txt'

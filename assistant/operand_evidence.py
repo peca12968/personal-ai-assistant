@@ -67,12 +67,11 @@ def _field_position(quote, number_start, field):
     if (match := _FIELD.search(prefix)) and match['name'] == field:
         return match.span('name')
     name = re.escape(field)
-    revision = re.fullmatch(rf'(?:(?:欄位\s*)?「{name}」|{name})\s*'
-                            r'(?:(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
-                            r'(?:改成|改為|更正為|更正成|應改為)\s*', prefix)
-    if revision:
-        start = prefix.index('「') + 1 if '「' in prefix else 0
-        return start, start + len(field)
+    revision = re.fullmatch(rf'(?:(?:欄位\s*)?「(?P<quoted>{name})」|(?P<bare>{name}))\s*'
+                            r'(?:正式\s*|(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
+                            r'(?:改成|改為|更正為|更正成|應改為)\s*(?P<literal_quote>「\s*)?', prefix)
+    if revision and (not revision['literal_quote'] or quote[number_start:].rstrip('。').endswith('」')):
+        return revision.span('quoted' if revision['quoted'] is not None else 'bare')
     raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
 
 

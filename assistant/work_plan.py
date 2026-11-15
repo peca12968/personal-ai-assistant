@@ -28,7 +28,7 @@ work_plan是最近一次清單；conditions_current=false代表目標補充或�
 使用者要求交付前核對工作清單及完成證據時，保存清單要加"verify_delivery":true。一旦開啟，本目標每次產檔及正式交付前，都須以目前條件更新原清單，未完成或受阻項目先處理；已取代項目需說明原因。work_plan.delivery_review指出仍待處理的項目、需要重驗的舊證據及可沿用的完整文件查讀。收到明確更正時，使用現有依據重算受影響的項目，避免再詢問已確認事項。仍需必要答覆時可用ask附暫表。若文件產於舊條件，按目前核對重新產檔，內容更新時使用新檔名。普通工作沿用現有清單及交付流程。
 使用者要求逐項核對具體算式或原文範圍時，在update_plan附evidence_requirements，例如[{"id":1,"expression":{"operation":"difference","values":["20","4"]}},{"id":2,"ranges":[{"document_id":1,"start_line":2,"end_line":2}]}]。同一項可同時要求算式及原文。知道精確範圍或算式時先記要求，待資料確定時可再新增。完成項的evidence_steps須引用該項完整原行及同一棵實際calculate_expression算式；結果相同也不能混用其他算式。補充後在更新清單時重新確認本次要求的算式。對有指定範圍的項目，delivery_review.reusable_documents可列出已完整覆蓋原行的步驟。即使項目先前還未完成或仍需算式，直接將這些舊查讀加到evidence_steps和reuse_document_steps，另補本次新計算，無需重讀。證據接錯時，先更正引用的步驟，已取得正確證據無需重做。
 使用者要求保存每個運算元的依據時，在該項evidence_requirements的expression旁附operands，列出每個數字葉節點的path、citation與quote。例如{"path":"/values/0","citation":"[D1:L1]","quote":"本批有 20 件"}。path用算式樹的完整位置，巢狀例如/values/0/values/1。citation限實際完整查讀的單行、本目標補充或更正，或以[目標]引用使用者目標原話。文件原行須列在該項ranges。每段逐字擷取短句，包含本次適用的欄位及唯一相符數值，分數與等值小數可核對。更正採實際補充，文件原值作對照。即使另批或另一欄有同樣的數字，也依本次對象和欄位選來源。證據齊備時可在本次完成清單一次保存，不必逐個更新。若已完整查讀原行，沿用同版讀取。數值與短句位置由工具核對，內容適用仍由你判讀。
-來源若明寫「欄位」和完整名稱，例如原句為『欄位「榆灣原備」為 25 包』，把完整原句放在quote，另在同一筆operands填field為「榆灣原備」，不含引號。欄位名須緊接數字之前的「為」或冒號，並與原話逐字相同。不同批次或欄位即使同值，也取實際適用的完整名稱及短句。同一個具名欄位在別處抄錄時，沿用相同名稱，整組確認仍須重算共用該欄的項目。沒有明列欄位名的原文使用既有格式。
+來源若明寫「欄位」和完整名稱，例如原句為『欄位「榆灣原備」為 25 包』，把完整原句放在quote，另在同一筆operands填field為「榆灣原備」，不含引號。更正原句若是『「北廊的份數」正式改為 6 份』，將這段原話完整放在quote，field填北廊的份數，引用實際更正的答覆。欄名須與數字前明列的名稱逐字相同。不同批次或欄位即使同值，也取實際適用的完整名稱及短句。同一個具名欄位在別處抄錄時，沿用相同名稱，整組確認仍須重算共用該欄的項目。沒有明列欄位名的原文使用既有格式。
 尚缺新數字而將項目標為pending、working或blocked時，可只更新items，原evidence_requirements會保留。若重列部分未變的要求，仍沿用原完整規約和舊條件。取得資料後，完成前再依目前條件確認完整的算式及來源；不要把暫表、待補註記或沿用的舊規約當成完成證據。
 delivery_review.reusable_calculations列出最新原話已以獨立一行「原項目全名」的數量與算式均照舊。確認的已完成算式。確認前後的需求相容且沒有更正共用輸入時，保持該項done及原evidence_steps，舊查讀仍列入reuse_document_steps，沿用原指定證據。其他項依目前資料核對；即使數值碰巧相同，算式或任何原數改變仍須重算。若仍需補問，可先保存目前可完成項並在ask中清楚標示暫表。
 最新回覆也可在最後一行寫『本次只更正「原項目全名」，其餘項目的數量與算式均照舊。』。reusable_calculations列出可沿用的已完成項。兩項即使同引一行或一則回覆，若每段數字原話在該來源中的位置互不重疊，也可能沿用。separate_operand_excerpts表示使用了這項核對。保持可沿用項的原evidence_steps，重算更正項並保存其完整新規約和證據。數字短句用足以辨認欄位的原話，不以整行代替不同欄位的短句。新證據重疊時須重驗相關項目。
@@ -502,14 +502,14 @@ def _check_revised_operands(match, revisions):
         if item_id != match['id']:
             continue
         actual = operands.get(path, {})
-        span = revision['evidence']
+        span = revision.get('value_evidence', revision['evidence'])
         if (actual.get('citation') != proof['citation'] or actual.get('source_sha256') != proof['source_sha256']
                 or not span['start'] <= actual['number_start'] < actual['number_end'] <= span['end']):
             raise ValueError(f'項目 {item_id} 的「{revision["field"]}」已更正。請用 {proof["citation"]} 的新值重算並核對運算元。')
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import CONFIRMATION_CORRECTION, QUALIFIED_CORRECTION_REPLY_VERSION
+    from .work_plan_scope import CONFIRMATION_CORRECTION, NUMERIC_CORRECTION_REPLY_VERSION
 
     validate(args)
     previous = latest(steps)
@@ -590,7 +590,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, QUALIFIED_CORRECTION_REPLY_VERSION + 1)))
+                                        for version in range(2, NUMERIC_CORRECTION_REPLY_VERSION + 1)))
                 if number != confirmation_step and (step['action'].get('args') not in versions
                                                     or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -680,9 +680,9 @@ def _retained_reply_rows(plan, steps, scope):
 
 
 def _current_confirmations(requirements, steps, scope):
-    from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
+    from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
                                   CONFIRMATION_CORRECTION, CONFIRMATION_FILENAME_REPLY_VERSION,
-                                  QUALIFIED_CORRECTION_REPLY_VERSION, RECONFIRMATION_REPLY_VERSION)
+                                  CORRECTION_REPLY_VERSIONS, RECONFIRMATION_REPLY_VERSION)
 
     if not any('confirmation_question' in row for row in requirements.values()):
         return {}
@@ -698,7 +698,7 @@ def _current_confirmations(requirements, steps, scope):
             rows = observation['scope_change']['verified_confirmations']
         elif (action['tool'] == 'update_plan' and action.get('args', {}).get('scope_reply_version') in
               (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION, CONFIRMATION_FILENAME_REPLY_VERSION,
-               RECONFIRMATION_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION, QUALIFIED_CORRECTION_REPLY_VERSION)):
+               RECONFIRMATION_REPLY_VERSION, *CORRECTION_REPLY_VERSIONS)):
             rows = observation['scope_reply']['verified_confirmations']
         else:
             continue

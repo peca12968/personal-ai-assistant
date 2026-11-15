@@ -61,6 +61,9 @@ CONFIRMATION_FILENAME_REPLY_VERSION = 16
 RECONFIRMATION_REPLY_VERSION = 17
 COMBINED_CORRECTION_REPLY_VERSION = 18
 QUALIFIED_CORRECTION_REPLY_VERSION = 19
+NUMERIC_CORRECTION_REPLY_VERSION = 20
+CORRECTION_REPLY_VERSIONS = (NUMERIC_CORRECTION_REPLY_VERSION, QUALIFIED_CORRECTION_REPLY_VERSION,
+                             COMBINED_CORRECTION_REPLY_VERSION)
 CONFIRMATION_CORRECTION = 'confirmation_correction'
 
 
@@ -399,7 +402,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
     return requested, remaining, choice
 
 
-def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False):
+def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False, bind_numeric=False):
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
     result = []
     for question, (value, evidence) in requested.items():
@@ -417,6 +420,8 @@ def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False)
             prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
                      'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
                      'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
+            if bind_numeric and (previous_value := parts[0].get('value_evidence')):
+                prior['value_evidence'] = previous_value
             fields = None
             if qualified:
                 fields = {field for field in {_question_field_name(question), target['field']}
@@ -424,6 +429,10 @@ def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False)
             revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence,
                                        dependency_fields=fields)
             revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
+            if bind_numeric and value is not None and _NUMBER.fullmatch(value):
+                # The confirmation parser took this literal from the end of the matched correction.
+                offset = evidence['quote'].rindex(value)
+                revision['value_evidence'] = _literal_span(evidence['start'] + offset, value)
             result.append(revision)
     return result
 
@@ -598,9 +607,10 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version in (COMBINED_CORRECTION_REPLY_VERSION, QUALIFIED_CORRECTION_REPLY_VERSION):
+    if version in CORRECTION_REPLY_VERSIONS:
         return _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks,
-                                            qualified=version == QUALIFIED_CORRECTION_REPLY_VERSION)
+                                            qualified=version != COMBINED_CORRECTION_REPLY_VERSION,
+                                            bind_numeric=version == NUMERIC_CORRECTION_REPLY_VERSION)
     if version == RECONFIRMATION_REPLY_VERSION:
         targets = _pending_confirmation_targets(steps, parts)
         if not targets:
@@ -936,7 +946,8 @@ def _resolve_confirmation_target(pending, requested, remaining):
     return None
 
 
-def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *, qualified=False):
+def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *,
+                                 qualified=False, bind_numeric=False):
     if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or 'plan_questions' not in steps[-1]['action']['args']
             or (language_followup(steps) or {}).get('cancellation')):
@@ -964,6 +975,8 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         return None
     if not (requested or choice or pending):
         return None
+    if bind_numeric and not any(_NUMBER.fullmatch(value) for value, _ in requested.values()):
+        return None
     if qualified and not (choice or pending or any(
             _question_field_name(question) != targets[question]['field']
             or len(_confirmation_field_matches(targets[question]['field'], targets, qualified=True)) > 1
@@ -984,7 +997,8 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         if pending or choice:
             raise ValueError('請分開寫明要回答的欄位。待選更正可指定完整欄名及新值，或回答「都不改」。')
         return None
-    revisions = _confirmation_revisions(steps, plan, targets, requested, qualified=qualified)
+    revisions = _confirmation_revisions(steps, plan, targets, requested,
+                                         qualified=qualified, bind_numeric=bind_numeric)
     result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed, revisions=revisions)
     proof = result['scope_reply']
     sequence = len(steps) + 1
@@ -1213,7 +1227,7 @@ def _dependent_operands(plan, previous, fields):
         for operand in row.get('operands', ()):
             if operand.get('field') in fields:
                 paths.setdefault(row['id'], set()).add(operand['path'])
-    evidence = previous['evidence']
+    evidence = previous.get('value_evidence', previous['evidence'])
     for row in plan.get('evidence_matches', ()):
         for operand in row.get('operands', ()):
             if (operand.get('source_sha256') == previous['source_sha256'] and operand.get('citation') == previous['citation']
@@ -1477,7 +1491,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= QUALIFIED_CORRECTION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= NUMERIC_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

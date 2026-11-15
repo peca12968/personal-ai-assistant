@@ -73,18 +73,16 @@ def _save_scope_reply(db, current, steps, notes):
     if pending_target:
         if delivery:
             raise ValueError('請先回答目前待選的更正欄位，交付方式可另從目標補充更正。')
-        versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION,)
+        versions = (work_plan_scope.NUMERIC_CORRECTION_REPLY_VERSION, work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION)
     elif work_plan.waiting_for_reconfirmation(steps):
         if delivery:
             raise ValueError('請先回答待重新確認的欄位，交付方式可另從目標補充更正。')
-        versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION, work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION,
-                    work_plan_scope.RECONFIRMATION_REPLY_VERSION)
+        versions = (*work_plan_scope.CORRECTION_REPLY_VERSIONS, work_plan_scope.RECONFIRMATION_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION, work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION,
                     *versions)
         if '改' in answer or '更正' in answer:
-            versions = (work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION, work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION,
-                        *versions)
+            versions = (*work_plan_scope.CORRECTION_REPLY_VERSIONS, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
@@ -102,7 +100,7 @@ def _save_scope_reply(db, current, steps, notes):
     pending = proof.get('language', {}).get('pending_revisions', ())
     minimum = max(3 if successor else 2, 2 + 2 * len(pending))
     file_delivery = delivery['receipt']['file_delivery'] if delivery else delivery_preference.enabled(db, gid)
-    if version in (work_plan_scope.COMBINED_CORRECTION_REPLY_VERSION, work_plan_scope.QUALIFIED_CORRECTION_REPLY_VERSION):
+    if version in work_plan_scope.CORRECTION_REPLY_VERSIONS:
         minimum += 1 + int(file_delivery) + int('confirmation_target_choice' in proof)
     if (choice or delivery) and file_delivery:
         minimum += 1
