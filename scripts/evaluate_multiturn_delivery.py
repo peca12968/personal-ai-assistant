@@ -230,9 +230,9 @@ def score(case, final, files, turns, calls):
     return checks, metrics
 
 
-def collect(path, case, suite, frozen):
+def collect(path, case, suite, frozen, *, engine_factory=CodexEngine):
     store, sid, gid = prepare(path, case)
-    engine = CodexEngine(path / 'engine')
+    engine = engine_factory(path / 'engine')
     trace = path / 'trace.json'
     row = {'id': case['id'], 'calls': [], 'turns': [], 'goal_id': gid, 'session_id': sid}
 

@@ -1,0 +1,48 @@
+[
+  {
+    "id": "workshop_display_handoff",
+    "file_delivery": false,
+    "prompt": "整理器材展示架借用通報。先只問展示架名稱；收到我的回覆後，再只問交接時段。交接時段獨立於展示架名稱。兩欄正式確認後才提交，回交地點讀原文。每行只列一項及其來源。",
+    "documents": [{"name": "workshop-details.txt", "content": "本次固定在銀棚交回。\n展示架名稱與交接時段須依實際答覆。"}],
+    "replies": [
+      {"question_has": ["展示架"], "question_excludes": ["時段|地點"], "answer": "展示架暫定為風松架。"},
+      {"question_has": ["時段"], "question_excludes": ["展示架|地點"], "answer": "交接時段正式確認為 17:50。展示架正式改為鐵林架。"}
+    ],
+    "must_match": ["鐵林架", "17[:：]50", "銀棚"],
+    "must_omit": ["風松架"],
+    "claim_sources": [
+      {"claim": "鐵林架", "sources": [{"kind": "reply", "index": 1, "text": "鐵林架"}]},
+      {"claim": "17[:：]50", "sources": [{"kind": "reply", "index": 1, "text": "17:50"}]},
+      {"claim": "銀棚", "sources": [{"kind": "document", "doc": 0, "line": 1, "text": "銀棚"}]}
+    ]
+  },
+  {
+    "id": "ticket_question_depends_on_group",
+    "file_delivery": false,
+    "prompt": "請做印刷排程核對。先確認本批的分組，只有分組正式確認後，才依規則問該組的證號；只列最後適用的分組、對應證號與來源。分組未定時不要先問證號。",
+    "documents": [{"name": "print-schedule.txt", "content": "紅組需報印版卡號。\n青組需報樣張序號。"}],
+    "replies": [
+      {"question_has": ["組"], "question_excludes": ["卡號|序號"], "answer": "暫定青組，目前尚未正式確認。"},
+      {"question_has": ["組"], "question_excludes": ["卡號|序號"], "answer": "本批分組正式確認為紅組。"},
+      {"question_has": ["印版卡號"], "question_excludes": ["青組|樣張序號"], "answer": "印版卡號為 P-703。"}
+    ],
+    "must_match": ["紅組", "P-703"],
+    "must_omit": ["青組|樣張序號"],
+    "claim_sources": [
+      {"claim": "紅組", "sources": [{"kind": "reply", "index": 1, "text": "紅組"}]},
+      {"claim": "P-703", "sources": [{"kind": "document", "doc": 0, "line": 1, "text": "印版卡號"}, {"kind": "reply", "index": 2, "text": "P-703"}]}
+    ]
+  },
+  {
+    "id": "rental_missing_after_independent_reply",
+    "file_delivery": false,
+    "prompt": "準備工程掛板的借用清單。依序先問本批借出人、收到回覆後再問實際退回時段。回收台讀原文。借出人與時段各自確認，所有欄位確定後才交付。等候補答時請附暫表。",
+    "documents": [{"name": "board-rental.txt", "content": "回收台固定為桂階台。\n借出人及退回時段需當批確認。"}],
+    "replies": [
+      {"question_has": ["借出人"], "question_excludes": ["時段|回收台"], "answer": "借出人暫定為全依蘋。"},
+      {"question_has": ["時段"], "question_excludes": ["借出人|回收台"], "answer": "退回時段正式確認為 14:35，借出人仍是暫定。"}
+    ],
+    "expected_question": {"question_has": ["借出人"], "question_excludes": ["(?:時段|回收台).{0,9}[？?]"]},
+    "must_match": ["借出人", "暫定|待確認", "14[:：]35", "桂階台"]
+  }
+]

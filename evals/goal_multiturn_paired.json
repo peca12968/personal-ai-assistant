@@ -1,0 +1,106 @@
+[
+  {
+    "id": "audio_release_exception",
+    "file_delivery": false,
+    "prompt": "為溪聲音檔整理本輪交付卡。先只問我實際播放通道，然後列取樣率、播放通道與交付群組，每項一行且同列附直接來源。可依各檔的適用範圍判斷，保留有效條件。",
+    "documents": [
+      {"name": "audio-default.txt", "content": "一般音檔作業\n一般取樣率 44.1 kHz。\n由夜班群組接收。"},
+      {"name": "audio-stream.txt", "content": "溪聲本輪專案，以下條件優先於一般音檔。\n交付取樣率 48 kHz。\n本輪由清晨群組接收。\n播放通道須用本輪實際答覆。"}
+    ],
+    "replies": [
+      {"question_has": ["播放通道"], "question_excludes": ["(?:取樣率|交付群組).{0,12}(?:[？?]|多少|哪個)"], "answer": "播放通道為雙聲道。這一批交付群組改為後製組，取樣率照舊。"}
+    ],
+    "must_match": ["48\\s*kHz", "雙聲道", "後製組"],
+    "must_omit": ["44\\.1", "夜班群組", "清晨群組"],
+    "claim_sources": [
+      {"claim": "48\\s*kHz", "sources": [{"kind": "document", "doc": 1, "line": 2, "text": "48 kHz"}]},
+      {"claim": "雙聲道", "sources": [{"kind": "reply", "index": 0, "text": "雙聲道"}]},
+      {"claim": "後製組", "sources": [{"kind": "reply", "index": 0, "text": "後製組"}]}
+    ]
+  },
+  {
+    "id": "costume_checkout_changed_batch",
+    "file_delivery": true,
+    "prompt": "用已匯入的借用明細 CSV 計算織補室、狀態為可借、批號在上限以內的布卷總量。上限先前預估是 1，但仍未確認，只能使用我實際答覆。先問上限，確認後只交付 counts.json，含 room、max_batch 和 rolls 三欄，後兩欄為整數。",
+    "csv": {"name": "costume.csv", "content": "房間,狀態,批號,布卷\n織補室,可借,1,6\n織補室,可借,2,5\n織補室,已留,2,80\n配件室,可借,2,55\n織補室,可借,3,4\n織補室,可借,4,9"},
+    "replies": [
+      {"question_has": ["上限|最大批號"], "question_excludes": ["(?:房間|狀態).{0,12}(?:[？?]|哪個|是什麼)"], "answer": "本次批號上限是 3。篩選的房間和狀態照舊。"}
+    ],
+    "artifact": "counts.json",
+    "expected_json": {"room": "織補室", "max_batch": 3, "rolls": 15}
+  },
+  {
+    "id": "map_print_equal_authority",
+    "file_delivery": false,
+    "prompt": "整理岬角地圖補印指示，只列當批的圖紙色及疊放位置，同列附來源。兩份通知是同一批、同一權限，沒有預設優先序。若位置互斥，先問採哪份的位置；相同的圖紙色已可用。只列生效值。",
+    "documents": [
+      {"name": "map-k.txt", "content": "岬角本批通知 K\n圖紙色依本批共同附表。\n疊放位置：外側排架。"},
+      {"name": "map-j.txt", "content": "岬角本批通知 J\n圖紙色依本批共同附表。\n疊放位置：內側矮桌。"},
+      {"name": "map-supplies.txt", "content": "本批共同附表\n圖紙色：灰白。"}
+    ],
+    "replies": [
+      {"question_has": ["疊放|排架|矮桌"], "question_excludes": ["圖紙色.{0,12}(?:[？?]|哪個|是什麼)"], "answer": "位置正式採通知 J。"}
+    ],
+    "must_match": ["灰白", "內側矮桌"],
+    "must_omit": ["外側排架"],
+    "claim_sources": [
+      {"claim": "灰白", "sources": [{"kind": "document", "doc": 2, "line": 2, "text": "灰白"}]},
+      {"claim": "內側矮桌", "sources": [{"kind": "document", "doc": 1, "line": 3, "text": "內側矮桌"}, {"kind": "reply", "index": 0, "text": "通知 J"}],
+       "forbidden_sources": [{"kind": "document", "doc": 0, "line": 3, "text": "外側排架"}]}
+    ]
+  },
+  {
+    "id": "ceramics_inventory_missing_clearance",
+    "file_delivery": false,
+    "prompt": "判定是否可以把 P-20 陶片移入開箱紀錄。條件全滿足才能標可移入。出示目前草稿，依實際原文列已知欄位及缺漏；缺少當批必要欄位時只問該欄，先不要交付定稿。",
+    "documents": [
+      {"name": "ceramic-rule.txt", "content": "陶片開箱登記\n可移入須同時有當批完整緩衝與當批放行碼。"},
+      {"name": "ceramic-now.txt", "content": "本批 P-20：緩衝完整。\n本批放行碼未收到。\n前批 P-19 放行碼為 R-144，不適用本批。"}
+    ],
+    "expected_question": {"question_has": ["放行碼"], "question_excludes": ["(?:緩衝|完整).{0,9}[？?]"]},
+    "must_match": ["緩衝.{0,6}完整", "放行碼.{0,8}(?:缺|待|未)"],
+    "must_omit": ["R-144"],
+    "claim_sources": [
+      {"claim": "緩衝.{0,6}完整", "sources": [{"kind": "document", "doc": 1, "line": 1, "text": "緩衝完整"}]},
+      {"claim": "放行碼.{0,8}(?:缺|待|未)", "sources": [{"kind": "document", "doc": 1, "line": 2, "text": "放行碼未收到"}]}
+    ]
+  },
+  {
+    "id": "radio_event_sequential_replies",
+    "file_delivery": false,
+    "prompt": "做短的直播交接。固定集合點讀適用通知。先只問監播員，等答覆後再只問直播間。最終每行列一個欄位及它的直接證據，只保留現行值。",
+    "documents": [
+      {"name": "radio-start.txt", "content": "本次直播集合點是橙梯台。\n監播員和直播間須用本次確認。"}
+    ],
+    "replies": [
+      {"question_has": ["監播員"], "question_excludes": ["直播間", "集合點"], "answer": "監播員暫定羅品森。"},
+      {"question_has": ["直播間"], "question_excludes": ["監播員", "集合點"], "answer": "直播間為 B-61，監播員改為汪雨澄。"}
+    ],
+    "must_match": ["橙梯台", "B-61", "汪雨澄"],
+    "must_omit": ["羅品森"],
+    "claim_sources": [
+      {"claim": "橙梯台", "sources": [{"kind": "document", "doc": 0, "line": 1, "text": "橙梯台"}]},
+      {"claim": "B-61", "sources": [{"kind": "reply", "index": 1, "text": "B-61"}]},
+      {"claim": "汪雨澄", "sources": [{"kind": "reply", "index": 1, "text": "汪雨澄"}],
+       "forbidden_sources": [{"kind": "reply", "index": 0, "text": "羅品森"}]}
+    ]
+  },
+  {
+    "id": "seed_trays_independent_controls",
+    "file_delivery": false,
+    "prompt": "用育苗規則算出本批裝機盤與保留盤的盤數，以及裝機盤可用格數。裝機盤數等我確認，保留盤數與每盤可用格數讀原文。先只問裝機盤數；交付時只列當前三個數字並把直接來源附在同一行。",
+    "documents": [
+      {"name": "tray-rules.txt", "content": "本輪計算規則\n固定保留 2 盤，不算入裝機盤。\n每盤 22 格，其中 3 格不得使用。"}
+    ],
+    "replies": [
+      {"question_has": ["裝機盤"], "question_excludes": ["(?:保留盤|可用格).{0,10}[？?]"], "answer": "本次確認的裝機盤數是 6 盤，已排除保留盤。"}
+    ],
+    "must_match": ["6\\s*盤", "2\\s*盤", "114\\s*格"],
+    "must_omit": ["76\\s*格", "132\\s*格"],
+    "claim_sources": [
+      {"claim": "6\\s*盤", "sources": [{"kind": "reply", "index": 0, "text": "6 盤"}]},
+      {"claim": "2\\s*盤", "sources": [{"kind": "document", "doc": 0, "line": 2, "text": "保留 2 盤"}]},
+      {"claim": "114\\s*格", "sources": [{"kind": "document", "doc": 0, "line": 3, "text": "3 格不得使用"}, {"kind": "reply", "index": 0, "text": "6 盤"}]}
+    ]
+  }
+]

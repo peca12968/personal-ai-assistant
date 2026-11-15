@@ -161,6 +161,8 @@ jobs:
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_reconfirmation_scope.json
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_guidance.json
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_question_withdrawal.json
+      - run: python scripts/evaluate_multiturn_pair.py
+      - run: python scripts/evaluate_multiturn_pair.py --suite evals/goal_multiturn_question_order.json
       - run: python scripts/evaluate_plan_scope_cancellation.py
       - run: python scripts/evaluate_plan_scope_reply.py
       - run: python scripts/evaluate_plan_scope_reply.py --suite evals/goal_plan_reply_clarification.json
