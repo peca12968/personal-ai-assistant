@@ -9,7 +9,7 @@ GUIDANCE = '''有已保存工作清單時，若缺漏會影響特定未完成項
 {"question":"收貨窗口是誰？\n入場門號是多少？","plan_questions":[{"question":"收貨窗口是誰？","items":[2]},{"question":"入場門號是多少？","items":[3]}]}。
 question 逐行等於各分問。items 填這個問題實際影響的所有未完成項目；一個獨立分問對應一個資料缺漏，無關的問題不綁進清單。
 scope_cancelled 列出使用者已取消的項目。當前成果只交保留項目的實際結果。取消項目和原因已保存於工作清單，除非使用者要求一併交代，定稿省略已取消項目的名稱、經過及結果。
-scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。revisions 保存使用者更正後的值、舊依據和須重核的項目。成果使用現行值並引用新回覆。declined_proposals 已明示未採用。pending_revisions 保存待選原話，選定前沿用最後確認值。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。
+scope_reply 的 confirmed 分問有實際使用者原話及值，引用其 citation。revisions 保存使用者更正後的值、舊依據和須重核的項目。成果使用現行值並引用新回覆。declined_proposals 及 unapplied_directives 都沿用原確認及原引用。pending_revisions 保存待選原話，選定前沿用最後確認值。completed_items 只包含已完成的確認工作。其他項目仍依清單完成。若交付核對已就緒，直接交付仍需的成果。
 若清單的數量分問仍待答，原話中的多個候選、不同單位或暫估都還需要明確確認。沿用其他已核對的來源，只保留仍影響成果的分問。'''
 _CANCEL = re.compile(r'(?:本輪|這次|本次)?\s*(?:先取消|取消|先不做|不做|先暫停|暫停|不用再做)\s*(.+)')
 _TITLES = re.compile(r'「[^「」\r\n]+」(?:\s*(?:、|，|,|及|和|與)\s*「[^「」\r\n]+」)*')
@@ -76,12 +76,15 @@ _REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\
 _CONFIRMATION_FIELD_REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))'
                                           rf'\s*正式\s*{_REVISION_VERB}\s*(.+)')
 _CONFIRMATION_QUESTION_REVISION = re.compile(r'更正\s*「([^「」\r\n]{1,400})」\s*(?:為|成)\s*(.+)')
+_DIRECTIVE_VERB = r'改用|改派(?:給|為)?|移到|移至'
+_DIRECTIVE_MODIFIER = r'正式|確定|暫定|先不要|不要|先別|不必|可能|考慮|擬|建議'
 _DIRECTIVE_REVISION = re.compile(
     r'(?:請\s*(?:(?:把|將)\s*)?|(?:把|將)\s*(?=「))?'
     r'(?:(?:欄位\s*)?「(?P<quoted>[^「」\r\n]{2,31})」|(?P<field>[\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))\s*'
-    r'(?P<modifier>正式|確定|暫定|先不要|不要|先別|不必|可能|考慮|擬|建議)?\s*'
-    r'(?P<verb>改用|改派(?:給|為)?|移到|移至)\s*(?P<literal>.+)')
+    rf'(?P<modifier>{_DIRECTIVE_MODIFIER})?\s*(?P<verb>{_DIRECTIVE_VERB})\s*(?P<literal>.+)')
 _DIRECTIVE_EXTRA = re.compile(r'如果|視情況|不一定|僅供參考|然後|並且|並(?:把|將)|改用|改派|移到|移至')
+_DIRECTIVE_QUOTE = re.compile(r'「([^「」]+)」|『([^『』]+)』|“([^“”]+)”')
+_DIRECTIVE_CONDITION = re.compile(r'(?:如果|假如|假設|若|萬一)[^，,。；！？]{1,80}[，,]\s*([^，,]+)')
 _CONFIRMATION_WITHDRAWAL = re.compile(r'(?:請\s*)?撤回\s*(?:「([^「」\r\n]{1,400})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))'
                                       r'\s*(?:的)?(?:答覆|回答|確認)')
 _REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern})')
@@ -91,6 +94,9 @@ _DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:
 _QUALIFIED_REVISION_COMMA = re.compile(rf'{_REVISION_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*(?:正式\s*)?{_REVISION_VERB}')
 _COUNT_REVISION_COMMA = re.compile(rf'{_BEFORE_BARE_COUNT}(?:{_QUALIFIED_REVISION_COMMA.pattern})')
 _TEXT_REVISION_COMMA = re.compile(rf'{_COUNT_REVISION_COMMA.pattern}|{_QUOTED_TEXT_ASSIGN}')
+_DIRECTIVE_REPLY_COMMA = re.compile(rf'{_TEXT_REVISION_COMMA.pattern}|'
+                                    rf'\s*「[^「」\r\n]{{2,31}}」\s*(?:{_DIRECTIVE_MODIFIER})?\s*(?:{_DIRECTIVE_VERB})|'
+                                    rf'\s*「[^「」\r\n]{{2,31}}?(?:{_DIRECTIVE_VERB})[^「」\r\n]{{1,80}}」')
 _PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
 _FILENAME_REPLY_COMMA = re.compile(rf'{_PENDING_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*{_REVISION_VERB}')
 _FIELD_DELAY = r'(?:(?:晚點|稍後|之後)(?:再)?(?:決定|選擇|確認)|先不(?:決定|選擇|確認)|還沒決定)'
@@ -117,7 +123,9 @@ TEXT_REPLY_VERSION = 25
 TEXT_CORRECTION_REPLY_VERSION = 26
 COLLOQUIAL_REPLY_VERSION = 27
 COLLOQUIAL_CORRECTION_REPLY_VERSION = 28
-CORRECTION_REPLY_VERSIONS = (COLLOQUIAL_CORRECTION_REPLY_VERSION, TEXT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION,
+DIRECTIVE_CORRECTION_REPLY_VERSION = 29
+CORRECTION_REPLY_VERSIONS = (DIRECTIVE_CORRECTION_REPLY_VERSION, COLLOQUIAL_CORRECTION_REPLY_VERSION,
+                             TEXT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION,
                              COUNT_CORRECTION_REPLY_VERSION, NUMERIC_CORRECTION_REPLY_VERSION,
                              QUALIFIED_CORRECTION_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION)
 CONFIRMATION_CORRECTION = 'confirmation_correction'
@@ -437,7 +445,34 @@ def confirmation_guidance_version(content):
     return TYPED_GUIDANCE_VERSION
 
 
-def _directive_revision(clause, targets):
+def directive_reply_requested(answer):
+    return re.search(_DIRECTIVE_VERB, answer) is not None
+
+
+def _directive_reply_clauses(answer):
+    for start, clause, inquiry in goal_guidance_sources.standalone_clauses(answer):
+        for offset, part, _ in goal_guidance_sources.standalone_clauses(clause, comma_before=_DIRECTIVE_REPLY_COMMA):
+            quote = _DIRECTIVE_QUOTE.match(part)
+            if quote and quote.end() < len(part) and quote[0][-2] in '。；！？!?' and directive_reply_requested(quote[0]):
+                yield start + offset, quote[0], False
+                tail = part[quote.end():]
+                part = tail.lstrip()
+                offset += quote.end() + len(tail) - len(part)
+            if _DIRECTIVE_CONDITION.match(clause, offset):
+                yield start + offset, clause[offset:], inquiry
+                break
+            yield start + offset, part, inquiry and offset + len(part) == len(clause)
+
+
+def _directive_revision(clause, targets, *, reply=False, inquiry=False):
+    unapplied = 'inquiry' if inquiry else None
+    if reply:
+        if quote := _DIRECTIVE_QUOTE.fullmatch(clause):
+            clause = next(value for value in quote.groups() if value).rstrip('。；！!?？ ').strip()
+            unapplied = 'quoted'
+        elif condition := _DIRECTIVE_CONDITION.fullmatch(clause):
+            clause = condition[1]
+            unapplied = 'conditional'
     match = _DIRECTIVE_REVISION.fullmatch(clause)
     if not match:
         return None
@@ -446,7 +481,14 @@ def _directive_revision(clause, targets):
     if not matches:
         return None
     if match['modifier'] not in (None, '正式', '確定'):
-        raise ValueError('尚未收到明確的新值。原確認及進度保留。')
+        if reply:
+            unapplied = unapplied or 'nondefinitive'
+        else:
+            raise ValueError('尚未收到明確的新值。原確認及進度保留。')
+    if unapplied and not all(targets[question]['confirmed'] for question in matches):
+        return None
+    if unapplied:
+        return field, matches, None, unapplied
     verb = match['verb']
     for question in matches:
         if verb.startswith('改派'):
@@ -460,7 +502,7 @@ def _directive_revision(clause, targets):
     literal = match['literal'].strip()
     if not re.fullmatch(r'「[^「」]+」', literal) and _DIRECTIVE_EXTRA.search(literal):
         raise ValueError('請為每個原問句提供一個明確的新值，並將其他指示分開保存。')
-    return field, matches, literal
+    return field, matches, literal, None
 
 
 def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False, number=_NUMBER,
@@ -468,12 +510,20 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
     requested = {}
     remaining = []
     choice = None
+    seen_directive = False
+    unapplied_directives = []
+    reply_directives = directive_verbs and not allow_withdrawal
     for start, clause, is_question in clauses:
-        if is_question:
+        directive = (_directive_revision(clause, targets, reply=reply_directives, inquiry=is_question)
+                     if directive_verbs and (reply_directives or not is_question) else None)
+        if is_question and not directive:
             remaining.append((start, clause))
             continue
         withdrawal = allow_withdrawal and _CONFIRMATION_WITHDRAWAL.fullmatch(clause)
-        if withdrawal:
+        if directive:
+            field, matches, literal, unapplied = directive
+            seen_directive = True
+        elif withdrawal:
             if withdrawal[1] in targets:
                 matches = [withdrawal[1]]
             elif qualified:
@@ -484,8 +534,6 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             literal = None
         elif match := _CONFIRMATION_QUESTION_REVISION.fullmatch(clause):
             matches, literal = ([match[1]] if match[1] in targets else []), match[2]
-        elif directive_verbs and (directive := _directive_revision(clause, targets)):
-            field, matches, literal = directive
         elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
             field = (match[1] or match[2]).strip()
             matches = _confirmation_field_matches(field, targets, qualified=qualified,
@@ -499,6 +547,11 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             continue
         value = _confirmation_literal(literal, matches, number, person_names=person_names,
                                       text_literals=text_literals, colloquial=colloquial)
+        if reply_directives and directive and (unapplied or value is None) and all(
+                targets[question]['confirmed'] for question in matches):
+            unapplied_directives.append({'questions': matches, 'reason': unapplied or 'unconfirmed',
+                                         'evidence': _literal_span(start, clause)})
+            continue
         if len(matches) != 1:
             if (not qualified or withdrawal or choice or value is None
                     or not all(targets[question]['confirmed'] for question in matches)
@@ -515,7 +568,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
                                   and not _number_matches(value, question, number, colloquial=colloquial))))):
             raise ValueError('請為每個原問句提供一個明確的新值。')
         requested[question] = (value, _literal_span(start, clause))
-    return requested, remaining, choice
+    return requested, remaining, choice, unapplied_directives if seen_directive else None
 
 
 def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False, bind_numeric=False,
@@ -577,7 +630,7 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
         return None
     clauses = goal_guidance_sources.standalone_clauses(source['content'])
     typed = version in (TYPED_GUIDANCE_VERSION, DIRECTIVE_GUIDANCE_VERSION)
-    requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=True, qualified=typed,
+    requested, remaining, choice, _ = _confirmation_requests(clauses, targets, allow_withdrawal=True, qualified=typed,
                                                            number=_COUNT_NUMBER if typed else _NUMBER,
                                                            person_names=typed, text_literals=typed, colloquial=typed,
                                                            directive_verbs=version == DIRECTIVE_GUIDANCE_VERSION)
@@ -778,7 +831,8 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
                                             count_units=version >= COUNT_CORRECTION_REPLY_VERSION,
                                             person_names=version >= PERSON_CORRECTION_REPLY_VERSION,
                                             text_literals=version >= TEXT_CORRECTION_REPLY_VERSION,
-                                            colloquial=version == COLLOQUIAL_CORRECTION_REPLY_VERSION)
+                                            colloquial=version >= COLLOQUIAL_CORRECTION_REPLY_VERSION,
+                                            directive_verbs=version == DIRECTIVE_CORRECTION_REPLY_VERSION)
     if version in (COUNT_REPLY_VERSION, PERSON_REPLY_VERSION, TEXT_REPLY_VERSION, COLLOQUIAL_REPLY_VERSION):
         return _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks,
                                     person_names=version >= PERSON_REPLY_VERSION, text_literals=version >= TEXT_REPLY_VERSION,
@@ -1374,10 +1428,12 @@ def _resolve_confirmation_target(pending, requested, remaining):
 
 def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *,
                                  qualified=False, bind_numeric=False, count_units=False,
-                                 person_names=False, text_literals=False, colloquial=False):
+                                 person_names=False, text_literals=False, colloquial=False, directive_verbs=False):
     if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or 'plan_questions' not in steps[-1]['action']['args']
             or (language_followup(steps) or {}).get('cancellation')):
+        return None
+    if directive_verbs and not directive_reply_requested(source['answer']):
         return None
     targets = confirmation_targets(steps, prior_scope)
     if not any(target['confirmed'] for target in targets.values()):
@@ -1388,7 +1444,7 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     def focused(question):
         return _focus_question(question, person_names=person_names, text_literals=text_literals, colloquial=colloquial)
 
-    needs_focus = person_names or text_literals or colloquial
+    needs_focus = (person_names or text_literals or colloquial) and not directive_verbs
     focus_in_current_parts = colloquial and any(focused(part['question']) for part in parts)
     if needs_focus and not focus_in_current_parts and not any(
             focused(question) and (
@@ -1411,19 +1467,28 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         comma_before = _TEXT_REVISION_COMMA
     elif count_units:
         comma_before = _COUNT_REVISION_COMMA
-    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before)
-    if not clauses or any(question for _, _, question in clauses):
+    clauses = (list(_directive_reply_clauses(source['answer'])) if directive_verbs else
+               goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before))
+    if not clauses or (not directive_verbs and any(question for _, _, question in clauses)):
         return None
     number = _COUNT_NUMBER if count_units else _NUMBER
     try:
-        requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=False,
+        requested, remaining, choice, unapplied = _confirmation_requests(clauses, targets, allow_withdrawal=False,
                                                                qualified=qualified, number=number, person_names=person_names,
-                                                               text_literals=text_literals, colloquial=colloquial)
+                                                               text_literals=text_literals, colloquial=colloquial,
+                                                               directive_verbs=directive_verbs)
     except ValueError:
         if qualified:
             raise
         return None
-    if not (requested or choice or pending):
+    if directive_verbs:
+        unanswered = {start for start, _, inquiry in clauses if inquiry}
+        if unapplied is None or any(start in unanswered for start, _ in remaining):
+            return None
+        held = {question for row in unapplied for question in row['questions']}
+        if held.intersection(requested) or held.intersection((choice or {}).get('questions', ())):
+            raise ValueError('同一欄位同時收到更正與待確認說明，請分開保存或指定一個明確的新值。')
+    if not (requested or choice or pending or unapplied):
         return None
     if bind_numeric and not count_units and not any(number.fullmatch(value) for value, _ in requested.values()):
         return None
@@ -1469,6 +1534,8 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
                                 keep_text_pending=text_literals, colloquial=colloquial):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
+    if unapplied:
+        proof['unapplied_directives'] = unapplied
     if choice:
         choice = {**choice, 'step': choice.get('step', sequence)}
         next_parts = (proof['successor'] or {}).get('plan_questions', [])
@@ -1959,7 +2026,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= COLLOQUIAL_CORRECTION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= DIRECTIVE_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

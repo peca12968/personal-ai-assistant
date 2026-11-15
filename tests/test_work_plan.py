@@ -1347,6 +1347,28 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(revision['previous']['step'], previous[1]['reply_step'])
         validate_database(qualified.path)
 
+        colloquial = restored(self.store, 'colloquial-target')
+        proposed = reply(colloquial, '門號為 8 號。接收人改派王昕琪。')
+        proposal_step = proposed['steps'][-2]
+        self.assertEqual(proposal_step['action']['args']['scope_reply_version'], 29)
+        proposed_values = confirmations(proposed)
+        self.assertEqual({n: proposed_values[n] for n in (1, 2)}, previous)
+        self.assertEqual(proposed_values[3]['value'], '8 號')
+        self.assertEqual(proposed['steps'][-1]['action']['args']['plan_questions'][1], parts[3])
+        colloquial = restored(colloquial, 'colloquial-choice')
+        selected = reply(colloquial, '「北廊的接收人」改派王昕琪。南廊的接收人不要改派吳景辰。封條編號為Q-99。')
+        selected_values = confirmations(selected)
+        self.assertEqual(selected['status'], 'paused')
+        self.assertEqual(selected_values[1]['value'], '王昕琪')
+        self.assertEqual(selected_values[2], previous[2])
+        self.assertEqual(selected_values[3], proposed_values[3])
+        self.assertEqual(selected_values[4]['value'], 'Q-99')
+        saved = selected['steps'][-1]['observation']['scope_reply']
+        self.assertEqual(saved['confirmation_target_resolution'],
+                         {'step': proposal_step['sequence'], 'decision': 'correct', 'question': questions[0]})
+        self.assertEqual(saved['unapplied_directives'][0]['questions'], [questions[1]])
+        validate_database(colloquial.path)
+
         pending = reply(self.store, '門號為 8 號。接收人改為王昕琪。')
         known = confirmations(pending)
         self.assertEqual({key: known[key] for key in (1, 2)}, previous)
@@ -1629,6 +1651,81 @@ class WorkPlanTests(unittest.TestCase):
             db.execute('UPDATE autonomous_steps SET action_json=? WHERE goal_id=? AND sequence=?',
                        (json.dumps(altered, ensure_ascii=False), gid, step['sequence']))
         with self.assertRaisesRegex(ValueError, '工作範圍更正與原清單或保存步驟不一致'):
+            validate_database(restored.path)
+
+    def test_unapplied_directive_in_mixed_reply_preserves_confirmation_and_exact_pending_question(self):
+        doc = self.root / 'mixed-reply.txt'
+        doc.write_text('材料依本輪確認。\n架號依本輪確認。\n門號依本輪確認。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, doc)
+        questions = ['外殼材料是什麼？', '架號是多少？', '門號是多少？']
+        parts = [{'question': question, 'items': [n]} for n, question in enumerate(questions, 1)]
+        rows = [item(n, '核對' + label) for n, label in enumerate(('外殼材料', '架號', '門號'), 1)]
+        ranges = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 4)]
+        required = [{'id': n, 'confirmation_question': question, 'ranges': [ranges[n - 1]]}
+                    for n, question in enumerate(questions, 1)]
+
+        def reply(store, gid, text):
+            view = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def checked(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        for index, (clause, reason) in enumerate((
+                ('外殼材料不要改用不鏽鋼', 'nondefinitive'),
+                ('外殼材料暫定改用不鏽鋼', 'nondefinitive'),
+                ('「外殼材料改用不鏽鋼。」', 'quoted'),
+                ('如果潮氣過高，外殼材料改用不鏽鋼', 'conditional'),
+                ('外殼材料改用不鏽鋼或鈦合金', 'unconfirmed'),
+                ('外殼材料改用不鏽鋼嗎', 'inquiry'))):
+            with self.subTest(clause=clause):
+                gid = a.create_goal(self.store, self.sid, '核對外殼材料、架號及門號。')
+                self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                                 action('read_ranges', ranges=ranges),
+                                 action('ask', question=questions[0], plan_questions=parts[:1]), gid=gid)
+                original = checked(reply(self.store, gid, '外殼材料為鋁合金。'))[1]
+                before = self.run_actions(action('ask', question='\n'.join(questions[1:]), plan_questions=parts[1:]), gid=gid)
+                if index == 0:
+                    with self.assertRaisesRegex(ValueError, '同一欄位'):
+                        reply(self.store, gid, '架號為 9 號。外殼材料改用不鏽鋼。外殼材料不要改用不鏽鋼。')
+                    self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
+                punctuation = {'inquiry': '？', 'quoted': ''}.get(reason, '。')
+                text = '架號為 9 號，' + clause + punctuation + '門號尚未確認。'
+                current = reply(self.store, gid, text)
+                values = checked(current)
+                self.assertEqual(current['status'], 'needs_input')
+                self.assertEqual(current['steps'][-1]['action']['args']['plan_questions'], parts[2:])
+                self.assertEqual(values[1], original)
+                self.assertEqual(values[2]['value'], '9 號')
+                self.assertEqual(set(values), {1, 2})
+                receipt = current['steps'][-2]
+                self.assertEqual(receipt['action']['args']['scope_reply_version'], 29)
+                self.assertEqual(values[2]['citation'], receipt['action']['args']['scope_reply'])
+                proof = receipt['observation']['scope_reply']
+                self.assertFalse(proof.get('revisions'))
+                held, = proof['unapplied_directives']
+                self.assertEqual(held['questions'], questions[:1])
+                self.assertEqual(held['reason'], reason)
+                span = held['evidence']
+                self.assertEqual(text[span['start']:span['end']], clause)
+                self.assertEqual(span['quote'], clause)
+
+        archive = create_backup(self.store.path, self.root / 'mixed-reply.paibackup')
+        destination = self.root / 'mixed-reply'
+        restore_backup(archive['path'], destination)
+        restored = Store(destination / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), current)
+        final_values = checked(reply(restored, gid, '門號為 17 號。'))
+        self.assertEqual(final_values[1], values[1])
+        self.assertEqual(final_values[2], values[2])
+        self.assertEqual(final_values[3]['value'], '17 號')
+        altered = copy.deepcopy(receipt['observation'])
+        altered['scope_reply']['unapplied_directives'][0]['reason'] = 'quoted'
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(altered, ensure_ascii=False), gid, receipt['sequence']))
+        with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(restored.path)
 
     def test_bound_text_reply_preserves_material_location_and_version_with_literal_sources(self):

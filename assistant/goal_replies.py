@@ -85,7 +85,7 @@ def _save_scope_reply(db, current, steps, notes):
         versions = (work_plan_scope.COLLOQUIAL_REPLY_VERSION, work_plan_scope.TEXT_REPLY_VERSION, work_plan_scope.PERSON_REPLY_VERSION,
                     work_plan_scope.COUNT_REPLY_VERSION, work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION,
                     work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION, *versions)
-        if '改' in answer or '更正' in answer:
+        if '改' in answer or '更正' in answer or work_plan_scope.directive_reply_requested(answer):
             versions = (*work_plan_scope.CORRECTION_REPLY_VERSIONS, *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
@@ -104,7 +104,9 @@ def _save_scope_reply(db, current, steps, notes):
     pending = proof.get('language', {}).get('pending_revisions', ())
     minimum = max(3 if successor else 2, 2 + 2 * len(pending))
     file_delivery = delivery['receipt']['file_delivery'] if delivery else delivery_preference.enabled(db, gid)
-    if version in work_plan_scope.CORRECTION_REPLY_VERSIONS:
+    if version in work_plan_scope.CORRECTION_REPLY_VERSIONS and (
+            version != work_plan_scope.DIRECTIVE_CORRECTION_REPLY_VERSION
+            or proof.get('revisions') or 'confirmation_target_choice' in proof):
         minimum += 1 + int(file_delivery) + int('confirmation_target_choice' in proof)
     if (choice or delivery) and file_delivery:
         minimum += 1
