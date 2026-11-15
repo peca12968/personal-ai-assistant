@@ -321,7 +321,7 @@ class Assistant:
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents,
                                                   reference_query=question)
         context['task_runs'] = task_context(self.store, sid, question)
-        context['autonomous_goals'] = goal_context(self.store, sid)
+        context['autonomous_goals'] = goal_context(self.store, sid, question)
         context['communication'] = conversation_style(question, history)
         context['companion_profile'] = get_profile(self.store)
         context['self_improvement'] = improvement_context(ROOT, question)

@@ -140,6 +140,68 @@ class GoalChatStatusTests(unittest.TestCase):
         self.assertEqual(self.row()['recorded_question'], '新問題')
         self.assertFalse(self.row()['sources_match'])
 
+    def test_named_chat_resolves_older_exact_job_and_preserves_origin_after_backup(self):
+        old = a.create_goal(self.store, self.sid, '整理澄木 A7 的交接報告\n保存核對結果。')
+        a.run_goal(self.store, self.sid, old, ScriptedEngine(action('ask', question='本批封條顏色是什麼？')))
+        progress = a.get_goal(self.store, self.sid, old)
+        for title in ('青鳥 J5 的架號', '港口領取清單', '澄木 A70 的交接報告'):
+            extra = a.create_goal(self.store, self.sid, title)
+            a.run_goal(self.store, self.sid, extra, ScriptedEngine(action('ask', question='另一件的接收人是誰？')))
+        self.assertNotIn(old, [row['id'] for row in goal_context(self.store, self.sid)['goals']])
+        question = '回到澄木Ａ７。請問目前必須回答哪個問題？'
+        app = Assistant(self.store, ScriptedEngine('本批封條顏色是什麼？'))
+        answer = app.ask(self.sid, question)
+        saved = self.store.answer_context(answer['id'])
+        status = saved['autonomous_goals']
+        self.assertEqual(status['reference'], {'name': '澄木Ａ７', 'status': 'matched'})
+        job, = status['goals']
+        self.assertEqual((job['id'], job['next_action'], job['recorded_question']),
+                         (old, 'reply', '本批封條顏色是什麼？'))
+        self.assertEqual(a.get_goal(self.store, self.sid, old), progress)
+        copy = self.root / 'named-task-copy'
+        archive = create_backup(self.store.path, self.root / 'named-task.paibackup')
+        restore_backup(archive['path'], copy)
+        restored = Store(copy / 'assistant.sqlite3')
+        self.assertEqual(goal_context(restored, self.sid, question), status)
+        view = goal_replies.snapshot(restored, self.sid, old)
+        goal_replies.save(restored, self.sid, old, '銀灰。', expected_fingerprint=view['fingerprint'])
+        self.assertEqual(goal_context(restored, self.sid, question)['goals'][0]['next_action'], 'resume')
+        self.assertEqual(restored.answer_context(answer['id']), saved)
+        self.assertEqual(a.get_goal(restored, self.sid, extra)['question'], '另一件的接收人是誰？')
+
+    def test_named_candidates_require_disambiguation_and_never_import_cross_session(self):
+        # The cap cannot turn many matches into an automatic selection.
+        jobs = [a.create_goal(self.store, self.sid, title) for title in
+                ['水門 B6 的交接', '水門 B6 的盤點', '水門 B6 的領取', '水門 B6 的清理']]
+        for gid in jobs:
+            a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='本件的專屬資料？')))
+        different = a.create_goal(self.store, self.sid, '水門 B60 的交接')
+        other_sid = self.store.new_session()
+        foreign = a.create_goal(self.store, other_sid, '外橋 K2 的交接')
+        a.run_goal(self.store, other_sid, foreign, ScriptedEngine(action('ask', question='另一個對話的待答資料？')))
+        query = '查看「水門 B6」的工作目前在等哪一條回覆？'
+        match = goal_context(self.store, self.sid, query)
+        self.assertEqual(match['reference']['status'], 'ambiguous')
+        self.assertTrue(match['limited'])
+        self.assertEqual([row['id'] for row in match['goals']], list(reversed(jobs[1:])))
+        self.assertTrue(all(not row['recorded_question'] and row['created_at'] for row in match['goals']))
+        for name in ('外橋 K2', foreign):
+            missing = goal_context(self.store, self.sid, f'查看目標「{name}」目前狀態？')
+            self.assertEqual(missing, {'goals': [], 'limited': False,
+                                       'reference': {'name': name, 'status': 'not_found'}})
+        for name in ('水門 B6 的交接', jobs[0]):
+            found = goal_context(self.store, self.sid, f'查看目標「{name}」目前狀態？')
+            self.assertEqual(found['reference']['status'], 'matched')
+            self.assertEqual([row['id'] for row in found['goals']], jobs[:1])
+        for ordinary in ('不要回到「水門 B6」，現在缺什麼？',
+                         '回到「水門 B6」這個話題，現在還缺什麼證據？',
+                         '「水門 B6」與「水門 B60」目前進度如何？'):
+            default = goal_context(self.store, self.sid, ordinary)
+            self.assertNotIn('reference', default)
+            self.assertEqual(default['goals'][0]['id'], different)
+        isolated = Assistant(self.store, None).prepare_context(self.sid, '只根據這則訊息作答。' + query)
+        self.assertNotIn('autonomous_goals', isolated)
+
     def test_fixed_controlled_fixtures_and_chat_projection(self):
         cases = json.loads(SUITE.read_text(encoding='utf-8'))
         self.assertEqual(len(cases), 5)
