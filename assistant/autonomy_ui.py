@@ -311,8 +311,10 @@ class AutonomousWindow:
         version_report = can_recheck_report and autonomy.decision_table.document_version_report(goal['steps'], goal['result'])
         supplement_report = can_recheck_report and autonomy.decision_table.document_supplement_report(goal['steps'], goal['result'])
         conflict_report = can_recheck_report and autonomy.decision_table.document_conflict_report(goal['steps'], goal['result'])
+        plan_report = goal['status'] == 'report_ready' and (goal['work_plan'] or {}).get(
+            'delivery_review', {}).get('verified_confirmations')
         self.guidance.configure(state='normal' if not self.busy and (
-            reference_report or version_report or supplement_report or conflict_report
+            reference_report or version_report or supplement_report or conflict_report or plan_report
             or goal['status'] in ('pending','paused','failed','needs_input')) else 'disabled')
         self.follow.configure(state='normal' if not self.busy and autonomy.goal_stages.eligible(goal['status'], len(goal['steps'])) else 'disabled')
         self.previous.configure(state='normal' if goal['previous_stage'] else 'disabled')
@@ -328,6 +330,7 @@ class AutonomousWindow:
                       else '匯入所缺版本規則後，可按「補充／更正此目標」指定補件原行。' if supplement_report
                       else '如有本批正式版本更正，可按「補充／更正此目標」重核成果。' if version_report
                       else '如有新的明確欄位更正，可按「補充／更正此目標」依序重核各分支。' if reference_report
+                      else '可按「補充／更正此目標」更新已核對的答覆及成果。' if plan_report
                       else '此目標已交付成果；後續工作請保存新目標。']
         if goal['work_plan']:
             lines += [work_plan.describe(goal['work_plan'])]

@@ -34,6 +34,9 @@ _REVISION_VERB = r'(?:改成|改為|更正為|更正成|應改為)'
 _REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))\s*'
                        r'(?:(?:剛才|先前|原先|上一則)\s*(?:說|填|寫|報)錯了?\s*[，,、]?\s*)?'
                        rf'{_REVISION_VERB}\s*(.+)')
+_CONFIRMATION_FIELD_REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))'
+                                          rf'\s*正式\s*{_REVISION_VERB}\s*(.+)')
+_CONFIRMATION_QUESTION_REVISION = re.compile(r'更正\s*「([^「」\r\n]{1,400})」\s*(?:為|成)\s*(.+)')
 _REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern})')
 _DECLINE = r'(?:(?:目前|本輪|這次)\s*)?(?:未採用|尚未採用|沒有採用|不採用|先不採用|維持原值)'
 _DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:提議|建議)\s*'
@@ -50,6 +53,9 @@ _KEEP_VALUE = {'沿用原值', '維持原值', '用原值', '都不改', '不改
 SUPPLEMENT_REPLY_VERSION = 12
 PARTIAL_DOCUMENT_REPLY_VERSION = 13
 COMBINED_EVIDENCE_REPLY_VERSION = 14
+CARRY_CONFIRMATIONS_REPLY_VERSION = 15
+CONFIRMATION_FILENAME_REPLY_VERSION = 16
+CONFIRMATION_CORRECTION = 'confirmation_correction'
 
 
 def validate_questions(args):
@@ -310,6 +316,114 @@ def _scope_update(steps, plan, source, changes, scope, prior_scope):
     return result, proof
 
 
+def _carry_independent_replies(proof, plan, steps, prior_scope):
+    if retained := work_plan._retained_reply_rows(plan, steps, prior_scope):
+        rows = [row for row in retained if row['id'] in proof['retained_items']]
+        if rows:
+            proof['retained_reply_items'] = rows
+
+
+def confirmation_targets(steps, scope):
+    plan = work_plan.latest(steps)
+    if not plan or not plan.get('verify_delivery') or _scope_receipt(plan).get('language', {}).get('pending_revisions'):
+        return {}
+    tasks = {row['id']: row['task'] for row in plan['items'] if row['state'] != 'superseded'}
+    requirements = {row['id']: row for row in plan.get('evidence_requirements', ()) if row['id'] in tasks}
+    current = work_plan._current_confirmations(requirements, steps, scope)
+    targets = {}
+    for number, spec in requirements.items():
+        if question := spec.get('confirmation_question'):
+            target = targets.setdefault(question, {'items': [], 'confirmed': []})
+            target['items'].append(number)
+            if number in current:
+                target['confirmed'].append(current[number])
+    for question, target in targets.items():
+        target['field'] = _asked_field({'question': question, 'items': target['items']}, tasks)
+    return targets
+
+
+def observe_confirmation_correction(steps, source, scope, prior_scope, *, waiting):
+    if source['steps_seen'] != len(steps):
+        return None
+    targets = confirmation_targets(steps, prior_scope)
+    if not any(target['confirmed'] for target in targets.values()):
+        return None
+    clauses = goal_guidance_sources.standalone_clauses(source['content'])
+    requested = {}
+    for start, clause, is_question in clauses:
+        if is_question:
+            continue
+        if match := _CONFIRMATION_QUESTION_REVISION.fullmatch(clause):
+            matches, literal = ([match[1]] if match[1] in targets else []), match[2]
+        elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
+            field = (match[1] or match[2]).strip()
+            matches = [question for question, target in targets.items() if target['field'] == field]
+            literal = match[3]
+        else:
+            continue
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
+        question = matches[0]
+        value = _value(literal.strip())
+        if (question in requested or value is None
+                or (_NUMERIC_QUESTION.search(question) and not _NUMBER.fullmatch(value))):
+            raise ValueError('請為每個原問句提供一個明確的新值。')
+        requested[question] = (value, _literal_span(start, clause))
+    if not requested:
+        return None
+    if len(requested) != len(clauses) or any(not targets[question]['confirmed'] for question in requested):
+        raise ValueError('這筆更正須指向已核對的答覆。請將其他指示或尚待回答的問題分開保存。')
+    plan = work_plan.latest(steps)
+    successor = None
+    if waiting:
+        ask = steps[-1]
+        if ('plan_questions' not in ask['action']['args']
+                or ask['observation'].get('goal_conditions_sha256') != prior_scope
+                or (language_followup(steps) or {}).get('cancellation')):
+            raise ValueError('目前待答問題有專用的確認流程，請先處理目前問題。')
+        _, parts = _waiting_parts(steps, plan)
+        if any(part['question'] in requested for part in parts):
+            raise ValueError('這個分問仍在等待答覆，請從目前提問保存新值。')
+        if ask['action']['args']['question'] != '\n'.join(part['question'] for part in parts):
+            raise ValueError('目前分問的保存格式無法直接沿用。')
+        successor = _next_question(parts)
+    active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
+    current = {row['id']: row for target in targets.values() for row in target['confirmed']}
+    revisions = []
+    for question, (value, evidence) in requested.items():
+        target = targets[question]
+        by_step = {}
+        for row in target['confirmed']:
+            by_step.setdefault(row['reply_step'], []).append(row)
+        for sequence, rows in by_step.items():
+            step = steps[sequence - 1]
+            previous_proof = _scope_receipt(step['observation'])
+            part_key = 'revisions' if CONFIRMATION_CORRECTION in step['action']['args'] else 'parts'
+            parts = [part for part in previous_proof.get(part_key, ())
+                     if part['question'] == question and part.get('value') == rows[0]['value']]
+            if not {row['id'] for row in rows} <= {number for part in parts for number in part['items']}:
+                raise ValueError('更正缺少相符的原始確認證據。')
+            prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
+                     'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
+                     'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
+            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence)
+            revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
+            revisions.append(revision)
+            for row in rows:
+                current[row['id']] = {**row, 'value': value, 'reply_step': len(steps) + 1,
+                                      'citation': source['citation'], 'sha256': source['sha256']}
+    result, proof = _scope_update(steps, plan, source, [], scope, prior_scope)
+    _apply_revisions(result, proof, {}, plan, revisions, source)
+    if waiting:
+        proof.update(ask_sequence=len(steps), ask_sha256=goal_stages.digest(steps[-1]))
+    proof.update(verified_confirmations=list(current.values()), successor=successor)
+    _carry_independent_replies(proof, plan, steps, prior_scope)
+    result['scope_change'] = proof
+    return result
+
+
 def _asked_field(part, tasks):
     match = _ASK_FIELD.search(part['question'])
     if match is None:
@@ -382,6 +496,20 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
         return None
     if version == artifact_names.MIXED_REPLY_VERSION:
         return _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery)
+    if version == CONFIRMATION_FILENAME_REPLY_VERSION:
+        requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
+        confirmations = work_plan._current_confirmations(requirements, steps, prior_scope)
+        if not any(row['citation'].startswith('[更正#') for row in confirmations.values()):
+            return None
+        result = _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery)
+        if result is None:
+            return None
+        proof = result['scope_reply']
+        if proof.get('revisions') or proof.get('language', {}).get('pending_revisions'):
+            return None
+        proof['verified_confirmations'] = list(confirmations.values())
+        _carry_independent_replies(proof, plan, steps, prior_scope)
+        return result
     if version == artifact_names.DEFERRED_REPLY_VERSION:
         return _observe_filename_revision(steps, plan, source, scope, prior_scope, delivery, defer_filename=True)
     if version == artifact_names.REPLY_VERSION:
@@ -397,8 +525,9 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
     if not parts or source['question'] != question:
         return None
     tasks = {item['id']: item['task'] for item in plan['items']}
-    if version == COMBINED_EVIDENCE_REPLY_VERSION:
-        return _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks)
+    if version in (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION):
+        return _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks,
+                                                carry=version == CARRY_CONFIRMATIONS_REPLY_VERSION)
     if version == SUPPLEMENT_REPLY_VERSION:
         return _observe_supplement_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     if version == PARTIAL_DOCUMENT_REPLY_VERSION:
@@ -630,29 +759,39 @@ def _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, t
     return _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed)
 
 
-def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks):
+def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, carry=False):
     if not plan.get('verify_delivery') or prior_scope != steps[-1]['observation'].get('goal_conditions_sha256'):
         return None
-    required = {row['id']: row['confirmation_question'] for row in plan.get('evidence_requirements', ())
+    requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
+    required = {number: row['confirmation_question'] for number, row in requirements.items()
                 if 'confirmation_question' in row}
-    if not any(required.get(number) == part['question'] for part in parts for number in part['items']):
+    prior = work_plan._current_confirmations(requirements, steps, prior_scope) if carry else {}
+    if carry and not prior:
+        return None
+    if not prior and not any(required.get(number) == part['question'] for part in parts for number in part['items']):
         return None
     result = _observe_direct_plan_reply(steps, plan, source, scope, prior_scope, parts, tasks)
     if result is None:
         return None
     proof = result['scope_reply']
-    confirmations = []
+    confirmations = {number: row for number, row in prior.items() if any(
+        item['id'] == number and item['state'] != 'superseded' for item in plan['items'])}
     for part in proof['parts']:
         if part['state'] == 'unanswered':
             continue
-        if part['state'] != 'confirmed' or any(required.get(number) != part['question'] for number in part['items']):
+        if part['state'] != 'confirmed':
             return None
-        confirmations.extend({'id': number, 'question': part['question'], 'value': part['value'],
-                              'reply_step': len(steps) + 1, 'citation': source['citation'], 'sha256': source['sha256']}
-                             for number in part['items'])
+        for number in part['items']:
+            if required.get(number) == part['question']:
+                confirmations[number] = {'id': number, 'question': part['question'], 'value': part['value'],
+                                         'reply_step': len(steps) + 1, 'citation': source['citation'], 'sha256': source['sha256']}
+            elif not carry or number not in proof['completed_items']:
+                return None
     if not confirmations:
         return None
-    proof['verified_confirmations'] = confirmations
+    proof['verified_confirmations'] = list(confirmations.values())
+    if carry:
+        _carry_independent_replies(proof, plan, steps, prior_scope)
     return result
 
 
@@ -1066,12 +1205,13 @@ def _apply_revisions(result, proof, complete, plan, revisions, source):
     proof['revisions'] = revisions
 
 
-def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_present, delivery_present=False):
+def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_present, delivery_present=False, pending=None):
+    confirmation = args.get(CONFIRMATION_CORRECTION)
     special = args.keys() & {'delivery_mode', 'filename_declaration', artifact_names.GUIDANCE_MARK}
-    keys = args.keys() - special
+    keys = args.keys() - special - {CONFIRMATION_CORRECTION}
     if (keys not in ({'scope_correction'}, {'scope_correction', 'ask_sequence'})
-            or any(args[key] is not True or not delivery_present for key in args.keys() - keys)
-            or len(special) > 1):
+            or any(args[key] is not True or not delivery_present for key in special)
+            or len(special) > 1 or (CONFIRMATION_CORRECTION in args and (confirmation is not True or special))):
         raise ValueError('已保存的工作範圍更正格式不符。')
     source = next((item for item in guidance if item['citation'] == args['scope_correction']), None)
     if source is None:
@@ -1096,8 +1236,9 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
         filename_guidance = artifact_names.guidance_choice(prior, source['content'], requirement, delivery=delivery)
         if not waiting or not filename_guidance or not delivery_preference.initially_enabled(db, goal['id']):
             raise ValueError('定稿檔名更正缺少原問題或已保存的來源。')
-    expected = observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named,
-                       filename_guidance=filename_guidance)
+    expected = (observe_confirmation_correction(prior, source, scope, previous, waiting=waiting) if confirmation else
+                observe(prior, source, scope, previous, waiting=waiting, delivery=delivery, filename_declaration=named,
+                        filename_guidance=filename_guidance))
     if expected is None:
         raise ValueError('工作範圍更正與原清單或保存步驟不一致。')
     if waiting:
@@ -1112,7 +1253,9 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
         successor = proof['successor']
         if successor and (not after or after['action']['tool'] != 'ask' or after['action']['args'] != successor
                           or after['observation'].get('question') != successor['question']
-                          or ((delivery or filename_guidance) and after['observation'].get('goal_conditions_sha256') != scope)):
+                          or ((delivery or filename_guidance or confirmation)
+                              and after['observation'].get('goal_conditions_sha256') != scope)
+                          or (confirmation and pending is not None and pending != successor['question'])):
             raise ValueError('工作範圍更正缺少相符的保留問題。')
     return expected
 
@@ -1120,7 +1263,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= COMBINED_EVIDENCE_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= CONFIRMATION_FILENAME_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:
@@ -1135,7 +1278,8 @@ def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_pr
         if not delivery_present:
             raise ValueError('工作清單答覆缺少交付方式紀錄。')
         delivery = delivery_preference.verify_plan_reply(db, goal['id'], source)
-    if version in (artifact_names.REPLY_VERSION, artifact_names.MIXED_REPLY_VERSION, artifact_names.DEFERRED_REPLY_VERSION):
+    if version in (artifact_names.REPLY_VERSION, artifact_names.MIXED_REPLY_VERSION, artifact_names.DEFERRED_REPLY_VERSION,
+                   CONFIRMATION_FILENAME_REPLY_VERSION):
         if not delivery_present or not delivery_preference.enabled_before(db, goal['id'], start):
             raise ValueError('定稿檔名答覆缺少當時的文件交付設定。')
         if version != artifact_names.REPLY_VERSION and delivery_preference.plan_reply(db, goal['id'], source):

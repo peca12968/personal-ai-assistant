@@ -124,6 +124,14 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
             checked = reference or version or (supplement or conflict)[0]
             receipt = json.dumps(checked, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             result['fingerprint'] = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
+    if review['sources_match'] and review['step_count'] and (include_work_plan or goal['status'] == 'report_ready'):
+        plan_scope = work_plan.conditions(_condition_goal(db, goal, goal['notes']))
+        if goal['status'] != 'needs_input' and not (goal['status'] == 'report_ready' and not review['file_delivery']):
+            steps = _steps(db, gid)
+        confirmations = work_plan_scope.confirmation_targets(steps, plan_scope)
+        if confirmed := [question for question, target in confirmations.items() if target['confirmed']]:
+            result['confirmed_plan_questions'] = confirmed
+            result['plan_correction_file_delivery'] = review['file_delivery']
     return result
 
 
@@ -164,6 +172,11 @@ def eligibility(value):
         scope = value['document_supplement']
         return True, (f'可補齊「{scope["scope"]}」的「{scope["version"]}」版規則。先匯入文件，再指定完整原行，'
                       f'例如 補件 [D5:L1-L2]。{choice_hint}')
+    if status == 'report_ready' and value.get('confirmed_plan_questions'):
+        if value['step_count'] + 3 + int(value['plan_correction_file_delivery']) > MAX_STEPS:
+            return False, '剩餘步數不足以重核工作清單及更新成果，請帶入原成果建立下一階段。'
+        question = value['confirmed_plan_questions'][0]
+        return True, f'可用「更正『{question}』為『新值』」更新成果。輸入時以「」括住完整問句和新值，先前成果保留於步驟紀錄。'
     reference_report = status == 'report_ready' and bool(
         value.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'})
     if status == 'report_ready' and not reference_report:
@@ -185,6 +198,9 @@ def eligibility(value):
         if conflict:
             return True, choice_hint
         return True, '可用完整欄名更正一欄。保存時會按原話先後重核各分支，保留先前成果，等待你接續。'
+    if value.get('confirmed_plan_questions'):
+        question = value['confirmed_plan_questions'][0]
+        return True, f'可用 更正「{question}」為「新值」。保存後可接續工作。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 
@@ -317,10 +333,12 @@ def _save_plan_document_supplement(db, current, notes, content):
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
     read = document_ranges.read_batch(documents, {'ranges': [replacement]})
-    observation = work_plan.supplement_receipt(steps, original, source, read, retain_replies=True)
+    prior_scope = work_plan.conditions(_condition_goal(db, goal, goal['notes']))
+    observation = work_plan.supplement_receipt(steps, original, source, read, retain_replies=True, prior_scope=prior_scope)
     observation['evidence_requirements'] = work_plan.supplemented_requirements(steps, observation, missing, replacement)
     args = {'guidance': source['citation'], 'original_sources': original, 'added_sources': added,
-            'missing': missing, 'replacement': replacement, 'check_question_ranges': True, 'retain_replies': True}
+            'missing': missing, 'replacement': replacement, 'check_question_ranges': True, 'retain_replies': True,
+            'carry_confirmations': True}
     action = {'tool': goal_sources.PLAN_SUPPLEMENT, 'args': args, 'note': '依使用者指定的原文補件'}
     sources_json = json.dumps(merged, ensure_ascii=False)
     merged_goal = {**goal, 'sources_json': sources_json, 'guidance_sources': guidance}
@@ -504,10 +522,10 @@ def _save_ordered_waiting_correction(db, current, notes):
     return _snapshot(db, goal['session_id'], gid)
 
 
-def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filename_guidance=None):
+def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filename_guidance=None, confirmation=False):
     goal, count = current['goal'], current['step_count']
     gid = goal['id']
-    if goal['status'] == 'report_ready':
+    if goal['status'] == 'report_ready' and not confirmation:
         return None
     steps = _steps(db, gid)
     if work_plan.latest(steps) is None:
@@ -527,8 +545,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
-    observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting, delivery=delivery_change,
-                                          filename_declaration=named, filename_guidance=filename_guidance)
+    observation = (work_plan_scope.observe_confirmation_correction(steps, source, scope, prior_scope, waiting=waiting)
+                   if confirmation else work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting,
+                       delivery=delivery_change, filename_declaration=named, filename_guidance=filename_guidance))
     if observation is None:
         if filename_guidance:
             raise ValueError('工作條件已變更。請先核對目前工作清單與待選欄位。')
@@ -536,7 +555,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     proof = observation['scope_change']
     successor = proof.get('successor')
     minimum = 3 if successor else 2
-    if delivery_change or filename_guidance:
+    if confirmation:
+        minimum += 1 + int(delivery_preference.enabled(db, gid))
+    elif delivery_change or filename_guidance:
         pending = proof.get('language', {}).get('pending_revisions', ())
         minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_preference.enabled(db, gid))
     elif named:
@@ -544,7 +565,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     if count + minimum > MAX_STEPS:
         raise ValueError('剩餘步數不足以更新工作清單及交付，請帶入目前進度建立下一階段。')
     args = {'scope_correction': source['citation']}
-    if delivery_change and not filename_guidance:
+    if confirmation:
+        args[work_plan_scope.CONFIRMATION_CORRECTION] = True
+    elif delivery_change and not filename_guidance:
         args['delivery_mode'] = True
     if filename_guidance:
         args[artifact_names.GUIDANCE_MARK] = True
@@ -556,17 +579,23 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
         if not options or source['number'] not in options['correction_numbers']:
             raise ValueError('這筆更正與目前等待的問題不一致。')
         goal_question_withdrawals.record(db, gid, options, source)
-    note = ('依使用者更正更新交付方式與工作清單' if delivery_change else
+    note = ('依使用者更正更新已核對的答覆' if confirmation else
+            '依使用者更正更新交付方式與工作清單' if delivery_change else
             '依使用者更正更新定稿檔名與工作清單' if named or filename_guidance else '依使用者更正取消指定工作項目')
     action = {'tool': 'update_plan', 'args': args, 'note': note}
     _append_step(db, goal, notes, count + 1, action, observation)
     if successor:
-        append_followup_question(db, {**goal, 'guidance_sources': guidance}, notes, count + 2, successor['question'],
+        reply_sources = goal_reply_sources.read(db, gid, notes) if confirmation else goal.get('reply_sources', ())
+        append_followup_question(db, {**goal, 'guidance_sources': guidance, 'reply_sources': reply_sources}, notes,
+                                 count + 2, successor['question'],
                                  '依目前工作範圍保留仍需回答的問題', plan_questions=successor.get('plan_questions'))
     status = 'needs_input' if successor else 'paused'
     notice = ('已取消指定項目。只需回答目前保留的問題。' if successor else
               '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
-    if delivery_change:
+    if confirmation:
+        notice = ('已核對更正，請處理目前保留的問題。' if successor else
+                  '已核對更正，可接續更新成果。先前的成果仍可在步驟紀錄查看。')
+    elif delivery_change:
         notice = delivery_preference.describe(delivery_change) + ('仍請回答目前的問題。' if successor else '工作清單已更新。')
     if filename_guidance:
         name = filename_guidance[0]['selection']['filename']
@@ -575,8 +604,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
         notice = (delivery_preference.describe(delivery_change) if delivery_change else '') + message + '仍請回答目前的欄位問題。'
     elif named:
         notice = f'已確認定稿檔名「{named["filename"]}」，可以接續交付。'
-    db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-               (notes, status, successor['question'] if successor else '', notice, gid))
+    db.execute('UPDATE autonomous_goals SET notes=?,status=?,question=?,notice=?,result=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (notes, status, successor['question'] if successor else '', notice,
+                '' if confirmation else goal['result'], gid))
     return _snapshot(db, goal['session_id'], gid)
 
 
@@ -622,8 +652,6 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
         if current.get('plan_document_supplement') and not current['sources_match'] and not plan_supplement:
             raise ValueError('請先指定缺行與補件的對應範圍。')
-        if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):
-            raise ValueError(reason)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         goal = current['goal']
         step_count = current['step_count']
@@ -639,6 +667,13 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         if plan_supplement:
             _save_plan_document_supplement(db, current, notes, content)
             return _snapshot(db, sid, gid)
+        if changed_confirmation := _save_plan_scope_change(db, current, notes, confirmation=True):
+            return changed_confirmation
+        if goal['status'] == 'report_ready' and not current.keys() & {
+                'reference_report', 'document_version_report', 'document_conflict_report', 'document_supplement'}:
+            raise ValueError('請明確指定一個已核對答覆的原問句及新值，或帶入所選成果建立下一階段。')
+        if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):
+            raise ValueError(reason)
         if named_scope := _save_filename_guidance(db, current, notes):
             return named_scope
         delivery_change = delivery_preference.capture(db, gid, notes, step_count)

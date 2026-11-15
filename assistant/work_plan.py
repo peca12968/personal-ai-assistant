@@ -38,6 +38,7 @@ delivery_review.document_read_progress列出有指定原文範圍的待辦項目
 plan_document_supplement是使用者明確指定並已實際查讀的補件。採用work_plan的現行範圍；原要求若只有部分缺行，保留其他原行。在evidence_steps引用補件步驟及仍適用的舊查讀，只補讀尚缺的原文。新值引用補件實際行號；原缺行及被撤下的問題留在歷史。同一工作項目有多個缺行分問時，每問寫出各自的文件編號和確切行號，例如「請提供 D2 第 3 至 4 行的原文。」；補件須涵蓋選定分問所指的全部行。
 delivery_review.retained_reply_items列出本次補件保留的獨立確認項。更新清單時維持其done和原reply_step，這些步驟不用列入reuse_document_steps。定稿引用該項的citation，文件項依本次核對的原行完成。
 同一項同時需要指定文件原文與使用者明確答覆時，在該項evidence_requirements附上confirmation_question，內容須等於之後plan_questions的單一確認問句，例如「接收人是誰？」。delivery_review.verified_confirmations列出已核對的答覆；完成該項須同時引用reply_step與所需文件步驟。答覆步驟不用列入reuse_document_steps。定稿各欄引用實際來源。
+已核對的答覆被更正時，verified_confirmations使用現行值與[更正#N]。將新的reply_step和仍適用的原文步驟一起核對；舊原文列入reuse_document_steps。只查讀仍缺的原文，定稿在更正欄位旁引用新的citation。舊答覆只在明確要求比較或變更歷程時引用。
 若算式葉節點已換算單位，在該運算元加conversion，例如{"from":"公克","to":"公斤"}。quote仍逐字引用含原數字及原單位的短句，例如「本批配料 450 公克」，算式放換算後的0.45。百分比轉比例用{"from":"%","to":"ratio"}，例如原文8%及算式0.08。工具核對精確倍率、完整原數量及原單位，保留原數與換算值；不同量綱不合併。分組數量若以箱數和每箱件數相乘，分開引用兩個欄位。使用者只要求原式及計算時沿用既有入口。
 清單只記錄公開任務及簡短進度，不輸出內部思考過程、不增加工具權限、不啟動新工作。需要檔案交付仍用deliver，文字成果仍用finish；完成清單本身不是交付。上一階段清單僅是歷史，本階段要重新建立清單並核對證據，不可重用其步驟編號。
 '''
@@ -445,7 +446,7 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import COMBINED_EVIDENCE_REPLY_VERSION
+    from .work_plan_scope import CONFIRMATION_CORRECTION, CONFIRMATION_FILENAME_REPLY_VERSION
 
     validate(args)
     previous = latest(steps)
@@ -470,7 +471,8 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
         raise ValueError('使用者已取消的工作項目須保留取消狀態。')
     cancelled = [number for number in prior_cancelled if by_id[number]['state'] == 'superseded']
     scope_reviewed = bool(cancelled) or (same_scope and any(
-        step['action']['tool'] == 'update_plan' and 'scope_reply' in step['observation']
+        step['action']['tool'] == 'update_plan' and ('scope_reply' in step['observation'] or
+                                                    CONFIRMATION_CORRECTION in step['action'].get('args', {}))
         and step['observation'].get('goal_conditions_sha256') == scope for step in steps))
     sequence = len(steps) + 1
     user_sources = operand_evidence.user_texts(objective, reply_sources, guidance_sources, sequence)
@@ -520,9 +522,9 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, COMBINED_EVIDENCE_REPLY_VERSION + 1)))
-                if (step['action'].get('args') not in versions
-                        or (item_id not in verified.get('completed_items', ()) and number != confirmation_step)):
+                                        for version in range(2, CONFIRMATION_FILENAME_REPLY_VERSION + 1)))
+                if number != confirmation_step and (step['action'].get('args') not in versions
+                                                    or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
             typed_ranges = requirements.get(item_id, {}).get('ranges')
             typed_batch = typed_ranges and step['action']['tool'] == 'read_ranges'
@@ -585,13 +587,33 @@ def _retained_replies_for_scope(plan, steps, scope):
     if not plan:
         return {}
     supplement = next((step for step in reversed(steps) if step['action']['tool'] == goal_sources.PLAN_SUPPLEMENT), None)
-    if not supplement or supplement['observation']['goal_conditions_sha256'] != scope:
-        return {}
-    return {row['id']: [row['reply_step']] for row in supplement['observation'].get('retained_reply_items', ())}
+    for step in reversed(steps):
+        observation = step['observation']
+        if observation.get('goal_conditions_sha256') != scope:
+            continue
+        if step is supplement:
+            rows = observation.get('retained_reply_items', ())
+        elif step['action']['tool'] == 'update_plan':
+            receipt = observation.get('scope_change') or observation.get('scope_reply') or {}
+            if 'verified_confirmations' not in receipt:
+                continue
+            rows = receipt.get('retained_reply_items', ())
+        else:
+            continue
+        return {row['id']: [row['reply_step']] for row in rows}
+    return {}
+
+
+def _retained_reply_rows(plan, steps, scope):
+    retained = _retained_replies_for_scope(plan, steps, scope)
+    return [{'id': row['id'], 'reply_step': refs[0],
+             'citation': steps[refs[0] - 1]['observation']['scope_reply']['citation']}
+            for row in plan['items'] if row['state'] == 'done' and (refs := retained.get(row['id']))]
 
 
 def _current_confirmations(requirements, steps, scope):
-    from .work_plan_scope import COMBINED_EVIDENCE_REPLY_VERSION
+    from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
+                                  CONFIRMATION_CORRECTION, CONFIRMATION_FILENAME_REPLY_VERSION)
 
     if not any('confirmation_question' in row for row in requirements.values()):
         return {}
@@ -603,9 +625,11 @@ def _current_confirmations(requirements, steps, scope):
         action = step['action']
         if action['tool'] == goal_sources.PLAN_SUPPLEMENT:
             rows = observation.get('retained_confirmations', ())
-        elif (action['tool'] == 'update_plan'
-              and action.get('args', {}).get('scope_reply_version') == COMBINED_EVIDENCE_REPLY_VERSION):
-            rows = observation.get('scope_reply', {}).get('verified_confirmations', ())
+        elif action['tool'] == 'update_plan' and CONFIRMATION_CORRECTION in action.get('args', {}):
+            rows = observation['scope_change']['verified_confirmations']
+        elif (action['tool'] == 'update_plan' and action.get('args', {}).get('scope_reply_version') in
+              (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION, CONFIRMATION_FILENAME_REPLY_VERSION)):
+            rows = observation['scope_reply']['verified_confirmations']
         else:
             continue
         for row in rows:
@@ -778,7 +802,8 @@ def _verify_supplement_question_ranges(selected, parts, missing):
     return ranges
 
 
-def supplement_receipt(steps, original, source, replacement_read, *, check_question_ranges=True, retain_replies=False):
+def supplement_receipt(steps, original, source, replacement_read, *, check_question_ranges=True, retain_replies=False,
+                       prior_scope=None):
     from . import goal_partials, goal_question_withdrawals, work_plan_scope
 
     missing, replacement, target = goal_sources.plan_mapping(source['content'])
@@ -837,8 +862,16 @@ def supplement_receipt(steps, original, source, replacement_read, *, check_quest
     if retain_replies:
         plan = latest(steps)
         requirements = {row['id']: row for row in plan['evidence_requirements']}
-        scope = ask['observation']['goal_conditions_sha256']
+        scope = prior_scope or ask['observation']['goal_conditions_sha256']
         confirmations = _current_confirmations(requirements, steps, scope)
+        if prior_scope:
+            retained_items = {row['id']: row for row in _retained_reply_rows(plan, steps, scope)}
+            if plan['goal_conditions_sha256'] == scope:
+                reply = plan.get('scope_reply', {})
+                for number in reply.get('completed_items', ()):
+                    retained_items[number] = {'id': number, 'reply_step': plan['sequence'], 'citation': reply['citation']}
+            if retained_items:
+                receipt['retained_reply_items'] = list(retained_items.values())
         active = {row['id'] for row in plan['items'] if row['state'] != 'superseded'}
         if retained := [row for number, row in confirmations.items() if number in active]:
             receipt['retained_confirmations'] = retained
@@ -940,8 +973,8 @@ def _delivery_review(plan, goal, scope, sources_current):
     review = {'ready': plan['conditions_current'] and not open_items and not pending_fields, 'open_items': open_items,
               'recheck_items': [], 'reusable_documents': []}
     retained_replies = _retained_replies_for_scope(plan, goal['steps'], scope) if sources_current else {}
-    if retained_replies and 'retained_reply_items' in plan:
-        review['retained_reply_items'] = plan['retained_reply_items']
+    if retained_replies:
+        review['retained_reply_items'] = _retained_reply_rows(plan, goal['steps'], scope)
     if pending_fields:
         review['pending_revision_fields'] = pending_fields
     requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
@@ -1010,13 +1043,24 @@ def check_delivery(plan, scope, action, steps):
     pending = _open_items(plan)
     if pending:
         raise ValueError('交付核對仍有未完成項目 ' + '、'.join(map(str, pending)) + '。')
+    confirmations = [row['confirmation'] for row in plan.get('evidence_matches', ())
+                     if row.get('confirmation', {}).get('citation', '').startswith('[更正#')]
+    texts = [action['args'].get('report', '')] if action['tool'] == 'finish' else []
     if action['tool'] == 'deliver':
-        checked_files = {step['action']['args']['filename'].casefold() for step in steps
+        checked_files = {step['action']['args']['filename'].casefold(): step['action']['args']['content'] for step in steps
                          if step['action']['tool'] == 'write_artifact'
                          and step['observation'].get('goal_conditions_sha256') == scope
                          and type(step['observation'].get('plan_check_step')) is int}
         if any(name.casefold() not in checked_files for name in action['args']['filenames']):
             raise ValueError('交付文件缺少目前條件下的清單核對，請按目前條件重新產檔。')
+        if confirmations:
+            texts = [json.dumps(json.loads(checked_files[name.casefold()]), ensure_ascii=False) if name.lower().endswith('.json')
+                     else checked_files[name.casefold()] for name in action['args']['filenames']]
+    if confirmations and action['tool'] != 'write_artifact':
+        missing = {row['citation'] for row in confirmations if not any(
+            isinstance(text, str) and row['citation'] in text and row['value'] in text for text in texts)}
+        if missing:
+            raise ValueError('成果須包含現行已核對的答覆及其更正引用：' + '、'.join(sorted(missing)) + '。')
     return plan['sequence']
 
 
@@ -1045,6 +1089,8 @@ def describe(value):
     if 'delivery_review' in value:
         review = value['delivery_review']
         lines.append('工作清單已通過交付核對。' if review['ready'] else '交付前仍需核對目前的工作清單。')
+        for row in review.get('verified_confirmations', ()):
+            lines.append(f'項目 {row["id"]} · {row["question"]} {row["value"]} {row["citation"]}')
         if pending_fields := review.get('pending_revision_fields'):
             lines.append('仍待確認的更正 · ' + '、'.join(pending_fields))
         lines.extend(_calculation_recheck_message(row) for row in review.get('calculation_rechecks', ()))
@@ -1136,7 +1182,8 @@ def validate_saved(db, *, replies_present=False, guidance_present=False):
                 if 'scope_correction' in args:
                     expected = work_plan_scope.replay(db, args, prior, next_step,
                         {**scope_goal, 'sources': history.get(sequence, sources)}, guidance, replies,
-                        withdrawals_present='autonomous_question_withdrawals' in available, delivery_present=delivery_present)
+                        withdrawals_present='autonomous_question_withdrawals' in available, delivery_present=delivery_present,
+                        pending=question if status == 'needs_input' and index + 2 == len(steps) else None)
                 elif 'scope_reply' in args:
                     expected = work_plan_scope.replay_reply(db, args, prior, next_step,
                         {**scope_goal, 'sources': history.get(sequence, sources)}, replies, guidance, delivery_present=delivery_present)
@@ -1174,12 +1221,16 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     fields = {'guidance', 'original_sources', 'added_sources', 'missing', 'replacement'}
     check_question_ranges = args.get('check_question_ranges') is True
     retain_replies = args.get('retain_replies') is True
+    carry_confirmations = args.get('carry_confirmations') is True
     if check_question_ranges:
         fields.add('check_question_ranges')
     if retain_replies:
         fields.add('retain_replies')
+    if carry_confirmations:
+        fields.add('carry_confirmations')
     if (source is None or not prior or step['sequence'] != source['steps_seen'] + 1
             or args.keys() != fields or (retain_replies and not check_question_ranges)
+            or (carry_confirmations and not retain_replies)
             or not goal_sources.valid_source_list(original) or not goal_sources.valid_source_list(args['added_sources'])):
         raise ValueError('清單補件缺少對應的原更正或來源範圍。')
     missing, replacement, _ = goal_sources.plan_mapping(source['content'])
@@ -1194,10 +1245,11 @@ def _verify_saved_supplement(db, goal, prior, step, guidance, documents, success
     merged = goal_sources.merge_sources(original, args['added_sources'])
     goal_sources.verify_excerpts(observation.get('excerpts'), merged, [replacement])
     _verified_read(step, merged)
-    expected = supplement_receipt(prior, original, source, observation, check_question_ranges=check_question_ranges,
-                                  retain_replies=retain_replies)
-    expected['evidence_requirements'] = supplemented_requirements(prior, expected, missing, replacement)
     notes_end = source['notes_start'] + len(goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at']))
+    prior_scope = conditions({**goal, 'notes': goal['notes'][:source['notes_start']], 'sources': original})
+    expected = supplement_receipt(prior, original, source, observation, check_question_ranges=check_question_ranges,
+                                  retain_replies=retain_replies, prior_scope=prior_scope if carry_confirmations else None)
+    expected['evidence_requirements'] = supplemented_requirements(prior, expected, missing, replacement)
     expected['goal_conditions_sha256'] = conditions({**goal, 'notes': goal['notes'][:notes_end], 'sources': merged})
     if observation != expected:
         raise ValueError('清單補件與保存的查讀或原提問不一致。')

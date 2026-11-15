@@ -70,7 +70,8 @@ def _save_scope_reply(db, current, steps, notes):
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (*versions, work_plan_scope.PARTIAL_DOCUMENT_REPLY_VERSION)
     if not delivery and 'plan_questions' in steps[-1]['action']['args']:
-        versions = (work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION, *versions)
+        versions = (work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION, work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION,
+                    *versions)
     for version in versions:
         result = work_plan_scope.observe_reply(steps, replies[-1], *scopes, version=version, delivery=delivery,
                                                filename_requirement=requirement)
@@ -129,11 +130,14 @@ def _save_filename_reply(db, current, steps, notes):
     replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
     source = replies[-1]
     delivery = delivery_preference.plan_reply(db, gid, source)
-    version = artifact_names.MIXED_REPLY_VERSION
     before = _condition_goal(db, goal, goal['notes'])
     scope = work_plan.conditions({**before, 'notes': notes})
     previous = work_plan.conditions(before)
+    version = work_plan_scope.CONFIRMATION_FILENAME_REPLY_VERSION
     observation = work_plan_scope.observe_reply(steps, source, scope, previous, version=version, delivery=delivery)
+    if observation is None:
+        version = artifact_names.MIXED_REPLY_VERSION
+        observation = work_plan_scope.observe_reply(steps, source, scope, previous, version=version, delivery=delivery)
     if observation is None and not delivery:
         version = artifact_names.DEFERRED_REPLY_VERSION
         observation = work_plan_scope.observe_reply(steps, source, scope, previous, version=version)
