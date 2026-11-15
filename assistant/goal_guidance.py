@@ -176,7 +176,7 @@ def eligibility(value):
         if value['step_count'] + 3 + int(value['plan_correction_file_delivery']) > MAX_STEPS:
             return False, '剩餘步數不足以重核工作清單及更新成果，請帶入原成果建立下一階段。'
         question = value['confirmed_plan_questions'][0]
-        return True, f'可用「更正『{question}』為『新值』」更新成果。輸入時以「」括住完整問句和新值，先前成果保留於步驟紀錄。'
+        return True, f'可用 更正「{question}」為「新值」，或 撤回「{question}」的答覆。先前成果保留於步驟紀錄。'
     reference_report = status == 'report_ready' and bool(
         value.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'})
     if status == 'report_ready' and not reference_report:
@@ -200,7 +200,7 @@ def eligibility(value):
         return True, '可用完整欄名更正一欄。保存時會按原話先後重核各分支，保留先前成果，等待你接續。'
     if value.get('confirmed_plan_questions'):
         question = value['confirmed_plan_questions'][0]
-        return True, f'可用 更正「{question}」為「新值」。保存後可接續工作。'
+        return True, f'可用 更正「{question}」為「新值」，或 撤回「{question}」的答覆。'
     return True, '保存後不會自動執行；回到自主目標按開始／接續。'
 
 
@@ -540,7 +540,7 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     source = guidance[-1]
     named = (artifact_names.declaration(source['content'], only=True)
              if not filename_guidance and not delivery_change and delivery_preference.initially_enabled(db, gid) else None)
-    if filename_ask and not (named or delivery_change):
+    if filename_ask and not (confirmation or named or delivery_change):
         return None
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
@@ -557,6 +557,8 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     minimum = 3 if successor else 2
     if confirmation:
         minimum += 1 + int(delivery_preference.enabled(db, gid))
+        if proof.get('withdrawn_confirmations'):
+            minimum += 1
     elif delivery_change or filename_guidance:
         pending = proof.get('language', {}).get('pending_revisions', ())
         minimum = max(minimum, 2 + 2 * len(pending)) + int(delivery_preference.enabled(db, gid))
@@ -592,7 +594,9 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     status = 'needs_input' if successor else 'paused'
     notice = ('已取消指定項目。只需回答目前保留的問題。' if successor else
               '已取消指定項目並更新工作清單，可接續處理剩餘工作。')
-    if confirmation:
+    if proof.get('withdrawn_confirmations'):
+        notice = '已撤回先前答覆。請依目前分問重新確認，其他有效證據會保留。'
+    elif confirmation:
         notice = ('已核對更正，請處理目前保留的問題。' if successor else
                   '已核對更正，可接續更新成果。先前的成果仍可在步驟紀錄查看。')
     elif delivery_change:
@@ -671,7 +675,7 @@ def save(store, sid, gid, content, *, expected_fingerprint):
             return changed_confirmation
         if goal['status'] == 'report_ready' and not current.keys() & {
                 'reference_report', 'document_version_report', 'document_conflict_report', 'document_supplement'}:
-            raise ValueError('請明確指定一個已核對答覆的原問句及新值，或帶入所選成果建立下一階段。')
+            raise ValueError('請指明要撤回的原問句，或提供已核對答覆的原問句及新值。也可帶入成果建立下一階段。')
         if 'document_supplement' in current and not (supplement or 'document_conflict_report' in current):
             raise ValueError(reason)
         if named_scope := _save_filename_guidance(db, current, notes):

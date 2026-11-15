@@ -69,7 +69,11 @@ def _save_scope_reply(db, current, steps, notes):
         versions = (*versions, work_plan_scope.SUPPLEMENT_REPLY_VERSION)
     elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (*versions, work_plan_scope.PARTIAL_DOCUMENT_REPLY_VERSION)
-    if not delivery and 'plan_questions' in steps[-1]['action']['args']:
+    if work_plan.waiting_for_reconfirmation(steps):
+        if delivery:
+            raise ValueError('請先回答待重新確認的欄位，交付方式可另從目標補充更正。')
+        versions = (work_plan_scope.RECONFIRMATION_REPLY_VERSION,)
+    elif not delivery and 'plan_questions' in steps[-1]['action']['args']:
         versions = (work_plan_scope.CARRY_CONFIRMATIONS_REPLY_VERSION, work_plan_scope.COMBINED_EVIDENCE_REPLY_VERSION,
                     *versions)
     for version in versions:
@@ -219,6 +223,8 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
             return _snapshot(db, sid, gid)
         if not (colloquial or combined) and _save_scope_reply(db, current, steps, notes):
             return _snapshot(db, sid, gid)
+        if steps and work_plan.waiting_for_reconfirmation(steps):
+            raise ValueError('撤回的欄位仍待確認。請對目前分問提供明確的值。')
         delivery_change = delivery_preference.capture(db, gid, notes, current['step_count'], reply=True)
         if colloquial:
             replies = goal_reply_sources.read(db, gid, notes, include_positions=True)

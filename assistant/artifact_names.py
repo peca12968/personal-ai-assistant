@@ -87,7 +87,8 @@ def writes(steps):
 def _changed_after(steps, sequence):
     for step in steps[sequence:]:
         scope = step['observation'].get('scope_reply') or step['observation'].get('scope_change') or {}
-        if (scope.get('changes') or any(part['state'] == 'confirmed' for part in scope.get('parts', ()))
+        if (scope.get('changes') or scope.get('withdrawn_confirmations')
+                or any(part['state'] == 'confirmed' for part in scope.get('parts', ()))
                 or any(row['value'] != row['previous']['value'] for row in scope.get('revisions', ()))
                 or (scope.get('revisions') and 'confirmation_correction' in step['action']['args'])):
             return True
