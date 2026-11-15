@@ -509,7 +509,7 @@ def _check_revised_operands(match, revisions):
 
 
 def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), guidance_sources=()):
-    from .work_plan_scope import CONFIRMATION_CORRECTION, COUNT_CORRECTION_REPLY_VERSION
+    from .work_plan_scope import CONFIRMATION_CORRECTION, PERSON_CORRECTION_REPLY_VERSION
 
     validate(args)
     previous = latest(steps)
@@ -590,7 +590,7 @@ def observe(args, steps, scope, sources=(), *, objective='', reply_sources=(), g
                 verified = observed.get('scope_reply', {})
                 original = {'scope_reply': verified.get('citation')}
                 versions = (original, *({**original, 'scope_reply_version': version}
-                                        for version in range(2, COUNT_CORRECTION_REPLY_VERSION + 1)))
+                                        for version in range(2, PERSON_CORRECTION_REPLY_VERSION + 1)))
                 if number != confirmation_step and (step['action'].get('args') not in versions
                                                     or item_id not in verified.get('completed_items', ())):
                     raise ValueError('清單步驟只可引用程式已核對且完成同一項的實際使用者答覆。')
@@ -682,7 +682,8 @@ def _retained_reply_rows(plan, steps, scope):
 def _current_confirmations(requirements, steps, scope):
     from .work_plan_scope import (CARRY_CONFIRMATIONS_REPLY_VERSION, COMBINED_EVIDENCE_REPLY_VERSION,
                                   CONFIRMATION_CORRECTION, CONFIRMATION_FILENAME_REPLY_VERSION,
-                                  CORRECTION_REPLY_VERSIONS, COUNT_REPLY_VERSION, RECONFIRMATION_REPLY_VERSION)
+                                  CORRECTION_REPLY_VERSIONS, COUNT_REPLY_VERSION, PERSON_REPLY_VERSION,
+                                  RECONFIRMATION_REPLY_VERSION)
 
     if not any('confirmation_question' in row for row in requirements.values()):
         return {}
@@ -698,7 +699,7 @@ def _current_confirmations(requirements, steps, scope):
             rows = observation['scope_change']['verified_confirmations']
         elif (action['tool'] == 'update_plan' and action.get('args', {}).get('scope_reply_version') in
               (COMBINED_EVIDENCE_REPLY_VERSION, CARRY_CONFIRMATIONS_REPLY_VERSION, CONFIRMATION_FILENAME_REPLY_VERSION,
-               RECONFIRMATION_REPLY_VERSION, COUNT_REPLY_VERSION, *CORRECTION_REPLY_VERSIONS)):
+               RECONFIRMATION_REPLY_VERSION, COUNT_REPLY_VERSION, PERSON_REPLY_VERSION, *CORRECTION_REPLY_VERSIONS)):
             rows = observation['scope_reply']['verified_confirmations']
         else:
             continue

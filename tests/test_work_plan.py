@@ -1402,6 +1402,130 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(final_store.path)
 
+    def test_person_reply_distinguishes_confirmed_names_from_unresolved_wording(self):
+        document = self.root / 'handover-names.txt'
+        document.write_text('份數由本輪確認。\n北廊點收台在木架旁。\n門號由本輪確認。\n封條號由本輪確認。',
+                            encoding='utf-8')
+        did = self.store.attach_document(self.sid, document)
+        gid = a.create_goal(self.store, self.sid, '核對北廊點收人、份數、門號和封條號。')
+        questions = ['份數是多少？', '北廊的點收人是誰？', '門號是多少？', '封條號是多少？']
+        rows = [item(n, task) for n, task in enumerate(
+            ('核對份數', '核對北廊點收台及點收人', '核對門號', '核對封條號'), 1)]
+        spans = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 5)]
+        parts = [{'question': question, 'items': [n]} for n, question in enumerate(questions, 1)]
+        required = [{'id': n, 'confirmation_question': question, 'ranges': [spans[n - 1]]}
+                    for n, question in enumerate(questions, 1)]
+
+        def ask(*numbers):
+            return action('ask', question='\n'.join(questions[n - 1] for n in numbers),
+                          plan_questions=[parts[n - 1] for n in numbers])
+
+        def reply(store, answer):
+            view = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, answer, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def verified(state):
+            return {entry['id']: entry for entry in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def restored(store, archive):
+            baseline = a.get_goal(store, self.sid, gid)
+            target = self.root / archive
+            backup = create_backup(store.path, target.with_suffix('.paibackup'))
+            restore_backup(backup['path'], target)
+            cloned = Store(target / 'assistant.sqlite3')
+            self.assertEqual(a.get_goal(cloned, self.sid, gid), baseline)
+            return cloned
+
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=spans), ask(1), gid=gid)
+        initial = verified(reply(self.store, '份數為 4 份。'))[1]
+        self.run_actions(ask(2, 3), gid=gid)
+        uncertain = ('北廊的點收人可能是黃未晴。', '點收人尚未確認。', '點收人不是黃未晴。',
+                     '點收人為黃未晴或林演洲。', '例如「點收人為黃未晴」。', '點收人是黃未晴嗎？',
+                     '點收人為「黃未晴（暫定）」。')
+        for index, phrase in enumerate(uncertain):
+            with self.subTest(phrase=phrase):
+                cloned = restored(self.store, f'people-{index}')
+                raw = '門號為 8 號。' + phrase
+                state = reply(cloned, raw)
+                known = verified(state)
+                self.assertEqual({1, 3}, known.keys())
+                self.assertEqual(known[1], initial)
+                self.assertEqual(known[3]['value'], '8 號')
+                self.assertEqual(state['question'], questions[1])
+                self.assertEqual(state['steps'][-1]['action']['args']['plan_questions'], [parts[1]])
+                proof = state['work_plan']['scope_reply']['parts'][0]
+                evidence = proof['evidence']
+                self.assertIn(proof['state'], ('ambiguous', 'deferred'))
+                self.assertTrue(phrase.startswith(raw[evidence['start']:evidence['end']]))
+                validate_database(cloned.path)
+
+        held = restored(self.store, 'person-in-quote')
+        direct = reply(held, '「北廊的點收人」為「黃未晴」。門號為 8 號。')
+        self.assertEqual(direct['status'], 'paused')
+        known = verified(direct)
+        self.assertEqual([row['value'] for row in known.values()], ['4 份', '黃未晴', '8 號'])
+        self.assertEqual(direct['work_plan']['scope_reply']['parts'][0]['value_evidence']['quote'], '黃未晴')
+        validate_database(held.path)
+
+        restored_question = restored(Store(self.root / 'people-0' / 'assistant.sqlite3'), 'still-waiting-person')
+        provisional = verified(a.get_goal(restored_question, self.sid, gid))
+        accepted = reply(restored_question, '黃未晴。')
+        self.assertEqual(verified(accepted)[2]['value'], '黃未晴')
+        self.assertEqual(verified(accepted)[3], provisional[3])
+        a.run_goal(restored_question, self.sid, gid, ScriptedEngine(ask(4)), max_steps=1)
+        revision = '封條號為 5 號。更正「北廊的點收人是誰？」為「魏不凡」。'
+        updated = reply(restored_question, revision)
+        latest = verified(updated)
+        self.assertEqual(latest[1], initial)
+        self.assertEqual(latest[2]['value'], '魏不凡')
+        self.assertEqual(latest[3], provisional[3])
+        self.assertEqual(latest[4]['value'], '5 號')
+        change, = updated['work_plan']['scope_reply']['revisions']
+        self.assertEqual(change['previous']['step'], verified(accepted)[2]['reply_step'])
+        span = change['value_evidence']
+        self.assertEqual(revision[span['start']:span['end']], '魏不凡')
+
+        completed_store = restored(restored_question, 'named-and-restored')
+        done = [{**row, 'state': 'done', 'evidence_steps': [2, latest[row['id']]['reply_step']]} for row in rows]
+        report = '\n'.join(f'{row["value"]} {row["citation"]} [D1:L{n}]' for n, row in sorted(latest.items()))
+        final = a.run_goal(completed_store, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=done, reuse_document_steps=[2]),
+            action('finish', report=report.replace('魏不凡', '黃未晴')),
+            action('finish', report=report)), max_steps=3)
+        self.assertIn('現行已核對的答覆', final['steps'][-2]['observation']['error'])
+        self.assertEqual(final['status'], 'report_ready')
+        validate_database(completed_store.path)
+
+    def test_person_reply_keeps_same_named_roles_unassigned_until_given_exact_names(self):
+        doc = self.root / 'contacts.txt'
+        doc.write_text('前門在走道。\n後門在廊下。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, doc)
+        gid = a.create_goal(self.store, self.sid, '核對前門與後門的接收人。')
+        questions = [f'{place}的接收人是誰？' for place in ('前門', '後門')]
+        rows = [item(1, '核對前門'), item(2, '核對後門')]
+        parts = [{'question': q, 'items': [i]} for i, q in enumerate(questions, 1)]
+        required = [{'id': i, 'confirmation_question': q, 'ranges': [{'document_id': did, 'start_line': i, 'end_line': i}]}
+                    for i, q in enumerate(questions, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('ask', question='\n'.join(questions), plan_questions=parts), gid=gid)
+
+        def reply(text):
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)
+
+        pending = reply('接收人為林未央。')
+        self.assertEqual(pending['question'], '\n'.join(questions))
+        proof = pending['work_plan']['scope_reply']
+        self.assertEqual(proof['verified_confirmations'], [])
+        self.assertEqual(proof['unassigned_people'][0]['questions'], questions)
+        state = reply('後門的接收人為魏不凡。前門的接收人為林未央。')
+        checks = state['work_plan']['delivery_review']['verified_confirmations']
+        self.assertEqual({row['question']: row['value'] for row in checks}, dict(zip(questions, ('林未央', '魏不凡'))))
+        validate_database(self.store.path)
+
     def test_count_reply_keeps_other_confirmations_and_asks_only_ambiguous_quantity(self):
         path = self.root / 'tray-counts.txt'
         path.write_text('本批稽核員由使用者確認。\n每盤有 8 株。\n架號由本輪指定。\n封條由本輪指定。', encoding='utf-8')
