@@ -29,6 +29,29 @@ def signature(suite):
     return {**fingerprint(suite), 'collector_sha256': hashlib.sha256(b''.join(path.read_bytes() for path in paths)).hexdigest()}
 
 
+def _required_patterns(patterns, message):
+    if not isinstance(patterns, list) or not patterns or any(
+            not isinstance(pattern, str) or not pattern.strip() or re.fullmatch(pattern, '') is not None
+            for pattern in patterns):
+        raise ValueError(message)
+    return patterns
+
+
+def _validate_question_rule(rule):
+    keys = rule.keys() & {'question_has', 'question_forms'}
+    if len(keys) != 1:
+        raise ValueError('提問規約須選用一組必要片段或完整問句變體。')
+    key, = keys
+    message = '提問規約需有可核對的非空問句條件。'
+    if key == 'question_forms':
+        _required_patterns(rule[key], message)
+    elif not rule[key]:
+        raise ValueError(message)
+    patterns = rule[key]
+    for pattern in patterns + rule.get('question_excludes', []):
+        re.compile(pattern)
+
+
 def validate_cases(cases):
     if not isinstance(cases, list) or not cases:
         raise ValueError('多輪任務題庫不能為空。')
@@ -43,11 +66,10 @@ def validate_cases(cases):
             if not 1 <= case['first_steps'] <= 6:
                 raise ValueError('分段更正必須設定前置步數。')
         if waiting := case.get('waiting_guidance'):
-            if 'guidance' in case or not waiting['question_has'] or type(waiting['withdraw']) is not bool:
+            if 'guidance' in case or type(waiting['withdraw']) is not bool:
                 raise ValueError('待答更正須指定原問題及是否撤下。')
             autonomy.text(waiting['text'], 4000)
-            for pattern in waiting['question_has']:
-                re.compile(pattern)
+            _validate_question_rule(waiting)
             if 'remaining_question' in waiting:
                 autonomy.text(waiting['remaining_question'], 800)
                 if not waiting['withdraw']:
@@ -60,9 +82,10 @@ def validate_cases(cases):
             if case.get('expected_json') is not None or case.get('source_lines'):
                 raise ValueError('等待補充案例應直接核對問題與暫表文字。')
             question = case['expected_question']
-            if not question['question_has']:
-                raise ValueError('等待補充案例須明列必要的問題內容。')
-            for pattern in question['question_has'] + question.get('question_excludes', []):
+            _validate_question_rule(question)
+            if question.keys() & {'partial_has', 'partial_omits'}:
+                _required_patterns(question.get('partial_has'), '等待補充案例須明列暫表的必要內容。')
+            for pattern in question.get('partial_has', []) + question.get('partial_omits', []):
                 re.compile(pattern)
         if not (case.get('must_match') or 'expected_json' in case):
             raise ValueError('每案須有可核對的交付條件。')
@@ -71,10 +94,7 @@ def validate_cases(cases):
             raise ValueError('每案最多六次固定答覆。')
         for reply in replies:
             autonomy.text(reply['answer'], 4000)
-            if not reply['question_has']:
-                raise ValueError('預設答覆須有可核對的提問條件。')
-            for pattern in reply['question_has'] + reply.get('question_excludes', []):
-                re.compile(pattern)
+            _validate_question_rule(reply)
             if 'partial_has' in reply and not reply['partial_has']:
                 raise ValueError('暫表驗收須明列必要內容。')
             if 'restore_before' in reply and (reply['restore_before'] is not True or 'partial_has' not in reply):
@@ -91,6 +111,8 @@ def validate_cases(cases):
             re.compile(claim['claim'])
             if not claim['claim'] or not claim['sources'] or 'expected_json' in case:
                 raise ValueError('同列引用驗收須明列主張及其支持來源，並使用文字成果。')
+            if 'row_selector' in claim:
+                _required_patterns([claim['row_selector']], '主張列格式須明確辨識欄位。')
             for source in [*claim['sources'], *claim.get('forbidden_sources', ())]:
                 kind = source['kind']
                 if kind == 'document':
@@ -114,6 +136,8 @@ def validate_cases(cases):
 
 
 def question_matches(question, rule):
+    if 'question_forms' in rule:
+        return any(re.fullmatch(pattern, question.strip()) for pattern in rule['question_forms'])
     return all(re.search(pattern, question) for pattern in rule['question_has'])
 
 
@@ -137,14 +161,21 @@ def claim_support(case, final, report, turns):
                    and reply['citation'] in line for reply in final.get('reply_sources', ()))
 
     result = []
+    lines = [(line, USER_CITATION.sub('', CITATION.sub('', line))) for line in report.splitlines()]
     for claim in case.get('claim_sources', ()):
-        matching = [line for line in report.splitlines()
-                    if re.search(claim['claim'], USER_CITATION.sub('', CITATION.sub('', line)))]
+        selector = claim.get('row_selector', claim['claim'])
+        matching = [(line, content) for line, content in lines if re.search(selector, content)]
         result.append(bool(matching) and all(
-            all(supports(source, line) for source in claim['sources'])
+            re.search(claim['claim'], content) is not None
+            and all(supports(source, line) for source in claim['sources'])
             and not any(supports(source, line) for source in claim.get('forbidden_sources', ()))
-            for line in matching))
+            for line, content in matching))
     return result
+
+
+def _partial_matches(partial, rule):
+    return (all(re.search(pattern, partial) for pattern in rule['partial_has'])
+            and not any(re.search(pattern, partial) for pattern in rule.get('partial_omits', ())))
 
 
 def score(case, final, files, turns, calls):
@@ -181,8 +212,7 @@ def score(case, final, files, turns, calls):
             before = reply_events[index]['before']
             partial = before.get('partial_result', '')
             return (before['status'] == 'needs_input' and not before['artifacts'] and not before['result']
-                    and all(re.search(p, partial) for p in rule['partial_has'])
-                    and not any(re.search(p, partial) for p in rule.get('partial_omits', ())))
+                    and _partial_matches(partial, rule))
 
         checks['intermediate_waiting'] = all(checkpoint_passes(index, rule) for index, rule in checkpoints)
     restores = [index for index, rule in checkpoints if rule.get('restore_before')]
@@ -213,6 +243,8 @@ def score(case, final, files, turns, calls):
         checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
                                                and question_matches(final['question'], question)
                                                and not any(re.search(p, final['question']) for p in question.get('question_excludes', ())))
+        if 'partial_has' in question:
+            checks['partial_content'] = _partial_matches(final.get('partial_result', ''), question)
     if 'expected_json' in case:
         try:
             actual = strict_json(report)

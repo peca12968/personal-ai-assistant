@@ -39,7 +39,7 @@ def cases_for(suite):
     for case in cases:
         if case.keys() - FIELDS or (case.get('expected_question') and case['file_delivery']):
             raise ValueError('配對題只接受相同公開回合、共同成果及待答條件。')
-        if any(reply.keys() - {'question_has', 'question_excludes', 'answer', 'partial_has', 'partial_omits'}
+        if any(reply.keys() - {'question_has', 'question_forms', 'question_excludes', 'answer', 'partial_has', 'partial_omits'}
                for reply in case.get('replies', ())):
             raise ValueError('配對題不使用還原等產品專屬條件。')
     return cases

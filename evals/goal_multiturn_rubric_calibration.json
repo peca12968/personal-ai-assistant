@@ -1,0 +1,66 @@
+[
+  {
+    "id": "print_folders_distributed_count",
+    "file_delivery": false,
+    "prompt": "整理講座講義袋的派發卡。先只問本批實際派發的袋數。回收袋數與每袋份數都已在規則。確認後列派發袋數、保留回收袋數及派發的講義總數，每項同行引用。只用本批確認的派發袋數。",
+    "documents": [{"name": "folder-rules.txt", "content": "本批講義袋規則\n保留 4 袋供回收，不計入派發。\n每袋派發講義 7 份。"}],
+    "replies": [{
+      "question_forms": [
+        "(?:(?:請問|請確認|請告知|請提供)[:：，, ]*)?(?:這(?:一)?批|本批|這次|本次)?[ ：:]*(?:(?:實際|需|要|將|預計)[ ]*){0,2}(?:派發|發放|發出|發)(?:(?:了|的|出|給)[ ]*)?(?:多少|幾)[ ]*(?:個|份)?(?:講義)?袋(?:數)?[？?。]?",
+        "(?:(?:請問|請確認|請告知|請提供)[:：，, ]*)?(?:這(?:一)?批|本批|這次|本次)?[ ：:]*(?:實際)?(?:派發|發放)(?:的)?(?:講義)?(?:袋數|袋的數量)(?:(?:為|是)?[ ]*(?:多少|幾袋))?[？?。]?",
+        "(?:請問)?(?:這批|本批)(?:講座)?講義袋實際派發(?:了)?(?:幾|多少)袋[？?]",
+        "(?:請問)?(?:這批|本批)實際派發(?:了)?(?:幾|多少)袋講義[？?]"
+      ],
+      "answer": "本批實際派發 9 袋，回收袋另計。"
+    }],
+    "must_match": ["9\\s*袋", "4\\s*袋", "63\\s*份"],
+    "must_omit": ["91\\s*份", "35\\s*份"],
+    "claim_sources": [
+      {"claim": "9\\s*袋", "sources": [{"kind": "reply", "index": 0, "text": "派發 9 袋"}]},
+      {"claim": "4\\s*袋", "sources": [{"kind": "document", "doc": 0, "line": 2, "text": "4 袋"}]},
+      {"claim": "63\\s*份", "sources": [{"kind": "document", "doc": 0, "line": 3, "text": "7 份"}, {"kind": "reply", "index": 0, "text": "派發 9 袋"}]}
+    ]
+  },
+  {
+    "id": "exhibition_current_edition_rows",
+    "file_delivery": false,
+    "prompt": "核對小展的最終佈置。先只問最終採用哪個版本。交付時以「採用版本」開頭寫一行，用本輪答覆引用選擇。接著以「照明」開頭寫一行，列該版本的照明並同行附適用文件原行；可在照明行再提選用版名。只列現行版本、燈色。",
+    "documents": [
+      {"name": "layout-sea.txt", "content": "晨海版展檯\n晨海版照明用琥珀燈。"},
+      {"name": "layout-bay.txt", "content": "岩灣版展檯\n岩灣版照明用青白燈。"}
+    ],
+    "replies": [{"question_has": ["版本|晨海|岩灣"], "question_excludes": ["(?:照明|燈色).{0,12}[？?]"], "answer": "本輪正式採用岩灣版。"}],
+    "must_match": ["岩灣版", "青白燈"],
+    "must_omit": ["晨海版", "琥珀燈"],
+    "claim_sources": [
+      {"row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?採用版本", "claim": "採用版本(?:\\*\\*)?\\s*[:：|]?\\s*(?:為|是)?\\s*岩灣版(?=\\s|[|。]|$)",
+       "sources": [{"kind": "reply", "index": 0, "text": "正式採用岩灣版"}]},
+      {"row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?照明", "claim": "照明(?:\\*\\*)?\\s*[:：|]?\\s*(?:岩灣版(?:的|用|使用)?\\s*)?(?:採|使用)?青白燈(?=\\s|[|。（(]|$)",
+       "sources": [{"kind": "document", "doc": 1, "line": 2, "text": "青白燈"}],
+       "forbidden_sources": [{"kind": "document", "doc": 0, "line": 2, "text": "琥珀燈"}]}
+    ]
+  },
+  {
+    "id": "audio_capsule_pending_check",
+    "file_delivery": false,
+    "prompt": "整理盒裝音檔入櫃的現況暫表。暫表每欄一行且附來源，寫「封袋」及「盤點碼」，只列 B-8 現況。若尚缺本批盤點碼，只問本批盤點碼。確認以前不出定稿。舊批代碼不得列入暫表。",
+    "documents": [
+      {"name": "capsule-rules.txt", "content": "音檔入櫃需本批封袋及盤點碼。"},
+      {"name": "capsule-state.txt", "content": "本批 B-8 已完成封袋。\nB-8 盤點碼仍未登記。\n舊批 B-7 盤點碼 E-540。"}
+    ],
+    "expected_question": {
+      "question_has": ["盤點碼"],
+      "question_excludes": ["封袋.{0,8}[？?]", "E-540"],
+      "partial_has": ["封袋", "盤點碼", "待|未"],
+      "partial_omits": ["B-7", "E-540"]
+    },
+    "must_match": ["盤點碼"],
+    "claim_sources": [
+      {"row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?封袋", "claim": "封袋(?:狀態)?(?:\\*\\*)?\\s*[:：|]\\s*(?:B-8\\s*)?(?:已完成|完成|已封袋)",
+       "sources": [{"kind": "document", "doc": 1, "line": 1, "text": "已完成封袋"}]},
+      {"row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?盤點碼", "claim": "盤點碼(?:\\*\\*)?\\s*[:：|]\\s*(?:B-8\\s*)?(?:(?:尚|仍)?未(?:登記|確認|收到)|待(?:補|確認|登記)|缺(?:少|漏)?)",
+       "sources": [{"kind": "document", "doc": 1, "line": 2, "text": "未登記"}],
+       "forbidden_sources": [{"kind": "document", "doc": 1, "line": 3, "text": "E-540"}]}
+    ]
+  }
+]
