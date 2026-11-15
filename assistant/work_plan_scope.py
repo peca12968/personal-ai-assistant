@@ -21,6 +21,17 @@ _COLLECT_FIELD = re.compile(r'^(?:確認|記錄|登記|填寫)')
 _ASK_FIELD = re.compile(r'(?:是誰|為誰|是哪位|是什麼|是多少|有多少|要用哪個|是哪一個|是哪個)[？?]$')
 _NUMERIC_QUESTION = re.compile(r'(?:是|有)多少[？?]$')
 _PERSON_QUESTION = re.compile(r'(?:是誰|為誰|是哪位)[？?]$')
+_TEXT_QUESTION = re.compile(r'(?:是什麼|是哪個|是哪一個|要用哪個|是哪種|要用哪種|用哪種|在哪裡|在哪兒|在何處)[？?]$')
+_PLACE_QUESTION = re.compile(r'(?:在哪裡|在哪兒|在何處)[？?]$')
+_PLACE_FIELD = re.compile(r'(?:地點|位置|集合點|會場|場地)$')
+_PLACE_ASSIGN = re.compile(r'(?:已確認在|確定在|位於|在)\s*(.+)')
+_TEXT_LITERAL = re.compile(r'[A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff][A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff ._/\-·‧（）()＋+－]{0,39}')
+_TEXT_STATUS = re.compile(r'^(?:(?:目前|這次|本次|我)\s*)?(?:不使用|不採用|不選|不在|未選定|'
+                          r'未指定|未決定|尚不|仍不|不可|不能|不要|是否|請問|還需要|等待|'
+                          r'待核對|待決定|沒決定|未定|先別|不知道|例如|原文寫|聽說|據說|改用|等一下|等候)')
+_TEXT_STATUS_END = re.compile(r'(?:待定|未定|待核對|再確認|稍後決定|未決定|僅供參考|可能適用|沒採用|不採用)[）)]?$')
+_TEXT_QUALIFIER = re.compile(r'(?:但|不過|只是)(?:尚|還|仍|要|須|另|得|未|不|待)')
+_TEXT_PLACEHOLDER = frozenset('tbd unknown none null na pending 沒有 等等 尚待確認'.split())
 _PERSON_NAME = re.compile(r'[\u3400-\u9fff]{2,6}(?:[·・‧][\u3400-\u9fff]{1,6})?')
 _PERSON_MODAL = re.compile(r'^(?:可能|或許|大概|應該|也許|似乎|看來|暫定|暫未|尚未|還沒|還未|仍未|'
                           r'不確定|不知道|不清楚|未確認|未確定|未安排|未指派|待確認|待指派|還要|有待|'
@@ -51,6 +62,8 @@ _POST_CANCEL = re.compile(r'(.{2,90}?)\s*(?:先不用了|不用了|先不做了|
 _PLAIN_COMMA = re.compile(r'\s*(?!\s*「)|\s*「[^」\r\n]+」\s*(?:先不用了|不用了|先不做了|不做了|先取消|取消掉)')
 _BEFORE_BARE_COUNT = rf'(?!\s*{_AMOUNT}\s*[{_COUNT_UNITS}])'
 _COUNT_COMMA = re.compile(rf'{_BEFORE_BARE_COUNT}(?:{_PLAIN_COMMA.pattern})')
+_QUOTED_TEXT_ASSIGN = r'\s*「[^「」\r\n]{1,31}」\s*(?:已確認為|已確認是|確定為|確定是|為|是|在|：|:)'
+_TEXT_COMMA = re.compile(rf'{_COUNT_COMMA.pattern}|{_QUOTED_TEXT_ASSIGN}')
 _KEEP_ALL = {'都保留', '都先保留', '兩項都保留', '都不取消', '不取消'}
 _REVISION_VERB = r'(?:改成|改為|更正為|更正成|應改為)'
 _REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))\s*'
@@ -67,6 +80,7 @@ _DECLINED_PROPOSAL = re.compile(r'(?:有人|同事|對方|主管)?\s*(?:曾)?(?:
                                 r'(?:「[^」\r\n]{1,200}」|『[^』\r\n]{1,200}』)\s*[，,、]?\s*' + _DECLINE)
 _QUALIFIED_REVISION_COMMA = re.compile(rf'{_REVISION_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*(?:正式\s*)?{_REVISION_VERB}')
 _COUNT_REVISION_COMMA = re.compile(rf'{_BEFORE_BARE_COUNT}(?:{_QUALIFIED_REVISION_COMMA.pattern})')
+_TEXT_REVISION_COMMA = re.compile(rf'{_COUNT_REVISION_COMMA.pattern}|{_QUOTED_TEXT_ASSIGN}')
 _PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
 _FILENAME_REPLY_COMMA = re.compile(rf'{_PENDING_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*{_REVISION_VERB}')
 _FIELD_DELAY = r'(?:(?:晚點|稍後|之後)(?:再)?(?:決定|選擇|確認)|先不(?:決定|選擇|確認)|還沒決定)'
@@ -89,9 +103,11 @@ COUNT_REPLY_VERSION = 21
 COUNT_CORRECTION_REPLY_VERSION = 22
 PERSON_REPLY_VERSION = 23
 PERSON_CORRECTION_REPLY_VERSION = 24
-CORRECTION_REPLY_VERSIONS = (PERSON_CORRECTION_REPLY_VERSION, COUNT_CORRECTION_REPLY_VERSION,
-                             NUMERIC_CORRECTION_REPLY_VERSION, QUALIFIED_CORRECTION_REPLY_VERSION,
-                             COMBINED_CORRECTION_REPLY_VERSION)
+TEXT_REPLY_VERSION = 25
+TEXT_CORRECTION_REPLY_VERSION = 26
+CORRECTION_REPLY_VERSIONS = (TEXT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION,
+                             COUNT_CORRECTION_REPLY_VERSION, NUMERIC_CORRECTION_REPLY_VERSION,
+                             QUALIFIED_CORRECTION_REPLY_VERSION, COMBINED_CORRECTION_REPLY_VERSION)
 CONFIRMATION_CORRECTION = 'confirmation_correction'
 
 
@@ -382,21 +398,25 @@ def confirmation_targets(steps, scope):
     return targets
 
 
-def _confirmation_field_matches(field, targets, *, qualified):
+def _confirmation_field_matches(field, targets, *, qualified, text_literals=False):
     return [question for question, target in targets.items() if field == target['field'] or (
-        qualified and _FIELD_NAME.fullmatch(field) and field == _question_field_name(question))]
+        qualified and _FIELD_NAME.fullmatch(field)
+        and field in _bound_field_names(question, target['field'], text_literals=text_literals))]
 
 
-def _confirmation_literal(literal, questions, number, person_names):
+def _confirmation_literal(literal, questions, number, *, person_names, text_literals):
     if literal is None:
         return None
     literal = literal.strip()
+    if text_literals and all(_TEXT_QUESTION.search(question) for question in questions):
+        return _text_literal(literal)
     if person_names and all(_PERSON_QUESTION.search(question) for question in questions):
         return _person_literal(literal)
     return _value(literal, number=number)
 
 
-def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False, number=_NUMBER, person_names=False):
+def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False, number=_NUMBER,
+                           person_names=False, text_literals=False):
     requested = {}
     remaining = []
     choice = None
@@ -413,7 +433,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             matches, literal = ([match[1]] if match[1] in targets else []), match[2]
         elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
             field = (match[1] or match[2]).strip()
-            matches = _confirmation_field_matches(field, targets, qualified=qualified)
+            matches = _confirmation_field_matches(field, targets, qualified=qualified, text_literals=text_literals)
             literal = match[3]
         else:
             remaining.append((start, clause))
@@ -421,7 +441,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
         if not matches:
             remaining.append((start, clause))
             continue
-        value = _confirmation_literal(literal, matches, number, person_names)
+        value = _confirmation_literal(literal, matches, number, person_names=person_names, text_literals=text_literals)
         if len(matches) != 1:
             if (not qualified or withdrawal or choice or value is None
                     or not all(targets[question]['confirmed'] for question in matches)
@@ -440,7 +460,7 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
 
 
 def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False, bind_numeric=False,
-                            number=_NUMBER, person_names=False):
+                            number=_NUMBER, person_names=False, text_literals=False):
     active = {row['id']: row for row in plan['items'] if row['state'] != 'superseded'}
     result = []
     for question, (value, evidence) in requested.items():
@@ -455,20 +475,22 @@ def _confirmation_revisions(steps, plan, targets, requested, *, qualified=False,
                      if part['question'] == question and part.get('value') == rows[0]['value']]
             if not {row['id'] for row in rows} <= {number for part in parts for number in part['items']}:
                 raise ValueError('更正缺少相符的原始確認證據。')
-            prior = {'field': target['field'], 'items': [row['id'] for row in rows], 'collected_items': [],
+            labels = _bound_field_names(question, target['field'], text_literals=text_literals)
+            field = target['field'] or (next(iter(labels), '') if text_literals else '')
+            prior = {'field': field, 'items': [row['id'] for row in rows], 'collected_items': [],
                      'value': rows[0]['value'], 'evidence': parts[0]['evidence'], 'step': sequence,
                      'step_sha256': goal_stages.digest(step), 'citation': rows[0]['citation'], 'source_sha256': rows[0]['sha256']}
             if bind_numeric and (previous_value := parts[0].get('value_evidence')):
                 prior['value_evidence'] = previous_value
             fields = None
             if qualified:
-                fields = {field for field in {_question_field_name(question), target['field']}
-                          if field and _confirmation_field_matches(field, targets, qualified=True) == [question]}
-            revision = _revision_entry(plan, active, target['field'], question, prior, value, evidence,
+                fields = {label for label in labels if label and _confirmation_field_matches(
+                    label, targets, qualified=True, text_literals=text_literals) == [question]}
+            revision = _revision_entry(plan, active, field, question, prior, value, evidence,
                                        dependency_fields=fields)
             revision['recheck_items'] = sorted(set(revision['recheck_items']) | set(prior['items']))
             if value is not None and ((bind_numeric and number.fullmatch(value))
-                                      or (person_names and _PERSON_QUESTION.search(question))):
+                                      or _language_field(question, person_names=person_names, text_literals=text_literals)):
                 revision['value_evidence'] = _accepted_value_span(value, evidence)
             result.append(revision)
     return result
@@ -543,6 +565,20 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
 def _question_field_name(question):
     match = _ASK_FIELD.search(question)
     return question[:match.start()].removeprefix('請問').strip() if match else ''
+
+
+def _bound_field_names(question, legacy_name, *, text_literals=False):
+    if text_literals and (match := _TEXT_QUESTION.search(question)):
+        complete = question[:match.start()].removeprefix('請問').strip()
+        if re.fullmatch(r'「[^「」]+」', complete):
+            complete = complete[1:-1]
+        return dict.fromkeys((complete, legacy_name, complete.rsplit('的', 1)[-1]))
+    return dict.fromkeys((_question_field_name(question), legacy_name))
+
+
+def _language_field(question, *, person_names, text_literals):
+    return ((person_names and _PERSON_QUESTION.search(question))
+            or (text_literals and _TEXT_QUESTION.search(question)))
 
 
 def _asked_field(part, tasks):
@@ -648,11 +684,12 @@ def observe_reply(steps, source, scope, prior_scope, *, version=1, delivery=None
         return _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks,
                                             qualified=version != COMBINED_CORRECTION_REPLY_VERSION,
                                             bind_numeric=version >= NUMERIC_CORRECTION_REPLY_VERSION,
-                                            count_units=version in (COUNT_CORRECTION_REPLY_VERSION, PERSON_CORRECTION_REPLY_VERSION),
-                                            person_names=version == PERSON_CORRECTION_REPLY_VERSION)
-    if version in (COUNT_REPLY_VERSION, PERSON_REPLY_VERSION):
+                                            count_units=version >= COUNT_CORRECTION_REPLY_VERSION,
+                                            person_names=version >= PERSON_CORRECTION_REPLY_VERSION,
+                                            text_literals=version == TEXT_CORRECTION_REPLY_VERSION)
+    if version in (COUNT_REPLY_VERSION, PERSON_REPLY_VERSION, TEXT_REPLY_VERSION):
         return _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks,
-                                    person_names=version == PERSON_REPLY_VERSION)
+                                    person_names=version >= PERSON_REPLY_VERSION, text_literals=version == TEXT_REPLY_VERSION)
     if version == RECONFIRMATION_REPLY_VERSION:
         targets = _pending_confirmation_targets(steps, parts)
         if not targets:
@@ -892,39 +929,78 @@ def _person_reply_value(text, *, bare=False, question=False):
     return None
 
 
-def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count_units=False,
-                    person_names=False, question_offsets=()):
+def _text_pending(value):
+    return (value.casefold() in _TEXT_PLACEHOLDER or _person_pending(value)
+            or _TEXT_STATUS.search(value) is not None or _TEXT_STATUS_END.search(value) is not None
+            or _TEXT_QUALIFIER.search(value) is not None)
 
+
+def _text_literal(text):
+    value = text[1:-1].strip() if re.fullmatch(r'「[^「」]+」', text) else text
+    if _text_pending(value) or '或' in value or '、' in value:
+        return None
+    return value if _TEXT_LITERAL.fullmatch(value) else None
+
+
+def _text_reply_value(text, question, label, *, bare=False, inquiry=False):
+    assignment = _ASSIGN.fullmatch(text)
+    if not assignment and (_PLACE_QUESTION.search(question) or _PLACE_FIELD.search(label)):
+        assignment = _PLACE_ASSIGN.fullmatch(text)
+    literal = assignment[1] if assignment else text
+    quoted = re.fullmatch(r'「([^「」]+)」', literal)
+    value = quoted[1].strip() if quoted else literal
+    if inquiry or _text_pending(value):
+        return 'deferred', None
+    choices = re.split(r'\s*(?:或者|或是|或|、)\s*', value)
+    if len(choices) > 1 and all(_text_literal(choice) for choice in choices):
+        return 'ambiguous', None
+    if (assignment or (bare and quoted)) and (accepted := _text_literal(literal)):
+        return 'confirmed', accepted
+    return None
+
+
+def _bound_field_answer(clause, question, name, quoted, *, inquiry, person, literal):
+    for label in filter(None, _bound_field_names(question, name, text_literals=literal)):
+        if (person or literal) and quoted and quoted[1].startswith(label):
+            rest = quoted[1][len(label):].strip()
+            if (_person_reply_value(rest) if person else _text_reply_value(rest, question, label)):
+                return 'deferred', None
+        quoted_label = f'「{label}」'
+        prefix = quoted_label if (person or literal) and clause.startswith(quoted_label) else label
+        if not clause.startswith(prefix):
+            continue
+        rest = clause[len(prefix):].strip()
+        if person:
+            outcome = _person_reply_value(rest, question=inquiry)
+        elif literal:
+            outcome = _text_reply_value(rest, question, label, inquiry=inquiry)
+        else:
+            outcome = _count_reply_value(rest, question)
+        if outcome:
+            return outcome
+    return None
+
+
+def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count_units=False,
+                    person_names=False, text_literals=False, question_offsets=()):
     statements, unassigned = {}, []
     active = [index for index, part in enumerate(parts) if set(part['items']) - cancelled]
     for start, raw in clauses:
         clause = re.sub('^' + _REPLY_CONNECTOR, '', raw, count=1)
         evidence = _literal_span(start, raw)
         matches = []
-        quoted = _PERSON_QUOTE.fullmatch(clause) if person_names else None
+        quoted = _PERSON_QUOTE.fullmatch(clause) if person_names or text_literals else None
         for index in active:
             question = parts[index]['question']
             numeric = bool(_NUMERIC_QUESTION.search(question))
             person = person_names and _PERSON_QUESTION.search(question)
+            literal = text_literals and _TEXT_QUESTION.search(question)
             name = fields[index]
-            if person or (count_units and numeric and start not in question_offsets):
-                names = dict.fromkeys((_question_field_name(question), name))
-                for label in filter(None, names):
-                    if person and quoted and quoted[1].startswith(label):
-                        rest = quoted[1][len(label):].strip()
-                        if _person_reply_value(rest):
-                            matches.append((index, ('deferred', None)))
-                            break
-                    quoted_label = f'「{label}」'
-                    prefix = quoted_label if person and clause.startswith(quoted_label) else label
-                    if not clause.startswith(prefix):
-                        continue
-                    rest = clause[len(prefix):].strip()
-                    outcome = (_person_reply_value(rest, question=start in question_offsets) if person
-                               else _count_reply_value(rest, question))
-                    if outcome:
-                        matches.append((index, outcome))
-                        break
+            if person or literal or (count_units and numeric and start not in question_offsets):
+                outcome = _bound_field_answer(clause, question, name, quoted, inquiry=start in question_offsets,
+                                              person=person, literal=literal)
+                if outcome:
+                    matches.append((index, outcome))
             elif start not in question_offsets and name and clause.startswith(name):
                 rest = clause[len(name):].strip()
                 outcome = _reply_value(rest)
@@ -940,6 +1016,10 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count
                     if len(active) == 1 and (outcome := _person_reply_value(
                             clause, bare=True, question=start in question_offsets)):
                         matches.append((index, outcome))
+                elif text_literals and _TEXT_QUESTION.search(question):
+                    if len(active) == 1 and (outcome := _text_reply_value(
+                            clause, question, fields[index], bare=True, inquiry=start in question_offsets)):
+                        matches.append((index, outcome))
                 elif start in question_offsets:
                     continue
                 elif count_units and numeric:
@@ -954,7 +1034,8 @@ def _natural_fields(clauses, parts, fields, cancelled, *, allow_bare=True, count
                 matches = [(active[0], ('deferred', None))]
         if count_units and len(matches) > 1 and all(
                 _NUMERIC_QUESTION.search(parts[index]['question'])
-                or (person_names and _PERSON_QUESTION.search(parts[index]['question'])) for index, _ in matches):
+                or _language_field(parts[index]['question'], person_names=person_names, text_literals=text_literals)
+                for index, _ in matches):
             unassigned.append({'evidence': evidence, 'questions': [parts[index]['question'] for index, _ in matches]})
             continue
         if len(matches) != 1:
@@ -1045,7 +1126,7 @@ def _observe_combined_evidence_reply(steps, plan, source, scope, prior_scope, pa
     return result
 
 
-def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, person_names=False):
+def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, *, person_names=False, text_literals=False):
     if (not plan.get('verify_delivery') or 'plan_questions' not in steps[-1]['action']['args']
             or prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or language_followup(steps) or pending_confirmation_target(steps)):
@@ -1053,31 +1134,34 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
     requirements = {row['id']: row for row in plan.get('evidence_requirements', ())}
     required = {number: row['confirmation_question'] for number, row in requirements.items()
                 if 'confirmation_question' in row}
-    question_type = _PERSON_QUESTION if person_names else _NUMERIC_QUESTION
+    question_type = _TEXT_QUESTION if text_literals else _PERSON_QUESTION if person_names else _NUMERIC_QUESTION
     selected_questions = {part['question'] for part in parts if question_type.search(part['question'])
                           and all(required.get(number) == part['question'] for number in part['items'])}
     if not selected_questions:
         return None
     fields = [_asked_field(part, tasks) for part in parts]
-    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=_COUNT_COMMA)
+    comma_before = _TEXT_COMMA if text_literals else _COUNT_COMMA
+    clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before)
     question_offsets = {start for start, _, question in clauses if question}
-    if not clauses or (question_offsets and not person_names):
+    if not clauses or (question_offsets and not (person_names or text_literals)):
         return None
     statements = _natural_fields([(start, clause) for start, clause, _ in clauses], parts, fields, set(),
-                                 count_units=True, person_names=person_names, question_offsets=question_offsets)
+                                 count_units=True, person_names=person_names, text_literals=text_literals,
+                                 question_offsets=question_offsets)
     if statements is None:
         return None
     parsed, unassigned = statements
     allowed_questions = selected_questions
     if person_names:
         allowed_questions = selected_questions | {
-            part['question'] for part in parts if _NUMERIC_QUESTION.search(part['question'])
+            part['question'] for part in parts if (
+                _NUMERIC_QUESTION.search(part['question']) or (text_literals and _PERSON_QUESTION.search(part['question'])))
             and all(required.get(number) == part['question'] for number in part['items'])}
     if any(not set(row['questions']) <= allowed_questions for row in unassigned):
         return None
     if not any(selected_questions.intersection(row['questions']) for row in unassigned) and not any(
             parts[index]['question'] in selected_questions and (
-                row['state'] != 'confirmed' or
+                text_literals or row['state'] != 'confirmed' or
                 (not _value(row['value']) if person_names else not _NUMBER.fullmatch(row['value']))
                 or (_question_field_name(parts[index]['question']) != fields[index]
                     and _question_field_name(parts[index]['question']) in row['evidence']['quote']))
@@ -1094,13 +1178,19 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
     proof = result['scope_reply']
     sequence = len(steps) + 1
     if not _verify_reply_parts(proof, required, confirmations, source, sequence,
-                               carry=True, keep_counts_pending=True, keep_people_pending=person_names):
+                               carry=True, keep_counts_pending=True, keep_people_pending=person_names,
+                               keep_text_pending=text_literals):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
     if unassigned:
         numeric_unassigned = [row for row in unassigned if all(_NUMERIC_QUESTION.search(question) for question in row['questions'])]
         if numeric_unassigned:
             proof['unassigned_counts'] = numeric_unassigned
+        if text_literals:
+            text_unassigned = [row for row in unassigned if any(_TEXT_QUESTION.search(question) for question in row['questions'])]
+            if text_unassigned:
+                proof['unassigned_text'] = text_unassigned
+            unassigned = [row for row in unassigned if row not in text_unassigned]
         if len(numeric_unassigned) != len(unassigned):
             proof['unassigned_people'] = [row for row in unassigned if row not in numeric_unassigned]
     if withdrawals:
@@ -1110,13 +1200,14 @@ def _observe_typed_reply(steps, plan, source, scope, prior_scope, parts, tasks, 
 
 
 def _verify_reply_parts(proof, required, confirmations, source, sequence, *, carry,
-                        keep_counts_pending=False, keep_people_pending=False):
+                        keep_counts_pending=False, keep_people_pending=False, keep_text_pending=False):
     for part in proof['parts']:
         if part['state'] == 'unanswered':
             continue
         typed = all(required.get(number) == part['question'] for number in part['items'])
         recognized = typed and ((keep_counts_pending and _NUMERIC_QUESTION.search(part['question']))
-                                or (keep_people_pending and _PERSON_QUESTION.search(part['question'])))
+                                or _language_field(part['question'], person_names=keep_people_pending,
+                                                   text_literals=keep_text_pending))
         if part['state'] != 'confirmed':
             if recognized:
                 continue
@@ -1163,7 +1254,8 @@ def _resolve_confirmation_target(pending, requested, remaining):
 
 
 def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts, tasks, *,
-                                 qualified=False, bind_numeric=False, count_units=False, person_names=False):
+                                 qualified=False, bind_numeric=False, count_units=False,
+                                 person_names=False, text_literals=False):
     if (prior_scope != steps[-1]['observation'].get('goal_conditions_sha256')
             or 'plan_questions' not in steps[-1]['action']['args']
             or (language_followup(steps) or {}).get('cancellation')):
@@ -1174,10 +1266,12 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     pending = pending_confirmation_target(steps) if qualified else None
     if pending:
         parts = parts[1:]  # The generated target question is separate from the original open fields.
-    if person_names and not any(
-            _PERSON_QUESTION.search(question) and (
+    question_type = _TEXT_QUESTION if text_literals else _PERSON_QUESTION if person_names else None
+    if question_type and not any(
+            question_type.search(question) and (
                 question in (pending or {}).get('questions', ())
-                or any(label and label in source['answer'] for label in (_question_field_name(question), target['field'])))
+                or any(label and label in source['answer'] for label in
+                       _bound_field_names(question, target['field'], text_literals=text_literals)))
             for question, target in targets.items()):
         return None
     if count_units and not person_names and not _ADDITIONAL_COUNT.search(source['answer']):
@@ -1190,7 +1284,9 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
             for question, target in targets.items()):
         return None
     comma_before = _QUALIFIED_REVISION_COMMA if qualified else _REVISION_COMMA
-    if count_units:
+    if text_literals:
+        comma_before = _TEXT_REVISION_COMMA
+    elif count_units:
         comma_before = _COUNT_REVISION_COMMA
     clauses = goal_guidance_sources.standalone_clauses(source['answer'], comma_before=comma_before)
     if not clauses or any(question for _, _, question in clauses):
@@ -1198,7 +1294,8 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
     number = _COUNT_NUMBER if count_units else _NUMBER
     try:
         requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=False,
-                                                               qualified=qualified, number=number, person_names=person_names)
+                                                               qualified=qualified, number=number, person_names=person_names,
+                                                               text_literals=text_literals)
     except ValueError:
         if qualified:
             raise
@@ -1223,7 +1320,8 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         choice = pending
     fields = [_asked_field(part, tasks) for part in parts]
     if count_units:
-        statements = _natural_fields(remaining, parts, fields, set(), count_units=True, person_names=person_names)
+        statements = _natural_fields(remaining, parts, fields, set(), count_units=True, person_names=person_names,
+                                     text_literals=text_literals)
         parsed = statements[0] if statements is not None and not statements[1] else None
     else:
         parsed = _direct_reply_fields(remaining, parts, fields) if remaining else {}
@@ -1231,21 +1329,21 @@ def _observe_combined_correction(steps, plan, source, scope, prior_scope, parts,
         if pending or choice:
             raise ValueError('請分開寫明要回答的欄位。待選更正可指定完整欄名及新值，或回答「都不改」。')
         return None
-    if person_names and not (any(_PERSON_QUESTION.search(question) for question in requested)
-            or any(_PERSON_QUESTION.search(question) for question in (choice or {}).get('questions', ()))
-            or any(_PERSON_QUESTION.search(question) for question in (pending or {}).get('questions', ()))
-            or any(_PERSON_QUESTION.search(parts[index]['question']) for index in parsed)):
+    if question_type and not any(question_type.search(question) for question in (
+            *requested, *(choice or {}).get('questions', ()), *(pending or {}).get('questions', ()),
+            *(parts[index]['question'] for index in parsed))):
         return None
     revisions = _confirmation_revisions(steps, plan, targets, requested,
                                          qualified=qualified, bind_numeric=bind_numeric, number=number,
-                                         person_names=person_names)
+                                         person_names=person_names, text_literals=text_literals)
     result = _reply_result(steps, plan, source, scope, prior_scope, parts, fields, tasks, [], parsed, revisions=revisions)
     proof = result['scope_reply']
     sequence = len(steps) + 1
     confirmations = _updated_confirmations(targets, revisions, source, sequence)
     required = {number: question for question, target in targets.items() for number in target['items']}
     if not _verify_reply_parts(proof, required, confirmations, source, sequence,
-                                carry=True, keep_counts_pending=count_units, keep_people_pending=person_names):
+                                carry=True, keep_counts_pending=count_units, keep_people_pending=person_names,
+                                keep_text_pending=text_literals):
         return None
     proof['verified_confirmations'] = list(confirmations.values())
     if choice:
@@ -1732,7 +1830,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
 def replay_reply(db, args, prior, after, goal, replies, guidance, *, delivery_present=False):
     version = args.get('scope_reply_version', 1)
     keys = {'scope_reply', 'scope_reply_version'} if version != 1 else {'scope_reply'}
-    if args.keys() != keys or type(version) is not int or not 1 <= version <= PERSON_CORRECTION_REPLY_VERSION:
+    if args.keys() != keys or type(version) is not int or not 1 <= version <= TEXT_CORRECTION_REPLY_VERSION:
         raise ValueError('已保存的工作清單答覆格式不符。')
     source = next((item for item in replies if item['citation'] == args['scope_reply']), None)
     if source is None:

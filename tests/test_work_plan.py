@@ -1402,6 +1402,123 @@ class WorkPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '工作清單與保存動作'):
             validate_database(final_store.path)
 
+    def test_bound_text_reply_preserves_material_location_and_version_with_literal_sources(self):
+        document = self.root / 'label-proof.txt'
+        document.write_text('盒數依使用者確認。\n外殼材料待填。\n集合點待填。\n版本名稱待填。\n台號待填。',
+                            encoding='utf-8')
+        did = self.store.attach_document(self.sid, document)
+        gid = a.create_goal(self.store, self.sid, '核對盒數、外殼材料、集合點、版本名和台號。')
+        questions = ['盒數是多少？', '外殼材料是什麼？', '集合點在哪裡？', '版本名是哪個？', '台號是多少？']
+        labels = ('盒數', '外殼材料', '集合點', '版本名', '台號')
+        items = [item(n, '核對' + label) for n, label in enumerate(labels, 1)]
+        spans = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 6)]
+        parts = [{'question': q, 'items': [n]} for n, q in enumerate(questions, 1)]
+        required = [{'id': n, 'confirmation_question': q, 'ranges': [spans[n - 1]]}
+                    for n, q in enumerate(questions, 1)]
+
+        def ask(*numbers):
+            selected = [parts[n - 1] for n in numbers]
+            return action('ask', question='\n'.join(part['question'] for part in selected), plan_questions=selected)
+
+        def reply(store, answer):
+            before = goal_replies.snapshot(store, self.sid, gid)
+            goal_replies.save(store, self.sid, gid, answer, expected_fingerprint=before['fingerprint'])
+            return a.get_goal(store, self.sid, gid)
+
+        def kept(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def restore(store, name):
+            prior = a.get_goal(store, self.sid, gid)
+            target = self.root / name
+            backup = create_backup(store.path, target.with_suffix('.paibackup'))
+            restore_backup(backup['path'], target)
+            clone = Store(target / 'assistant.sqlite3')
+            self.assertEqual(a.get_goal(clone, self.sid, gid), prior)
+            return clone
+
+        self.run_actions(action('update_plan', items=items, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=spans), ask(1), gid=gid)
+        box_count = kept(reply(self.store, '盒數為 6 盒。'))[1]
+        self.run_actions(ask(2, 3, 4), gid=gid)
+        uncertain = ('外殼材料可能是不鏽鋼。', '外殼材料不是不鏽鋼。', '外殼材料為不鏽鋼或鋁合金。',
+                     '外殼材料是不鏽鋼嗎？', '例如「外殼材料為不鏽鋼」。', '外殼材料為 TBD。',
+                     '外殼材料為不鏽鋼但還要再問。')
+        for index, phrase in enumerate(uncertain):
+            with self.subTest(phrase=phrase):
+                store = restore(self.store, f'text-uncertain-{index}')
+                state = reply(store, '集合點確定在未央館，「版本名」為「R2.1 未央修訂版」。' + phrase)
+                saved = kept(state)
+                self.assertEqual(state['question'], questions[1])
+                self.assertEqual(state['steps'][-1]['action']['args']['plan_questions'], [parts[1]])
+                self.assertEqual(saved[1], box_count)
+                self.assertEqual(saved[3]['value'], '未央館')
+                self.assertEqual(saved[4]['value'], 'R2.1 未央修訂版')
+                self.assertNotIn(2, saved)
+                proof = state['work_plan']['scope_reply']['parts'][0]
+                self.assertIn(proof['state'], ('ambiguous', 'deferred'))
+                validate_database(store.path)
+
+        saved_reply = Store(self.root / 'text-uncertain-0' / 'assistant.sqlite3')
+        retained = kept(a.get_goal(saved_reply, self.sid, gid))
+        after_restore = restore(saved_reply, 'text-answer')
+        answered = reply(after_restore, '「不鏽鋼」。')
+        self.assertEqual(answered['status'], 'paused')
+        self.assertEqual(kept(answered)[2]['value'], '不鏽鋼')
+        self.assertEqual({n: kept(answered)[n] for n in retained}, retained)
+
+        a.run_goal(after_restore, self.sid, gid, ScriptedEngine(ask(5)), max_steps=1)
+        correction = '台號為 8 號。集合點正式改為「不落亭」。'
+        corrected = reply(after_restore, correction)
+        current = kept(corrected)
+        self.assertEqual(current[3]['value'], '不落亭')
+        self.assertEqual(current[4], retained[4])
+        self.assertEqual(current[5]['value'], '8 號')
+        change, = corrected['work_plan']['scope_reply']['revisions']
+        self.assertEqual(change['previous']['value_evidence']['quote'], '未央館')
+        evidence = change['value_evidence']
+        self.assertEqual(correction[evidence['start']:evidence['end']], '不落亭')
+
+        delivery = restore(after_restore, 'text-corrected')
+        done = [{**row, 'state': 'done', 'evidence_steps': [2, current[row['id']]['reply_step']]} for row in items]
+        report = '\n'.join(f'{row["value"]} {row["citation"]} [D1:L{n}]' for n, row in sorted(current.items()))
+        final = a.run_goal(delivery, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=done, reuse_document_steps=[2]),
+            action('finish', report=report.replace('不落亭', '未央館')),
+            action('finish', report=report)), max_steps=3)
+        self.assertIn('現行已核對的答覆', final['steps'][-2]['observation']['error'])
+        self.assertEqual(final['status'], 'report_ready')
+        validate_database(delivery.path)
+
+    def test_bound_text_reply_requires_the_exact_field_when_two_labels_share_a_name(self):
+        doc = self.root / 'two-materials.txt'
+        doc.write_text('北架外殼待確認。\n南架外殼待確認。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, doc)
+        gid = a.create_goal(self.store, self.sid, '分別核對兩架材料。')
+        questions = ['北架的材料要用哪種？', '南架的材料是哪種？']
+        rows = [item(1, '核對北架外殼'), item(2, '核對南架外殼')]
+        parts = [{'question': q, 'items': [n]} for n, q in enumerate(questions, 1)]
+        req = [{'id': n, 'confirmation_question': q, 'ranges': [
+            {'document_id': did, 'start_line': n, 'end_line': n}]} for n, q in enumerate(questions, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=req),
+                         action('ask', question='\n'.join(questions), plan_questions=parts), gid=gid)
+
+        def reply(answer):
+            before = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, answer, expected_fingerprint=before['fingerprint'])
+            return a.get_goal(self.store, self.sid, gid)
+
+        pending = reply('材料為不鏽鋼。')
+        self.assertEqual(pending['question'], '\n'.join(questions))
+        proof = pending['work_plan']['scope_reply']
+        self.assertEqual(proof['verified_confirmations'], [])
+        self.assertEqual(proof['unassigned_text'][0]['questions'], questions)
+        final = reply('南架的材料為鋁合金。北架的材料為不鏽鋼。')
+        verified = final['work_plan']['delivery_review']['verified_confirmations']
+        self.assertEqual({row['question']: row['value'] for row in verified},
+                         dict(zip(questions, ('不鏽鋼', '鋁合金'))))
+        validate_database(self.store.path)
+
     def test_person_reply_distinguishes_confirmed_names_from_unresolved_wording(self):
         document = self.root / 'handover-names.txt'
         document.write_text('份數由本輪確認。\n北廊點收台在木架旁。\n門號由本輪確認。\n封條號由本輪確認。',
