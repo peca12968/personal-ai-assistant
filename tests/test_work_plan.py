@@ -1546,6 +1546,91 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(final['status'], 'report_ready')
         validate_database(resumed.path)
 
+    def test_standalone_directives_update_only_confirmed_fields_and_replay_exact_sources(self):
+        document = self.root / 'verified-work.txt'
+        document.write_text('外殼依確認。\n交接依確認。\n集合依確認。\n架號依確認。', encoding='utf-8')
+        did = self.store.attach_document(self.sid, document)
+        gid = a.create_goal(self.store, self.sid, '定稿外殼材料、接收人、集合點與架號。')
+        labels = ['外殼材料', '接收人', '集合點', '架號']
+        questions = ['外殼材料是什麼？', '接收人是誰？', '集合點在哪裡？', '架號是多少？']
+        rows = [item(n, '核對' + label) for n, label in enumerate(labels, 1)]
+        ranges = [{'document_id': did, 'start_line': n, 'end_line': n} for n in range(1, 5)]
+        parts = [{'question': question, 'items': [n]} for n, question in enumerate(questions, 1)]
+        required = [{'id': n, 'confirmation_question': question, 'ranges': [ranges[n - 1]]}
+                    for n, question in enumerate(questions, 1)]
+        self.run_actions(action('update_plan', items=rows, verify_delivery=True, evidence_requirements=required),
+                         action('read_ranges', ranges=ranges),
+                         action('ask', question='\n'.join(questions), plan_questions=parts), gid=gid)
+        reply = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '外殼材料為鋁合金。接收人為林怡安。集合點在北廊。架號為 9 號。',
+                          expected_fingerprint=reply['fingerprint'])
+
+        def checked(state):
+            return {row['id']: row for row in state['work_plan']['delivery_review']['verified_confirmations']}
+
+        def deliverable(values):
+            return '\n'.join(f'{labels[n - 1]}：{row["value"]} {row["citation"]} [D1:L{n}]'
+                             for n, row in sorted(values.items()))
+
+        def completed(values):
+            return [{**row, 'state': 'done', 'evidence_steps': [2, values[row['id']]['reply_step']]} for row in rows]
+
+        initial = checked(a.get_goal(self.store, self.sid, gid))
+        original = self.run_actions(action('update_plan', items=completed(initial), reuse_document_steps=[2]),
+                                    action('finish', report=deliverable(initial)), gid=gid)
+        self.assertEqual(original['status'], 'report_ready')
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        for text in ('外殼材料暫定改用不鏽鋼。', '接收人不要改派魏不凡。',
+                     '「集合點移到未央館。」', '如果下雨，集合點移到未央館。',
+                     '外殼材料改用不鏽鋼（待核對）。', '接收人改派魏不凡或吳景辰。',
+                     '集合點移到未央館嗎？', '架號移到未央館。',
+                     '外殼材料改用不鏽鋼；外殼材料不要改用不鏽鋼。',
+                     '外殼材料改用不鏽鋼並且重新編號。'):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    goal_guidance.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+                self.assertEqual(a.get_goal(self.store, self.sid, gid), original)
+
+        text = '外殼材料改用不鏽鋼；接收人改派為「魏不凡」；請把「集合點」移至「未央館」。'
+        goal_guidance.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+        state = a.get_goal(self.store, self.sid, gid)
+        values = checked(state)
+        self.assertEqual(state['status'], 'paused')
+        self.assertEqual(state['steps'][:-1], original['steps'])
+        self.assertEqual(state['work_plan']['items'][3], original['work_plan']['items'][3])
+        self.assertEqual(values[4], initial[4])
+        step = state['steps'][-1]
+        self.assertEqual(step['action']['args']['confirmation_correction_version'], 3)
+        revisions = step['observation']['scope_change']['revisions']
+        self.assertEqual(len(revisions), 3)
+        for n, (change, value) in enumerate(zip(revisions, ['不鏽鋼', '魏不凡', '未央館'], strict=True), 1):
+            start, end = (change['value_evidence'][key] for key in ('start', 'end'))
+            self.assertEqual(text[start:end], value)
+            self.assertEqual(change['question'], questions[n - 1])
+            self.assertEqual(change['previous']['step'], initial[n]['reply_step'])
+            self.assertEqual(change['recheck_items'], [n])
+            self.assertEqual(values[n]['value'], value)
+
+        archive = create_backup(self.store.path, self.root / 'directive-work.paibackup')
+        destination = self.root / 'directive-work'
+        restore_backup(archive['path'], destination)
+        restored = Store(destination / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), state)
+        report = deliverable(values)
+        final = a.run_goal(restored, self.sid, gid, ScriptedEngine(
+            action('update_plan', items=completed(values), reuse_document_steps=[2]),
+            action('finish', report=deliverable(initial)), action('finish', report=report)), max_steps=3)
+        self.assertEqual(final['result'], report)
+        self.assertIn('現行已核對的答覆', final['steps'][-2]['observation']['error'])
+        validate_database(restored.path)
+        altered = copy.deepcopy(step['action'])
+        altered['args']['confirmation_correction_version'] = 2
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET action_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(altered, ensure_ascii=False), gid, step['sequence']))
+        with self.assertRaisesRegex(ValueError, '工作範圍更正與原清單或保存步驟不一致'):
+            validate_database(restored.path)
+
     def test_bound_text_reply_preserves_material_location_and_version_with_literal_sources(self):
         document = self.root / 'label-proof.txt'
         document.write_text('盒數依使用者確認。\n外殼材料待填。\n集合點待填。\n版本名稱待填。\n台號待填。',

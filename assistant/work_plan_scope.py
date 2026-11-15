@@ -76,6 +76,12 @@ _REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\
 _CONFIRMATION_FIELD_REVISION = re.compile(r'(?:(?:欄位\s*)?「([^「」\r\n]{2,31})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))'
                                           rf'\s*正式\s*{_REVISION_VERB}\s*(.+)')
 _CONFIRMATION_QUESTION_REVISION = re.compile(r'更正\s*「([^「」\r\n]{1,400})」\s*(?:為|成)\s*(.+)')
+_DIRECTIVE_REVISION = re.compile(
+    r'(?:請\s*(?:(?:把|將)\s*)?|(?:把|將)\s*(?=「))?'
+    r'(?:(?:欄位\s*)?「(?P<quoted>[^「」\r\n]{2,31})」|(?P<field>[\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))\s*'
+    r'(?P<modifier>正式|確定|暫定|先不要|不要|先別|不必|可能|考慮|擬|建議)?\s*'
+    r'(?P<verb>改用|改派(?:給|為)?|移到|移至)\s*(?P<literal>.+)')
+_DIRECTIVE_EXTRA = re.compile(r'如果|視情況|不一定|僅供參考|然後|並且|並(?:把|將)|改用|改派|移到|移至')
 _CONFIRMATION_WITHDRAWAL = re.compile(r'(?:請\s*)?撤回\s*(?:「([^「」\r\n]{1,400})」|([\u4e00-\u9fffA-Za-z0-9 _-]{2,31}?))'
                                       r'\s*(?:的)?(?:答覆|回答|確認)')
 _REVISION_COMMA = re.compile(rf'(?!\s*{_REVISION_VERB})(?:{_PLAIN_COMMA.pattern})')
@@ -117,6 +123,7 @@ CORRECTION_REPLY_VERSIONS = (COLLOQUIAL_CORRECTION_REPLY_VERSION, TEXT_CORRECTIO
 CONFIRMATION_CORRECTION = 'confirmation_correction'
 CONFIRMATION_CORRECTION_VERSION = 'confirmation_correction_version'
 TYPED_GUIDANCE_VERSION = 2
+DIRECTIVE_GUIDANCE_VERSION = 3
 
 
 def validate_questions(args):
@@ -423,8 +430,41 @@ def _confirmation_literal(literal, questions, number, *, person_names, text_lite
     return _value(literal, number=number)
 
 
+def confirmation_guidance_version(content):
+    if any(not question and _DIRECTIVE_REVISION.fullmatch(clause)
+           for _, clause, question in goal_guidance_sources.standalone_clauses(content)):
+        return DIRECTIVE_GUIDANCE_VERSION
+    return TYPED_GUIDANCE_VERSION
+
+
+def _directive_revision(clause, targets):
+    match = _DIRECTIVE_REVISION.fullmatch(clause)
+    if not match:
+        return None
+    field = (match['quoted'] or match['field']).strip()
+    matches = _confirmation_field_matches(field, targets, qualified=True, text_literals=True, colloquial=True)
+    if not matches:
+        return None
+    if match['modifier'] not in (None, '正式', '確定'):
+        raise ValueError('尚未收到明確的新值。原確認及進度保留。')
+    verb = match['verb']
+    for question in matches:
+        if verb.startswith('改派'):
+            supported = _person_question(question, colloquial=True)
+        else:
+            supported = _TEXT_QUESTION.search(question) and (verb == '改用' or _PLACE_QUESTION.search(question)
+                or any(_PLACE_FIELD.search(label) for label in _bound_field_names(
+                    question, targets[question]['field'], text_literals=True, colloquial=True)))
+        if not supported:
+            raise ValueError('這個更正用語與原欄位不符，請逐字指定原問句及新值。')
+    literal = match['literal'].strip()
+    if not re.fullmatch(r'「[^「」]+」', literal) and _DIRECTIVE_EXTRA.search(literal):
+        raise ValueError('請為每個原問句提供一個明確的新值，並將其他指示分開保存。')
+    return field, matches, literal
+
+
 def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=False, number=_NUMBER,
-                           person_names=False, text_literals=False, colloquial=False):
+                           person_names=False, text_literals=False, colloquial=False, directive_verbs=False):
     requested = {}
     remaining = []
     choice = None
@@ -444,6 +484,8 @@ def _confirmation_requests(clauses, targets, *, allow_withdrawal, qualified=Fals
             literal = None
         elif match := _CONFIRMATION_QUESTION_REVISION.fullmatch(clause):
             matches, literal = ([match[1]] if match[1] in targets else []), match[2]
+        elif directive_verbs and (directive := _directive_revision(clause, targets)):
+            field, matches, literal = directive
         elif match := _CONFIRMATION_FIELD_REVISION.fullmatch(clause) or _REVISION.fullmatch(clause):
             field = (match[1] or match[2]).strip()
             matches = _confirmation_field_matches(field, targets, qualified=qualified,
@@ -534,10 +576,11 @@ def observe_confirmation_correction(steps, source, scope, prior_scope, *, waitin
     if not any(target['confirmed'] for target in targets.values()):
         return None
     clauses = goal_guidance_sources.standalone_clauses(source['content'])
-    typed = version == TYPED_GUIDANCE_VERSION
+    typed = version in (TYPED_GUIDANCE_VERSION, DIRECTIVE_GUIDANCE_VERSION)
     requested, remaining, choice = _confirmation_requests(clauses, targets, allow_withdrawal=True, qualified=typed,
                                                            number=_COUNT_NUMBER if typed else _NUMBER,
-                                                           person_names=typed, text_literals=typed, colloquial=typed)
+                                                           person_names=typed, text_literals=typed, colloquial=typed,
+                                                           directive_verbs=version == DIRECTIVE_GUIDANCE_VERSION)
     if choice:
         raise ValueError('有多個工作分問使用這個欄名，請逐字指定要更正的原問句。')
     if not requested:
@@ -1856,7 +1899,7 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
     confirmation = args.get(CONFIRMATION_CORRECTION)
     version = args.get(CONFIRMATION_CORRECTION_VERSION, 1)
     if CONFIRMATION_CORRECTION_VERSION in args and (confirmation is not True or type(version) is not int
-                                                   or version != TYPED_GUIDANCE_VERSION):
+                                                   or version not in (TYPED_GUIDANCE_VERSION, DIRECTIVE_GUIDANCE_VERSION)):
         raise ValueError('已保存的確認更正版本不符。')
     special = args.keys() & {'delivery_mode', 'filename_declaration', artifact_names.GUIDANCE_MARK}
     keys = args.keys() - special - {CONFIRMATION_CORRECTION, CONFIRMATION_CORRECTION_VERSION}
@@ -1867,6 +1910,8 @@ def replay(db, args, prior, after, goal, guidance, replies, *, withdrawals_prese
     source = next((item for item in guidance if item['citation'] == args['scope_correction']), None)
     if source is None:
         raise ValueError('工作範圍更正缺少使用者原話。')
+    if version == DIRECTIVE_GUIDANCE_VERSION and confirmation_guidance_version(source['content']) != version:
+        raise ValueError('已保存的確認更正版本不符。')
     start = source['notes_start']
     end = start + len(goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at']))
     previous = work_plan.conditions({**goal, 'notes': goal['notes'][:start]})

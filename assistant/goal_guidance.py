@@ -176,7 +176,8 @@ def eligibility(value):
         if value['step_count'] + 3 + int(value['plan_correction_file_delivery']) > MAX_STEPS:
             return False, '剩餘步數不足以重核工作清單及更新成果，請帶入原成果建立下一階段。'
         question = value['confirmed_plan_questions'][0]
-        return True, f'可用 更正「{question}」為「新值」，或 撤回「{question}」的答覆。先前成果保留於步驟紀錄。'
+        return True, (f'可用完整欄名更正，例如「集合點移到未央館」。也可用 更正「{question}」為「新值」，'
+                      f'或 撤回「{question}」的答覆。先前成果保留於步驟紀錄。')
     reference_report = status == 'report_ready' and bool(
         value.keys() & {'reference_report', 'document_version_report', 'document_conflict_report'})
     if status == 'report_ready' and not reference_report:
@@ -545,11 +546,13 @@ def _save_plan_scope_change(db, current, notes, delivery_change=None, *, filenam
     scope_goal = _condition_goal(db, goal, goal['notes'])
     prior_scope = work_plan.conditions(scope_goal)
     scope = work_plan.conditions({**scope_goal, 'notes': notes})
-    version = work_plan_scope.TYPED_GUIDANCE_VERSION
-    observation = (work_plan_scope.observe_confirmation_correction(steps, source, scope, prior_scope,
-                                                                    waiting=waiting, version=version)
-                   if confirmation else work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting,
-                       delivery=delivery_change, filename_declaration=named, filename_guidance=filename_guidance))
+    if confirmation:
+        version = work_plan_scope.confirmation_guidance_version(source['content'])
+        observation = work_plan_scope.observe_confirmation_correction(
+            steps, source, scope, prior_scope, waiting=waiting, version=version)
+    else:
+        observation = work_plan_scope.observe(steps, source, scope, prior_scope, waiting=waiting,
+            delivery=delivery_change, filename_declaration=named, filename_guidance=filename_guidance)
     if observation is None:
         if filename_guidance:
             raise ValueError('工作條件已變更。請先核對目前工作清單與待選欄位。')
