@@ -22,6 +22,7 @@ _WAIVE = re.compile(rf'^{_CURRENT}(?:不用|不必|無須)(?:再)?\s*{_FULL}\s*(
 _LONG = re.compile(r'^第\s*([0-9]{1,12})\s*行(?:是|為)長行$')
 _CONDITIONAL = re.compile(r'^(?:若|如果|假設|只要|有需要|引述|轉述|範例|例句)')
 _COMMA = re.compile(r'')
+_JOIN = re.compile(r'\s*(?:、|以及|與|和|及)\s*')
 _DECISION_TOOLS = {'ask', 'finish', 'write_artifact', 'deliver'}
 
 
@@ -37,9 +38,10 @@ def _named_pattern(sources, *, include_missing=False):
         return names, None
     labels = '|'.join(re.escape(name) for name in sorted(names, key=len, reverse=True))
     missing = r'(?P<missing>(?:的\s*)?(?:匯入副本\s*)?(?:缺少|尚缺|缺漏)\s*)?' if include_missing else ''
+    prefix = r'(?:D(?P<prefix>[1-9][0-9]{0,11})(?:\s+|(?=[「\x60])))?' if include_missing else ''
     shown = r'(?:[（(]\s*D(?P<shown>[1-9][0-9]{0,11})\s*[）)]\s*)?' if include_missing else ''
     pattern = re.compile(
-        rf'(?<![A-Za-z0-9_.\\/])(?:\x60|「)?(?P<name>{labels})(?:\x60|」)?\s*'
+        rf'(?<![A-Za-z0-9_.\\/]){prefix}(?:\x60|「)?(?P<name>{labels})(?:\x60|」)?\s*'
         + shown + r'(?:的\s*)?' + missing +
         r'第\s*(?P<first>[0-9]{1,12})\s*(?:(?:至|到|[-–])\s*(?:第\s*)?(?P<last>[0-9]{1,12})\s*)?行')
     return names, pattern
@@ -48,30 +50,39 @@ def _named_pattern(sources, *, include_missing=False):
 def _named_range(match, names):
     ids = names[match['name']]
     first, last = int(match['first']), int(match['last'] or match['first'])
-    shown = match.groupdict().get('shown')
-    if shown is not None:
-        ids = [did for did in ids if did == int(shown)]
+    for key in ('prefix', 'shown'):
+        if (shown := match.groupdict().get(key)) is not None:
+            ids = [did for did in ids if did == int(shown)]
     return (ids[0], first, last) if len(ids) == 1 and 1 <= first <= last else None
 
 
 def _explicit_targets(text, names, pattern):
     result = []
-    for label in text.split('、'):
-        target = label.strip()
-        if document_ranges.RANGES.fullmatch(target):
-            ranges, _ = document_ranges.requested_ranges(target)
+    start = 0
+    while True:
+        explicit = document_ranges.RANGES.match(text, start)
+        named = pattern.match(text, start) if pattern else None
+        if named and (explicit is None or named.end() > explicit.end()):
+            match = named
+            seen = _named_range(match, names)
+            if seen is None:
+                return []
+        elif explicit:
+            match = explicit
+            ranges, _ = document_ranges.requested_ranges(match[0])
             row = ranges[0]
             seen = row['document_id'], row['start_line'], row['end_line']
             if seen[0] < 1 or not 1 <= seen[1] <= seen[2]:
                 return []
-        elif pattern and (match := pattern.fullmatch(target)):
-            seen = _named_range(match, names)
-            if seen is None:
-                return []
         else:
             return []
         result.append(seen)
-    return result
+        if match.end() == len(text):
+            return result
+        connector = _JOIN.match(text, match.end())
+        if connector is None:
+            return []
+        start = connector.end()
 
 
 def _directives(text, names, pattern):

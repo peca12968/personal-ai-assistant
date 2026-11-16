@@ -241,6 +241,36 @@ class GoalRequiredSupplementTests(unittest.TestCase):
                 self.attach(f'{gid}.txt','補件候選。')
                 self.assertFalse(goal_guidance.snapshot(self.store,self.sid,gid).get('required_document_supplement'))
 
+    def test_supplement_question_accepts_a_matching_id_before_the_named_file(self):
+        registry = self.attach('交付、位置.txt','本批交付位置')
+        proof = self.attach('核對與簽收.txt','本批核對人：安楷。')
+        for template,eligible in (
+            ('請提供 D{target}「交付、位置.txt」第 2 行記載交付位置的原文。',True),
+            ('請提供 D{other}「交付、位置.txt」第 2 行記載交付位置的原文。',False),
+            ('請提供 D{target}「交付、位置.txt」（D{other}）第 2 行的交付位置原文。',False),
+        ):
+            with self.subTest(template=template):
+                objective = f'先完整查讀 [D{registry}:L2] 和 [D{proof}:L1]。'
+                gid = autonomy.create_goal(self.store,self.sid,objective)
+                question = template.format(target=registry,other=proof)
+                waiting = autonomy.run_goal(self.store,self.sid,gid,ScriptedEngine(
+                    action('read',document_id=proof,start_line=1,end_line=1),
+                    action('ask',question=question,partial_result=f'核對人：安楷。[D{proof}:L1]'),
+                ),max_steps=2)
+                self.assertEqual(waiting['status'],'needs_input')
+                new = self.attach(f'new-{gid}.txt','當期交付位置：北樓收件匣。')
+                snapshot = goal_guidance.snapshot(self.store,self.sid,gid)
+                self.assertEqual(bool(snapshot.get('required_document_supplement')),eligible)
+                if eligible:
+                    self.supplement(gid,registry,new)
+                    self.assertEqual(goal_required_reads.requirements(autonomy.get_goal(self.store,self.sid,gid)),[
+                        (new,1,1),(proof,1,1),
+                    ])
+                    validate_database(self.store.path)
+                else:
+                    with self.assertRaises(ValueError):
+                        self.supplement(gid,registry,new)
+
     def mismatched_supplement_waiting(self, *, question='請提供適用於 Q6 本輪的正式檢修處置原文。', cite=True):
         original,gid,_ = self.waiting()
         wrong = self.attach('old/procedure.txt','僅適用 Q5。請把檢修中的樣本移走。')
