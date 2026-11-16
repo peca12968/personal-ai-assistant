@@ -185,6 +185,161 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('完整且已確認', result['steps'][2]['observation']['error'])
         self.assertEqual(result['partial_result'], '總件數：待查')
 
+    def test_ordinal_uses_question_order_and_replays_json_after_detaching_version(self):
+        revised = self.attach('批次量：23 袋。', '晚班.txt')
+        self.create(files=True)
+        late = f'[D{revised}:L1]'
+        first = self.cite(1)
+        question = f'批次量要採用「晚班」{late} 還是「原批」{first}？'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=question))
+        self.reply('第二份。')
+        rows = [{'label': '總件數', 'calculation_step': 5, 'unit': '件'},
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]
+        result = self.run_actions(
+            self.formula(quantity='23', citation=late, quote='批次量：23 袋'),
+            self.formula(),
+            action('write_artifact', filename='定稿.json', calculation_report=rows),
+            action('deliver', filenames=['定稿.json'], calculation_report=rows))
+        self.assertIn(f'目前採用 {first}', result['steps'][3]['observation']['error'])
+        self.assertIn('51 件', result['result'])
+        proof, = result['steps'][4]['observation'][goal_calculation.PROOF]['source_adoptions']
+        ordered = proof['spoken_selection']['ordinal']
+        self.assertEqual(ordered['position'], 2)
+        self.assertEqual([item['citation'] for item in ordered['options']], [late, first])
+        for item in ordered['options']:
+            self.assertEqual(question[item['question_start']:item['question_end']], item['citation'])
+        old = artifacts.directory(self.store, self.gid).joinpath('定稿.json').read_bytes()
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('定稿.json').read_bytes(), old)
+        with restored.connect() as db:
+            obs = result['steps'][4]['observation']
+            ordered['options'].reverse()
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(obs, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_last_numbered_choice_ignores_background_citation(self):
+        revised = self.attach('批次量：26 袋。\n批次量：20 袋。', '點驗.txt')
+        self.create()
+        first = f'[D{revised}:L1]'
+        last = f'[D{revised}:L2]'
+        question = (f'每袋件數仍看 {self.cite(2)}。批次量要選用哪一筆？\n'
+                    f'1. 初次點驗 {first}\n（一）另外的說明\n2. 複點 {last}')
+        invalid = question
+        question = question.replace('\n（一）另外的說明', '')
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=2),
+                         action('ask', question=invalid))
+        self.reply('最後那筆。')
+        result = self.run_actions(
+            self.formula(quantity='20', citation=last, quote='批次量：20 袋'),
+            action('ask', question=question, calculation_report=[{'label': '總件數', 'pending': True}]))
+        self.assertIn('採用尚待核對', result['steps'][3]['observation']['error'])
+        self.reply('最後那筆。')
+        result = self.run_actions(self.formula(quantity='20', citation=last, quote='批次量：20 袋'),
+                                  action('finish', calculation_report=[
+                                      {'label': '總件數', 'calculation_step': 6, 'unit': '件'}]))
+        self.assertIn('60 件', result['result'])
+        proof, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(proof['spoken_selection']['ordinal']['mode'], 'last')
+        self.assertEqual(proof['spoken_selection']['question_references'], [first, last])
+        validate_database(self.store.path)
+
+    def test_out_of_range_ordinal_does_not_confirm_and_later_new_order_is_used(self):
+        revised = self.attach('批次量：21 袋。', '點驗.txt')
+        self.create()
+        original, late = self.cite(1), f'[D{revised}:L1]'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=f'批次量要採用 {late} 還是 {original}？'))
+        self.reply('第九份。')
+        pending = [{'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                   {'label': '總件數', 'pending': True}]
+        reversed_question = f'批次量要採用 {original} 還是 {late}？'
+        waiting = self.run_actions(self.formula(),
+                                   action('ask', question=reversed_question, calculation_report=pending))
+        self.assertIn('採用尚待核對', waiting['steps'][3]['observation']['error'])
+        self.assertIn('窗口：北門', waiting['partial_result'])
+        self.store = self.restore()
+        self.reply('第２筆。')
+        result = self.run_actions(
+            self.formula(quantity='21', citation=late, quote='批次量：21 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 6, 'unit': '件'}]))
+        self.assertIn('63 件', result['result'])
+        proof, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(proof['spoken_selection']['ask_sequence'], 5)
+        self.assertEqual(proof['spoken_selection']['question_references'], [original, late])
+        validate_database(self.store.path)
+
+    def test_user_reorders_visible_options_before_reply_and_needs_new_question(self):
+        revised = self.attach('批次量：21 袋。', '點驗.txt')
+        self.create()
+        original, late = self.cite(1), f'[D{revised}:L1]'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=f'批次量要採用 {late} 還是 {original}？'))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid,
+                           '請重新調換順序，把點驗列成第二份，再讓我選。',
+                           expected_fingerprint=snapshot['fingerprint'])
+        self.reply('第二份。')
+        pending = [{'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                   {'label': '總件數', 'pending': True}]
+        engine = ScriptedEngine(
+            self.formula(),
+            action('ask', question=f'批次量要採用 {original} 還是 {late}？', calculation_report=pending))
+        waiting = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertIn('choice_order_changed', engine.prompts[0])
+        self.assertIn('採用尚待核對', waiting['steps'][3]['observation']['error'])
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.reply('用第二份。')
+        final = self.run_actions(
+            self.formula(quantity='21', citation=late, quote='批次量：21 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 6, 'unit': '件'}]))
+        self.assertIn('63 件', final['result'])
+        validate_database(self.store.path)
+
+    def test_unrelated_later_ordinal_keeps_previously_confirmed_field(self):
+        revised = self.attach('批次量：23 袋。', '點驗.txt')
+        self.create()
+        original, late = self.cite(1), f'[D{revised}:L1]'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=f'批次量要採用 {original} 還是 {late}？'))
+        snap = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '窗口改為南門。同事轉述「請重排候選」。',
+                           expected_fingerprint=snap['fingerprint'])
+        self.reply('第二份。')
+        self.run_actions(action('ask', question='集合時間是上午還是下午？'))
+        self.reply('第一個。')
+        result = self.run_actions(
+            self.formula(),
+            self.formula(quantity='23', citation=late, quote='批次量：23 袋'),
+            action('finish', calculation_report=[
+                {'label': '總件數', 'calculation_step': 6, 'unit': '件'},
+                {'label': '窗口', 'citation': '[更正#1]', 'quote': '窗口改為南門'}]))
+        self.assertIn('目前採用', result['steps'][4]['observation']['error'])
+        self.assertEqual(result['steps'][5]['observation']['exact'], '69')
+        proof, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(proof['spoken_selection']['ask_sequence'], 3)
+        self.assertNotIn('[補充#4]', result['result'])
+        validate_database(self.store.path)
+
+    def test_mixed_fields_in_option_list_do_not_change_other_field(self):
+        revised = self.attach('窗口：南門。', '附記.txt')
+        self.create()
+        original, other = self.cite(1), f'[D{revised}:L1]'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=f'批次量要採用 {original} 還是 {other}？'))
+        self.reply('第 2 筆。')
+        pending = self.run_actions(self.formula(), action('ask', question='請確認哪一行是正式批次量？',
+            calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        self.assertIn('採用尚待核對', pending['steps'][3]['observation']['error'])
+        self.assertIn('窗口：北門', pending['partial_result'])
+        validate_database(self.store.path)
+
     def test_document_title_chooses_unique_shared_field_and_restores_file_with_detached_copy(self):
         revised = self.attach('複點說明。\n批次量：24 袋。', '晚班清點.txt')
         self.create(files=True)

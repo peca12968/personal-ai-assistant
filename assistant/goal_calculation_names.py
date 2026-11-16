@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import document_ranges, goal_sources
+from . import document_ranges, goal_calculation_order, goal_sources
 
 
 _LINE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}\]'
@@ -98,7 +98,8 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 
 
 class Names:
-    def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_at, clauses):
+    def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_at, clauses, *,
+                 ordinal_guidance=None, direct_change=None):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -109,6 +110,8 @@ class Names:
         self.literal = literal
         self.field_at = field_at
         self.clauses = clauses
+        self.ordinal_guidance = ordinal_guidance
+        self.direct_change = direct_change
         self.observed = {}
         self.documents_seen = {}
 
@@ -177,8 +180,68 @@ class Names:
         selected = set().union(*(known.get(did, set()) for did in ids)) if ids else set()
         return None, selected
 
+    def _resolve_ordinal(self, reply, field, name, selection):
+        question = reply['question']
+        options = goal_calculation_order.options(question, _LINE, self.clauses)
+        if not options and not goal_calculation_order.source_list(question, _LINE):
+            return None
+
+        refs = tuple(row['citation'] for row in options) if options else _references(question)
+        sequence = reply['ask_sequence']
+        scope = self.history.get(sequence, self.scope)
+        documents = self._possibilities(scope, refs)
+        prompt = goal_calculation_order.source_prompt(question, self.clauses)
+        hint = _FIELD.search(prompt)
+        field = field or (hint['field'] if hint else None)
+        if field:
+            possible = {field}
+        else:
+            field, possible = self._pick(prompt, documents, refs, ())
+        if not field and not possible and refs:
+            known = self._known_fields(documents, refs)
+            possible.update(label for fields in known.values() for label in fields)
+        mode, number = selection
+        position = len(options) if mode == 'last' else number
+        basis = {'name': name, 'question': question, 'ask_sequence': sequence,
+                 'question_references': list(refs),
+                 'candidate_documents': [doc['document_id'] for doc in documents], 'selected_documents': [],
+                 'ordinal': {'mode': mode, 'position': position, 'options': options}}
+        result = {'field': field, 'status': _PENDING, 'candidates': [], 'choices': list(refs),
+                  'field_candidates': sorted(possible), 'spoken_selection': basis}
+        if not options or not 1 <= position <= len(options):
+            result['reason'] = 'choice_order_unresolved'
+            return result
+
+        for source in reversed(self.ordinal_guidance):
+            if source['steps_seen'] < sequence or source['notes_start'] >= reply['notes_start']:
+                continue
+            text = source['content']
+            if (goal_calculation_order.reordered(text, self.clauses)
+                    or field and self.direct_change(text, field)):
+                result.update(reason='choice_order_changed', changed_by=source['citation'])
+                return result
+
+        indexed = {}
+        for doc in documents:
+            did = doc['document_id']
+            wanted = {int(match[2]) for ref in refs if (match := _LINE_ID.fullmatch(ref)) and int(match[1]) == did}
+            indexed.update((ref, label) for label, ref in self._fields(doc, self._lines(doc) & wanted))
+        if set(indexed) != set(refs) or len(set(indexed.values())) != 1 or indexed[refs[0]] != field:
+            result['field_candidates'] = sorted(possible | set(indexed.values()))
+            result['reason'] = 'choice_field_unresolved'
+            return result
+
+        chosen = refs[position - 1]
+        basis['selected_documents'] = [int(_LINE_ID.fullmatch(chosen)[1])]
+        result['references'] = (chosen,)
+        return result
+
     def resolve(self, citation, clause):
         reply = self.replies.get(citation)
+        if reply is not None and self.ordinal_guidance is not None and (parsed := _parts(clause, True)):
+            field, name, _ = parsed
+            if selection := goal_calculation_order.parse(name):
+                return self._resolve_ordinal(reply, field, name, selection)
         question = _question(reply, self.clauses)
         parsed = _parts(clause, question is not None)
         if not parsed:
