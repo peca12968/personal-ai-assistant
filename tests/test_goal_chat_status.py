@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant import autonomy as a, goal_guidance, goal_replies
+from assistant import answer_runs, autonomy as a, goal_guidance, goal_replies
 from assistant.autonomy_status import goal_context
 from assistant.backup import create_backup, restore_backup
-from assistant.engine import Assistant
+from assistant.engine import Assistant, EngineError
 from assistant.store import Store
 from scripts.evaluate_goal_status import prepare, SUITE
 from test_autonomy import ScriptedEngine, action
@@ -216,6 +216,100 @@ class GoalChatStatusTests(unittest.TestCase):
             self.assertEqual(a.get_goal(store, sid, gid), before)
             self.assertNotIn('PRIVATE_REPORT_DO_NOT_REPLAY', json.dumps(ctx))
             self.assertEqual(ctx['autonomous_goals']['goals'][0]['id'], gid)
+
+    def _candidate_answer(self, *, numbered=True, omit_last=False):
+        group = '水門 B6'
+        titles = [group + ' 的交接報告', group + ' 的夜間盤點']
+        questions = ['封條顏色是什麼？', '第二組盤點架號是多少？']
+        gids = []
+        for title, question in zip(titles, questions, strict=True):
+            gid = a.create_goal(self.store, self.sid, title)
+            a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=question)))
+            gids.append(gid)
+        for title in ('清掃紀錄', '借用紀錄', '水門 B60 的夜間盤點'):
+            a.create_goal(self.store, self.sid, title)
+        offered = ['「' + title + '」' for title in (titles[:1] if omit_last else titles)]
+        text = ('\n'.join(f'{i}. {title}' for i, title in enumerate(offered, 1)) if numbered
+                else '還是'.join(offered))
+        app = Assistant(self.store, ScriptedEngine('你指哪一件？\n' + text))
+        answer = app.ask(self.sid, f'查看「{group}」目前等我回答哪個問題？')
+        return gids, questions, answer
+
+    def test_short_choice_keeps_original_id_and_displays_latest_state_after_restore(self):
+        gids, questions, prior = self._candidate_answer()
+        question = '夜間盤點那件，現在要補哪項資料？'
+        snapshot = goal_context(self.store, self.sid, question)
+        self.assertEqual(snapshot['reference']['selection'], {'answer_id': prior['id'], 'label': '夜間盤點', 'goal_id': gids[1]})
+        self.assertEqual(snapshot['goals'][0]['recorded_question'], questions[1])
+        numbered = goal_context(self.store, self.sid, '選第一件，目前等我回答哪一個問題？')
+        self.assertEqual(numbered['goals'][0]['id'], gids[0])
+        self.assertEqual(numbered['goals'][0]['recorded_question'], questions[0])
+        # A later goal with the same exact title was not among the offered choices.
+        duplicate = a.create_goal(self.store, self.sid, '水門 B6 的夜間盤點')
+        self.assertEqual(goal_context(self.store, self.sid, question), snapshot)
+
+        copy = self.root / 'goal-choice-copy'
+        archive = create_backup(self.store.path, self.root / 'goal-choice.paibackup')
+        restore_backup(archive['path'], copy)
+        restored = Store(copy / 'assistant.sqlite3')
+        self.assertEqual(goal_context(restored, self.sid, question), snapshot)
+        view = goal_replies.snapshot(restored, self.sid, gids[1])
+        goal_replies.save(restored, self.sid, gids[1], '架號為 27 號。', expected_fingerprint=view['fingerprint'])
+        answer = Assistant(restored, ScriptedEngine('已收到補充，可接續。')).ask(self.sid, question)
+        current = restored.answer_context(answer['id'])['autonomous_goals']
+        self.assertEqual(current['reference']['selection'], snapshot['reference']['selection'])
+        self.assertEqual((current['goals'][0]['next_action'], current['goals'][0]['recorded_question']), ('resume', ''))
+        self.assertEqual(a.get_goal(restored, self.sid, duplicate)['status'], 'pending')
+        self.assertEqual(a.get_goal(restored, self.sid, gids[0])['question'], questions[0])
+
+    def test_nonnumbered_or_unshown_options_cannot_select_and_intervening_turn_ends_scope(self):
+        gids, _, prior = self._candidate_answer(numbered=False)
+        ordinal = goal_context(self.store, self.sid, '選第二件。')
+        self.assertEqual(ordinal['reference']['status'], 'ambiguous')
+        self.assertNotIn('goal_id', ordinal['reference']['selection'])
+        self.assertEqual({row['id'] for row in ordinal['goals']}, set(gids))
+        self.assertTrue(all(not row['recorded_question'] for row in ordinal['goals']))
+        short = '夜間盤點那件，現在還缺什麼？'
+        self.assertEqual(goal_context(self.store, self.sid, short)['reference']['selection']['goal_id'], gids[1])
+        self.assertNotIn('reference', goal_context(self.store, self.sid, '不要選夜間盤點那件。'))
+        # Changing only the final saved context cannot introduce or change a choice.
+        with self.store.connect() as db:
+            db.execute("UPDATE answer_contexts SET payload='{}' WHERE message_id=?", (prior['id'],))
+        self.assertNotIn('reference', goal_context(self.store, self.sid, short))
+        with self.store.connect() as db:
+            db.execute('UPDATE answer_contexts SET payload=(SELECT context_json FROM answer_runs WHERE answer_message_id=?) '
+                       'WHERE message_id=?', (prior['id'], prior['id']))
+        self.store.add_message(self.sid, 'user', '換個話題，談日落。')
+        self.assertNotIn('reference', goal_context(self.store, self.sid, short))
+
+        self._candidate_answer(omit_last=True)
+        missing = goal_context(self.store, self.sid, short)
+        self.assertNotIn('reference', missing)
+        other = self.store.new_session()
+        self.assertNotIn('reference', goal_context(self.store, other, short))
+
+    def test_choice_rechecked_before_recording_and_keeps_same_source_on_retry(self):
+        gids, _, prior = self._candidate_answer()
+        prompt = '夜間盤點那件。'
+        app = Assistant(self.store, ScriptedEngine('可接續。'))
+        prepared = app.prepare_context(self.sid, prompt)
+        count = len(self.store.messages(self.sid))
+        view = goal_replies.snapshot(self.store, self.sid, gids[1])
+        goal_replies.save(self.store, self.sid, gids[1], '架號為 27 號。', expected_fingerprint=view['fingerprint'])
+        with self.assertRaisesRegex(ValueError, '狀態已變更'):
+            answer_runs.begin(self.store, self.sid, 'a' * 32, prompt, prepared)
+        self.assertEqual(len(self.store.messages(self.sid)), count)
+
+        class Fail:
+            def answer(self, prompt, cancel=None):
+                raise EngineError('合成失敗', 'process_failed')
+
+        with self.assertRaises(EngineError):
+            Assistant(self.store, Fail()).ask(self.sid, prompt)
+        retried = app.retry(self.sid)
+        reference = self.store.answer_context(retried['id'])['autonomous_goals']['reference']
+        self.assertEqual(reference['selection']['answer_id'], prior['id'])
+        self.assertEqual(reference['selection']['goal_id'], gids[1])
 
 
 if __name__ == '__main__':

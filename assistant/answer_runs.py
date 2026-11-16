@@ -94,6 +94,9 @@ def begin(store, sid, run_id, question, context, retry=None, draft=None):
         if 'image_inputs' in context:
             from .image_inputs import check_references
             check_references(db, sid, context['image_inputs'], historical=retry is not None)
+        if context.get('autonomous_goals', {}).get('reference', {}).get('selection'):
+            from .autonomy_status import verify_choice
+            verify_choice(db, sid, question, context, retry['user_message_id'] if retry else None)
         if retry:
             latest = db.execute('SELECT id,status,user_message_id FROM answer_runs WHERE session_id=? ORDER BY rowid DESC LIMIT 1', (sid,)).fetchone()
             message = db.execute('SELECT id,role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1', (sid,)).fetchone()

@@ -321,7 +321,7 @@ class Assistant:
         context["documents"] = retrieve_documents(question + ("\n" + followup if followup else ""), documents,
                                                   reference_query=question)
         context['task_runs'] = task_context(self.store, sid, question)
-        context['autonomous_goals'] = goal_context(self.store, sid, question)
+        context['autonomous_goals'] = goal_context(self.store, sid, question, before=exclude_message_id)
         context['communication'] = conversation_style(question, history)
         context['companion_profile'] = get_profile(self.store)
         context['self_improvement'] = improvement_context(ROOT, question)
@@ -420,6 +420,9 @@ class Assistant:
             context['image_inputs'] = image_metadata
             context['image_input_guidance'] = GUIDANCE
         if retry:
+            selection = previous.get('autonomous_goals', {}).get('reference', {}).get('selection')
+            if selection and selection != context.get('autonomous_goals', {}).get('reference', {}).get('selection'):
+                raise ValueError('重試所需的候選工作已變更，請重新查詢。')
             context['retry_of'] = {'run_id': retry['id'], 'previous_status': retry['status'], 'uses_current_references': True}
         run_id = uuid.uuid4().hex
         with answer_runs.lease(self.store, run_id):
