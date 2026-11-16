@@ -105,7 +105,7 @@ class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
                  line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False,
-                 confirm_approval=False):
+                 confirm_approval=False, confirm_repeated_waits=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -125,6 +125,7 @@ class Names:
         self.reply_assignments = reply_assignments
         self.confirm_single_line = confirm_single_line
         self.confirm_approval = confirm_approval
+        self.confirm_repeated_waits = confirm_repeated_waits
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -468,26 +469,104 @@ class Names:
         result['reason'] = reason
         return result
 
+    def _approval_proposal(self, question):
+        proposal = goal_calculation_confirmation.approval_question(question, self.clauses)
+        if proposal is None and self.confirm_repeated_waits:
+            proposal = goal_calculation_confirmation.approval_wait(question, self.clauses)
+        return proposal
+
+    def _earlier_asks(self, sequence):
+        return (step['sequence'] for step in reversed(self.steps)
+                if step['sequence'] < sequence and step['action']['tool'] == 'ask')
+
+    def _pending_notice_check(self, proposal):
+        approval = proposal['approval']
+        if notice := approval.get('reported_pending'):
+            if any(notice[key] != approval[key] for key in ('actor', 'verb')):
+                return None, 'approval_actor_or_action_changed'
+            return notice['citation'], None
+        return None, None
+
+    def _waiting_trace(self, proposal, earlier_asks):
+        deferred = []
+        expected, reason = self._pending_notice_check(proposal)
+        if reason:
+            return None, [], reason
+        for sequence in earlier_asks:
+            earlier = self.replies.get(f'[補充#{sequence}]')
+            if earlier is None:
+                break
+            if expected and earlier['citation'] != expected:
+                return None, [], 'approval_wait_citation_conflict'
+            if self.direct_change(earlier['answer'], proposal['field']):
+                return sequence, [], 'approval_superseded'
+            if goal_calculation_confirmation.question_source(earlier['question'], self.clauses):
+                if expected:
+                    return None, [], 'approval_wait_citation_conflict'
+                return sequence, deferred, None
+            prior = self._approval_proposal(earlier['question'])
+            if prior is None:
+                break
+            if any(prior[key] != proposal[key] for key in ('field', 'citation')):
+                return None, [], 'approval_proposal_changed'
+            approval = prior['approval']
+            if any(approval[key] != proposal['approval'][key] for key in ('actor', 'verb')):
+                return None, [], 'approval_actor_or_action_changed'
+            expected, reason = self._pending_notice_check(prior)
+            if reason:
+                return None, [], reason
+            offset, quote, status, whole = goal_calculation_confirmation.approval_response(
+                earlier['answer'], self.clauses, approval, repeated=True)
+            companions = [] if whole else self.reply_assignments(earlier['answer'], offset, prior['field'])
+            if status != 'declined' or not (whole or companions):
+                break
+            deferred.append({'citation': earlier['citation'], 'sha256': earlier['sha256'], 'ask_sequence': sequence,
+                             'question': earlier['question'], 'proposal': prior, 'quote': quote, 'quote_start': offset})
+        return None, [], 'approval_condition_unverified'
+
+    def _verify_deferred_approvals(self, result, deferred, document):
+        evidence = []
+        for reply in reversed(deferred):
+            prior = reply['proposal']
+            scope = self.history.get(reply['ask_sequence'], self.scope)
+            earlier_doc = next((row for row in scope if row['document_id'] == prior['document_id']), None)
+            if earlier_doc != document:
+                return 'approval_proposal_changed'
+            scratch = {'spoken_selection': {'confirmation': {}}}
+            if reason := self._confirm_proposal(scratch, prior, scope, earlier_doc):
+                result.update({key: scratch[key] for key in ('needs_read', 'needs_line') if key in scratch})
+                return reason
+            evidence.append({**reply, **scratch['spoken_selection']['confirmation']})
+        if evidence:
+            result['spoken_selection']['confirmation']['deferred_replies'] = evidence
+        return None
+
     def confirmation(self, citation):
         reply = self.replies.get(citation) if self.confirm_single_line else None
         if reply is None:
             return None
         proposal = goal_calculation_confirmation.question_source(reply['question'], self.clauses)
         if proposal is None and self.confirm_approval:
-            proposal = goal_calculation_confirmation.approval_question(reply['question'], self.clauses)
+            proposal = self._approval_proposal(reply['question'])
         if proposal is None:
             return None
         approval = proposal.get('approval')
         field, ref = proposal['field'], proposal['citation']
         sequence = reply['ask_sequence']
-        previous_ask = next((step['sequence'] for step in reversed(self.steps)
-                             if step['sequence'] < sequence and step['action']['tool'] == 'ask'), None) if approval else None
+        earlier_asks = list(self._earlier_asks(sequence)) if approval else []
+        previous_ask = earlier_asks[0] if earlier_asks else None
+        origin, deferred, trace_error = previous_ask, [], None
+        if approval and self.confirm_repeated_waits:
+            origin, deferred, trace_error = self._waiting_trace(proposal, earlier_asks)
+            if trace_error == 'approval_superseded':
+                return None
+        boundary = origin if origin is not None else previous_ask
         scope = self.history.get(sequence, self.scope)
         did, line = proposal['document_id'], proposal['line_number']
         document = next((row for row in scope if row['document_id'] == did), None)
         if approval:
             offset, clause, status, whole = goal_calculation_confirmation.approval_response(
-                reply['answer'], self.clauses, approval)
+                reply['answer'], self.clauses, approval, repeated=self.confirm_repeated_waits)
         else:
             offset, clause, status, whole = goal_calculation_confirmation.response(reply['answer'], self.clauses)
         companions = [] if whole else self.reply_assignments(reply['answer'], offset, field)
@@ -501,15 +580,18 @@ class Names:
         result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': [field],
                   'choices': [ref], 'spoken_selection': basis}
         reason = 'confirmation_unconfirmed'
-        if any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply, previous_ask)):
+        if any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply, boundary)):
             return None
-        if changed := self._changed_order(reply, field, previous_ask):
+        if changed := self._changed_order(reply, field, boundary):
             result['changed_by'] = changed
             reason = 'confirmation_question_changed'
         elif status == 'declined':
             reason = 'confirmation_declined'
         elif status == 'affirmed' and (whole or companions):
-            reason = self._approval_condition(result, proposal, previous_ask, document) if approval else None
+            reason = trace_error
+            if approval and not reason:
+                reason = (self._approval_condition(result, proposal, origin, document)
+                          or self._verify_deferred_approvals(result, deferred, document))
             if not reason:
                 reason = self._confirm_proposal(result, proposal, scope, document)
         if reason:
