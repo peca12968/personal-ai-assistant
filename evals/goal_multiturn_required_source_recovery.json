@@ -1,0 +1,80 @@
+[
+  {
+    "id": "proofing_guide_after_multiple_explicit_ranges",
+    "file_delivery": true,
+    "artifact": "press-check.md",
+    "prompt": "替樣張室做故障接班單 press-check.md。請先完整查讀 [D1:L2-L4]、[D2:L2-L4] 再交付。根據本輪試印順序，找第一個失敗階段，依適用的處置規程列下一步和保留的工作桌。結果各佔一行，用「故障階段」「下一步」「工作桌」欄名，各附直接來源。試印中止的後續階段不能當成第一個失敗。只要查得到資料，就直接完成接班單。",
+    "documents": [
+      {
+        "name": "press-run.txt",
+        "content": "樣張室第六輪測試\n掃描樣張：成功。\n對齊測試：失敗，定位線偏右。\n二次印樣：未執行。\n舊例誤報：網點濃度不足。"
+      },
+      {
+        "name": "press-guide.txt",
+        "content": "第六輪試印現行處置規程\n定位線偏右：先校準導軌，再用新樣張測對齊。\n網點濃度不足：調整墨量。\n現行工作桌：梣紋桌。"
+      }
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 2,
+        "end_line": 4
+      },
+      {
+        "doc": 1,
+        "start_line": 2,
+        "end_line": 4
+      }
+    ],
+    "must_match": [
+      "對齊測試",
+      "校準導軌",
+      "梣紋桌"
+    ],
+    "must_omit": [
+      "調整墨量"
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?故障階段",
+        "claim": "對齊測試",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "定位線偏右"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?下一步",
+        "claim": "校準導軌.{0,30}新樣張",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "校準導軌"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?工作桌",
+        "claim": "梣紋桌",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "梣紋桌"
+          }
+        ]
+      }
+    ]
+  }
+]

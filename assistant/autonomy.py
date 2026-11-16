@@ -39,6 +39,7 @@ from . import work_plan
 from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
+from . import goal_required_reads
 from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
@@ -564,9 +565,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 update(store, gid, 'paused', notice='參考文件已改變，請另建目標。')
                 break
             conditions_hash = work_plan.conditions(goal)
+            required_reads = goal_required_reads.progress(goal, documents)
             required_filename = artifact_names.requirement(goal) if goal['file_delivery'] else None
             pending_filename = artifact_names.awaiting_confirmation(goal['steps'], required_filename)
-            if name_question := artifact_names.question(goal, conditions_hash, required_filename):
+            if not required_reads and (name_question := artifact_names.question(goal, conditions_hash, required_filename)):
                 if len(goal['steps']) + 4 > MAX_STEPS or len(goal['artifacts']) >= artifacts.MAX_FILES:
                     reason = 'goal_limit'
                     update(store, gid, 'paused', notice='定稿需要新檔名。請帶入目前進度建立下一階段，再交付文件。')
@@ -603,6 +605,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                     'calculations': [{'expression': row['args']['expression'], 'observation': row['result'],
                                       **({'id': index} if checked_calculations else {})}
                                      for index, row in enumerate(recheck_evidence['calculations'], 1)]}
+            if required_reads:
+                payload['required_source_reads'] = required_reads
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
@@ -690,6 +694,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 payload['engine_selection'] = engine_selection
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + decision_table.GUIDANCE + '\n' + source_decision.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
+                ('\n' + goal_required_reads.GUIDANCE if required_reads else '') +
                 ('\n' + work_plan_scope.GUIDANCE if goal['work_plan'] else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
@@ -804,6 +809,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 # Detach before execution: a tool may normalize/mutate its input.
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
+                recovery = goal_required_reads.recovery(action, required_reads)
+                if recovery:
+                    action = recovery
+                    verified_rows = expected_files = None
                 declared = rule_scope['ranges'] if rule_scope else []
                 check = None
                 plan_check = None
@@ -821,6 +830,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                                       document_version_reply=document_version_reply, document_version_rules=document_version_rules,
                                       recheck_evidence=recheck_evidence, calculation_sources=calc_sources,
                                       expected_files=expected_files)
+                if recovery:
+                    observation['required_read_recovery'] = {'before_tool': attempted['tool']}
                 if verified_rows is not None:
                     observation[goal_calculation.RECEIPT] = verified_rows
                 if check is not None:

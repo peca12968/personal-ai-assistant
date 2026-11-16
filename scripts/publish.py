@@ -191,6 +191,7 @@ def main():
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_version_triage.json")
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_field_version_handoff.json")
     run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_rule_priority_ranges.json")
+    run(sys.executable, "scripts/evaluate_multiturn_delivery.py", "--suite", "evals/goal_multiturn_required_source_recovery.json")
     run(sys.executable, "scripts/evaluate_multiturn_pair.py")
     run(sys.executable, "scripts/evaluate_multiturn_pair.py", "--suite", "evals/goal_multiturn_question_order.json")
     run(sys.executable, "scripts/evaluate_multiturn_pair.py", "--suite", "evals/goal_multiturn_rubric_calibration.json")

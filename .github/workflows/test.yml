@@ -165,6 +165,7 @@ jobs:
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_version_triage.json
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_field_version_handoff.json
       - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_rule_priority_ranges.json
+      - run: python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_required_source_recovery.json
       - run: python scripts/evaluate_multiturn_pair.py
       - run: python scripts/evaluate_multiturn_pair.py --suite evals/goal_multiturn_question_order.json
       - run: python scripts/evaluate_multiturn_pair.py --suite evals/goal_multiturn_rubric_calibration.json

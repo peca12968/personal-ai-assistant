@@ -1,7 +1,7 @@
 """Grade whether saved goal steps exposed the original lines required by a fixture."""
 import hashlib
 
-from assistant.documents import check_citations
+from assistant.documents import check_citations, matches_numbered_excerpt
 
 
 def _files(case):
@@ -28,22 +28,6 @@ def validate(case, ranges):
         seen.add(key)
 
 
-def _matches(excerpt, lines):
-    first, last = excerpt.get('start_line'), excerpt.get('end_line')
-    if type(first) is not int or type(last) is not int or not 1 <= first <= last <= len(lines):
-        return False
-    text = excerpt.get('text')
-    if excerpt.get('partial_line') is False:
-        return text == '\n'.join(f'L{number}: {lines[number - 1]}' for number in range(first, last + 1))
-    if excerpt.get('partial_line') is not True or first != last:
-        return False
-    low, high, total = (excerpt.get(name) for name in ('start_char', 'end_char', 'line_chars'))
-    line = lines[first - 1]
-    return (all(type(value) is int for value in (low, high, total))
-            and 1 <= low <= high <= total == len(line)
-            and text == f'L{first}: {line[low - 1:high]}')
-
-
 def _observed_excerpts(steps, originals, *, artifact=None):
     excerpts = []
     for step in steps:
@@ -56,7 +40,7 @@ def _observed_excerpts(steps, originals, *, artifact=None):
         for excerpt in observation.get('excerpts', ()):
             source = originals.get(excerpt.get('document_id'))
             if (source and (excerpt.get('name'), excerpt.get('sha256')) == source[:2]
-                    and _matches(excerpt, source[2])):
+                    and matches_numbered_excerpt(excerpt, source[2])):
                 excerpts.append(excerpt)
     return excerpts
 

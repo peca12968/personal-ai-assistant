@@ -180,6 +180,23 @@ def retrieve_documents(query, documents, max_excerpts=8, max_chars=14000, *, ref
             'requested_ranges_limited': requests_limited}
 
 
+def matches_numbered_excerpt(excerpt, lines):
+    """Check a returned line range or character span against an original snapshot."""
+    first, last = excerpt.get('start_line'), excerpt.get('end_line')
+    if type(first) is not int or type(last) is not int or not 1 <= first <= last <= len(lines):
+        return False
+    text = excerpt.get('text')
+    if excerpt.get('partial_line') is False:
+        return text == '\n'.join(f'L{number}: {lines[number - 1]}' for number in range(first, last + 1))
+    if excerpt.get('partial_line') is not True or first != last:
+        return False
+    low, high, total = (excerpt.get(name) for name in ('start_char', 'end_char', 'line_chars'))
+    line = lines[first - 1]
+    return (all(type(value) is int for value in (low, high, total))
+            and 1 <= low <= high <= total == len(line)
+            and text == f'L{first}: {line[low - 1:high]}')
+
+
 def _covers(intervals, start, end):
     if start < 1 or end < start:
         return False
