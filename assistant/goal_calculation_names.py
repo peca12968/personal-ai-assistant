@@ -104,7 +104,8 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
-                 line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False):
+                 line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False,
+                 confirm_approval=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -123,6 +124,7 @@ class Names:
         self.field_quantity = field_quantity
         self.reply_assignments = reply_assignments
         self.confirm_single_line = confirm_single_line
+        self.confirm_approval = confirm_approval
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -189,12 +191,13 @@ class Names:
         selected = set().union(*(known.get(did, set()) for did in ids)) if ids else set()
         return None, selected
 
-    def _choice_guidance(self, reply):
+    def _choice_guidance(self, reply, since=None):
+        boundary = reply['ask_sequence'] if since is None else since
         return (row for row in reversed(self.ordinal_guidance)
-                if row['steps_seen'] >= reply['ask_sequence'] and row['notes_start'] < reply['notes_start'])
+                if row['steps_seen'] >= boundary and row['notes_start'] < reply['notes_start'])
 
-    def _changed_order(self, reply, field):
-        for source in self._choice_guidance(reply):
+    def _changed_order(self, reply, field, since=None):
+        for source in self._choice_guidance(reply, since):
             text = source['content']
             if (goal_calculation_order.reordered(text, self.clauses)
                     or field and self.direct_change(text, field)):
@@ -470,14 +473,23 @@ class Names:
         if reply is None:
             return None
         proposal = goal_calculation_confirmation.question_source(reply['question'], self.clauses)
+        if proposal is None and self.confirm_approval:
+            proposal = goal_calculation_confirmation.approval_question(reply['question'], self.clauses)
         if proposal is None:
             return None
+        approval = proposal.get('approval')
         field, ref = proposal['field'], proposal['citation']
         sequence = reply['ask_sequence']
+        previous_ask = next((step['sequence'] for step in reversed(self.steps)
+                             if step['sequence'] < sequence and step['action']['tool'] == 'ask'), None) if approval else None
         scope = self.history.get(sequence, self.scope)
         did, line = proposal['document_id'], proposal['line_number']
         document = next((row for row in scope if row['document_id'] == did), None)
-        offset, clause, status, whole = goal_calculation_confirmation.response(reply['answer'], self.clauses)
+        if approval:
+            offset, clause, status, whole = goal_calculation_confirmation.approval_response(
+                reply['answer'], self.clauses, approval)
+        else:
+            offset, clause, status, whole = goal_calculation_confirmation.response(reply['answer'], self.clauses)
         companions = [] if whole else self.reply_assignments(reply['answer'], offset, field)
         if companions is None:
             return None
@@ -489,18 +501,49 @@ class Names:
         result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': [field],
                   'choices': [ref], 'spoken_selection': basis}
         reason = 'confirmation_unconfirmed'
-        if any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply)):
+        if any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply, previous_ask)):
             return None
-        if changed := self._changed_order(reply, field):
+        if changed := self._changed_order(reply, field, previous_ask):
             result['changed_by'] = changed
             reason = 'confirmation_question_changed'
         elif status == 'declined':
             reason = 'confirmation_declined'
         elif status == 'affirmed' and (whole or companions):
-            reason = self._confirm_proposal(result, proposal, scope, document)
+            reason = self._approval_condition(result, proposal, previous_ask, document) if approval else None
+            if not reason:
+                reason = self._confirm_proposal(result, proposal, scope, document)
         if reason:
             result['reason'] = reason
         return result, offset, clause
+
+    def _approval_condition(self, result, proposal, earlier_ask, document):
+        if not (earlier := self.replies.get(f'[補充#{earlier_ask}]')):
+            return 'approval_condition_unverified'
+        prior = goal_calculation_confirmation.question_source(earlier['question'], self.clauses)
+        condition = goal_calculation_confirmation.waiting_condition(earlier['answer'], self.clauses)
+        if not prior or not condition:
+            return 'approval_condition_unverified'
+        if (prior['field'], prior['citation']) != (proposal['field'], proposal['citation']):
+            return 'approval_proposal_changed'
+        if any(condition[key] != proposal['approval'][key] for key in ('actor', 'verb')):
+            return 'approval_actor_or_action_changed'
+
+        scope = self.history.get(earlier_ask, self.scope)
+        earlier_doc = next((row for row in scope if row['document_id'] == prior['document_id']), None)
+        if earlier_doc != document:
+            return 'approval_proposal_changed'
+        candidate = {'spoken_selection': {'confirmation': {}}}
+        reason = self._confirm_proposal(candidate, prior, scope, earlier_doc)
+        if reason:
+            for key in ('needs_read', 'needs_line'):
+                if key in candidate:
+                    result[key] = candidate[key]
+            return reason
+        result['spoken_selection']['confirmation']['prior_condition'] = {
+            **condition, 'citation': earlier['citation'], 'sha256': earlier['sha256'], 'ask_sequence': earlier_ask,
+            'question': earlier['question'], 'proposal': prior,
+            **candidate['spoken_selection']['confirmation']}
+        return None
 
     def _confirm_proposal(self, result, proposal, scope, document):
         did, line, field, ref = (proposal[key] for key in ('document_id', 'line_number', 'field', 'citation'))
