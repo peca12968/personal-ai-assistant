@@ -947,6 +947,121 @@ class GoalCalculationTests(unittest.TestCase):
             self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]['observation']['exact'], '87')
         validate_database(self.store.path)
 
+    def prepare_limited_approval(self, report='品質員只同意換窗口。'):
+        ref = self.prepare_conditional_approval(files=True,
+            first_reply='好，但要等收件人和品質員都同意。')
+        self.reply('收件人已同意。')
+        self.run_actions(action('ask', question=
+            f'品質員是否已同意採用 29 袋 {ref} 作為正式批次量？'))
+        self.reply(report)
+        return ref
+
+    def test_limited_approval_of_other_field_allows_a_later_scoped_confirmation(self):
+        ref = self.prepare_limited_approval('品質員只同意換窗口，窗口正式改為 南門。')
+        question = (f'品質員目前只同意更換窗口 [補充#4]。'
+                    f'品質員是否已另行同意採用 29 袋 {ref} 作為正式批次量？')
+        self.run_actions(action('ask', question=question))
+        self.reply('品質員已同意。')
+        rows = [{'label': '總件數', 'calculation_step': 6, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#4]', 'quote': '窗口正式改為 南門'}]
+        filename = '交接確認.json'
+        goal = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            action('write_artifact', filename=filename, calculation_report=rows),
+            action('deliver', filenames=[filename], calculation_report=rows))
+        self.assertEqual(goal['status'], 'report_ready')
+        self.assertIn('87 件', goal['result'])
+        self.assertIn('窗口正式改為 南門 [補充#4]', goal['result'])
+        stored = goal['steps'][5]['observation']
+        adopted, = stored[goal_calculation.PROOF]['source_adoptions']
+        proof = adopted['spoken_selection']['confirmation']
+        approvals = proof['approval_group']
+        self.assertEqual(approvals['awaiting'], [])
+        self.assertEqual([(row['actor'], row['status'], row['citation']) for row in approvals['reports']], [
+            ('收件人', 'affirmed', '[補充#3]'), ('品質員', 'limited', '[補充#4]'), ('品質員', 'affirmed', '[補充#5]')])
+        self.assertEqual(approvals['reports'][1]['other_field'], '窗口')
+        self.assertEqual(proof['approval']['reported_limited_scope']['citation'], '[補充#4]')
+        content = artifacts.directory(self.store, self.gid).joinpath(filename).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(filename).read_bytes(), content)
+        with restored.connect() as db:
+            approvals['reports'][1]['other_field'] = '放行口'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                       (json.dumps(stored, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_group_limited_recaps_must_match_the_actual_reply_and_distinct_field(self):
+        cases = [
+            ('品質員只同意換窗口。', '品質員目前只同意更換窗口 [補充#3]。', 'approval_wait_citation_conflict'),
+            ('品質員只同意換窗口。', '收件人目前只同意更換窗口 [補充#4]。', 'approval_wait_citation_conflict'),
+            ('品質員只同意換窗口。', '品質員目前只同意更換退回量 [補充#4]。', 'approval_wait_citation_conflict'),
+            ('品質員只同意換窗口。', '品質員目前只核准更換窗口 [補充#4]。', 'approval_wait_citation_conflict'),
+            ('品質員只同意換批次量。', '', 'approval_scope_unverified'),
+            ('品質員只同意換不在文件內的欄位。', '', 'approval_scope_unverified'),
+            ('「品質員只同意換窗口」。', '', 'confirmation_unconfirmed'),
+        ]
+        for report, recap, reason in cases:
+            with self.subTest(report=report, recap=recap):
+                ref = self.prepare_limited_approval(report)
+                self.run_actions(action('ask', question=
+                    f'{recap}品質員是否已另行同意採用 29 袋 {ref} 作為正式批次量？'))
+                self.reply('品質員已同意。')
+                engine = ScriptedEngine(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+                    action('ask', question='批次量是否已確認？', calculation_report=[
+                        {'label': '總件數', 'pending': True},
+                        {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]))
+                goal = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+                context = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+                self.assertEqual(context['calculation_source_adoptions'][0]['reason'], reason)
+                self.assertEqual(goal['steps'][5]['action']['tool'], 'invalid')
+                self.assertIn('總件數：待查', goal['partial_result'])
+                validate_database(self.store.path)
+
+    def test_group_repeated_limited_scope_preserves_pending_approval_until_a_factual_report(self):
+        for answer, expected_tool in [('對。', 'invalid'), ('品質員已另外同意。', 'calculate_expression')]:
+            with self.subTest(answer=answer):
+                ref = self.prepare_limited_approval()
+                self.run_actions(action('ask', question=
+                    f'品質員是否已另行同意採用 29 袋 {ref} 作為正式批次量？'))
+                self.reply('品質員仍只同意換窗口。')
+                self.run_actions(action('ask', question=
+                    f'品質員目前仍只同意更換窗口 [補充#5]。'
+                    f'品質員是否已同意採用 29 袋 {ref} 作為正式批次量？請在取得同意後回覆。'))
+                self.reply(answer)
+                goal = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))
+                step = goal['steps'][-1]
+                self.assertEqual(step['action']['tool'], expected_tool)
+                if expected_tool != 'invalid':
+                    adopted, = step['observation'][goal_calculation.PROOF]['source_adoptions']
+                    group = adopted['spoken_selection']['confirmation']['approval_group']
+                    self.assertEqual([item['status'] for item in group['reports']],
+                                     ['affirmed', 'limited', 'limited', 'affirmed'])
+                validate_database(self.store.path)
+
+    def test_group_question_checks_its_displayed_text_against_the_exact_field(self):
+        for shown, should_deliver in [('西側緩坡', True), ('玻璃廊', False), ('藍旗架', False)]:
+            with self.subTest(shown=shown):
+                doc = self.attach('入場路線：西側緩坡。\n分流旗：藍旗架。', '動線.txt')
+                ref = f'[D{doc}:L1]'
+                self.create('整理入場路線。')
+                self.run_actions(action('read', document_id=doc, start_line=1, end_line=2),
+                                 action('ask', question=f'入場路線是否採用 {ref}？'))
+                self.reply('好，但要等門房和場務都批准。')
+                self.run_actions(action('ask', question=f'門房是否已批准採用 {ref} 作為正式入場路線？'))
+                self.reply('門房已批准。')
+                self.run_actions(action('ask', question=
+                    f'場務是否也已另行批准採用「{shown}」 {ref} 作為正式入場路線？'))
+                self.reply('對。')
+                goal = self.run_actions(action('finish', calculation_report=[
+                    {'label': '入場路線', 'citation': ref, 'quote': '入場路線：西側緩坡'}]))
+                self.assertEqual(goal['status'] == 'report_ready', should_deliver)
+                if should_deliver:
+                    self.assertIn('西側緩坡', goal['result'])
+                else:
+                    self.assertEqual(goal['steps'][-1]['action']['tool'], 'invalid')
+                validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),

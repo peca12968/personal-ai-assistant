@@ -101,6 +101,16 @@ def _literal_field(text, valid_clause, requested=None):
     return found[0] if len(found) == 1 else None
 
 
+def field_value(text, valid_clause, field):
+    record = _literal_field(text, valid_clause, field)
+    if record and record[0] == field and record[3]:
+        quote, offset = record[1:3]
+        match = _REPLY_ASSIGNMENT.fullmatch(quote)
+        if match and (match['quoted'] or match['bare']) == field:
+            return {'value': match['value'].strip(), 'quote': quote, 'quote_start': offset}
+    return None
+
+
 def _description_conflicts(description, filename):
     if not description:
         return False

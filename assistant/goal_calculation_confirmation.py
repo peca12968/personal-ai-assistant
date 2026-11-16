@@ -45,6 +45,18 @@ _GROUP_CONDITION = re.compile(
     rf'(?:但(?:是)?\s*)?(?:(?:尚須|必須|仍須|需要|還要|要|得|先)\s*)?等(?:到)?\s*'
     rf'(?P<actors>{_GROUP_ACTOR}(?:{_GROUP_SEPARATOR}{_GROUP_ACTOR}){{1,3}})\s*(?:都|皆)\s*{_PERMISSION}'
     r'\s*(?:後)?\s*(?:(?:才(?:能|會)?|再)(?:採用|使用|用)|才行)?')
+_GROUP_QUESTION = re.compile(
+    rf'{_START}{_ACTOR}\s*是否\s*(?:也\s*)?(?:已經?\s*)?(?:(?:另行|另外)\s*)?'
+    rf'{_PERMISSION}\s*{_ACTION}\s*(?P<target>.+?)\s*(?:作為|當作)\s*(?:正式\s*)?{_FIELD}')
+_REPLY_AFTER_APPROVAL = re.compile(rf'請(?:在|於)?\s*取得\s*{_PERMISSION}\s*後\s*回覆')
+_LIMITED_SCOPE = re.compile(
+    rf'{_ACTOR}\s*(?:(?:目前|現在|這次|本次)\s*)?(?:仍\s*)?(?:只|僅)\s*{_PERMISSION}\s*'
+    r'(?:更換|變更|調整|修改|更新|換|改)\s*(?:欄位)?'
+    r'(?:「(?P<label>[^「」\[\]\r\n]{1,80})」|(?P<bare>[\u3400-\u9fffA-Za-z0-9_-]{1,60}))')
+_SUPPLEMENT_AT_END = re.compile(r'\s*(?P<citation>\[補充#[1-9][0-9]{0,3}\])$')
+_GROUP_APPROVAL_REPLY = re.compile(
+    rf'{_ACTOR}\s*(?P<state>已經?|尚未|還沒|沒有)\s*(?:(?:另行|另外)\s*)?{_PERMISSION}'
+    r'\s*(?:(?:採用|使用|用)(?:這筆|該行|這一行)?)?')
 
 
 def _amount(text):
@@ -82,7 +94,7 @@ def question_source(question, clauses):
     return _proposal(match, target, offset)
 
 
-def _proposal(match, target, offset):
+def _proposal(match, target, offset, *, allow_text_value=False):
     refs = list(_LINE.finditer(target))
     if len(refs) != 1:
         return None
@@ -94,20 +106,29 @@ def _proposal(match, target, offset):
     row = _ROW.match(before)
     if row:
         before = before[row.end():].strip()
-    shown = []
-    for word in (before, after if after not in {'這筆', '該行', '這一行', '為準'} else ''):
+    shown, shown_text = [], None
+    for index, word in enumerate((before, after if after not in {'這筆', '該行', '這一行', '為準'} else '')):
         if not word:
             continue
-        if not (amount := _amount(word.removeprefix('的').strip())):
+        value = word.removeprefix('的').strip()
+        if amount := _amount(value):
+            shown.append(amount)
+        elif allow_text_value and index == 0 and 1 <= len(value) <= 100:
+            shown_text = value[1:-1] if value.startswith('「') and value.endswith('」') else value
+            if not shown_text:
+                return None
+        else:
             return None
-        shown.append(amount)
-    return {'field': match['label'] or match['bare'], 'citation': ref[0],
+    result = {'field': match['label'] or match['bare'], 'citation': ref[0],
             'document_id': int(ref['document']), 'line_number': int(ref['line']),
             'question_start': offset + match.start('target') + ref.start(),
             'question_end': offset + match.start('target') + ref.end(),
             'displayed_title': title['title'] if title else None,
             'displayed_line': int(row['row']) if row else None,
             'displayed_quantities': shown}
+    if shown_text is not None:
+        result['displayed_value'] = shown_text
+    return result
 
 
 def response(answer, clauses):
@@ -132,6 +153,49 @@ def approval_question(question, clauses):
     if proposal is not None:
         proposal['approval'] = {'actor': match['actor'], 'verb': match['verb'],
                                 'question_start': offset + match.start('actor')}
+    return proposal
+
+
+def _limited_scope(text):
+    match = _LIMITED_SCOPE.fullmatch(text)
+    if not match or not _valid_group_actor(match['actor']):
+        return None
+    return {'actor': match['actor'], 'verb': match['verb'], 'other_field': match['label'] or match['bare']}
+
+
+def group_approval_question(question, clauses):
+    parts = clauses(question)
+    instruction = None
+    if parts and not parts[-1][2]:
+        instruction = _REPLY_AFTER_APPROVAL.fullmatch(parts[-1][1])
+        if instruction:
+            parts = parts[:-1]
+    if (not 1 <= len(parts) <= 2 or not parts[-1][2]
+            or not (instruction or question.rstrip().endswith(('？', '?')))):
+        return None
+    offset, part, _ = parts[-1]
+    if _UNCERTAIN.search(part) or '不要' in part:
+        return None
+    recap = None
+    if len(parts) == 2:
+        start, text, is_question = parts[0]
+        citation = _SUPPLEMENT_AT_END.search(text)
+        if is_question or not citation or not (scope := _limited_scope(text[:citation.start()])):
+            return None
+        recap = {**scope, 'citation': citation['citation'], 'text': text, 'question_start': start}
+    match = _GROUP_QUESTION.fullmatch(part)
+    if (not match or not _valid_group_actor(match['actor'])
+            or instruction and instruction['verb'] != match['verb']):
+        return None
+    proposal = _proposal(match, match['target'], offset, allow_text_value=True)
+    if proposal is not None:
+        approval = {'actor': match['actor'], 'verb': match['verb'],
+                    'question_start': offset + match.start('actor')}
+        if recap:
+            approval['reported_limited_scope'] = recap
+        if instruction:
+            approval['wait_notice'] = True
+        proposal['approval'] = approval
     return proposal
 
 
@@ -200,9 +264,23 @@ def waiting_group(answer, clauses):
             'choice_quote': pieces[0][1], 'choice_start': pieces[0][0]}
 
 
-def group_response(answer, clauses, approval):
+def _valid_group_actor(actor):
+    return re.fullmatch(_GROUP_ACTOR, actor) and not _UNCLEAR_ACTOR.search(actor)
+
+
+def group_response(answer, clauses, approval, *, limited_scope=False):
+    if limited_scope:
+        scopes = [(offset, text, scope) for offset, text, question in clauses(answer)
+                  if not question and (scope := _limited_scope(text))]
+        if len(scopes) == 1:
+            offset, text, scope = scopes[0]
+            whole = answer.strip() in (text, text + '。', text + '！', text + '!')
+            return {**scope, 'status': 'limited', 'quote': text, 'quote_start': offset}, whole
+        if scopes:
+            return None
+    pattern = _GROUP_APPROVAL_REPLY if limited_scope else _APPROVAL_REPLY
     reports = [(offset, text, match) for offset, text, question in clauses(answer)
-               if not question and (match := _APPROVAL_REPLY.fullmatch(text))]
+               if not question and (match := pattern.fullmatch(text))]
     if len(reports) > 1:
         return None
     if reports:

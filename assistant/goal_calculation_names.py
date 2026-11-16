@@ -106,7 +106,7 @@ class Names:
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
                  line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False,
                  confirm_approval=False, confirm_repeated_waits=False, confirm_other_approvals=False,
-                 confirm_approval_groups=False):
+                 confirm_approval_groups=False, field_text=None):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -129,6 +129,7 @@ class Names:
         self.confirm_repeated_waits = confirm_repeated_waits
         self.confirm_other_approvals = confirm_other_approvals
         self.confirm_approval_groups = confirm_approval_groups
+        self.field_text = field_text
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -586,6 +587,8 @@ class Names:
             prior = (proposal if source is reply else
                      goal_calculation_confirmation.question_source(source['question'], self.clauses)
                      or self._approval_proposal(source['question']))
+            if prior is None and self.field_text is not None:
+                prior = goal_calculation_confirmation.group_approval_question(source['question'], self.clauses)
             if prior and prior['field'] != proposal['field']:
                 break
             trail.append((source, prior))
@@ -628,13 +631,23 @@ class Names:
                                or any(last[name] != notice[name] for name in ('actor', 'verb'))
                                or notice['citation'] not in (None, last['citation'])):
                     return None, 'approval_wait_citation_conflict'
-            response = goal_calculation_confirmation.group_response(reply['answer'], self.clauses, approval)
+            if notice := approval.get('reported_limited_scope'):
+                if not last or last['status'] != 'limited' or any(
+                        notice[key] != last[key] for key in ('actor', 'verb', 'other_field', 'citation')):
+                    return None, 'approval_wait_citation_conflict'
+            response = goal_calculation_confirmation.group_response(
+                reply['answer'], self.clauses, approval, limited_scope=self.field_text is not None)
             if response is None:
                 return None, 'confirmation_unconfirmed'
             report, whole = response
             companions = [] if whole else self.reply_assignments(reply['answer'], report['quote_start'], original['field'])
             if not whole and not companions:
                 return None, 'confirmation_unconfirmed'
+            if report['status'] == 'limited':
+                scope = self.history.get(reply['ask_sequence'], self.scope)
+                other = report['other_field']
+                if other == original['field'] or not any(other in fields for fields in self._known_fields(scope, ()).values()):
+                    return None, 'approval_scope_unverified'
             last = {**report, **source, 'citation': reply['citation'], 'sha256': reply['sha256'],
                     'ask_sequence': reply['ask_sequence'], 'question': reply['question'], 'proposal': proposal}
             if companions:
@@ -642,7 +655,7 @@ class Names:
             group['reports'].append(last)
             actor = last['actor']
             if actor in condition['actors']:
-                if last['verb'] != condition['verb']:
+                if last['status'] != 'limited' and last['verb'] != condition['verb']:
                     return None, 'approval_actor_or_action_changed'
                 if last['status'] == 'affirmed':
                     outstanding.discard(actor)
@@ -698,6 +711,10 @@ class Names:
         proposal = goal_calculation_confirmation.question_source(reply['question'], self.clauses)
         if proposal is None and self.confirm_approval:
             proposal = self._approval_proposal(reply['question'])
+        if proposal is None and self.field_text is not None:
+            extended = goal_calculation_confirmation.group_approval_question(reply['question'], self.clauses)
+            if extended and (group := self._approval_group(reply, extended)):
+                return self._group_confirmation(reply, extended, *group)
         if proposal is None:
             return None
         if self.confirm_approval_groups and (group := self._approval_group(reply, proposal)):
@@ -799,6 +816,11 @@ class Names:
                                    for item in shown):
                 return 'confirmation_quantity_conflict'
             result['spoken_selection']['confirmation']['source_quantity'] = quantity
+        if shown_text := proposal.get('displayed_value'):
+            value = self.field_text(ref, field)
+            if not value or value['value'] != shown_text:
+                return 'confirmation_value_conflict'
+            result['spoken_selection']['confirmation']['source_value'] = value
         result['references'] = (ref,)
         result['spoken_selection']['selected_documents'] = [did]
         return None
