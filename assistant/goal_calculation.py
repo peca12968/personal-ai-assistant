@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 4
-SOURCE_VERSIONS = (1, 2, 3, SOURCE_VERSION)
+SOURCE_VERSION = 5
+SOURCE_VERSIONS = (1, 2, 3, 4, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -35,6 +35,9 @@ GUIDANCE = (
     '同名或同欄多筆時，choices 已指出需要確認的來源，保留其他欄位，只問要採用哪一筆。'
     '已知兩筆都屬候選時毋須再作數量比較。'
     '「第二份」等短答依保存的問題列出的同欄候選順序；採用已核對的原行。'
+    '原問以文件名、已配對短稱或混合引用列選項時，依 ordinal.options 的現況。'
+    '有 needs_lookup 時先查指定欄位，等各候選都核對後才採用已選的序號。'
+    '碰到同名或名稱與引用衝突時，用實際文件及原行歧義確認該欄，只問會改變交付的選擇。'
     '若順序未能確認，針對受影響欄位列出二至八個明確選項，各附一個原行引用，再問使用哪筆。'
     '交付、寫檔及附暫表提問使用 calculation_report 陣列，替換 report、content 或 partial_result。'
     '計算列 {"label":"總件數","calculation_step":3,"unit":"件"} 只送實際步驟號，不送答案。'
@@ -114,7 +117,8 @@ class Sources:
         names = (goal_calculation_names.Names(
             steps, scope, replies, self.excerpts, self.documents, self.document_counts, self.literal,
             lambda text: goal_calculation_adoption._literal_field(text, _valid_clause), _clauses,
-            ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change)
+            ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change,
+            named_ordinals=self.version >= 5)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause, names=names)
                           if self.version >= 2 else None)

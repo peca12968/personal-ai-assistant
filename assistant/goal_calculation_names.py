@@ -99,7 +99,7 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_at, clauses, *,
-                 ordinal_guidance=None, direct_change=None):
+                 ordinal_guidance=None, direct_change=None, named_ordinals=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -112,6 +112,7 @@ class Names:
         self.clauses = clauses
         self.ordinal_guidance = ordinal_guidance
         self.direct_change = direct_change
+        self.named_ordinals = named_ordinals
         self.observed = {}
         self.documents_seen = {}
 
@@ -180,7 +181,17 @@ class Names:
         selected = set().union(*(known.get(did, set()) for did in ids)) if ids else set()
         return None, selected
 
-    def _resolve_ordinal(self, reply, field, name, selection):
+    def _changed_order(self, reply, field):
+        for source in reversed(self.ordinal_guidance):
+            if source['steps_seen'] < reply['ask_sequence'] or source['notes_start'] >= reply['notes_start']:
+                continue
+            text = source['content']
+            if (goal_calculation_order.reordered(text, self.clauses)
+                    or field and self.direct_change(text, field)):
+                return source['citation']
+        return None
+
+    def _resolve_ordinal(self, reply, field, name, selection, *, permit=True):
         question = reply['question']
         options = goal_calculation_order.options(question, _LINE, self.clauses)
         if not options and not goal_calculation_order.source_list(question, _LINE):
@@ -208,18 +219,13 @@ class Names:
                  'ordinal': {'mode': mode, 'position': position, 'options': options}}
         result = {'field': field, 'status': _PENDING, 'candidates': [], 'choices': list(refs),
                   'field_candidates': sorted(possible), 'spoken_selection': basis}
-        if not options or not 1 <= position <= len(options):
+        if not permit or not options or not 1 <= position <= len(options):
             result['reason'] = 'choice_order_unresolved'
             return result
 
-        for source in reversed(self.ordinal_guidance):
-            if source['steps_seen'] < sequence or source['notes_start'] >= reply['notes_start']:
-                continue
-            text = source['content']
-            if (goal_calculation_order.reordered(text, self.clauses)
-                    or field and self.direct_change(text, field)):
-                result.update(reason='choice_order_changed', changed_by=source['citation'])
-                return result
+        if change := self._changed_order(reply, field):
+            result.update(reason='choice_order_changed', changed_by=change)
+            return result
 
         indexed = {}
         for doc in documents:
@@ -236,12 +242,165 @@ class Names:
         result['references'] = (chosen,)
         return result
 
+    def _exact_title_ids(self, name, scope):
+        if name is None:
+            return set()
+        return {doc['document_id'] for doc in scope
+                if _key(name) in {_key(doc['name']), _key(doc['name'].rsplit('.', 1)[0])}}
+
+    def _field_lines(self, document, field):
+        did = document['document_id']
+        count = self.counts.get(did)
+        seen = self._lines(document)
+        if count is not None and len(seen) == count:
+            return [ref for label, ref in self._fields(document, seen) if label == field]
+        originals = self.documents.get((did, document['name'], document['sha256']))
+        checked = _complete_lookup(self.steps, document, field, count, self.literal, originals)
+        if checked is None:
+            return None
+        return [ref for label, ref in self._fields(document, (number for number, _ in checked)) if label == field]
+
+    def _displayed_candidates(self, options, scope, question):
+        documents = {doc['document_id']: doc for doc in scope}
+        # Only separate, earlier bindings may supply citations to an option by alias.
+        preface = question[:options[0]['question_start']]
+        aliases = {}
+        for match in _ALIAS.finditer(preface):
+            aliases.setdefault(_key(match['name']), set()).add(match['ref'])
+        rows = []
+        for option in options:
+            name = option['name']
+            ref = option['displayed_citation']
+            alias_refs = aliases.get(_key(name), set()) if name else set()
+            title_ids = self._exact_title_ids(name, scope)
+            if ref:
+                did = int(_LINE_ID.fullmatch(ref)[1])
+                status = 'reference_conflict' if (
+                    title_ids and did not in title_ids or alias_refs and alias_refs != {ref}) else None
+            elif alias_refs:
+                ref = next(iter(alias_refs)) if len(alias_refs) == 1 else None
+                did = int(_LINE_ID.fullmatch(ref)[1]) if ref else None
+                status = ('reference_conflict' if not ref or title_ids and did not in title_ids else None)
+            else:
+                did = next(iter(title_ids)) if len(title_ids) == 1 else None
+                status = None if did is not None else 'ambiguous_title' if title_ids else 'unknown_title'
+            if did is not None and did not in documents:
+                status = 'outside_scope'
+            row = {**option, 'citation': ref, 'document_id': did, 'status': status}
+            if title_ids and status in ('ambiguous_title', 'reference_conflict'):
+                row['matching_document_ids'] = sorted(title_ids)
+            rows.append(row)
+        return rows, documents
+
+    def _displayed_field(self, rows, documents, prompt, declared):
+        known, complete = [], True
+        for row in rows:
+            doc = documents.get(row['document_id'])
+            if doc is None or row['status']:
+                complete = False
+                continue
+            seen = self._lines(doc)
+            if row['citation']:
+                line = int(_LINE_ID.fullmatch(row['citation'])[2])
+                numbers = seen & {line}
+                complete &= bool(numbers)
+            else:
+                numbers = seen
+                complete &= len(seen) == self.counts.get(doc['document_id'])
+            known.append({field for field, _ in self._fields(doc, numbers)})
+        fields = set().union(*known) if known else set()
+        mentioned = {field for field in fields if field in prompt}
+        mentioned = {field for field in mentioned if not any(field != other and field in other for other in mentioned)}
+        if declared:
+            return declared, {declared}
+        if len(mentioned) == 1:
+            return next(iter(mentioned)), mentioned
+        if mentioned:
+            return None, mentioned
+        if complete and known:
+            common = set.intersection(*known)
+            if len(common) == 1:
+                return next(iter(common)), common
+        return None, fields
+
+    def _fill_displayed_lines(self, rows, documents, field):
+        missing = []
+        for row in rows:
+            if row['status']:
+                continue
+            doc = documents[row['document_id']]
+            ref = row['citation']
+            if ref:
+                number = int(_LINE_ID.fullmatch(ref)[2])
+                matches = [found for label, found in self._fields(doc, self._lines(doc) & {number})
+                           if label == field]
+                if not matches:
+                    row['status'] = 'unverified_line_or_field'
+                continue
+            matches = self._field_lines(doc, field)
+            if matches is None:
+                row['status'] = 'needs_lookup'
+                missing.append({'document_id': doc['document_id'], 'query': field, 'start_line': 1})
+            elif len(matches) != 1:
+                row.update(status='competing_lines' if matches else 'field_not_found', matching_lines=matches)
+            else:
+                row['citation'] = matches[0]
+        return missing
+
+    def _resolve_named_ordinal(self, reply, claimed_field, name, selection):
+        question = reply['question']
+        options = goal_calculation_order.named_options(question, _LINE, self.clauses)
+        if not options:
+            return self._resolve_ordinal(reply, claimed_field, name, selection, permit=False)
+        sequence = reply['ask_sequence']
+        scope = self.history.get(sequence, self.scope)
+        rows, documents = self._displayed_candidates(options, scope, question)
+        prompt = goal_calculation_order.source_prompt(question, self.clauses)
+        hint = _FIELD.search(prompt)
+        field, possible = self._displayed_field(rows, documents, prompt, hint['field'] if hint else None)
+        if not field and not any(label in prompt for label in possible):
+            observed, _ = self._pick(prompt, scope, (), ())
+            if observed and observed in prompt:
+                field, possible = observed, {observed}
+
+        mode, number = selection
+        position = len(rows) if mode == 'last' else number
+        basis = {'name': name, 'question': question, 'ask_sequence': sequence,
+                 'question_references': [option['displayed_citation'] for option in options if option['displayed_citation']],
+                 'candidate_documents': sorted({row['document_id'] for row in rows if row['document_id'] is not None}),
+                 'selected_documents': [],
+                 'ordinal': {'mode': mode, 'position': position, 'options': rows}}
+        result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': sorted(possible),
+                  'spoken_selection': basis}
+        reason = 'choice_order_unresolved'
+        if 1 <= position <= len(rows):
+            reason = 'choice_field_unresolved'
+            if claimed_field and claimed_field != field:
+                reason = 'reply_field_conflict'
+            elif change := self._changed_order(reply, field):
+                result['changed_by'] = change
+                reason = 'choice_order_changed'
+            elif field:
+                needed = self._fill_displayed_lines(rows, documents, field)
+                refs = [row['citation'] for row in rows]
+                if all(row['status'] is None for row in rows) and len(set(refs)) == len(refs):
+                    chosen = rows[position - 1]
+                    basis['selected_documents'] = [chosen['document_id']]
+                    result['references'] = (chosen['citation'],)
+                    return result
+                if needed and all(row['status'] in (None, 'needs_lookup') for row in rows):
+                    result['needs_lookup'] = needed[0]
+        result['choices'] = [row['citation'] or row['name'] for row in rows]
+        result['reason'] = reason
+        return result
+
     def resolve(self, citation, clause):
         reply = self.replies.get(citation)
         if reply is not None and self.ordinal_guidance is not None and (parsed := _parts(clause, True)):
             field, name, _ = parsed
             if selection := goal_calculation_order.parse(name):
-                return self._resolve_ordinal(reply, field, name, selection)
+                return (self._resolve_named_ordinal(reply, field, name, selection) if self.named_ordinals
+                        else self._resolve_ordinal(reply, field, name, selection))
         question = _question(reply, self.clauses)
         parsed = _parts(clause, question is not None)
         if not parsed:

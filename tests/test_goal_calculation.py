@@ -185,6 +185,133 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('完整且已確認', result['steps'][2]['observation']['error'])
         self.assertEqual(result['partial_result'], '總件數：待查')
 
+    def test_hypothetical_named_numbered_question_does_not_confirm_current_source(self):
+        revised = self.attach('批次量：23 袋。', '晚班.txt')
+        self.create()
+        question = '如果只是試算，批次量要採用哪一份？\n1. 清單\n2. 晚班'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=question))
+        self.reply('第二份。')
+        waiting = self.run_actions(
+            self.formula(quantity='23', citation=f'[D{revised}:L1]', quote='批次量：23 袋'),
+            action('ask', question='正式批次量要用哪一行？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        self.assertIn('採用尚待核對', waiting['steps'][3]['observation']['error'])
+        self.assertIn('窗口：北門', waiting['partial_result'])
+        validate_database(self.store.path)
+
+    def test_named_ordinal_uses_only_displayed_titles_and_restores_json(self):
+        revised = self.attach('批次量：23 袋。', '晚班.txt')
+        extra = self.attach('批次量：41 袋。', '插閱.txt')
+        self.create(files=True)
+        question = '批次量要採用哪一份：晚班還是清單？'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('read', document_id=extra, start_line=1, end_line=1), action('ask', question=question))
+        self.reply('第二份。')
+        roster = [{'label': '總件數', 'calculation_step': 6, 'unit': '件'},
+                  {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]
+        result = self.run_actions(
+            self.formula(quantity='23', citation=f'[D{revised}:L1]', quote='批次量：23 袋'),
+            self.formula(),
+            action('write_artifact', filename='定稿.json', calculation_report=roster),
+            action('deliver', filenames=['定稿.json'], calculation_report=roster))
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertIn('目前採用', result['steps'][4]['observation']['error'])
+        proof, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(proof['spoken_selection']['candidate_documents'], [self.doc, revised])
+        ordered = proof['spoken_selection']['ordinal']['options']
+        self.assertEqual([row['citation'] for row in ordered], [f'[D{revised}:L1]', self.cite(1)])
+        self.assertEqual([question[row['question_start']:row['question_end']] for row in ordered], ['晚班', '清單'])
+        original = artifacts.directory(self.store, self.gid).joinpath('定稿.json').read_bytes()
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('定稿.json').read_bytes(), original)
+        validate_database(restored.path)
+
+    def test_mixed_ordinal_checks_title_against_another_displayed_citation(self):
+        revised = self.attach('批次量：23 袋。', '晚班.txt')
+        self.create()
+        question = f'批次量要採用清單 [D{revised}:L1] 還是晚班？'
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=question))
+        self.reply('第二份。')
+        engine = ScriptedEngine(
+            self.formula(quantity='23', citation=f'[D{revised}:L1]', quote='批次量：23 袋'),
+            action('ask', question='請確認批次量採哪個來源？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertIn('reference_conflict', engine.prompts[0])
+        self.assertIn('採用尚待核對', result['steps'][3]['observation']['error'])
+        self.assertIn('窗口：北門', result['partial_result'])
+        validate_database(self.store.path)
+
+    def test_numbered_aliases_use_the_preface_and_ignore_background_refs(self):
+        revised = self.attach('批次量：24 袋。\n批次量：21 袋。', '夜間記錄.txt')
+        self.create()
+        night = f'[D{revised}:L2]'
+        original = self.cite(1)
+        question = (f'案號類別是「早點」{original} 與「晚點」{night}。'
+                    f'每袋件數照 {self.cite(2)}。批次量要採用哪一筆？\n'
+                    '1. 「晚點」\n2. 「早點」')
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=2),
+                         action('ask', question=question))
+        self.reply('最後那筆。')
+        result = self.run_actions(self.formula(), action('finish', calculation_report=[
+            {'label': '總件數', 'calculation_step': 4, 'unit': '件'}]))
+        self.assertIn('51 件', result['result'])
+        proof, = result['steps'][3]['observation'][goal_calculation.PROOF]['source_adoptions']
+        options = proof['spoken_selection']['ordinal']['options']
+        self.assertEqual([row['citation'] for row in options], [night, original])
+        self.assertEqual([row['displayed_citation'] for row in options], [None, None])
+        validate_database(self.store.path)
+
+    def test_named_ordinal_keeps_same_title_and_same_field_lines_unresolved(self):
+        revised = self.attach('批次量：23 袋。\n批次量：24 袋。', '晚班.txt')
+        other_dir = self.root / '暗室'
+        other_dir.mkdir()
+        path = other_dir / '晚班.txt'
+        path.write_text('批次量：29 袋。', encoding='utf-8')
+        duplicate = self.store.attach_document(self.sid, path)
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=2),
+                         action('read', document_id=duplicate, start_line=1, end_line=1),
+                         action('ask', question='批次量要採用哪一份：清單還是晚班？'))
+        self.reply('第一份。')
+        engine = ScriptedEngine(self.formula(), action('ask', question=(
+            f'要採用清單 {self.cite(1)} 還是晚班 [D{revised}:L1]？'), calculation_report=[
+            {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+            {'label': '總件數', 'pending': True}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertIn('ambiguous_title', engine.prompts[0])
+        self.assertIn('採用尚待核對', result['steps'][4]['observation']['error'])
+        self.reply('第一份。')
+        final = self.run_actions(self.formula(), action('finish', calculation_report=[
+            {'label': '總件數', 'calculation_step': 7, 'unit': '件'}]))
+        self.assertIn('51 件', final['result'])
+        validate_database(self.store.path)
+
+    def test_unread_named_candidate_uses_exact_lookup_before_selecting_other_option(self):
+        revised = self.attach('備註行。\n簡報架：西。 \n批次量：27 袋。', '晚點複查.txt')
+        self.create()
+        self.run_actions(self.initial(), action('ask', question='批次量要採用哪一份：晚點複查還是清單？'))
+        self.reply('第二份。')
+        engine = ScriptedEngine(
+            self.formula(),
+            action('find_document_text', document_id=revised, query='批次量', start_line=1),
+            self.formula(),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 5, 'unit': '件'}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=4)
+        self.assertIn('needs_lookup', engine.prompts[0])
+        self.assertIn('採用尚待核對', result['steps'][2]['observation']['error'])
+        self.assertEqual(result['steps'][3]['observation']['excerpts'][0]['start_line'], 3)
+        self.assertIn('51 件', result['result'])
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid)['result'], result['result'])
+
     def test_ordinal_uses_question_order_and_replays_json_after_detaching_version(self):
         revised = self.attach('批次量：23 袋。', '晚班.txt')
         self.create(files=True)
@@ -208,7 +335,8 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertEqual(ordered['position'], 2)
         self.assertEqual([item['citation'] for item in ordered['options']], [late, first])
         for item in ordered['options']:
-            self.assertEqual(question[item['question_start']:item['question_end']], item['citation'])
+            displayed = question[item['question_start']:item['question_end']]
+            self.assertEqual(displayed, f'「{item["name"]}」{item["displayed_citation"]}')
         old = artifacts.directory(self.store, self.gid).joinpath('定稿.json').read_bytes()
         self.store.detach_document(self.sid, revised)
         restored = self.restore()

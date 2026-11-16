@@ -128,3 +128,139 @@ def reordered(content, clauses):
         if not is_question and _REORDER.search(unquoted) and not _NONOPERATIVE.search(unquoted):
             return True
     return False
+
+
+# V5 options retain their displayed text when an original citation is omitted.
+_NAMED_HEAD = re.compile(
+    r'(?:(?:請(?:先)?)?(?:要)?(?:採用|改採|改用|選用|選擇|要用)|以)'
+    r'\s*(?:哪(?:一)?(?:份|筆|版|個來源|個版本|個文件)(?:文件|來源|版本|紀錄|資料)?'
+    r'(?:為準)?\s*)?[：:]?\s*'
+)
+_SIMPLE_HEAD = re.compile(r'(?:用|採)\s*')
+_NAMED_COLON = re.compile(r'[:：]\s*')
+_NAMED_SEPARATOR = re.compile(r'還是|或者|或|、|／')
+_NAMED_QUOTED = re.compile(r'「(?P<name>[^「」\[\]\r\n]{1,80})」')
+_NAMED_PLAIN = re.compile(r'[^「」『』“”"\'\[\]\r\n。！？?!，,、；;：:]{1,80}')
+_NAMED_SUFFIX = re.compile(r'\s*(?:為準|呢|這一份|這份|哪一份)$')
+_NAMED_TRAILING = re.compile(
+    r'\s*[。？?]?\s*(?:請(?:選擇|選用|選)一(?:份|筆|項)[。？?]?\s*)?'
+)
+
+
+def _trim_span(fragment, offset):
+    stripped = fragment.strip()
+    return stripped, offset + len(fragment) - len(fragment.lstrip())
+
+
+def _named_option(fragment, offset, line_pattern):
+    fragment, offset = _trim_span(fragment, offset)
+    fragment = fragment.rstrip('。？?').rstrip()
+    if not fragment:
+        return None
+    matches = list(re.finditer(line_pattern, fragment))
+    if len(matches) > 1 or matches and matches[0].end() != len(fragment):
+        return None
+    citation = matches[0][0] if matches else None
+    label = fragment[:matches[0].start()].strip() if matches else fragment
+    if quoted := _NAMED_QUOTED.fullmatch(label):
+        name = quoted['name'].strip()
+        if not name:
+            return None
+    elif label and _NAMED_PLAIN.fullmatch(label):
+        name = label
+    elif not label and citation:
+        name = None
+    else:
+        return None
+    return {'name': name, 'displayed_citation': citation,
+            'question_start': offset, 'question_end': offset + len(fragment)}
+
+
+def _trial_question(question, offset, part):
+    prefix = re.split(r'[。！？!?；;\r\n]', question[:offset])[-1]
+    unquoted = _QUOTED_LABEL.sub('', prefix + part)
+    return bool(_NONOPERATIVE.search(unquoted) or unquoted.lstrip().startswith(('若', '倘若', '要是')))
+
+
+def _named_numbered(question, line_pattern, clauses):
+    offset, numbered = 0, []
+    for index, raw in enumerate(question.splitlines(keepends=True)):
+        marker = _MARKER.match(unicodedata.normalize('NFKC', raw[:12]))
+        if marker:
+            option = _named_option(raw[marker.end():], offset + marker.end(), line_pattern)
+            if option is None:
+                return None
+            number = ordinal_position({'number': marker['number'] or marker['wrapped']})
+            numbered.append((index, number, offset, option))
+        offset += len(raw)
+    if not numbered:
+        return []
+    positions = [index for index, _, _, _ in numbered]
+    order = [number for _, number, _, _ in numbered]
+    header = question[:numbered[0][2]]
+    rows = [option for _, _, _, option in numbered]
+    if (not 2 <= len(rows) <= 8 or order != list(range(1, len(rows) + 1))
+            or positions != list(range(positions[0], positions[0] + len(rows))) or not _ASK.search(header)
+            or any(flag and not _ASK.search(text) or _ASK.search(text) and _trial_question(header, offset, text)
+                   for offset, text, flag in clauses(header))
+            or not _NAMED_TRAILING.fullmatch(question[rows[-1]['question_end']:])):
+        return None
+    return rows
+
+
+def _inline_spans(part, line_pattern):
+    token = re.compile(rf'{_QUOTED_LABEL.pattern}|{line_pattern}|{_NAMED_SEPARATOR.pattern}')
+    start = 0
+    result = []
+    for match in token.finditer(part):
+        if _NAMED_SEPARATOR.fullmatch(match[0]):
+            if not part[start:match.start()].strip():
+                return []
+            result.append((start, match.start()))
+            start = match.end()
+    if not result:
+        return []
+    result.append((start, len(part)))
+    return result
+
+
+def _option_start(part, first_end, opener):
+    intro = part[:first_end]
+    # Ignore colons inside a citation or a quoted document name.
+    hidden = re.compile(rf'{_QUOTED_LABEL.pattern}|\[D\d+:L\d+\]')
+    masked = hidden.sub(lambda match: ' ' * len(match[0]), intro)
+    if _ASK.search(masked) and (colons := list(_NAMED_COLON.finditer(masked))):
+        return min(colons[-1].end(), len(intro))
+    header_text = masked.rstrip()
+    header = _NAMED_HEAD.search(header_text) or _SIMPLE_HEAD.search(header_text)
+    return header.end() if header else 0 if opener else None
+
+
+def _named_alternatives(question, line_pattern, clauses):
+    bits, found = clauses(question), []
+    for offset, part, is_question in bits:
+        spans = _inline_spans(part, line_pattern)
+        if not 2 <= len(spans) <= 8 or _trial_question(question, offset, part):
+            continue
+        openers = [(earlier, text) for earlier, text, flag in bits if flag and earlier < offset]
+        if (len(openers) > 1 or any(not _ASK.search(text) or re.search(line_pattern, text)
+                or _trial_question(question, earlier, text) for earlier, text in openers)
+                or any(flag and later > offset for later, _, flag in bits) or not (is_question or openers)):
+            continue
+        start = _option_start(part, spans[0][1], bool(openers))
+        if start is None:
+            continue
+        spans[0] = (start, spans[0][1])
+        left, right = spans[-1]
+        if tail := _NAMED_SUFFIX.search(part[left:right]):
+            spans[-1] = (left, left + tail.start())
+        options = [_named_option(part[left:right], offset + left, line_pattern) for left, right in spans]
+        if all(option is not None for option in options):
+            found.append(options)
+    return found[0] if len(found) == 1 else []
+
+
+def named_options(question, line_pattern, clauses):
+    """Return the complete displayed list, including options without citations."""
+    numbered = _named_numbered(question, line_pattern, clauses)
+    return (numbered or _named_alternatives(question, line_pattern, clauses)) if numbered is not None else []
