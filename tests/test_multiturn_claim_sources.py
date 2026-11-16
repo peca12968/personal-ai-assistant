@@ -165,3 +165,78 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
         del self.case['replies'][1]['partial_has']
         with self.assertRaises(ValueError):
             validate_cases([self.case])
+
+    def test_waiting_checkpoint_matches_the_same_fields_in_several_presentations(self):
+        fields = [{'labels': ['倉區'], 'value_forms': [r'西倉（暫定）']},
+                  {'labels': ['待維護件數', '待維護筆數與件數'], 'value_forms': ['待查']}]
+        self.case['replies'][1].update(partial_fields=fields, restore_before=True)
+        self.final.update(status='report_ready', result='總件數 72 件 [D7:L2] [補充#5] [更正#1]',
+                          steps=[{'action': {'tool': 'finish'}}])
+        self.turns[1]['restored'] = True
+        before = self.turns[1]['before']
+        before.update(status='needs_input', result='', artifacts=[])
+        validate_cases([self.case])
+        previews = [
+            '| 倉區 | 待維護筆數 | 待維護件數 |\n|---|---:|---:|\n| 西倉（暫定） | 待查 | 待查 |',
+            '倉區 | 待維護件數\n--- | ---:\n西倉（暫定） | 待查',
+            '| 欄位 | 目前值 |\n|---|---|\n| 倉區 | 西倉（暫定） |\n| 待維護件數 | 待查 |',
+            '- **倉區：** 西倉（暫定） [D7:L1]\n- 待維護筆數與件數：待查。',
+        ]
+        for preview in previews:
+            with self.subTest(preview=preview):
+                before['partial_result'] = preview
+                checks, _ = score(self.case, self.final, [], self.turns, [])
+                self.assertTrue(checks['intermediate_waiting'])
+                self.assertTrue(checks['restored_waiting'])
+
+    def test_structured_waiting_rejects_pending_from_another_cell_or_literal_example(self):
+        self.case.pop('guidance')
+        self.case.pop('claim_sources')
+        self.case['replies'] = []
+        self.case['must_match'] = ['箱數']
+        self.case['expected_question'] = {'question_has': ['箱數'], 'partial_omits': ['舊記錄'],
+            'partial_fields': [{'labels': ['件數'], 'value_forms': ['待查']}]}
+        self.final.update(status='needs_input', question='本批箱數為何？', result='', artifacts=[],
+                          steps=[{'action': {'tool': 'ask'}, 'observation': {'question': '本批箱數為何？'}}])
+        validate_cases([self.case])
+        wrong = [
+            '| 筆數 | 件數 |\n|---|---|\n| 待查 | 25 |',
+            '| 欄位 | 狀態 |\n|---|---|\n| 筆數 | 待查 |\n| 件數 | 25 |',
+            '件數：待查\n件數：25',
+            '件數：未待查',
+            '件數：待查但估計 25 件',
+            '件數：待查\n| 筆數 | 件數 |\n|---|---|\n| 待查 |',
+            '件數：待查\n| 件數 | 件數 |\n|---|---|\n| 待查 | 25 |',
+            '```markdown\n件數：待查\n```',
+            '> 件數：待查',
+            '    件數：待查',
+            '件數：待查\n舊記錄',
+        ]
+        for preview in wrong:
+            with self.subTest(preview=preview):
+                self.final['partial_result'] = preview
+                checks, _ = score(self.case, self.final, [], [], [])
+                self.assertTrue(checks['waiting_for_required_data'])
+                self.assertFalse(checks['partial_content'])
+        self.final['partial_result'] = '件數：待查 [更正#1]'
+        self.assertTrue(score(self.case, self.final, [], [], [])[0]['partial_content'])
+
+    def test_field_rubric_rejects_ambiguous_labels_and_accepts_paired_runs(self):
+        import json
+        from tempfile import TemporaryDirectory
+        from scripts.evaluate_multiturn_pair import cases_for
+
+        rule = {'answer': '三箱。', 'question_has': ['箱數'],
+                'partial_fields': [{'labels': ['件數'], 'value_forms': ['待查']}]}
+        case = {'id': 'paired_waiting_fields', 'prompt': '先問箱數。', 'file_delivery': False,
+                'replies': [rule], 'must_match': ['三箱']}
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'suite.json'
+            path.write_text(json.dumps([case], ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(cases_for(path), [case])
+        for fields in ([], [{'labels': ['件數'], 'value_forms': ['.*']}],
+                       [{'labels': ['件數', '件數'], 'value_forms': ['待查']}],
+                       [{'labels': ['件數'], 'value_forms': ['待查']},
+                        {'labels': ['筆數', '件數'], 'value_forms': ['待確認']}]):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                validate_cases([{**case, 'replies': [{**rule, 'partial_fields': fields}]}])

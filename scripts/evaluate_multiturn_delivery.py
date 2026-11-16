@@ -14,6 +14,7 @@ from assistant.acceptance import strict_json
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
+from scripts import multiturn_partial_fields
 from scripts.evaluate_cross_task_boundaries import prepare
 from scripts.evaluate_understanding import RUNNER_PATH as REPORT_WRITER_PATH, fingerprint, save_report
 
@@ -25,7 +26,8 @@ MAX_GOAL_STEPS = 24
 
 
 def signature(suite):
-    paths = (Path(__file__), ROOT / 'scripts/evaluate_cross_task_boundaries.py', REPORT_WRITER_PATH)
+    paths = (Path(__file__), ROOT / 'scripts/evaluate_cross_task_boundaries.py', REPORT_WRITER_PATH,
+             Path(multiturn_partial_fields.__file__))
     return {**fingerprint(suite), 'collector_sha256': hashlib.sha256(b''.join(path.read_bytes() for path in paths)).hexdigest()}
 
 
@@ -49,6 +51,24 @@ def _validate_question_rule(rule):
         raise ValueError(message)
     patterns = rule[key]
     for pattern in patterns + rule.get('question_excludes', []):
+        re.compile(pattern)
+
+
+def _checks_partial(rule):
+    return bool({'partial_has', 'partial_fields'} & rule.keys())
+
+
+def _validate_partial(rule, *, final_question=False):
+    if 'partial_has' in rule:
+        if final_question:
+            _required_patterns(rule['partial_has'], '等待補充案例須明列暫表的必要內容。')
+        if not rule['partial_has']:
+            raise ValueError('暫表驗收須明列必要內容。')
+        for pattern in rule['partial_has']:
+            re.compile(pattern)
+    if 'partial_fields' in rule:
+        multiturn_partial_fields.validate(rule['partial_fields'])
+    for pattern in rule.get('partial_omits', ()):
         re.compile(pattern)
 
 
@@ -83,10 +103,9 @@ def validate_cases(cases):
                 raise ValueError('等待補充案例應直接核對問題與暫表文字。')
             question = case['expected_question']
             _validate_question_rule(question)
-            if question.keys() & {'partial_has', 'partial_omits'}:
-                _required_patterns(question.get('partial_has'), '等待補充案例須明列暫表的必要內容。')
-            for pattern in question.get('partial_has', []) + question.get('partial_omits', []):
-                re.compile(pattern)
+            if 'partial_omits' in question and not _checks_partial(question):
+                raise ValueError('等待補充案例須明列暫表的必要內容。')
+            _validate_partial(question, final_question=True)
         if not (case.get('must_match') or 'expected_json' in case):
             raise ValueError('每案須有可核對的交付條件。')
         replies = case.get('replies', ())
@@ -95,12 +114,9 @@ def validate_cases(cases):
         for reply in replies:
             autonomy.text(reply['answer'], 4000)
             _validate_question_rule(reply)
-            if 'partial_has' in reply and not reply['partial_has']:
-                raise ValueError('暫表驗收須明列必要內容。')
-            if 'restore_before' in reply and (reply['restore_before'] is not True or 'partial_has' not in reply):
+            if 'restore_before' in reply and (reply['restore_before'] is not True or not _checks_partial(reply)):
                 raise ValueError('須指定待答暫表，才能在答覆前驗收備份還原。')
-            for pattern in reply.get('partial_has', []) + reply.get('partial_omits', []):
-                re.compile(pattern)
+            _validate_partial(reply)
         for pattern in case.get('must_match', []) + case.get('must_omit', []):
             re.compile(pattern)
         for source in case.get('source_lines', ()):
@@ -174,8 +190,9 @@ def claim_support(case, final, report, turns):
 
 
 def _partial_matches(partial, rule):
-    return (all(re.search(pattern, partial) for pattern in rule['partial_has'])
-            and not any(re.search(pattern, partial) for pattern in rule.get('partial_omits', ())))
+    return (all(re.search(pattern, partial) for pattern in rule.get('partial_has', ()))
+            and not any(re.search(pattern, partial) for pattern in rule.get('partial_omits', ()))
+            and ('partial_fields' not in rule or multiturn_partial_fields.matches(partial, rule['partial_fields'])))
 
 
 def score(case, final, files, turns, calls):
@@ -204,7 +221,7 @@ def score(case, final, files, turns, calls):
         supported = claim_support(case, final, claim_report, turns)
         checks['claim_sources'] = all(supported)
     reply_events = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
-    checkpoints = [(index, rule) for index, rule in enumerate(case.get('replies', ())) if 'partial_has' in rule]
+    checkpoints = [(index, rule) for index, rule in enumerate(case.get('replies', ())) if _checks_partial(rule)]
     if checkpoints:
         def checkpoint_passes(index, rule):
             if index >= len(reply_events):
@@ -243,7 +260,7 @@ def score(case, final, files, turns, calls):
         checks['waiting_for_required_data'] = (final['status'] == 'needs_input' and not final['artifacts'] and not final['result']
                                                and question_matches(final['question'], question)
                                                and not any(re.search(p, final['question']) for p in question.get('question_excludes', ())))
-        if 'partial_has' in question:
+        if _checks_partial(question):
             checks['partial_content'] = _partial_matches(final.get('partial_result', ''), question)
     if 'expected_json' in case:
         try:
