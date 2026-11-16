@@ -22,6 +22,8 @@ _CHOICE = re.compile(rf'(?:{_FIELD}\s*)?(?P<verb>{_USE}|{_KEEP})\s*'
 _LABEL = re.compile(rf'{_FIELD}\s*[：:]\s*\S')
 _ASSIGNMENT = re.compile(rf'{_FIELD}\s*(?:已確認為|確認為|為)\s*\S')
 _RATE = re.compile(rf'(?P<label>每{_NAME})\s+-?[0-9０-９]')
+_REPLY_ASSIGNMENT = re.compile(rf'{_FIELD}\s*(?:正式改為|已確認為|確認為|[：:])\s*(?P<value>\S.*)')
+_REPLY_UNRESOLVED = re.compile(r'不要|不選|不確定|不改|撤回|取消|沒說|僅|只是|但|反而|除非|並且|或是')
 _COMMA = re.compile(r'(?![0-9])')
 _NONOPERATIVE = re.compile(r'如果|假如|假設|僅作示例|試算|暫定|暫估|暫用|引述|轉述|是否|能否|先別|別用|不採|不用|未採用')
 _QUOTED_REFERENCE = re.compile(rf'「[^」]*{_LINE}[^」]*」|『[^』]*{_LINE}[^』]*』|“[^”]*{_LINE}[^”]*”|'
@@ -33,6 +35,27 @@ _RETENTION = frozenset({'繼續沿用', '仍沿用', '照用', '沿用', '維持
 
 def clauses(text):
     return standalone_clauses(text, comma_before=_COMMA)
+
+
+def reply_assignments(text, choice_offset, choice_field, valid_clause):
+    result, fields, complete = [], set(), True
+    for offset, clause, question in clauses(text):
+        if offset == choice_offset:
+            continue
+        match = _REPLY_ASSIGNMENT.fullmatch(clause)
+        if (question or not match or not valid_clause(text, offset, clause)
+                or _NONOPERATIVE.search(clause) or _REPLY_UNRESOLVED.search(clause)
+                or re.search(_LINE, clause)):
+            complete = False
+            continue
+        field = match['quoted'] or match['bare']
+        if field == choice_field:
+            return None
+        if field in fields or choice_field in match['value']:
+            complete = False
+        fields.add(field)
+        result.append({'field': field, 'quote': clause, 'quote_start': offset})
+    return result if complete else []
 
 
 def _selection(clause):
@@ -149,8 +172,8 @@ class Review:
                 selected = _selection(clause) if not question else None
                 if selected is not None:
                     entry = _resolve(selected, versions, literal, valid_clause, multi_fields=multi_fields)
-                elif names is not None and not question and not _NONOPERATIVE.search(prefix) and not re.search(_LINE, clause):
-                    entry = names.resolve(citation, clause)
+                elif names is not None and not question and not re.search(_LINE, clause):
+                    entry = names.resolve(citation, clause, offset, inert=bool(_NONOPERATIVE.search(prefix)))
                     if entry is not None and (refs := entry.pop('references', None)):
                         adopted = _resolve({'refs': refs, 'field': entry['field'], 'description': None,
                                             'retain': False, 'undecided': False}, versions, literal, valid_clause,

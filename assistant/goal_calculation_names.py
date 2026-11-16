@@ -19,6 +19,8 @@ _ORDINAL = re.compile(r'第[一二三四五六七八1-8](?:個|筆|份|版)?')
 _BAD_TEXT = re.compile(r'[\x00-\x1f\[\]「」『』“”"\'、，,！？?!。；;]')
 _PENDING = 'pending'
 _VALUE_VERB = re.compile(r'^(?:就用|採用|選用|選擇)\s*')
+_VALUE_NEGATED = re.compile(r'^(?:不要(?:用|選)?|不用|先別用|不採(?:用)?|不選|不是)\s*')
+_VALUE_QUOTE_PAIRS = {'「': '」', '『': '』', '“': '”', '"': '"', "'": "'", '`': '`'}
 _AMOUNT = re.compile(r'[-+０-９0-9]+(?:[.．][0-9０-９]+)?\s*(?:袋|匣|份|項|瓶|箱|件|人|趟|克|公斤|g|kg)$')
 
 
@@ -101,7 +103,7 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
-                 line_pages=None, field_quantity=None):
+                 line_pages=None, field_quantity=None, reply_assignments=None):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -118,6 +120,7 @@ class Names:
         self.paged_lookup = paged_lookup
         self.line_pages = line_pages
         self.field_quantity = field_quantity
+        self.reply_assignments = reply_assignments
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -458,14 +461,47 @@ class Names:
         result['reason'] = reason
         return result
 
-    def resolve(self, citation, clause):
+    def _compound_quantity_choice(self, reply, clause, offset, quantity, *, blocked, standalone):
+        entry = self._resolve_named_choice(reply, None, clause, ('quantity', quantity))
+        if not entry or not entry['field']:
+            return entry
+        companions = self.reply_assignments(reply['answer'], offset, entry['field'])
+        if companions is None:
+            return None
+        basis = entry['spoken_selection']
+        choice = basis['value_choice']
+        if companions:
+            choice['companion_clauses'] = companions
+        if blocked or not (standalone or companions):
+            entry.pop('references', None)
+            basis['selected_documents'] = []
+            choice['position'] = None
+            entry['choices'] = [row['citation'] or row['name'] for row in choice['options']]
+            entry['reason'] = 'choice_reply_not_confirmed'
+        return entry
+
+    def resolve(self, citation, clause, offset, *, inert=False):
+        if inert and self.reply_assignments is None:
+            return None
         reply = self.replies.get(citation)
         if reply is not None and self.field_quantity is not None:
-            answer = reply['answer'].strip()
-            if clause in (answer, answer.removesuffix('。').rstrip()):
-                value = _VALUE_VERB.sub('', clause.removesuffix('.').rstrip())
-                if quantity := operand_evidence.choice_quantity(value):
+            value = _VALUE_VERB.sub('', clause.removesuffix('.').rstrip())
+            blocked = inert
+            if self.reply_assignments is not None:
+                if negated := _VALUE_NEGATED.match(value):
+                    value, blocked = value[negated.end():], True
+                if len(value) >= 2 and _VALUE_QUOTE_PAIRS.get(value[0]) == value[-1]:
+                    value, blocked = value[1:-1].strip(), True
+            if quantity := operand_evidence.choice_quantity(value):
+                answer = reply['answer'].strip()
+                standalone = clause in (answer, answer.removesuffix('。').rstrip())
+                if standalone and not blocked:
                     return self._resolve_named_choice(reply, None, clause, ('quantity', quantity))
+                if self.reply_assignments is not None:
+                    return self._compound_quantity_choice(
+                        reply, clause, offset, quantity, blocked=blocked, standalone=standalone)
+        if inert:
+            return None
         if reply is not None and self.ordinal_guidance is not None and (parsed := _parts(clause, True)):
             field, name, _ = parsed
             if selection := goal_calculation_order.parse(name):

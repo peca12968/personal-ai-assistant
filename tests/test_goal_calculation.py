@@ -435,6 +435,76 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('54 件', active['result'])
         validate_database(self.store.path)
 
+    def test_compound_quantity_choice_keeps_correction_and_restores_separate_clause_positions(self):
+        first, _ = self.prepare_short_quantity('22 袋', files=True)
+        reply = '窗口正式改為 南門；就用 ２９ 袋。'
+        self.reply(reply)
+        filename = '窗口選擇.json'
+        rows = [{'label': '總件數', 'calculation_step': 3, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#2]', 'quote': '窗口正式改為 南門'}]
+        result = self.run_actions(self.formula(quantity='29', citation=first, quote='批次量：29 袋'),
+                                  action('write_artifact', filename=filename, calculation_report=rows),
+                                  action('deliver', filenames=[filename], calculation_report=rows))
+        self.assertEqual(result['status'], 'report_ready')
+        proof = result['steps'][2]['observation'][goal_calculation.PROOF]
+        adopted, = proof['source_adoptions']
+        choice = adopted['spoken_selection']['value_choice']
+        self.assertEqual(adopted['user_quote_start'], reply.index('就用'))
+        self.assertEqual(choice['companion_clauses'],
+                         [{'field': '窗口', 'quote': '窗口正式改為 南門', 'quote_start': 0}])
+        self.assertIn('87 件', result['result'])
+        self.assertIn('窗口正式改為 南門 [補充#2]', result['result'])
+        self.assertNotIn('北門', result['result'])
+        original = artifacts.directory(self.store, self.gid).joinpath(filename).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(filename).read_bytes(), original)
+        with restored.connect() as db:
+            choice['companion_clauses'][0]['quote_start'] = 1
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(result['steps'][2]['observation'], ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_compound_amount_does_not_confirm_quotes_negation_or_unresolved_scope(self):
+        cases = [('22 袋', '「29 袋」，窗口正式改為 南門。', 'choice_reply_not_confirmed'),
+                 ('22 袋', '不要用 29 袋，窗口正式改為 南門。', 'choice_reply_not_confirmed'),
+                 ('29 袋', '29 袋，窗口正式改為 南門。', 'choice_quantity_ambiguous'),
+                 ('22 袋', '29 袋，窗口正式改為 南門；先等等。', 'choice_reply_not_confirmed')]
+        for alternative, reply, reason in cases:
+            with self.subTest(reply=reply, reason=reason):
+                first, second = self.prepare_short_quantity(alternative)
+                self.reply(reply)
+                engine = ScriptedEngine(self.formula(quantity='29', citation=first, quote='批次量：29 袋'),
+                    action('ask', question=f'批次量要採用 {first} 還是 {second}？', calculation_report=[
+                        {'label': '窗口', 'citation': '[補充#2]', 'quote': '窗口正式改為 南門'},
+                        {'label': '總件數', 'pending': True}]))
+                result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+                payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+                self.assertEqual(payload['calculation_source_adoptions'][0]['reason'], reason)
+                self.assertEqual(result['steps'][2]['action']['tool'], 'invalid')
+                self.assertEqual(result['status'], 'needs_input')
+                self.assertIn('窗口正式改為 南門 [補充#2]', result['partial_result'])
+                self.assertIn('總件數：待查', result['partial_result'])
+                validate_database(self.store.path)
+
+    def test_compound_amount_yields_to_an_explicit_same_field_replacement(self):
+        first, _ = self.prepare_short_quantity('22 袋')
+        self.reply('29 袋；批次量正式改為 18 袋；窗口正式改為 南門。')
+        result = self.run_actions(self.formula(quantity='29', citation=first, quote='批次量：29 袋'),
+            self.formula(quantity='18', citation='[補充#2]', quote='批次量正式改為 18 袋'),
+            action('finish', calculation_report=[
+                {'label': '總件數', 'calculation_step': 4, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#2]', 'quote': '窗口正式改為 南門'}]))
+        self.assertIn('另有較新的', result['steps'][2]['observation']['error'])
+        self.assertEqual(result['status'], 'report_ready')
+        proof = result['steps'][3]['observation'][goal_calculation.PROOF]
+        self.assertEqual(proof['source_adoptions'], [])
+        self.assertEqual(proof['operands'][0]['citation'], '[補充#2]')
+        self.assertIn('54 件', result['result'])
+        self.assertIn('窗口正式改為 南門 [補充#2]', result['result'])
+        validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),
