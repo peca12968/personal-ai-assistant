@@ -14,15 +14,21 @@ RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
 SOURCE_VERSION = 16
 SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SOURCE_VERSION)
+DOCUMENT_GROUP_VERSION = 1
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
-OPTIONAL_GUIDANCE = (
+_OPERAND_GUIDANCE = (
     '一般文件解題如需重算，可在 calculate_expression 的 expression 之外提供 operands，'
     '每個數字葉節點各一筆 {"path":"/values/0","citation":"[D1:L2]","quote":"箱數：12 箱","field":"箱數","unit":"箱"}。'
     'quote須為已讀原行或當前補充的逐字短句，path是數字樹的實際路徑。單位換算改用 conversion {"from":"kg","to":"g"}。'
     '直接沿用仍適用的已核對結果，在欄位旁留原始依據。')
+OPTIONAL_GUIDANCE = (
+    _OPERAND_GUIDANCE +
+    '一般算式可以保留已讀原行「本次影像組：架具備援量為 0 件」的分組前綴。'
+    '此時 field 仍是「架具備援量」，quote 逐字保留該組、欄位、數值和單位。'
+    '先根據本次指示選定組別及適用文件，再引用各欄原文；明列 0 可計算，尚未登記仍待查。')
 GUIDANCE = (
-    OPTIONAL_GUIDANCE + '\n本目標已要求逐項核對。計算只能用 calculate_expression 的 operands；'
+    _OPERAND_GUIDANCE + '\n本目標已要求逐項核對。計算只能用 calculate_expression 的 operands；'
     '每筆須有完整欄位名 field、單位 unit 或 conversion，quote 使用明確確認該欄的完整原句（去掉句末標點）。'
     '未決、候選、被更正或撤回的數字不能代入。只算有證據的部分。'
     'calculation_source_adoptions 是從已保存的引用選擇核對到的欄位與來源。'
@@ -123,7 +129,7 @@ def _complete_excerpts(steps, scope, recheck):
 
 class Sources:
     def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *,
-                 version=SOURCE_VERSION, document_counts=None):
+                 version=SOURCE_VERSION, document_counts=None, document_groups=True):
         sequence = len(steps) + 1
         self.steps = steps
         self.excerpts = _complete_excerpts(steps, scope, recheck)
@@ -132,6 +138,7 @@ class Sources:
         self.documents = {(row['id'], row['name'], row['sha256']): row['content'].splitlines() for row in documents}
         self.recheck = recheck
         self.strict = required(objective)
+        self.document_groups = document_groups and not self.strict
         self.version = version if self.strict else 1
         self.line_pages = (goal_calculation_lookup.LinePages(steps, scope, self.documents)
                            if self.version >= 7 else None)
@@ -208,14 +215,17 @@ class Sources:
 
     def calculate(self, args, cancel=None):
         expression = {'expression': args['expression']}
-        validate(args)
-        bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user, ordinary=True)
+        validate(args, document_groups=self.document_groups)
+        bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user,
+                                      ordinary=True, document_groups=self.document_groups)
         applied = []
         for row in bound:
             if selection := self.confirm(row):
                 applied.append({'path': row['path'], **selection})
         proof = {'version': self.version, 'operands': bound,
                  'recheck_sha256': self.recheck['sha256'] if self.recheck else None}
+        if any('document_group' in row for row in bound):
+            proof['document_group_version'] = DOCUMENT_GROUP_VERSION
         if self.version >= 2:
             proof['source_adoptions'] = applied
         if self.version >= 3:
@@ -331,11 +341,11 @@ def _document_counts(scope, documents, saved):
     return saved
 
 
-def validate(args):
+def validate(args, *, document_groups=True):
     if not isinstance(args, dict) or args.keys() != {'expression', 'operands'}:
         raise ValueError('逐項核對的算式須提供 expression 及 operands。')
     expression_math.validate({'expression': args['expression']})
-    operand_evidence.validate(args['operands'], args['expression'], None, ordinary=True)
+    operand_evidence.validate(args['operands'], args['expression'], None, ordinary=True, document_groups=document_groups)
 
 
 def _label(value, limit):
@@ -475,8 +485,10 @@ def validate_saved(db, *, replies_present, guidance_present, checked_rechecks, a
                 raise ValueError('口語來源核對缺少保存的文件範圍。')
             prior = steps[:index]
             recheck = _recheck(prior, guidance, checked_rechecks.get(gid, {}))
+            document_group_version = receipt.get('document_group_version')
+            document_groups = type(document_group_version) is int and document_group_version == DOCUMENT_GROUP_VERSION
             context = Sources(objective, prior, history.get(step['sequence'], scope), replies, guidance,
-                              recheck, docs.values(), version=version, document_counts=counts)
+                              recheck, docs.values(), version=version, document_counts=counts, document_groups=document_groups)
             if calculated:
                 expected = context.calculate(args)
                 if any(digest(seen.get(key)) != digest(value) for key, value in expected.items()):

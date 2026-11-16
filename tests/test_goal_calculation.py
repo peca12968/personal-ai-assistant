@@ -145,6 +145,67 @@ class GoalCalculationTests(unittest.TestCase):
         result = self.run_actions(action('calculate_expression', expression='7'), action('finish', report='7'))
         self.assertEqual(result['result'], '7')
 
+    def test_ordinary_calculation_preserves_current_group_and_zero_in_full_document_quote(self):
+        did = self.attach('本次影像組：架具常備量 7 件。\n本次影像組：架具備援量為 0 件。\n'
+                          '本次聲音組：架具備援量為 3 件。', '器材.txt')
+        self.create(checked=False)
+        quotes = ['本次影像組：架具常備量 7 件', '本次影像組：架具備援量為 0 件']
+        goal = self.run_actions(
+            action('read', document_id=did, start_line=1, end_line=3),
+            action('calculate_expression', expression={'operation': 'sum', 'values': ['7', '0']}, operands=[
+                {'path': f'/values/{index}', 'citation': f'[D{did}:L{index+1}]', 'quote': quote,
+                 'field': label, 'unit': '件'}
+                for index, (quote, label) in enumerate(zip(quotes, ('架具常備量', '架具備援量'), strict=True))
+            ]),
+            action('finish', report='本次影像組架具總量 7 件。'))
+        self.assertEqual(goal['status'], 'report_ready')
+        step = goal['steps'][1]
+        observation = step['observation']
+        self.assertEqual(observation['exact'], '7')
+        proof = observation[goal_calculation.PROOF]
+        self.assertEqual(proof['document_group_version'], 1)
+        self.assertEqual([row['number'] for row in proof['operands']], ['7', '0'])
+        for row, quote in zip(proof['operands'], quotes, strict=True):
+            group = row['document_group']
+            self.assertEqual(group['name'], '本次影像組')
+            self.assertEqual(quote[group['start']:group['end']], group['name'])
+            self.assertEqual(quote[row['field_start']:row['field_end']], row['field'])
+            self.assertEqual(row['quote'], quote)
+        restored = self.restore()
+        validate_database(restored.path)
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid)['result'], goal['result'])
+        del proof['document_group_version']
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=2',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaises(ValueError):
+            validate_database(restored.path)
+
+    def test_full_group_quote_does_not_adopt_a_clipped_unconfirmed_or_mismatched_source(self):
+        valid = '本次影像組：架具備援量為 0 件'
+        scenarios = [
+            (valid, valid.replace('影像組', '聲音組'), '架具備援量', '件', False),
+            (valid, valid, '備援量', '件', False),
+            (valid, valid, '架具備援量', None, False),
+            (valid + '，仍未確認', valid, '架具備援量', '件', False),
+            ('備註只引述' + valid, valid, '架具備援量', '件', False),
+            (valid.replace('本次', '前次'), valid.replace('本次', '前次'), '架具備援量', '件', False),
+            (valid.replace('影像組', '待確認影像組'), valid.replace('影像組', '待確認影像組'), '架具備援量', '件', False),
+            ('本次影像組：架具備援量尚未登記', valid, '架具備援量', '件', False),
+            (valid, valid, '架具備援量', '件', True),
+        ]
+        for text, quote, label, unit, strict in scenarios:
+            with self.subTest(text=text, quote=quote, label=label, unit=unit, strict=strict):
+                did = self.attach(text + '。', '器材.txt')
+                self.create(checked=strict)
+                operand = {'path': '', 'citation': f'[D{did}:L1]', 'quote': quote, 'field': label}
+                if unit:
+                    operand['unit'] = unit
+                result = self.run_actions(action('read', document_id=did, start_line=1, end_line=1),
+                    action('calculate_expression', expression='0', operands=[operand]))
+                self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
+                validate_database(self.store.path)
+
     def test_rechecked_partial_keeps_the_original_question_and_reuses_the_new_calculation(self):
         self.create()
         rows = [{'label': '總件數', 'calculation_step': 2, 'unit': '件'}]

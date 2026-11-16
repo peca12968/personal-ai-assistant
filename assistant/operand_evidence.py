@@ -20,6 +20,10 @@ _UNIT_END = r'(?=$|[\s,，。；;、！!？?：:）)\]」』】]|\.(?!\S))'
 _CHOICE_QUANTITY = re.compile(_NUMBER + rf'[ \t\u3000]*(?P<unit>{_UNIT.pattern})\Z')
 _OPTION_NOTE = re.compile(r'(?:（(?P<wide>[^()（）]{1,40})）|\((?P<ascii>[^()（）]{1,40})\))\Z')
 _LINE_NAME = re.compile(r'第[ \t]*[0-9０-９一二三四五六七八九十百]+[ \t]*[行筆列]\Z')
+_DOCUMENT_GROUP = re.compile(
+    r'(?P<name>(?:本次|本批|本輪|當次|當批)[ \t]*[A-Za-z0-9０-９㐀-鿿_-]{1,32}(?:組|隊|班))'
+    r'[ \t]*[：:][ \t]*')
+_UNCERTAIN_GROUP = re.compile(r'待查|待定|待確認|未確認|未登記|待補|假設|暫定|試算|預估|舊版|前次|或者|或是')
 
 
 def _leaves(node, path=''):
@@ -91,7 +95,20 @@ def _field_position(quote, number_start, field):
     raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
 
 
-def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False):
+def _operand_field(quote, token, field, *, ordinary, document_group):
+    try:
+        return field_position(quote, token.start('number'), field, ordinary=ordinary), None
+    except ValueError:
+        if (not document_group or not (group := _DOCUMENT_GROUP.match(quote))
+                or _UNCERTAIN_GROUP.search(group['name']) or 'unit' not in token.re.groupindex
+                or quote[token.end():].strip() not in {'', '。', '.'}):
+            raise
+        offset = group.end()
+        lo, hi = field_position(quote[offset:], token.start('number') - offset, field, ordinary=True)
+        return (offset + lo, offset + hi), group
+
+
+def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, document_groups=False):
     leaves = {path: value for path, value in _leaves(expression) if path not in omitted_paths}
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
@@ -121,7 +138,8 @@ def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False):
         pattern, factor = _spec(row)
         token, _ = _numeric_match(quote, leaves[path], pattern, factor)
         if 'field' in row:
-            field_position(quote, token.start('number'), row['field'], ordinary=ordinary)
+            _operand_field(quote, token, row['field'], ordinary=ordinary,
+                           document_group=document_groups and doc_line is not None)
 
 
 def user_texts(objective, replies, guidance, sequence):
@@ -188,7 +206,7 @@ def displayed_choice_quantities(text):
     return values
 
 
-def bind(rows, expression, excerpts, user_sources, *, ordinary=False):
+def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_groups=False):
     leaves = dict(_leaves(expression))
     bound = []
     for row in rows:
@@ -213,8 +231,15 @@ def bind(rows, expression, excerpts, user_sources, *, ordinary=False):
         receipt = {**row, 'source_sha256': sha, 'quote_start': start, 'quote_end': start + len(quote),
                    'number_start': start + low, 'number_end': start + high, 'number': quote[low:high]}
         if 'field' in row:
-            field_start, field_end = field_position(quote, low, row['field'], ordinary=ordinary)
+            (field_start, field_end), group = _operand_field(
+                quote, token, row['field'], ordinary=ordinary,
+                document_group=document_groups and _DOCUMENT.fullmatch(citation) is not None)
             receipt.update(field_start=start + field_start, field_end=start + field_end)
+            if group:
+                if text[:start].strip() or text[start + len(quote):].strip() not in {'', '。', '.'}:
+                    raise ValueError('分組運算元須引用整行的唯一已確認數量，不可取用附註或截斷原行。')
+                receipt['document_group'] = {'name': group['name'], 'start': start + group.start('name'),
+                                             'end': start + group.end('name')}
         if 'unit' in row:
             unit_start, unit_end = token.span('unit')
             receipt.update(unit_start=start + unit_start, unit_end=start + unit_end)
