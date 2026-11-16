@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from assistant import artifacts, goal_guidance
 from assistant import autonomy as a
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.autonomy_status import goal_context
@@ -72,6 +73,105 @@ class GoalStageTests(unittest.TestCase):
         self.assertEqual(payload['steps'], [])
         self.assertEqual(payload['documents'][0]['line_count'], 1)
         self.assertNotIn('steps', payload['previous_stage'])
+
+    def delivered_parent(self):
+        parent = a.create_goal(self.store, self.sid, '交付當期排程。', file_delivery=True)
+        done = a.run_goal(self.store,self.sid,parent,ScriptedEngine(
+            action('write_artifact',filename='booking.json',content='{"room":"青杉間","participants":["研秋"]}'),
+            action('write_artifact',filename='draft.txt',content='未交付的內部草稿'),
+            action('deliver',filenames=['booking.json'],report='已交付 booking.json。'),
+        ),max_steps=3)
+        self.assertEqual(done['status'],'report_ready')
+        return parent
+
+    def test_explicit_prior_file_read_uses_delivered_bytes_and_survives_restore(self):
+        parent = self.delivered_parent()
+        original = artifacts.directory(self.store,parent)/'booking.json'
+        original.write_text('{"room":"本機另改","participants":["誤用"]}',encoding='utf-8')
+        child = a.create_goal(self.store,self.sid,
+                              '正式改期。用上一階段實際交付的 booking.json 內的participants 和 room。',
+                              parent_id=parent)
+        unauthorized = ScriptedEngine(
+            action('read_previous_file',filename='draft.txt'),
+            action('ask',question='請重新匯入 booking.json。'),
+        )
+        paused = a.run_goal(self.store,self.sid,child,unauthorized,max_steps=2)
+        self.assertEqual(paused['status'],'paused')
+        rejected, read = paused['steps']
+        self.assertEqual(rejected['action']['tool'],'invalid')
+        self.assertEqual(read['action']['tool'],'read_previous_file')
+        saved = read['observation']['previous_file']
+        self.assertEqual(saved['content'],'{"room":"青杉間","participants":["研秋"]}')
+        self.assertEqual(saved['parent_goal_id'],parent)
+        self.assertEqual(saved['delivery_sequence'],3)
+        self.assertEqual(read['observation']['previous_file_recovery'],{'before_tool':'ask'})
+        self.assertNotIn('未交付的內部草稿','\n'.join(unauthorized.prompts))
+        self.assertNotIn('青杉間',unauthorized.prompts[0])
+        self.assertIn('本機另改',original.read_text(encoding='utf-8'))
+
+        backup = create_backup(self.store.path,self.root/'prior-read.paibackup')
+        restore_backup(backup['path'],self.root/'prior-restored')
+        restored = Store(self.root/'prior-restored'/'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored,self.sid,child),paused)
+        engine = ScriptedEngine(action('finish',report='場地青杉間，研秋參加。[上一階段檔案#2]'))
+        result = a.run_goal(restored,self.sid,child,engine,max_steps=1)
+        self.assertEqual(result['status'],'report_ready')
+        self.assertIn('青杉間',engine.prompts[0])
+        self.assertNotIn('本機另改',engine.prompts[0])
+        self.assertEqual(result['steps'][-1]['observation']['previous_file_citations'][0]['sha256'],saved['sha256'])
+        validate_database(restored.path)
+        with restored.connect() as db:
+            changed = {**read['observation'],'previous_file':{**saved,'content':'換成不同內容'}}
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=2',
+                       (json.dumps(changed,ensure_ascii=False),child))
+        with self.assertRaisesRegex(ValueError,'上一階段檔案查讀'):
+            validate_database(restored.path)
+
+    def test_prior_file_scope_excludes_inherited_quotes_and_non_delivered_files(self):
+        parent = self.delivered_parent()
+        for objective, ancestor in (
+            ('請核對排程摘要。',parent),
+            ('範例：「請用上一階段實際交付的 booking.json」。只核對摘要。',parent),
+            ('是否能讀上一階段已交付的 booking.json？',parent),
+            ('若可行，請讀上一階段已交付的 booking.json。',parent),
+            ('請用上一階段實際交付的 booking.json。',None),
+        ):
+            with self.subTest(objective=objective,ancestor=ancestor):
+                child = a.create_goal(self.store,self.sid,objective,parent_id=ancestor)
+                engine = ScriptedEngine(action('read_previous_file',filename='booking.json'))
+                result = a.run_goal(self.store,self.sid,child,engine,max_steps=1)
+                self.assertEqual(result['steps'][0]['action']['tool'],'invalid')
+                self.assertNotIn('previous_stage_files',engine.prompts[0])
+                self.assertNotIn('青杉間',engine.prompts[0])
+        child = a.create_goal(self.store,self.sid,'請讀取上一階段已交付的「draft.txt」。',parent_id=parent)
+        engine = ScriptedEngine(action('ask',question='請提供正式稿。'))
+        result = a.run_goal(self.store,self.sid,child,engine,max_steps=1)
+        self.assertEqual(result['status'],'needs_input')
+        self.assertNotIn('未交付的內部草稿',engine.prompts[0])
+
+    def test_saved_user_guidance_can_revoke_and_restore_previous_file_read_scope(self):
+        parent = self.delivered_parent()
+        child = a.create_goal(self.store,self.sid,'請讀取上一階段已交付的「booking.json」。',parent_id=parent)
+        read_engine = ScriptedEngine(action('read_previous_file',filename='booking.json'))
+        a.run_goal(self.store,self.sid,child,read_engine,max_steps=1)
+        view = goal_guidance.snapshot(self.store,self.sid,child)
+        goal_guidance.save(self.store,self.sid,child,'這次請勿再讀取上一階段已交付的 booking.json。',
+                           expected_fingerprint=view['fingerprint'])
+        engine = ScriptedEngine(
+            action('finish',report='引用舊檔。[上一階段檔案#1]'),
+            action('ask',question='請問目前場地為何？'),
+        )
+        result = a.run_goal(self.store,self.sid,child,engine,max_steps=2)
+        self.assertEqual(result['steps'][1]['action']['tool'],'invalid')
+        self.assertNotIn('青杉間','\n'.join(engine.prompts))
+        self.assertEqual(result['status'],'needs_input')
+        a.reply(self.store,self.sid,child,'請用上一階段已交付的 booking.json 的資料。',
+                expected_fingerprint=reply_snapshot(self.store,self.sid,child)['fingerprint'])
+        result = a.run_goal(self.store,self.sid,child,ScriptedEngine(
+            action('finish',report='場地為青杉間。[上一階段檔案#1]'),
+        ),max_steps=1)
+        self.assertEqual(result['status'],'report_ready')
+        validate_database(self.store.path)
 
     def test_current_source_changes_are_marked_and_removed_sources_stay_unavailable(self):
         did = self.attach('舊費用120元')

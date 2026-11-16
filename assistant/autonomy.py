@@ -15,7 +15,7 @@ from .acceptance import strict_json
 from .answer_runs import lease
 from . import document_ranges
 from .documents import check_citations, retrieve_documents
-from . import goal_stages
+from . import goal_stages, goal_stage_files
 from . import goal_calculation, goal_partials, goal_partial_recheck
 from . import goal_guidance_sources
 from . import goal_question_withdrawals
@@ -259,6 +259,7 @@ def validate_action(value):
     value['note'] = text(value['note'], 400)
     fields = {'search': {'query'}, 'read': {'document_id', 'start_line', 'end_line'},
               'recall': {'query'}, 'calculate': {'operation', 'values'},
+              goal_stage_files.TOOL: {'filename'},
               'finish': {'report'},
               'write_artifact': {'filename', 'content'}, 'deliver': {'report', 'filenames'},
               'plan_csv': {'spec'}, 'execute_csv': {'plan_id'}, 'read_csv_result': {'plan_id', 'offset'}}
@@ -354,12 +355,14 @@ def validate_action(value):
             artifacts.validate_names(args['filenames'])
     elif name == 'write_artifact':
         artifacts.payload(args['filename'], args['content'])
+    elif name == goal_stage_files.TOOL:
+        artifacts.filename(args['filename'])
     return value
 
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
             declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None, document_version_rules=None,
-            recheck_evidence=None, calculation_sources=None, expected_files=None):
+            recheck_evidence=None, calculation_sources=None, expected_files=None, previous_files=None):
     name, args = action['tool'], action['args']
     if pending_document_rule and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
             name == 'check_decision' and args == pending_document_rule):
@@ -383,6 +386,8 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return month_schedule.calculate(args, cancel)
     if name == 'round_number':
         return number_rounding.calculate(args, cancel)
+    if name == goal_stage_files.TOOL:
+        return goal_stage_files.observation(previous_files or {}, args['filename'], len(steps) + 1)
     if name == 'check_decision':
         if (args.get('waiting_recheck') or args.get('waiting_version_recheck') or args.get('waiting_field_version') or args.get('partial_reply')
                 or args.get('answered_revision') or args.get('combined_reply') or args.get('report_version_recheck')
@@ -566,6 +571,17 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 break
             conditions_hash = work_plan.conditions(goal)
             required_reads = goal_required_reads.progress(goal, documents)
+            guidance_sources = goal.get('guidance_sources', ())
+            reply_sources = goal.get('reply_sources', ())
+            previous_names = (goal_stage_files.requested(goal['objective'], reply_sources, guidance_sources,
+                                                          len(goal['steps']) + 1) if goal['previous_stage'] else {})
+            previous_files = {}
+            if previous_names:
+                with store.connect() as db:
+                    db.execute('BEGIN')
+                    previous_files = goal_stage_files.available(db, sid, gid, previous_names)
+            file_reads = goal_stage_files.read_sources(goal['steps'], previous_names)
+            file_catalog = goal_stage_files.catalog(previous_names, previous_files, file_reads)
             required_filename = artifact_names.requirement(goal) if goal['file_delivery'] else None
             pending_filename = artifact_names.awaiting_confirmation(goal['steps'], required_filename)
             if not required_reads and (name_question := artifact_names.question(goal, conditions_hash, required_filename)):
@@ -584,13 +600,13 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 progress({'step': sequence, 'tool': 'ask', 'note': action['note']})
                 reason = 'needs_input'
                 break
-            guidance_sources = goal.get('guidance_sources', ())
             checked_calculations = goal_calculation.required(goal['objective'])
+            excluded = {'companion_profile', 'engine_selection', 'previous_file'}
             payload = {'objective': goal['objective'],
                        'user_notes': goal_guidance_sources.prompt_notes(goal['notes'], guidance_sources),
                        'work_plan': goal['work_plan'],
                        'documents': catalog, 'steps': [{**step, 'observation': {key: value for key, value in step['observation'].items()
-                           if key not in {'companion_profile', 'engine_selection'}}} for step in goal['steps']],
+                           if key not in excluded or (key == 'previous_file' and value in file_reads)}} for step in goal['steps']],
                        'companion_profile': profile,
                        'previous_stage': goal['previous_stage'],
                        'file_delivery': goal['file_delivery'], 'artifacts': goal['artifacts'],
@@ -607,11 +623,12 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                                      for index, row in enumerate(recheck_evidence['calculations'], 1)]}
             if required_reads:
                 payload['required_source_reads'] = required_reads
+            if file_catalog:
+                payload['previous_stage_files'] = file_catalog
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
                 payload['artifact_filename_requirement'] = required_filename
-            reply_sources = goal.get('reply_sources', ())
             current_calculations = (goal_calculation.Sources(
                 goal['objective'], goal['steps'], goal['sources'], reply_sources, guidance_sources,
                 recheck_evidence, documents) if checked_calculations else None)
@@ -697,6 +714,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + goal_required_reads.GUIDANCE if required_reads else '') +
                 ('\n' + goal_required_supplement.GUIDANCE if any(
                     step['action']['tool'] == goal_sources.REQUIRED_SUPPLEMENT for step in payload['steps']) else '') +
+                ('\n' + goal_stage_files.GUIDANCE if file_catalog else '') +
                 ('\n' + work_plan_scope.GUIDANCE if goal['work_plan'] else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
@@ -811,10 +829,13 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 # Detach before execution: a tool may normalize/mutate its input.
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
-                recovery = goal_required_reads.recovery(action, required_reads)
+                file_recovery = (goal_stage_files.recovery(action, file_catalog)
+                                 if not (required_reads and required_reads['next_read']) else None)
+                recovery = file_recovery or goal_required_reads.recovery(action, required_reads)
                 if recovery:
                     action = recovery
                     verified_rows = expected_files = None
+                file_checks = goal_stage_files.citations(action, file_reads)
                 declared = rule_scope['ranges'] if rule_scope else []
                 check = None
                 plan_check = None
@@ -831,9 +852,13 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                                       declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
                                       document_version_reply=document_version_reply, document_version_rules=document_version_rules,
                                       recheck_evidence=recheck_evidence, calculation_sources=calc_sources,
-                                      expected_files=expected_files)
-                if recovery:
+                                      expected_files=expected_files, previous_files=previous_files)
+                if file_recovery:
+                    observation['previous_file_recovery'] = {'before_tool': attempted['tool']}
+                elif recovery:
                     observation['required_read_recovery'] = {'before_tool': attempted['tool']}
+                if file_checks:
+                    observation['previous_file_citations'] = file_checks
                 if verified_rows is not None:
                     observation[goal_calculation.RECEIPT] = verified_rows
                 if check is not None:

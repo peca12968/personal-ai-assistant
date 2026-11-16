@@ -196,6 +196,11 @@ def validate_database(path):
             for (gid,) in db.execute('SELECT goal_id FROM autonomous_handoffs'):
                 read(db, gid)
         if 'autonomous_steps' in actual_tables:
+            from .goal_stage_files import validate_saved as validate_stage_files
+            validate_stage_files(db, handoffs_present='autonomous_handoffs' in actual_tables,
+                                 artifacts_present='autonomous_artifacts' in actual_tables,
+                                 replies_present='autonomous_reply_sources' in actual_tables,
+                                 guidance_present='autonomous_guidance_sources' in actual_tables)
             from .decision_table import validate_saved as validate_decisions
             validate_decisions(db, replies_present='autonomous_reply_sources' in actual_tables,
                                guidance_present='autonomous_guidance_sources' in actual_tables)
