@@ -60,6 +60,10 @@ def _rows(db, gid=None):
         latest = db.execute('SELECT * FROM autonomous_continuous_runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1', (row['id'],)).fetchone()
         if latest is not None:  # Preserve pre-upgrade fingerprints until there is new work.
             evidence['continuous_run'] = dict(latest)
+        recheck = db.execute('''SELECT receipt_sha256 FROM autonomous_partial_rechecks WHERE goal_id=?
+            ORDER BY ask_sequence DESC,guidance_number DESC LIMIT 1''', (row['id'],)).fetchone()
+        if recheck is not None:
+            evidence['partial_recheck_sha256'] = recheck[0]
         fingerprint = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
         stored = json.loads(row['sources_json'])

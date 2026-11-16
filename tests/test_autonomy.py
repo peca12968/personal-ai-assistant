@@ -554,6 +554,7 @@ class AutonomyTests(unittest.TestCase):
             db.execute('DROP TABLE autonomous_handoffs')
             db.execute('DROP TABLE autonomous_reply_sources')
             db.execute('DROP TABLE autonomous_question_withdrawals')
+            db.execute('DROP TABLE autonomous_partial_rechecks')
             db.execute('DROP TABLE autonomous_guidance_sources')
             db.execute('DROP TABLE autonomous_decision_scopes')
             db.execute('DROP TABLE autonomous_quantity_scopes')
@@ -562,6 +563,7 @@ class AutonomyTests(unittest.TestCase):
         self.assertNotIn('autonomous_goals', validate_database(restored.path))
         upgraded = Store(restored.path)
         self.assertEqual(a.goals(upgraded, self.sid), [])
+        self.assertEqual(validate_database(upgraded.path)['autonomous_partial_rechecks'], 0)
         with upgraded.connect() as db:
             db.execute('DROP TABLE autonomous_steps')
         with self.assertRaisesRegex(ValueError, '不完整'):

@@ -81,8 +81,12 @@ def waiting(question, action, observation, *, sequence=None, guidance=()):
 
 
 def waiting_label(goal):
+    if goal.get('partial_source_changed'):
+        return '參考文件變更前的暫表（歷史）'
     if goal.get('partial_result_historical'):
         return '補充前的暫表（歷史，尚未依最新條件核對）'
+    if goal.get('partial_recheck_sha256'):
+        return '依補充更新的暫表（尚待定稿）'
     return '待補期間的成果（尚待定稿）'
 
 

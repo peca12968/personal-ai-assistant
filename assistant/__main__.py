@@ -55,6 +55,7 @@ def main():
     mode.add_argument('--goal-status', help='讀取自主目標與行動紀錄；需 --session')
     mode.add_argument('--reply-goal', help='補充自主目標問題；需 --session、--goal-reply 與 --goal-fingerprint')
     parser.add_argument('--goal-reply', help='搭配 --reply-goal 的回答')
+    mode.add_argument('--recheck-goal-partial', help='用已保存補充重核等待中的暫表；需 --session 與 --goal-fingerprint')
     mode.add_argument('--withdraw-goal-question', help='依選定更正撤下自主目標目前的問題，保存後仍需明確接續')
     parser.add_argument('--goal-correction', type=int, help='搭配 --withdraw-goal-question 選擇已保存的更正編號')
     mode.add_argument('--goal-guidance-status', '--goal-reply-status', help='查看目標、目前問題、補充與指紋；需 --session')
@@ -126,7 +127,7 @@ def main():
         parser.error('--profile-revision 只能搭配儲存／重設夥伴設定。')
     if profile_mode and (args.session or args.file):
         parser.error('夥伴設定套用整份資料庫，不搭配 --session 或 --file。')
-    goal_changes = (args.amend_goal, args.reply_goal, args.withdraw_goal_question)
+    goal_changes = (args.amend_goal, args.reply_goal, args.withdraw_goal_question, args.recheck_goal_partial)
     autonomous = any(value is not None for value in (*goal_changes, args.draft_goal, args.new_goal, args.run_goal,
                      args.goal_status, args.rebuild_goal_files, args.goal_guidance_status))
     if args.amend_goal is not None:
@@ -135,9 +136,11 @@ def main():
     elif args.goal_guidance is not None:
         parser.error('補充內容需搭配 --amend-goal。')
     if args.goal_fingerprint is not None and all(value is None for value in goal_changes):
-        parser.error('目標指紋需搭配保存更正、回答或撤下問題。')
+        parser.error('目標指紋需搭配保存更正、回答、撤下問題或重核暫表。')
     if args.reply_goal is not None and args.goal_fingerprint is None:
         parser.error('--reply-goal需先以 --goal-reply-status 讀取問題，並提供 --goal-fingerprint。')
+    if args.recheck_goal_partial is not None and args.goal_fingerprint is None:
+        parser.error('--recheck-goal-partial需先以 --goal-reply-status 讀取 --goal-fingerprint。')
     if (args.withdraw_goal_question is not None) != (args.goal_correction is not None):
         parser.error('--withdraw-goal-question 與 --goal-correction 需一起使用。')
     if args.withdraw_goal_question is not None and args.goal_fingerprint is None:
@@ -339,6 +342,10 @@ def main():
             elif args.reply_goal is not None:
                 reply(store, args.session, args.reply_goal, args.goal_reply, expected_fingerprint=args.goal_fingerprint)
                 result = get_goal(store, args.session, args.reply_goal)
+            elif args.recheck_goal_partial is not None:
+                from .goal_partial_recheck import run as recheck_partial
+                result = recheck_partial(store, args.session, args.recheck_goal_partial, make_engine(),
+                                         expected_fingerprint=args.goal_fingerprint)
             elif args.withdraw_goal_question is not None:
                 from .goal_replies import withdraw
                 result = withdraw(store, args.session, args.withdraw_goal_question, args.goal_correction,

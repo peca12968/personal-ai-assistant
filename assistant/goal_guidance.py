@@ -8,7 +8,7 @@ from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
 from . import (artifact_names, artifacts, conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
-               goal_partials, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
+               goal_partials, goal_partial_recheck, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
                work_plan_scope)
 
 
@@ -58,7 +58,8 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
             if colloquial_question:
                 receipt = json.dumps(steps[-1], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
                 fingerprint = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
-        details = goal_partials.read_waiting(db, gid, goal['question'], guidance=guidance)
+        details = goal_partial_recheck.waiting(db, goal, steps, sources, guidance,
+                                               sources_match=review['sources_match'])
         goal.update(details)
         if 'partial_result' in details:
             fingerprint = hashlib.sha256((fingerprint + '\0' + details['partial_result']).encode('utf-8')).hexdigest()

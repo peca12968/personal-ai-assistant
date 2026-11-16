@@ -83,7 +83,10 @@ class GoalReplyWindow:
                 lines += [f"{source['citation']} · {source['content']}"
                           for source in goal.get('guidance_sources', []) if source['number'] in options]
                 self.correction.configure(values=options)
-                self.correction.set('')
+                suggested = goal.get('partial_withdrawal_source')
+                if suggested:
+                    lines += [f'助理建議核對 {suggested}。確認該問題已無須回答後，可按下方按鈕撤下。']
+                self.correction.set(suggested.removeprefix('[更正#').removesuffix(']') if suggested else '')
                 self.withdrawal.pack(fill='x', before=self.reload_button)
             else:
                 self.withdrawal.pack_forget()

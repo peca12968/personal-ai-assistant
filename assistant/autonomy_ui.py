@@ -11,7 +11,7 @@ from tkinter import messagebox, ttk
 
 from . import autonomy
 from . import continuous
-from . import artifact_names, artifacts, goal_partials
+from . import artifact_names, artifacts, goal_partial_recheck, goal_partials
 from . import work_plan
 from . import goal_drafts
 from .goal_conversation import describe as describe_conversation
@@ -122,6 +122,7 @@ class AutonomousWindow:
         self.layout.wrapped_label(body, text='持續執行只處理所選目標，不需逐輪按接續。完成成果、需要補充、來源改變、連續三次工具錯誤或達上限即停止；目標累計仍最多32步。關閉程式會要求停止，重開不會自行啟動。', padding=12).pack(fill='x')
         self.reply = ttk.Button(body, text='回答目前問題', command=self.add_reply, state='disabled')
         self.reply.pack(anchor='w', padx=12, pady=6)
+        self.recheck_partial = ttk.Button(body, text='重核暫表', command=self.recheck_waiting_partial)
         self.guidance = ttk.Button(body, text='補充／更正此目標', command=self.add_guidance, state='disabled')
         self.guidance.pack(anchor='w', padx=12, pady=6)
         self.notice = tk.StringVar(value='選擇目標後開始；進度保存在本機。')
@@ -158,7 +159,7 @@ class AutonomousWindow:
         self.active_goal = None
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.recheck_partial, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在整理目標草稿；不會保存或開始工作，可停止。')
@@ -295,7 +296,7 @@ class AutonomousWindow:
         self.busy, self.active_goal = True, gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.recheck_partial, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
         self.notice.set('正在核對／重建已保存的歷史內容，不會覆寫不同內容的同名檔案。')
@@ -315,6 +316,12 @@ class AutonomousWindow:
         self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
         self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
+        if goal.get('can_recheck_partial'):
+            if not self.recheck_partial.winfo_manager():
+                self.recheck_partial.pack(anchor='w', padx=12, pady=6, before=self.guidance)
+            self.recheck_partial.configure(state='disabled' if self.busy else 'normal')
+        else:
+            self.recheck_partial.pack_forget()
         can_recheck_report = goal['status'] == 'report_ready' and not goal['file_delivery']
         reference_report = can_recheck_report and autonomy.decision_table.reference_report(goal['steps'], goal['result'])
         version_report = can_recheck_report and autonomy.decision_table.document_version_report(goal['steps'], goal['result'])
@@ -381,7 +388,11 @@ class AutonomousWindow:
         if goal.get('answered_reference_review'):
             lines += [autonomy.decision_table.describe_answered_review(goal['answered_reference_review'])]
         if goal['question']:
-            lines += ['需要你的補充：' + goal['question']]
+            if source := goal.get('partial_withdrawal_source'):
+                lines += ['原問題：' + goal['question'],
+                          f'助理建議核對 {source}。若這項已無須回答，可在回答視窗依該補充撤下問題。']
+            else:
+                lines += ['需要你的補充：' + goal['question']]
         if goal.get('withdrawn_questions'):
             lines += ['已依更正撤下的問題（原步驟保留）']
             lines += [f"步驟 {row['ask_sequence']} · {row['guidance_citation']} · {row['question']}"
@@ -490,7 +501,19 @@ class AutonomousWindow:
             return True
         return False
 
-    def begin(self, *, continuous_mode=False, goal_id=None, step_budget=None):
+    def recheck_waiting_partial(self):
+        if self.busy:
+            return
+        from .goal_guidance import snapshot
+        try:
+            gid = self.selected_id()
+            current = snapshot(self.store, self.sid, gid)
+        except ValueError as exc:
+            self.notice.set(str(exc))
+            return
+        return self.begin(goal_id=gid, partial_fingerprint=current['fingerprint'])
+
+    def begin(self, *, continuous_mode=False, goal_id=None, step_budget=None, partial_fingerprint=None):
         if self.busy:
             return
         try:
@@ -498,7 +521,7 @@ class AutonomousWindow:
             if continuous_mode:
                 budget, seconds = int(self.continuous_steps.get()), int(self.continuous_minutes.get()) * 60
                 continuous.validate_limits(budget, seconds)
-            else:
+            elif partial_fingerprint is None:
                 budget = int(self.budget.get()) if step_budget is None else step_budget
                 if not 1 <= budget <= 12:
                     raise ValueError('每輪步數需為1到12。')
@@ -509,12 +532,17 @@ class AutonomousWindow:
         self.active_goal = gid
         self.cancel.clear()
         self.csv_input.configure(state='disabled')
-        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
+        for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.recheck_partial, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
             button.configure(state='disabled')
         self.stop.configure(state='normal')
-        self.notice.set('正在自主選擇下一步；可隨時停止。')
+        self.notice.set('正在依保存的補充重核暫表。' if partial_fingerprint else '正在自主選擇下一步；可隨時停止。')
         def work():
             try:
+                if partial_fingerprint is not None:
+                    result = goal_partial_recheck.run(self.store, self.sid, gid, self.engine,
+                                                      expected_fingerprint=partial_fingerprint, cancel=self.cancel)
+                    self.events.put(('partial_done', result['goal']))
+                    return
                 runner = continuous.run_continuous if continuous_mode else autonomy.run_goal
                 options = {'max_seconds': seconds} if continuous_mode else {}
                 result = runner(self.store, self.sid, gid, self.engine, max_steps=budget, **options,
@@ -534,7 +562,7 @@ class AutonomousWindow:
                 else:
                     self.busy = False
                     self.csv_input.configure(state='readonly')
-                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
+                    for button in (self.start, self.continue_start, self.continuous_steps, self.continuous_minutes, self.budget, self.create, self.reply, self.recheck_partial, self.guidance, self.follow, self.rebuild, self.file_option, self.csv_reload, self.chat_option, self.history_option, self.draft_button, self.discuss):
                         button.configure(state='normal')
                     self.stop.configure(state='disabled')
                     if kind == 'draft_done':
@@ -542,7 +570,15 @@ class AutonomousWindow:
                         self.active_goal = None
                         self.select()
                         continue
-                    self.notice.set(value if kind == 'error' else '已核對／重建保存文件；未重新驗證歷史內容。' if kind == 'files_done' else autonomy.LABELS.get(value['status'], value['status']))
+                    if kind == 'partial_done':
+                        self.notice.set('已更新暫表。原問題仍可查看或回答。')
+                        for editor in self.reply_editors:
+                            if editor.gid == self.active_goal and editor.window.winfo_exists():
+                                editor.reload()
+                    elif kind == 'files_done':
+                        self.notice.set('已核對／重建保存文件；未重新驗證歷史內容。')
+                    else:
+                        self.notice.set(value if kind == 'error' else autonomy.LABELS.get(value['status'], value['status']))
                     self.refresh(self.active_goal)
                     self.active_goal = None
         except queue.Empty:

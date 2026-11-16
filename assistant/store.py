@@ -167,6 +167,12 @@ class Store:
                     PRIMARY KEY(goal_id,ask_sequence),
                     FOREIGN KEY(goal_id,ask_sequence) REFERENCES autonomous_steps(goal_id,sequence),
                     FOREIGN KEY(goal_id,guidance_number) REFERENCES autonomous_guidance_sources(goal_id,number));
+                CREATE TABLE IF NOT EXISTS autonomous_partial_rechecks (
+                    goal_id TEXT NOT NULL, ask_sequence INTEGER NOT NULL, guidance_number INTEGER NOT NULL,
+                    receipt_json TEXT NOT NULL, receipt_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(goal_id,ask_sequence,guidance_number),
+                    FOREIGN KEY(goal_id,ask_sequence) REFERENCES autonomous_steps(goal_id,sequence),
+                    FOREIGN KEY(goal_id,guidance_number) REFERENCES autonomous_guidance_sources(goal_id,number));
                 CREATE TABLE IF NOT EXISTS autonomous_handoffs (
                     goal_id TEXT PRIMARY KEY REFERENCES autonomous_goals(id),
                     parent_goal_id TEXT NOT NULL REFERENCES autonomous_goals(id),

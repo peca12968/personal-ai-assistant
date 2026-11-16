@@ -44,6 +44,7 @@ TABLES = {
     'autonomous_reply_sources': {'goal_id', 'ask_sequence', 'notes_start', 'answer'},
     'autonomous_guidance_sources': {'goal_id', 'number', 'notes_start', 'steps_seen', 'stamp', 'content'},
     'autonomous_question_withdrawals': {'goal_id', 'ask_sequence', 'guidance_number', 'question_sha256', 'guidance_sha256'},
+    'autonomous_partial_rechecks': {'goal_id', 'ask_sequence', 'guidance_number', 'receipt_json', 'receipt_sha256'},
     'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
     'companion_profile': {'id', 'revision', 'settings_json', 'updated_at'},
     'autonomous_delivery': {'goal_id', 'enabled'},
@@ -94,8 +95,8 @@ def validate_database(path):
             raise ValueError('數量採用範圍資料表不完整。')
         if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources'} and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
-        if 'autonomous_question_withdrawals' in actual_tables and 'autonomous_guidance_sources' not in actual_tables:
-            raise ValueError('提問撤下的更正來源資料表不完整。')
+        if actual_tables & {'autonomous_question_withdrawals', 'autonomous_partial_rechecks'} and 'autonomous_guidance_sources' not in actual_tables:
+            raise ValueError('待答狀態的更正來源資料表不完整。')
         delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
         if len(actual_tables & delivery_tables) == 1 or (delivery_tables <= actual_tables and 'autonomous_goals' not in actual_tables):
             raise ValueError('自主文件資料表不完整。')
@@ -110,7 +111,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals'} - delivery_tables - delivery_changes - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals', 'autonomous_partial_rechecks'} - delivery_tables - delivery_changes - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -210,6 +211,9 @@ def validate_database(path):
                                       guidance_present=guidance_present, scope_present=quantity_scope_tables <= actual_tables)
             validate_partials(db, reply_sources_present='autonomous_reply_sources' in actual_tables,
                               guidance_sources_present=guidance_present)
+            if 'autonomous_partial_rechecks' in actual_tables:
+                from .goal_partial_recheck import validate_saved as validate_rechecks
+                validate_rechecks(db, replies_present='autonomous_reply_sources' in actual_tables)
             from .goal_reply_sources import validate_saved as validate_reply_sources
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
             from .goal_guidance_sources import validate_saved as validate_guidance_sources

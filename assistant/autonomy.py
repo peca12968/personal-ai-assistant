@@ -16,7 +16,7 @@ from .answer_runs import lease
 from . import document_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
-from . import goal_partials
+from . import goal_partials, goal_partial_recheck
 from . import goal_guidance_sources
 from . import goal_question_withdrawals
 from . import goal_reply_sources
@@ -212,14 +212,16 @@ def get_goal(store, sid, gid, *, include_reply_positions=False):
         withdrawals = goal_question_withdrawals.read(db, gid, guidance_sources, reply_sources, waiting_step=waiting_step)
         if withdrawals:
             result['withdrawn_questions'] = withdrawals
-        if result['status'] == 'needs_input' and result['steps']:
-            last = result['steps'][-1]
-            result.update(goal_partials.waiting(result['question'], last['action'], last['observation'],
-                                                sequence=last['sequence'], guidance=guidance_sources))
         current_sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)).fetchall())
         current_sources = goal_sources.current_scope(
             result['sources'], current_sources, scoped=goal_sources.has_supplement(result['steps']))
-        if waiting_step and guidance_sources and current_sources == result['sources']:
+        sources_match = current_sources == result['sources']
+        if waiting_step:
+            result.update(goal_partial_recheck.waiting(db, result, result['steps'], reply_sources, guidance_sources,
+                                                       sources_match=sources_match))
+        if waiting_step and guidance_sources and sources_match:
+            if result.get('partial_result_historical'):
+                result['can_recheck_partial'] = True
             answered = decision_table.answered_reference_review(result['steps'], reply_sources, guidance_sources)
             if answered is not None:
                 result['answered_reference_review'] = answered
