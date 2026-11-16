@@ -8,7 +8,8 @@ from .answer_runs import lease
 from .autonomy import MAX_STEPS, signature, text
 from .documents import check_citations
 from . import (artifact_names, artifacts, conversation_history, decision_table, delivery_preference, document_ranges, document_rule_update, goal_guidance_sources,
-               goal_partials, goal_partial_recheck, goal_question_withdrawals, goal_reply_sources, goal_review, goal_sources, work_plan,
+               goal_partials, goal_partial_recheck, goal_question_withdrawals, goal_reply_sources,
+               goal_required_supplement, goal_review, goal_sources, work_plan,
                work_plan_scope)
 
 
@@ -20,6 +21,27 @@ def _steps(db, gid):
     return [{'sequence': number, 'action': json.loads(action), 'observation': json.loads(observation)}
             for number, action, observation in db.execute(
                 'SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
+
+
+def _document(db, session_id, document_id):
+    row = db.execute('SELECT id,name,sha256,content FROM documents WHERE session_id=? AND id=?',
+                     (session_id, document_id)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _ordinary_missing_target(db, goal, steps, sources):
+    if steps[-1]['observation'].get('question') != goal['question']:
+        return []
+    scope = json.loads(goal['sources_json'])
+    current = {**goal, 'sources': scope, 'steps': steps, 'reply_sources': sources}
+    target = goal_required_supplement.target(current, steps[-1])
+    if not target:
+        return []
+    did = target[0][0]
+    row = _document(db, goal['session_id'], did)
+    frozen = next((source for source in scope if source['document_id'] == did), None)
+    count = goal_required_supplement.line_count({did: row}, frozen) if frozen else None
+    return target if count is not None and all(start > count for _, start, _ in target) else []
 
 
 def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=False):
@@ -94,13 +116,18 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
     if goal['status'] == 'needs_input' and decision_table.compound_reference_ask(steps):
         result['reference_partial_reply'] = True
     if (goal['status'] == 'needs_input' and steps and not colloquial_question
-            and work_plan.can_supplement_question(steps)):
-        files = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
-        original = json.loads(goal['sources_json'])
-        if (goal_sources.matching_scope(original, files, scoped=True)
-                and any(row not in original for row in files) and waiting_step + 3 + review['file_delivery'] <= MAX_STEPS):
-            result['plan_document_supplement'] = True
-            result['supplement_documents'] = files
+            and waiting_step + 3 + review['file_delivery'] <= MAX_STEPS):
+        plan_supplement = work_plan.can_supplement_question(steps)
+        ordinary_target = [] if plan_supplement else _ordinary_missing_target(db, goal, steps, sources)
+        if plan_supplement or ordinary_target:
+            files = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
+            original = json.loads(goal['sources_json'])
+            if goal_sources.matching_scope(original, files, scoped=True) and any(row not in original for row in files):
+                if plan_supplement:
+                    result['plan_document_supplement'] = True
+                else:
+                    result['required_document_supplement'] = True
+                result['supplement_documents'] = files
     if goal['status'] == 'report_ready' and not review['file_delivery']:
         steps = _steps(db, gid)
         reference = decision_table.reference_report(steps, goal['result'])
@@ -147,6 +174,8 @@ def eligibility(value):
     if value.get('plan_document_supplement'):
         return True, ('可用「補件 [D2:L2] 改由 [D3:L1]」。有多個分問時，下一行寫「請撤下分問『原句』」，'
                       '請以「」括住完整原句。只有一個問題時可寫「請撤下目前問題。」')
+    if value.get('required_document_supplement'):
+        return True, '可用「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」'
     if question := value.get('report_colloquial_question'):
         if question.get('ordered', {}).get('answers'):
             if not value['sources_match']:
@@ -359,6 +388,34 @@ def _save_plan_document_supplement(db, current, notes, content):
     db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,question=?,status=?,notice=?,
                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                (sources_json, notes, question, status, notice, gid))
+
+
+def _save_required_document_supplement(db, current, notes, content):
+    goal, count = current['goal'], current['step_count']
+    gid, sid = goal['id'], goal['session_id']
+    missing, replacement, _ = goal_sources.plan_mapping(content)
+    original = json.loads(goal['sources_json'])
+    missing_id, replacement_id = missing['document_id'], replacement['document_id']
+    previous = next((row for row in original if row['document_id'] == missing_id), None)
+    if previous is None:
+        raise ValueError('缺行須屬於目前目標的原匯入副本。')
+    old_copy = _document(db, sid, missing_id)
+    new_copy = _document(db, sid, replacement_id)
+    added = signature([new_copy]) if new_copy is not None else []
+    old_count = goal_required_supplement.line_count({missing_id: old_copy}, previous)
+    new_count = len(new_copy['content'].splitlines()) if new_copy is not None else None
+    steps = _steps(db, gid)
+    guidance = goal_guidance_sources.read(db, gid, notes, count)
+    source = guidance[-1]
+    action, observation, merged = goal_required_supplement.bind(
+        {**goal, 'sources': original, 'steps': steps}, steps[-1], source, added, old_count, new_count)
+    sources_json = json.dumps(merged, ensure_ascii=False)
+    _append_step(db, {**goal, 'sources_json': sources_json}, notes, count + 1, action, observation)
+    options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
+    goal_question_withdrawals.record(db, gid, options, source)
+    db.execute("""UPDATE autonomous_goals SET sources_json=?,notes=?,question='',status='paused',notice=?,
+                  updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+               (sources_json, notes, '已綁定指定補件並保留原提問，請接續查讀原文。', gid))
 
 
 def append_waiting_recheck(db, current, notes):
@@ -657,13 +714,16 @@ def save(store, sid, gid, content, *, expected_fingerprint):
         if current['goal']['status'] == 'needs_input' and work_plan_scope.pending_confirmation_target(_steps(db, gid)):
             raise ValueError('請先在目前問題指定要更正的欄位，或回答「都不改」。')
         plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
-        if current['goal']['status'] == 'needs_input' and goal_sources.is_plan_mapping(content) and not plan_supplement:
-            raise ValueError('目前提問無法用這筆補件撤下。請核對提問與清單的缺行項目。')
+        mapped = goal_sources.is_plan_mapping(content)
+        required_supplement = current.get('required_document_supplement') and mapped
+        if current['goal']['status'] == 'needs_input' and mapped and not (plan_supplement or required_supplement):
+            raise ValueError('目前提問無法用這筆補件撤下。請核對提問與實際缺行。')
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
         supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
-        if current.get('plan_document_supplement') and not current['sources_match'] and not plan_supplement:
+        if (current.keys() & {'plan_document_supplement', 'required_document_supplement'}
+                and not current['sources_match'] and not (plan_supplement or required_supplement)):
             raise ValueError('請先指定缺行與補件的對應範圍。')
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         goal = current['goal']
@@ -679,6 +739,9 @@ def save(store, sid, gid, content, *, expected_fingerprint):
                    'VALUES(?,?,?,?,?,?)', (gid, number, len(goal['notes']), step_count, stamp, content))
         if plan_supplement:
             _save_plan_document_supplement(db, current, notes, content)
+            return _snapshot(db, sid, gid)
+        if required_supplement:
+            _save_required_document_supplement(db, current, notes, content)
             return _snapshot(db, sid, gid)
         if changed_confirmation := _save_plan_scope_change(db, current, notes, confirmation=True):
             return changed_confirmation

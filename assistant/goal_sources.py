@@ -7,6 +7,7 @@ from . import document_ranges
 _RANGE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}(?:-L[1-9][0-9]{0,11})?\]'
 _SUPPLEMENT = re.compile(rf'補件[ \t]+{_RANGE}(?:[ \t]+{_RANGE}){{0,7}}')
 PLAN_SUPPLEMENT = 'plan_document_supplement'
+REQUIRED_SUPPLEMENT = 'required_document_supplement'
 _PLAN_MAPPING = re.compile(rf'補件[ \t]+{_RANGE}[ \t]+改由[ \t]+{_RANGE}\s*\n'
                            r'請撤下(?:目前問題|分問[ \t]*「(?P<question>[^「」\r\n]{1,400})」)[。.]?')
 
@@ -49,19 +50,21 @@ def supplement_ranges(content):
     return ranges
 
 
-def _supplement_step(step):
+def supplement_step(step):
     action = step['action']
-    return action['tool'] == PLAN_SUPPLEMENT or (action['tool'] == 'check_decision' and 'report_supplement' in action['args'])
+    return action['tool'] in {PLAN_SUPPLEMENT, REQUIRED_SUPPLEMENT} or (
+        action['tool'] == 'check_decision' and 'report_supplement' in action['args'])
 
 
 def has_supplement(steps):
-    return any(_supplement_step(step) for step in steps)
+    return any(supplement_step(step) for step in steps)
 
 
 def saved_supplement(db, goal_id):
     return db.execute("""SELECT 1 FROM autonomous_steps WHERE goal_id=?
-        AND (json_extract(action_json, '$.tool')=? OR (json_extract(action_json, '$.tool')='check_decision'
-        AND json_extract(action_json, '$.args.report_supplement') IS NOT NULL)) LIMIT 1""", (goal_id, PLAN_SUPPLEMENT)).fetchone() is not None
+        AND (json_extract(action_json, '$.tool') IN (?, ?) OR (json_extract(action_json, '$.tool')='check_decision'
+        AND json_extract(action_json, '$.args.report_supplement') IS NOT NULL)) LIMIT 1""",
+                      (goal_id, PLAN_SUPPLEMENT, REQUIRED_SUPPLEMENT)).fetchone() is not None
 
 
 def matching_scope(stored, current, *, scoped=False):
@@ -111,18 +114,21 @@ def verify_excerpts(excerpts, sources, ranges):
 
 def verify_history(steps, final_scope, documents):
     """Replay source additions, including comparisons to still-present original bytes."""
-    first = next((step for step in steps if _supplement_step(step)), None)
+    first = next((step for step in steps if supplement_step(step)), None)
     if first is None:
         return {}
     current = first['action']['args'].get('original_sources')
     by_sequence = {}
     for step in steps:
         args = step['action']['args']
-        if _supplement_step(step):
+        if supplement_step(step):
             if (args.get('original_sources') != current or not valid_source_list(current)
                     or not valid_source_list(args.get('added_sources'))):
                 raise ValueError('保存的補件前後文件範圍不一致。')
             current = merge_sources(current, args['added_sources'])
+            if step['action']['tool'] == REQUIRED_SUPPLEMENT:
+                by_sequence[step['sequence']] = current
+                continue  # The initial mapping admits the source. Its normal read is a separate step.
             excerpts = step['observation'].get('excerpts')
             if not isinstance(excerpts, list) or not excerpts or any(not isinstance(row, dict)
                     or not {*document_ranges.BATCH_FIELDS, 'sha256', 'name'} <= row.keys() for row in excerpts):

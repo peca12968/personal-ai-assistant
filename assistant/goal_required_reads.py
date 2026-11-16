@@ -2,7 +2,7 @@
 import re
 from itertools import chain
 
-from . import document_ranges
+from . import document_ranges, goal_sources
 from .documents import matches_numbered_excerpt
 from .goal_guidance_sources import standalone_clauses
 
@@ -29,15 +29,18 @@ def _ranges(document_id, start, end):
     return {'document_id': document_id, 'start_line': start, 'end_line': end}
 
 
-def _named_pattern(sources):
+def _named_pattern(sources, *, include_missing=False):
     names = {}
     for row in sources:
         names.setdefault(row['name'], []).append(row['document_id'])
     if not names:
         return names, None
     labels = '|'.join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    missing = r'(?P<missing>(?:的\s*)?(?:匯入副本\s*)?(?:缺少|尚缺|缺漏)\s*)?' if include_missing else ''
+    shown = r'(?:[（(]\s*D(?P<shown>[1-9][0-9]{0,11})\s*[）)]\s*)?' if include_missing else ''
     pattern = re.compile(
-        rf'(?<![A-Za-z0-9_.\\/])(?:\x60|「)?(?P<name>{labels})(?:\x60|」)?\s*(?:的\s*)?'
+        rf'(?<![A-Za-z0-9_.\\/])(?:\x60|「)?(?P<name>{labels})(?:\x60|」)?\s*'
+        + shown + r'(?:的\s*)?' + missing +
         r'第\s*(?P<first>[0-9]{1,12})\s*(?:(?:至|到|[-–])\s*(?:第\s*)?(?P<last>[0-9]{1,12})\s*)?行')
     return names, pattern
 
@@ -45,6 +48,9 @@ def _named_pattern(sources):
 def _named_range(match, names):
     ids = names[match['name']]
     first, last = int(match['first']), int(match['last'] or match['first'])
+    shown = match.groupdict().get('shown')
+    if shown is not None:
+        ids = [did for did in ids if did == int(shown)]
     return (ids[0], first, last) if len(ids) == 1 and 1 <= first <= last else None
 
 
@@ -101,11 +107,21 @@ def _directives(text, names, pattern):
 
 
 def requirements(goal):
-    names, pattern = _named_pattern(goal['sources'])
-    updates = [(row['notes_start'], row['content']) for row in goal.get('guidance_sources', ())]
-    updates.extend((row['notes_start'], row['answer']) for row in goal.get('reply_sources', ()))
+    supplements = [step for step in goal.get('steps', ()) if goal_sources.supplement_step(step)]
+    initial = supplements[0]['action']['args']['original_sources'] if supplements else goal['sources']
+    names, pattern = _named_pattern(initial)
+    updates = [(row['notes_start'], row.get('steps_seen', 0), row['content']) for row in goal.get('guidance_sources', ())]
+    updates.extend((row['notes_start'], row['ask_sequence'], row['answer']) for row in goal.get('reply_sources', ()))
     active = []
-    for source in [goal['objective'], *(text for _, text in sorted(updates))]:
+    remaining = iter(supplements)
+    supplement = next(remaining, None)
+    for _, sequence, source in [(-1, 0, goal['objective']), *sorted(updates), (0, float('inf'), '')]:
+        while supplement is not None and supplement['sequence'] <= sequence:
+            args = supplement['action']['args']
+            if supplement['action']['tool'] == goal_sources.REQUIRED_SUPPLEMENT:
+                active = _mapped_ranges(active, args['missing'], args['replacement'])
+            names, pattern = _named_pattern(goal_sources.merge_sources(args['original_sources'], args['added_sources']))
+            supplement = next(remaining, None)
         for waive, (did, low, high) in _directives(source, names, pattern):
             if waive:
                 active = [(doc, start, end) for doc, first, last in active
@@ -113,6 +129,20 @@ def requirements(goal):
             elif (did, low, high) not in active:
                 active.append((did, low, high))
     return active
+
+
+def _mapped_ranges(active, missing, replacement):
+    did, low, high = (missing[key] for key in document_ranges.BATCH_FIELDS)
+    shift = replacement['start_line'] - low
+    result = []
+    for doc, start, end in active:
+        first, last = max(low, start), min(high, end)
+        if doc != did or first > last:
+            result.append((doc, start, end))
+            continue
+        result.extend((doc, left, right) for left, right in _missing([(low, high)], start, end))
+        result.append((replacement['document_id'], first + shift, last + shift))
+    return result
 
 
 def _missing(covered, low, high):

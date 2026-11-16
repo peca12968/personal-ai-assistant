@@ -39,7 +39,7 @@ from . import work_plan
 from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
 from . import goal_conversation
-from . import goal_required_reads
+from . import goal_required_reads, goal_required_supplement
 from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
 
@@ -695,6 +695,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             raw = engine.answer(INSTRUCTIONS + '\n' + month_schedule.GUIDANCE + '\n' + number_rounding.GUIDANCE + '\n' + expression_math.GUIDANCE + '\n' + date_tools.GUIDANCE + '\n' + document_diff.GUIDANCE + '\n' + document_lines.GUIDANCE + '\n' + json_documents.GUIDANCE + '\n' + json_statistics.GUIDANCE + '\n' + work_plan.GUIDANCE + '\n' + decision_table.GUIDANCE + '\n' + source_decision.GUIDANCE + '\n' + COMPANION_GUIDANCE + '\n' + MEMORY_ALIAS_GUIDANCE +
                 ('\n' + goal_guidance_sources.GUIDANCE if guidance_sources else '') +
                 ('\n' + goal_required_reads.GUIDANCE if required_reads else '') +
+                ('\n' + goal_required_supplement.GUIDANCE if any(
+                    step['action']['tool'] == goal_sources.REQUIRED_SUPPLEMENT for step in payload['steps']) else '') +
                 ('\n' + work_plan_scope.GUIDANCE if goal['work_plan'] else '') +
                 ('\n' + goal_question_withdrawals.GUIDANCE if withdrawals else '') +
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
