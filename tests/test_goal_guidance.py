@@ -37,6 +37,42 @@ class GoalGuidanceTests(unittest.TestCase):
         self.assertFalse(after['file_delivery']);self.assertIsNone(after['csv_source'])
         self.assertEqual(self.store.messages(self.sid),[])
 
+    def test_pending_partial_is_historical_after_later_guidance_and_restore(self):
+        gid = a.create_goal(self.store, self.sid, '整理本批暫表，填櫃位、見證人與會合時段')
+        question = '這一批的見證人是誰？'
+        first = a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('ask', question=question, partial_result='櫃位：楓杉櫃。見證人待補。')))
+        self.assertNotIn('partial_result_historical', first)
+        first_reply = reply_snapshot(self.store, self.sid, gid)
+
+        revision = g.snapshot(self.store, self.sid, gid)['fingerprint']
+        saved = g.save(self.store, self.sid, gid, '本批櫃位正式改為白榆櫃。見證人照原問題確認。',
+                       expected_fingerprint=revision)
+        self.assertTrue(saved['goal']['partial_result_historical'])
+        waiting = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual((waiting['steps'], waiting['partial_result'], waiting['question']),
+                         (first['steps'], first['partial_result'], question))
+        self.assertTrue(waiting['partial_result_historical'])
+        with self.assertRaisesRegex(ValueError, '重新載入'):
+            goal_replies.save(self.store, self.sid, gid, '林序華', expected_fingerprint=first_reply['fingerprint'])
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'pending-partial')
+        restored = Store(self.root / 'pending-partial' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), waiting)
+        view = reply_snapshot(restored, self.sid, gid)
+        self.assertTrue(view['goal']['partial_result_historical'])
+        goal_replies.save(restored, self.sid, gid, '林序華', expected_fingerprint=view['fingerprint'])
+        current = a.run_goal(restored, self.sid, gid, ScriptedEngine(
+            action('ask', question='本批會合時段？',
+                   partial_result='櫃位：白榆櫃。[更正#1] 見證人：林序華。[補充#1]')), max_steps=1)
+        self.assertEqual(current['status'], 'needs_input')
+        self.assertNotIn('partial_result_historical', current)
+        self.assertNotIn('partial_result_historical', reply_snapshot(restored, self.sid, gid)['goal'])
+        self.assertIn('白榆櫃', current['partial_result'])
+        self.assertEqual(current['steps'][0], first['steps'][0])
+        validate_database(restored.path)
+
     def test_report_correction_rechecks_the_unresolved_branches_atomically(self):
         fields = ['配送班別', '複核班別', '入口']
         domains = {fields[0]: ['早班', '晚班'], fields[1]: ['早班', '晚班'], '入口': ['北口', '南口']}

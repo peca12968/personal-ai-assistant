@@ -18,7 +18,7 @@ FOLLOWUP_GUIDANCE = (
     '引文、假設與未結數保留為背景；可能重複或不知道增量是否另計時，只問實際需要採用的正式總數或計算所缺的關係。'
     '已確認為互不重複的增量可依原數推得總數，不再要求重報。'
     '先完成可確認的欄位。仍需ask時，question直接點名每個會影響交付的待補欄位；'
-    '如需說明已知數或其他對象，放在partial_result。若已能完成或使用者允許留待確認，依原要求交付。'
+    '已核對且仍適用的數量與其他獨立欄位，放在partial_result。若已能完成或使用者允許留待確認，依原要求交付。'
     '獲准保留待確認時，若該欄影響所交付的合計、比率或其他結果，逐項標示仍未能確定的結果；'
     '例如固定包裝已知而增補未結數，應另標整批包裝合計待確認。已知小計、獨立結果和在所有可能值下都成立的結論仍分開交付。'
 )
@@ -68,9 +68,11 @@ def question_citations(question, excerpts, reply_sources, guidance_sources=()):
     return result
 
 
-def waiting(question, action, observation):
+def waiting(question, action, observation, *, sequence=None, guidance=()):
     partial = saved(action, observation)
     details = {'partial_result': partial} if partial is not None else {}
+    if partial is not None and sequence is not None and guidance and guidance[-1]['steps_seen'] >= sequence:
+        details['partial_result_historical'] = True
     if 'question_citations' in observation:
         details['question_citations'] = observation['question_citations']
     if details and goal_reply_sources.checked_question(action, observation) != question:
@@ -78,11 +80,18 @@ def waiting(question, action, observation):
     return details
 
 
-def read_waiting(db, gid, question):
-    row = db.execute('SELECT action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
+def waiting_label(goal):
+    if goal.get('partial_result_historical'):
+        return '補充前的暫表（歷史，尚未依最新條件核對）'
+    return '待補期間的成果（尚待定稿）'
+
+
+def read_waiting(db, gid, question, *, guidance=()):
+    row = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps WHERE goal_id=? '
                      'ORDER BY sequence DESC LIMIT 1', (gid,)).fetchone()
     if row is not None:
-        return waiting(question, json.loads(row[0]), json.loads(row[1]))
+        sequence, action, observation = row
+        return waiting(question, json.loads(action), json.loads(observation), sequence=sequence, guidance=guidance)
     return {}
 
 

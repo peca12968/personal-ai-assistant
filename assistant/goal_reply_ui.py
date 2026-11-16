@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from . import decision_table, goal_replies
+from . import decision_table, goal_partials, goal_replies
 from .autonomy import LABELS, MAX_STEPS
 from .ui_layout import ScrollableForm, fit_window
 
@@ -62,8 +62,8 @@ class GoalReplyWindow:
             if filename_status := goal.get('artifact_filename_status'):
                 lines.insert(-1, filename_status)
             if goal.get('partial_result'):
-                label = '更正前的暫表（歷史）' if goal.get('reference_review') else '待補期間的成果（尚待定稿）'
-                lines[2:2] = [label, goal['partial_result']]
+                position = 3 if goal.get('partial_result_historical') else 2
+                lines[position:position] = [goal_partials.waiting_label(goal), goal['partial_result']]
             if goal.get('reference_review'):
                 lines.insert(-1, decision_table.describe_waiting_review(goal['reference_review']))
             if goal.get('answered_reference_review'):

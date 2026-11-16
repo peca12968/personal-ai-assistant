@@ -1,0 +1,682 @@
+[
+  {
+    "id": "current_handoff_partial_keeps_independent_result",
+    "file_delivery": false,
+    "prompt": "幫我辦澄川 C8 的兩項交接。檢查能否先行寄放，能做的請把可供同仁直接用的暫表寫出，剩下辦不了的只問阻礙。暫表各列列「書盒」「導覽牌」，逐項附能支持目前判斷的直接資料。用本批，只有當前交接單指定的欄位必須以交接單為準。齊全前不定稿。",
+    "documents": [
+      {
+        "name": "policy.txt",
+        "content": "寄放規則\n書盒裝好即可先寄放，不需同時交導覽牌。\n導覽牌須有本批同意碼才能寄放。"
+      },
+      {
+        "name": "current.txt",
+        "content": "澄川 C8 本批交接單\n書盒已裝好，寄放點為柳桌。\n導覽牌同意碼欄仍空白。"
+      },
+      {
+        "name": "history.txt",
+        "content": "澄川 C7 前批紀錄\n導覽牌同意碼 Y-33，此碼只適用 C7。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "同意碼"
+      ],
+      "question_excludes": [
+        "書盒|柳桌|C7|Y-33"
+      ],
+      "partial_has": [
+        "書盒",
+        "柳桌",
+        "導覽牌",
+        "待|缺|未|空白"
+      ],
+      "partial_omits": [
+        "C7|Y-33",
+        "\\[D3:"
+      ]
+    },
+    "must_match": [
+      "書盒.{0,36}柳桌",
+      "導覽牌.{0,30}(?:待|缺|未|空白)"
+    ],
+    "must_omit": [
+      "C7|Y-33",
+      "\\[D3:"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?書盒",
+        "claim": "柳桌",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "即可先寄放"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "柳桌"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?導覽牌",
+        "claim": "待|缺|未|空白",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "本批同意碼"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "仍空白"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "Y-33"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "current_roster_replaces_same_batch_retired_values",
+    "file_delivery": false,
+    "prompt": "整理渚南 M12 的發放暫表給櫃台直接用。依目前生效的安排，用「領用桌」「成套匣」「放行識別碼」各寫一列和直接資料。識別碼還沒登就只問它，收到才能定稿，不用再確認已核對的內容。",
+    "documents": [
+      {
+        "name": "first.txt",
+        "content": "渚南 M12 初版留存，領用桌及成套匣已換版。\n領用桌是柚布桌，成套匣 24 匣。"
+      },
+      {
+        "name": "current.txt",
+        "content": "渚南 M12 發放單第二版，明確取代初版前兩欄。\n目前領用桌是葵帆桌。\n已核對成套匣共 12 匣。\n放行識別碼尚未登記，只接受本批確認。"
+      },
+      {
+        "name": "other.txt",
+        "content": "渚南 M13 排練單，單獨使用。\n放行識別碼 LD-59。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "放行.{0,8}(?:碼|編號)|識別碼"
+      ],
+      "question_excludes": [
+        "M13|LD-59|柚布桌|24\\s*匣|(?:領用桌|成套匣)[？?]"
+      ],
+      "partial_has": [
+        "葵帆桌",
+        "(?<!\\d)12\\s*匣",
+        "放行識別碼"
+      ],
+      "partial_omits": [
+        "M13|LD-59|柚布桌|24\\s*匣",
+        "\\[D(?:1|3):"
+      ]
+    },
+    "must_match": [
+      "葵帆桌",
+      "(?<!\\d)12\\s*匣",
+      "放行識別碼[^\\n]{0,25}(?:待|缺|未)"
+    ],
+    "must_omit": [
+      "M13|LD-59|柚布桌|24\\s*匣",
+      "\\[D(?:1|3):"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?領用桌",
+        "claim": "葵帆桌",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "葵帆桌"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?成套匣",
+        "claim": "(?<!\\d)12\\s*匣",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "12 匣"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?放行識別碼",
+        "claim": "待|缺|未",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "尚未登記"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "crew_current_only_with_applicable_earlier_rule",
+    "file_delivery": false,
+    "prompt": "做近沙 N-18 的換班暫表給下一班直接用。接手台和每班檢核時間各一行，直接引用適用行。值班章另一行交代當前狀態，須取得本批章號才定稿，只問這個號。可以在句尾註記仍有效的舊通則，請省略不適用的前批章號和前批紀錄，不要把它們寫到附註。",
+    "documents": [
+      {
+        "name": "rule.txt",
+        "content": "通則發布於前年，近沙站各批持續適用。\n每班檢核時間為 16 分鐘，至今未改。\n定稿須等待當批值班章號。"
+      },
+      {
+        "name": "shift.txt",
+        "content": "近沙 N-18 當批交接\n接手台使用紙桐台。\n當批值班章號仍待刻印分組提供。"
+      },
+      {
+        "name": "prior.txt",
+        "content": "近沙 N-17 已結清\n章號 ZW-21 僅供 N-17 作廢前查閱，不適用其他批次。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "章號|章.{0,5}編號"
+      ],
+      "question_excludes": [
+        "台號|檢核時間|N-17|ZW-21"
+      ],
+      "partial_has": [
+        "紙桐台",
+        "16\\s*分鐘",
+        "值班章"
+      ],
+      "partial_omits": [
+        "N-17|ZW-21",
+        "\\[D3:"
+      ]
+    },
+    "must_match": [
+      "紙桐台",
+      "16\\s*分鐘",
+      "值班章[^\\n]{0,35}(?:待|缺|未)"
+    ],
+    "must_omit": [
+      "N-17|ZW-21",
+      "\\[D3:"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?接手台",
+        "claim": "紙桐台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "紙桐台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?每班檢核時間|檢核時間",
+        "claim": "16\\s*分鐘",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "16 分鐘"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?值班章",
+        "claim": "等|待|缺|未",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "仍待刻印"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "ZW-21"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "plausible_current_conflict_survives_partial_scope",
+    "file_delivery": false,
+    "prompt": "幫我編一張蓮川站 V4 當輪收納卡。外袋規格已核對就保留。置放格若兩份現行通知相牴觸，在暫表的置放格列並列目前仍可能採用的兩個值與來源，只問我置放格採哪個值。完成前不要定稿。各列以「外袋規格」「置放格」開頭，只列當輪會用到的資料。",
+    "documents": [
+      {
+        "name": "on-duty.txt",
+        "content": "蓮川站 V4 週一場務通知，仍有效，與當輪補登同等優先。\n置放格：紅角格。"
+      },
+      {
+        "name": "second.txt",
+        "content": "蓮川站 V4 當輪補登，未撤回場務通知，沒有宣布優先序。\n置放格：藍槐格。"
+      },
+      {
+        "name": "bag.txt",
+        "content": "蓮川站 V4 固定外袋規格：粗紋布袋。"
+      },
+      {
+        "name": "old.txt",
+        "content": "蓮川站 V3 舊收納卡，只供 V3。\n置放格：灰角格。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "置放格|紅角格|藍槐格"
+      ],
+      "question_excludes": [
+        "外袋規格|V3|灰角格"
+      ],
+      "partial_has": [
+        "粗紋布袋",
+        "紅角格",
+        "藍槐格"
+      ],
+      "partial_omits": [
+        "V3|灰角格",
+        "\\[D4:"
+      ]
+    },
+    "must_match": [
+      "粗紋布袋",
+      "紅角格",
+      "藍槐格"
+    ],
+    "must_omit": [
+      "V3|灰角格",
+      "\\[D4:"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?外袋規格",
+        "claim": "粗紋布袋",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "粗紋布袋"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?置放格",
+        "claim": "(?:紅角格.*藍槐格|藍槐格.*紅角格)",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "紅角格"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "藍槐格"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 3,
+            "line": 2,
+            "text": "灰角格"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "explicit_history_comparison_in_a_partial_table",
+    "file_delivery": false,
+    "prompt": "幫我做石橋組 F6 出貨看板的變更比較暫表。比較對照的是本批固定取件櫃與前一批固定取件櫃，各自分行，分別標「現行取件櫃」「前批取件櫃」。只把 F6 的櫃用在本次，前值需要放進比較。點收人同樣分行標仍待答，沒有點收人前只問點收人，先不要定稿。每列引用各自資料。",
+    "documents": [
+      {
+        "name": "now.txt",
+        "content": "石橋組 F6 現行通知\n現行取件櫃：葦塔櫃。\nF6 點收人尚未登記。"
+      },
+      {
+        "name": "last.txt",
+        "content": "石橋組 F5 舊通知\n前批取件櫃：荔木櫃。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "點收人|誰點收"
+      ],
+      "question_excludes": [
+        "取件櫃|葦塔櫃|荔木櫃"
+      ],
+      "partial_has": [
+        "現行取件櫃",
+        "前批取件櫃",
+        "葦塔櫃",
+        "荔木櫃"
+      ],
+      "partial_omits": []
+    },
+    "must_match": [
+      "現行取件櫃[^\\n]{0,30}葦塔櫃",
+      "前批取件櫃[^\\n]{0,30}荔木櫃",
+      "點收人[^\\n]{0,25}(?:待|缺|未)"
+    ],
+    "must_omit": [],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?現行取件櫃",
+        "claim": "葦塔櫃",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "葦塔櫃"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "荔木櫃"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?前批取件櫃",
+        "claim": "荔木櫃",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "荔木櫃"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?點收人",
+        "claim": "待|缺|未",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "尚未登記"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "current_partial_survives_backup_and_later_correction",
+    "file_delivery": false,
+    "prompt": "替蒲檯 S5 做本批收存回條。缺見證人時先在暫表列目前櫃位、已核對盒數和見證人狀態，只問見證人。請讓同仁直接使用，前批不必交代。收到答覆按它的更正定稿。暫表及定稿各一行標「櫃位」「盒數」「見證人」，各列附直接資料。",
+    "documents": [
+      {
+        "name": "this.txt",
+        "content": "蒲檯 S5 已核對的現況\n櫃位是梯松櫃。\n本批盒數是 7 盒。\n本批見證人仍未填。"
+      },
+      {
+        "name": "old.txt",
+        "content": "蒲檯 S4 回條，僅供前一批。\n櫃位是直杉櫃，盒數 16 盒，見證人趙顯鶴。"
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "見證人|誰見證"
+        ],
+        "question_excludes": [
+          "S4|直杉櫃|16\\s*盒|趙顯鶴|(?:櫃位|盒數)[？?]"
+        ],
+        "partial_has": [
+          "(?m)^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?櫃位(?=[^\\n]*梯松櫃)(?=[^\\n]*\\[D1:L(?:2|1-L?2|1-L?3|1-L?4|2-L?3|2-L?4)\\])",
+          "(?m)^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?盒數(?=[^\\n]*(?<!\\d)7\\s*盒)(?=[^\\n]*\\[D1:L(?:3|1-L?3|1-L?4|2-L?3|2-L?4|3-L?4)\\])",
+          "(?m)^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?見證人(?=[^\\n]*(?:待|缺|未))(?=[^\\n]*\\[D1:L(?:4|1-L?4|2-L?4|3-L?4)\\])"
+        ],
+        "partial_omits": [
+          "S4|直杉櫃|16\\s*盒|趙顯鶴",
+          "\\[D2:"
+        ],
+        "restore_before": true,
+        "answer": "蒲檯 S5 見證人確認為裴安田。追加已核對的 2 盒，盒數正式更正為 9 盒。櫃位照舊。"
+      }
+    ],
+    "must_match": [
+      "梯松櫃",
+      "9\\s*盒",
+      "裴安田"
+    ],
+    "must_omit": [
+      "(?<!\\d)7\\s*盒|S4|直杉櫃|16\\s*盒|趙顯鶴",
+      "\\[D2:",
+      "暫表|尚未填|待補"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?櫃位",
+        "claim": "梯松櫃",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "梯松櫃"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?盒數",
+        "claim": "9\\s*盒",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "正式更正為 9 盒"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?見證人",
+        "claim": "裴安田",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "裴安田"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "combine_records_into_a_current_counter_card",
+    "file_delivery": false,
+    "prompt": "先把交接簿和後來的調整單核對，再做一份可直接貼在櫃台的竹岬 T8 領件卡。用「寄存位」「可領匣數」「放行章」各一行，交代現行資料與直接來源。放行章由當班補才能定稿，先交可用暫表，只問這個章。已核對的資料可直接用。",
+    "documents": [
+      {
+        "name": "handover.txt",
+        "content": "竹岬 T8 交接簿初版\n可領匣數核對完成為 11 匣，適用本輪。\n原安排寄存位為迎風架，另有調整單時依新單。\n放行章須由 T8 當班提供。"
+      },
+      {
+        "name": "update.txt",
+        "content": "竹岬 T8 調整單，現行\n正式把寄存位改到竹霞架，取代原安排。\nT8 放行章仍待當班填寫。"
+      },
+      {
+        "name": "previous.txt",
+        "content": "竹岬 T7 當時的放行清冊\nT7 已結清，其放行章 WQ-74 只供 T7。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "放行章"
+      ],
+      "question_excludes": [
+        "迎風架|WQ-74|T7",
+        "\\[D3:"
+      ],
+      "partial_has": [
+        "竹霞架",
+        "(?<!\\d)11\\s*匣",
+        "放行章[^\\n]{0,42}(?:待|缺|未|暫緩)"
+      ],
+      "partial_omits": [
+        "迎風架|WQ-74|T7",
+        "\\[D3:"
+      ]
+    },
+    "must_match": [
+      "竹霞架",
+      "(?<!\\d)11\\s*匣",
+      "放行章[^\\n]{0,42}(?:待|缺|未|暫緩)"
+    ],
+    "must_omit": [
+      "迎風架|WQ-74|T7",
+      "\\[D3:"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?寄存位",
+        "claim": "竹霞架",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "竹霞架"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?可領匣數",
+        "claim": "(?<!\\d)11\\s*匣",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "11 匣"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?放行章",
+        "claim": "待|缺|未|暫緩",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "仍待當班"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "deliver_current_inspection_with_older_policy_and_archived_receipt",
+    "file_delivery": false,
+    "prompt": "幫曲橋 R8 編一份夜班同仁能照著用的暫表。不用先等另一項才釘封繩。「封繩」說明能怎麼做，「開箱」說明待補的憑證與能否先做，兩列要附直接來源。開箱憑證沒確認就不要定稿，只問開箱憑證。以這一輪為準。",
+    "documents": [
+      {
+        "name": "policy.txt",
+        "content": "此版常設作業規範仍在使用。\n封繩到齊即可獨立釘封繩，無須等開箱。\n開箱須有當輪的開箱憑證。"
+      },
+      {
+        "name": "records.txt",
+        "content": "曲橋 R7 舊案歸檔資料。\n曲橋 R7 開箱憑證為 VR-28，本案已結清。\n曲橋 R8 當輪確認，封繩已到齊，請在碧枝台釘封繩。\n曲橋 R8 開箱憑證欄留空，尚未收到。"
+      }
+    ],
+    "expected_question": {
+      "question_has": [
+        "開箱憑證"
+      ],
+      "question_excludes": [
+        "VR-28|R7",
+        "\\[D2:L(?:1|2)(?:-L?\\d+)?\\]"
+      ],
+      "partial_has": [
+        "碧枝台",
+        "開箱憑證[^\\n]{0,42}(?:待|缺|未|暫緩)"
+      ],
+      "partial_omits": [
+        "VR-28|R7",
+        "\\[D2:L(?:1|2)(?:-L?\\d+)?\\]"
+      ]
+    },
+    "must_match": [
+      "碧枝台",
+      "開箱憑證[^\\n]{0,42}(?:待|缺|未|暫緩)"
+    ],
+    "must_omit": [
+      "VR-28|R7",
+      "\\[D2:L(?:1|2)(?:-L?\\d+)?\\]"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?封繩",
+        "claim": "碧枝台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "獨立釘封繩"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "碧枝台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\\s*(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?開箱",
+        "claim": "待|缺|未|暫緩",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "當輪的開箱憑證"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "尚未收到"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -58,7 +58,7 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
             if colloquial_question:
                 receipt = json.dumps(steps[-1], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
                 fingerprint = hashlib.sha256((fingerprint + '\0' + receipt).encode('utf-8')).hexdigest()
-        details = goal_partials.read_waiting(db, gid, goal['question'])
+        details = goal_partials.read_waiting(db, gid, goal['question'], guidance=guidance)
         goal.update(details)
         if 'partial_result' in details:
             fingerprint = hashlib.sha256((fingerprint + '\0' + details['partial_result']).encode('utf-8')).hexdigest()
