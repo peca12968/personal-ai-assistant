@@ -1062,6 +1062,84 @@ class GoalCalculationTests(unittest.TestCase):
                     self.assertEqual(goal['steps'][-1]['action']['tool'], 'invalid')
                 validate_database(self.store.path)
 
+    def test_group_question_can_replace_a_wrong_quantity_and_replay_exact_repair(self):
+        ref = self.prepare_limited_approval('品質員只同意換窗口，窗口正式改為 南門。')
+        self.run_actions(action('ask', question=f'品質員是否已同意採用 28 袋 {ref} 作為正式批次量？'))
+        self.reply('是的。')
+        self.run_actions(action('ask', question=
+            f'上一問顯示的數量與引用原文不一致。品質員是否已同意採用 29 袋 {ref} 作為正式批次量？'))
+        self.reply('是的。')
+        rows = [{'label': '總件數', 'calculation_step': 7, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#4]', 'quote': '窗口正式改為 南門'}]
+        name = '更正後交接.json'
+        goal = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            action('write_artifact', filename=name, calculation_report=rows),
+            action('deliver', filenames=[name], calculation_report=rows))
+        self.assertEqual(goal['status'], 'report_ready')
+        self.assertIn('87 件', goal['result'])
+        stored = goal['steps'][6]['observation']
+        adopted, = stored[goal_calculation.PROOF]['source_adoptions']
+        group = adopted['spoken_selection']['confirmation']['approval_group']
+        replaced, = group['replaced_questions']
+        self.assertEqual((replaced['citation'], replaced['replacement_reply'], replaced['reason']),
+                         ('[補充#5]', '[補充#6]', 'confirmation_quantity_conflict'))
+        self.assertEqual([report['citation'] for report in group['reports']], ['[補充#3]', '[補充#4]', '[補充#6]'])
+        content = artifacts.directory(self.store, self.gid).joinpath(name).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(name).read_bytes(), content)
+        with restored.connect() as db:
+            replaced['replacement_reply'] = '[補充#5]'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=7',
+                       (json.dumps(stored, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_group_recap_repair_requires_the_real_reply_and_the_same_proposal(self):
+        cases = [('[補充#4]', '品質員', 1, '是的。', True), ('[補充#3]', '品質員', 1, '是的。', False),
+                 ('[補充#4]', '主管', 1, '是的。', False), ('[補充#4]', '品質員', 2, '是的。', False),
+                 ('[補充#4]', '品質員', 1, '品質員尚未同意。', False)]
+        for citation, actor, line, reply, expected in cases:
+            with self.subTest(citation=citation, actor=actor, line=line, reply=reply):
+                ref = self.prepare_limited_approval()
+                self.run_actions(action('ask', question=
+                    f'品質員目前只同意換窗口 [補充#3]。品質員是否已同意採用 29 袋 {ref} 作為正式批次量？'))
+                self.reply('是的。')
+                amount, selected = ((29, ref) if line == 1 else (22, ref.replace('L1', 'L2')))
+                self.run_actions(action('ask', question=
+                    f'品質員目前只同意換窗口 {citation}。更正前一問的引用後，'
+                    f'{actor}是否已同意採用 {amount} 袋 {selected} 作為正式批次量？'))
+                self.reply(reply)
+                step = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]
+                self.assertEqual(step['action']['tool'] == 'calculate_expression', expected)
+                validate_database(self.store.path)
+
+    def test_group_clarification_binds_ambiguous_reply_and_a_fresh_factual_confirmation(self):
+        cases = [(5, '對', 1, '批次量', '品質員', True), (4, '對', 1, '批次量', '品質員', False),
+                 (5, '好', 1, '批次量', '品質員', False), (5, '對', 2, '批次量', '品質員', False),
+                 (5, '對', 1, '退回量', '品質員', False), (5, '對', 1, '批次量', '主管', False),
+                 (5, '對', 1, '批次量', None, False)]
+        for cite, quote, line, field, actor, expected in cases:
+            with self.subTest(cite=cite, quote=quote, line=line, field=field, actor=actor):
+                ref = self.prepare_limited_approval()
+                self.run_actions(action('ask', question=
+                    f'等品質員同意採用 29 袋 {ref} 作為正式批次量後，請回覆確認。'))
+                self.reply('對。')
+                proposal = f'品質員已同意採用 {ref} 作為正式批次量'
+                self.run_actions(action('ask', question=
+                    f'請確認你說的「{quote}」[補充#{cite}] 是指{proposal}嗎？若已同意，請回覆「{proposal}」。'))
+                cited = ref if line == 1 else ref.replace('L1','L2')
+                self.reply(f'{actor}已同意採用 {cited} 作為正式{field}。' if actor else '對。')
+                step = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]
+                self.assertEqual(step['action']['tool'] == 'calculate_expression', expected)
+                if expected:
+                    adopted, = step['observation'][goal_calculation.PROOF]['source_adoptions']
+                    group = adopted['spoken_selection']['confirmation']['approval_group']
+                    self.assertEqual([row['status'] for row in group['reports']],
+                                     ['affirmed','limited','unclear','affirmed'])
+                    self.assertEqual(group['reports'][-1]['scope']['citation'], ref)
+                validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),

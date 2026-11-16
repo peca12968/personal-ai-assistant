@@ -49,14 +49,25 @@ _GROUP_QUESTION = re.compile(
     rf'{_START}{_ACTOR}\s*是否\s*(?:也\s*)?(?:已經?\s*)?(?:(?:另行|另外)\s*)?'
     rf'{_PERMISSION}\s*{_ACTION}\s*(?P<target>.+?)\s*(?:作為|當作)\s*(?:正式\s*)?{_FIELD}')
 _REPLY_AFTER_APPROVAL = re.compile(rf'請(?:在|於)?\s*取得\s*{_PERMISSION}\s*後\s*回覆')
-_LIMITED_SCOPE = re.compile(
-    rf'{_ACTOR}\s*(?:(?:目前|現在|這次|本次)\s*)?(?:仍\s*)?(?:只|僅)\s*{_PERMISSION}\s*'
+_LIMITED_SCOPE_BODY = (
+    rf'(?:仍\s*)?(?:只|僅)\s*{_PERMISSION}\s*'
     r'(?:更換|變更|調整|修改|更新|換|改)\s*(?:欄位)?'
     r'(?:「(?P<label>[^「」\[\]\r\n]{1,80})」|(?P<bare>[\u3400-\u9fffA-Za-z0-9_-]{1,60}))')
+_LIMITED_SCOPE = re.compile(rf'{_ACTOR}\s*(?:(?:目前|現在|這次|本次)\s*)?{_LIMITED_SCOPE_BODY}')
+_LIMITED_RECAP = re.compile(rf'{_ACTOR}\s*(?:(?:目前|現在|這次|本次|先前|當時)\s*)?{_LIMITED_SCOPE_BODY}')
 _SUPPLEMENT_AT_END = re.compile(r'\s*(?P<citation>\[補充#[1-9][0-9]{0,3}\])$')
 _GROUP_APPROVAL_REPLY = re.compile(
     rf'{_ACTOR}\s*(?P<state>已經?|尚未|還沒|沒有)\s*(?:(?:另行|另外)\s*)?{_PERMISSION}'
     r'\s*(?:(?:採用|使用|用)(?:這筆|該行|這一行)?)?')
+_CORRECTED_QUESTION = re.compile(
+    r'(?:上一問|前一問)(?:的)?(?:顯示(?:的)?[^\s\[\]「」]{1,30}與(?:引用)?原文不(?:一致|符)|'
+    r'(?:補答)?引用(?:錯誤|有誤))|更正(?:上一問|前一問)(?:的)?(?:引用|顯示值)(?:後)?')
+_SCOPED_REPORT = re.compile(
+    rf'{_ACTOR}\s*(?P<state>已經?|尚未|還沒|沒有)\s*(?:(?:另行|另外)\s*)?{_PERMISSION}\s*{_ACTION}'
+    rf'\s*(?P<reference>{_LINE.pattern})\s*(?:作為|當作)\s*(?:正式\s*)?{_FIELD}')
+_CLARIFY_VOTE = re.compile(
+    r'請(?:再)?確認(?:你|您)說的「(?P<vote>[^「」]{1,10})」\s*'
+    r'(?P<citation>\[補充#[1-9][0-9]{0,3}\])\s*是指(?P<claim>.+)嗎')
 
 
 def _amount(text):
@@ -156,15 +167,23 @@ def approval_question(question, clauses):
     return proposal
 
 
-def _limited_scope(text):
-    match = _LIMITED_SCOPE.fullmatch(text)
+def _limited_scope(text, *, recap=False):
+    pattern = _LIMITED_RECAP if recap else _LIMITED_SCOPE
+    match = pattern.fullmatch(text)
     if not match or not _valid_group_actor(match['actor']):
         return None
     return {'actor': match['actor'], 'verb': match['verb'], 'other_field': match['label'] or match['bare']}
 
 
-def group_approval_question(question, clauses):
+def group_approval_question(question, clauses, *, corrected=False):
     parts = clauses(question)
+    correction = None
+    if corrected:
+        candidates = [index for index, (_, text, is_question) in enumerate(parts[:2])
+                      if not is_question and _CORRECTED_QUESTION.fullmatch(text)]
+        if len(candidates) == 1:
+            start, text, _ = parts.pop(candidates[0])
+            correction = {'text': text, 'question_start': start}
     instruction = None
     if parts and not parts[-1][2]:
         instruction = _REPLY_AFTER_APPROVAL.fullmatch(parts[-1][1])
@@ -180,7 +199,7 @@ def group_approval_question(question, clauses):
     if len(parts) == 2:
         start, text, is_question = parts[0]
         citation = _SUPPLEMENT_AT_END.search(text)
-        if is_question or not citation or not (scope := _limited_scope(text[:citation.start()])):
+        if is_question or not citation or not (scope := _limited_scope(text[:citation.start()], recap=corrected)):
             return None
         recap = {**scope, 'citation': citation['citation'], 'text': text, 'question_start': start}
     match = _GROUP_QUESTION.fullmatch(part)
@@ -195,8 +214,49 @@ def group_approval_question(question, clauses):
             approval['reported_limited_scope'] = recap
         if instruction:
             approval['wait_notice'] = True
+        if correction:
+            approval['correction'] = correction
         proposal['approval'] = approval
     return proposal
+
+
+def _scoped_report(text, offset):
+    match = _SCOPED_REPORT.fullmatch(text)
+    if not match or not _valid_group_actor(match['actor']):
+        return None
+    return {'actor': match['actor'], 'verb': match['verb'],
+            'status': 'affirmed' if match['state'] in {'已', '已經'} else 'declined',
+            'quote': text, 'quote_start': offset,
+            'scope': {'field': match['label'] or match['bare'], 'citation': match['reference'],
+                      'document_id': int(match['document']), 'line_number': int(match['line']),
+                      'quote_start': offset + match.start('reference'),
+                      'quote_end': offset + match.end('reference')}}
+
+
+def clarification_question(question, clauses):
+    parts = clauses(question)
+    if not parts or not parts[0][2]:
+        return None
+    start, text, _ = parts[0]
+    match = _CLARIFY_VOTE.fullmatch(text)
+    if not match or match['vote'] not in _APPROVAL_ACK:
+        return None
+    claim = _scoped_report(match['claim'], start + match.start('claim'))
+    if not claim or claim['status'] != 'affirmed':
+        return None
+    tail = parts[1:]
+    if tail:
+        if len(tail) != 2 or any(question for _, _, question in tail) or tail[0][1] != f"若已{claim['verb']}":
+            return None
+        if tail[1][1] != f"請回覆「{match['claim']}」":
+            return None
+    scope = claim['scope']
+    return {'field': scope['field'], 'citation': scope['citation'], 'document_id': scope['document_id'],
+            'line_number': scope['line_number'], 'question_start': scope['quote_start'], 'question_end': scope['quote_end'],
+            'displayed_title': None, 'displayed_line': None, 'displayed_quantities': [],
+            'approval': {'actor': claim['actor'], 'verb': claim['verb'], 'question_start': claim['quote_start'],
+                         'wait_notice': True, 'clarifies_reply': {'citation': match['citation'], 'quote': match['vote'],
+                                                                   'question_start': start + match.start('vote')}}}
 
 
 def approval_wait(question, clauses, *, other_approvals=False):
@@ -268,7 +328,21 @@ def _valid_group_actor(actor):
     return re.fullmatch(_GROUP_ACTOR, actor) and not _UNCLEAR_ACTOR.search(actor)
 
 
-def group_response(answer, clauses, approval, *, limited_scope=False):
+def group_response(answer, clauses, approval, *, limited_scope=False, corrected=False):
+    if corrected:
+        scoped = [report for offset, text, question in clauses(answer)
+                  if not question and (report := _scoped_report(text, offset))]
+        if len(scoped) > 1:
+            return None
+        if scoped:
+            report, = scoped
+            quote = report['quote']
+            return report, answer.strip() in (quote, quote + '。', quote + '！', quote + '!')
+        if approval.get('wait_notice'):
+            offset, quote, status, whole = response(answer, clauses)
+            if whole and status == 'affirmed' and quote in _APPROVAL_ACK:
+                return {'actor': approval['actor'], 'verb': approval['verb'], 'status': 'unclear',
+                        'quote': quote, 'quote_start': offset}, True
     if limited_scope:
         scopes = [(offset, text, scope) for offset, text, question in clauses(answer)
                   if not question and (scope := _limited_scope(text))]
