@@ -33,6 +33,9 @@ _WAIT_APPROVAL = re.compile(
 _WAIT_STATUS = re.compile(
     rf'(?:目前|截至目前)?\s*{_ACTOR}\s*(?:尚未|還沒|沒有)\s*{_PERMISSION}'
     r'\s*(?P<citation>\[補充#[1-9][0-9]{0,3}\])?')
+_WAIT_OTHER_APPROVAL = re.compile(
+    rf'已收到\s*{_ACTOR}\s*{_PERMISSION}\s*的(?:回覆|補答)'
+    r'\s*(?P<citation>\[補充#[1-9][0-9]{0,3}\])?')
 _WAIT_INSTRUCTIONS = {'請回覆確認', '請再回覆確認', '再回覆確認', '請回覆', '請再回覆'}
 _NOT_YET = {'還沒', '還沒有', '尚未', '仍未', '還在等'}
 _UNCLEAR_ACTOR = re.compile(r'不|未|尚|或|和|與|都|全部|可能|如果|要等|還要|還沒|沒有|已經|才能|同意|批准|核准')
@@ -126,16 +129,21 @@ def approval_question(question, clauses):
     return proposal
 
 
-def approval_wait(question, clauses):
+def approval_wait(question, clauses, *, other_approvals=False):
     pieces = clauses(question)
     if any(is_question for _, _, is_question in pieces) or not 1 <= len(pieces) <= 3:
         return None
     parts = list(pieces)
-    evidence = None
-    if len(parts) > 1 and (status := _WAIT_STATUS.fullmatch(parts[0][1])):
-        evidence = {'actor': status['actor'], 'verb': status['verb'], 'citation': status['citation'],
-                    'text': parts[0][1], 'question_start': parts[0][0]}
-        parts.pop(0)
+    evidence, evidence_key = None, 'reported_pending'
+    if len(parts) > 1:
+        status = _WAIT_STATUS.fullmatch(parts[0][1])
+        if status is None and other_approvals:
+            status = _WAIT_OTHER_APPROVAL.fullmatch(parts[0][1])
+            evidence_key = 'reported_other_approval'
+        if status:
+            evidence = {'actor': status['actor'], 'verb': status['verb'], 'citation': status['citation'],
+                        'text': parts[0][1], 'question_start': parts[0][0]}
+            parts.pop(0)
     if len(parts) == 1:
         offset, part, _ = parts[0]
         suffix = next((text for text in sorted(_WAIT_INSTRUCTIONS, key=len, reverse=True) if part.endswith(text)), None)
@@ -155,7 +163,7 @@ def approval_wait(question, clauses):
         proposal['approval'] = {'actor': match['actor'], 'verb': match['verb'],
                                 'question_start': offset + match.start('actor'), 'wait_notice': True}
         if evidence is not None:
-            proposal['approval']['reported_pending'] = evidence
+            proposal['approval'][evidence_key] = evidence
     return proposal
 
 
@@ -192,3 +200,17 @@ def approval_response(answer, clauses, approval, *, repeated=False):
         start, part, code = reports[0]
         return start, part, code, answer.strip() in (part, part + '。', part + '！', part + '!')
     return offset, quote, status, whole
+
+
+def other_approval_report(answer, clauses, expected_actor):
+    reports = []
+    for offset, quote, question in clauses(answer):
+        if not question and (match := _APPROVAL_REPLY.fullmatch(quote)):
+            reports.append((offset, quote, match))
+    if len(reports) != 1:
+        return None
+    offset, quote, match = reports[0]
+    actor = match['actor']
+    if actor == expected_actor or _UNCLEAR_ACTOR.search(actor) or match['state'] not in {'已', '已經'}:
+        return None
+    return {'actor': actor, 'verb': match['verb'], 'quote': quote, 'quote_start': offset}

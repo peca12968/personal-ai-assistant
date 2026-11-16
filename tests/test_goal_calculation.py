@@ -772,6 +772,90 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertNotIn('spoken_selection', adopted)
         validate_database(self.store.path)
 
+    def other_approval_notice(self, ref, *, actor='主管', verb='同意', source=4):
+        return (f'已收到{actor}{verb}的回覆 [補充#{source}]。'
+                f'等收件人同意採用 29 袋 {ref} 作為正式批次量後，請回覆確認。')
+
+    def test_other_approval_is_preserved_and_designated_approval_releases_original_line(self):
+        ref = self.prepare_conditional_approval(files=True)
+        self.reply('收件人還沒同意。')
+        self.run_actions(action('ask', question=self.approval_wait_notice(ref)))
+        self.reply('主管已同意，窗口正式改為 南門。')
+        question = self.other_approval_notice(ref)
+        self.run_actions(action('ask', question=question))
+        self.reply('收件人已同意。')
+        filename = '兩人回覆.json'
+        rows = [{'label': '總件數', 'calculation_step': 6, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#4]', 'quote': '窗口正式改為 南門'}]
+        active = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            action('write_artifact', filename=filename, calculation_report=rows),
+            action('deliver', filenames=[filename], calculation_report=rows))
+        self.assertEqual(active['status'], 'report_ready')
+        self.assertIn('87 件', active['result'])
+        self.assertIn('窗口正式改為 南門 [補充#4]', active['result'])
+        stored = active['steps'][5]['observation']
+        adopted, = stored[goal_calculation.PROOF]['source_adoptions']
+        proof = adopted['spoken_selection']['confirmation']
+        self.assertEqual(adopted['user_citation'], '[補充#5]')
+        self.assertEqual(proof['prior_condition']['actor'], '收件人')
+        self.assertEqual(proof['prior_condition']['citation'], '[補充#2]')
+        self.assertEqual(proof['approval']['reported_other_approval']['citation'], '[補充#4]')
+        deferred = proof['deferred_replies']
+        self.assertEqual([row['citation'] for row in deferred], ['[補充#3]', '[補充#4]'])
+        self.assertNotIn('kind', deferred[0])
+        self.assertEqual((deferred[1]['kind'], deferred[1]['actor'], deferred[1]['quote']),
+                         ('other_approval', '主管', '主管已同意'))
+        content = artifacts.directory(self.store, self.gid).joinpath(filename).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(filename).read_bytes(), content)
+        with restored.connect() as db:
+            deferred[1]['quote'] = '資材員已同意'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=6',
+                       (json.dumps(stored, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_other_approval_recaps_cannot_substitute_or_misstate_the_actual_waiting_reply(self):
+        cases = [({}, '主管已同意。', '主管已同意。', 'confirmation_unconfirmed'),
+                 ({}, '資材員已同意。', '收件人已同意。', 'approval_wait_citation_conflict'),
+                 ({'verb': '核准'}, '主管已同意。', '收件人已同意。', 'approval_wait_citation_conflict'),
+                 ({'source': 3}, '主管已同意。', '收件人已同意。', 'approval_wait_citation_conflict'),
+                 ({}, '「主管已同意」。', '收件人已同意。', 'approval_wait_citation_conflict')]
+        for recap, earlier, reply, reason in cases:
+            with self.subTest(recap=recap, earlier=earlier, reply=reply):
+                ref = self.prepare_conditional_approval()
+                self.reply('收件人還沒同意。')
+                self.run_actions(action('ask', question=self.approval_wait_notice(ref)))
+                self.reply(earlier)
+                self.run_actions(action('ask', question=self.other_approval_notice(ref, **recap)))
+                self.reply(reply)
+                engine = ScriptedEngine(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+                    action('ask', question='批次量是否有正式採用的原行？', calculation_report=[
+                        {'label': '總件數', 'pending': True},
+                        {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]))
+                active = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+                payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+                self.assertEqual(payload['calculation_source_adoptions'][0]['reason'], reason)
+                self.assertEqual(active['steps'][5]['action']['tool'], 'invalid')
+                self.assertEqual(active['status'], 'needs_input')
+                self.assertIn('窗口：北門', active['partial_result'])
+                validate_database(self.store.path)
+
+    def test_other_actor_context_cannot_fill_a_missing_original_condition(self):
+        ref = self.prepare_conditional_approval(first_reply='再核對。')
+        self.reply('收件人還沒同意。')
+        self.run_actions(action('ask', question=self.approval_wait_notice(ref)))
+        self.reply('主管已同意。')
+        self.run_actions(action('ask', question=self.other_approval_notice(ref)))
+        self.reply('收件人已同意。')
+        engine = ScriptedEngine(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))
+        active = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=1)
+        payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(payload['calculation_source_adoptions'][0]['reason'], 'approval_condition_unverified')
+        self.assertEqual(active['steps'][5]['action']['tool'], 'invalid')
+        validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),
