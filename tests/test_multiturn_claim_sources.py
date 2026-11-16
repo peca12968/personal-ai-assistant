@@ -181,6 +181,7 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
             '倉區 | 待維護件數\n--- | ---:\n西倉（暫定） | 待查',
             '| 欄位 | 目前值 |\n|---|---|\n| 倉區 | 西倉（暫定） |\n| 待維護件數 | 待查 |',
             '- **倉區：** 西倉（暫定） [D7:L1]\n- 待維護筆數與件數：待查。',
+            '倉區｜西倉（暫定） [D7:L1]\n待維護件數｜待查。',
         ]
         for preview in previews:
             with self.subTest(preview=preview):
@@ -257,6 +258,8 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
             '| 筆數 | 件數 |\n|---|---|\n| 待查 | 25 |',
             '| 欄位 | 狀態 |\n|---|---|\n| 筆數 | 待查 |\n| 件數 | 25 |',
             '件數：待查\n件數：25',
+            '件數｜待查\n件數｜25',
+            '筆數｜待查\n件數｜25',
             '件數：未待查',
             '件數：待查但估計 25 件',
             '件數：待查\n| 筆數 | 件數 |\n|---|---|\n| 待查 |',
@@ -289,6 +292,7 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
             path.write_text(json.dumps([case], ensure_ascii=False), encoding='utf-8')
             self.assertEqual(cases_for(path), [case])
         for fields in ([], [{'labels': ['件數'], 'value_forms': ['.*']}],
+                       [{'labels': ['筆數｜件數'], 'value_forms': ['待查']}],
                        [{'labels': ['件數', '件數'], 'value_forms': ['待查']}],
                        [{'labels': ['件數'], 'value_forms': ['待查']},
                         {'labels': ['筆數', '件數'], 'value_forms': ['待確認']}]):

@@ -14,7 +14,7 @@ from assistant.acceptance import strict_json
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
-from scripts import multiturn_partial_fields
+from scripts import multiturn_partial_fields, multiturn_read_coverage
 from scripts.evaluate_cross_task_boundaries import prepare
 from scripts.evaluate_understanding import RUNNER_PATH as REPORT_WRITER_PATH, fingerprint, save_report
 
@@ -27,7 +27,7 @@ MAX_GOAL_STEPS = 24
 
 def signature(suite):
     paths = (Path(__file__), ROOT / 'scripts/evaluate_cross_task_boundaries.py', REPORT_WRITER_PATH,
-             Path(multiturn_partial_fields.__file__))
+             Path(multiturn_partial_fields.__file__), Path(multiturn_read_coverage.__file__))
     return {**fingerprint(suite), 'collector_sha256': hashlib.sha256(b''.join(path.read_bytes() for path in paths)).hexdigest()}
 
 
@@ -136,6 +136,8 @@ def validate_cases(cases):
             _validate_partial(question, final_question=True)
         if not (case.get('must_match') or 'expected_json' in case):
             raise ValueError('每案須有可核對的交付條件。')
+        if 'required_read_ranges' in case:
+            multiturn_read_coverage.validate(case, case['required_read_ranges'])
         replies = case.get('replies', ())
         if len(replies) > 6:
             raise ValueError('每案最多六次固定答覆。')
@@ -143,9 +145,11 @@ def validate_cases(cases):
             autonomy.text(reply['answer'], 4000)
             _validate_question_rule(reply)
             if 'restore_before' in reply and (reply['restore_before'] is not True
-                    or not (_checks_partial(reply) or reply.get('partial_claim_sources'))):
-                raise ValueError('須指定待答暫表，才能在答覆前驗收備份還原。')
+                    or not (_checks_partial(reply) or reply.get('partial_claim_sources') or reply.get('required_read_ranges'))):
+                raise ValueError('須指定待答驗收條件，才能在答覆前驗收備份還原。')
             _validate_partial(reply)
+            if 'required_read_ranges' in reply:
+                multiturn_read_coverage.validate(case, reply['required_read_ranges'])
             if 'partial_claim_sources' in reply:
                 claims = reply['partial_claim_sources']
                 if not isinstance(claims, list) or not claims:
@@ -221,6 +225,20 @@ def _interim_claim_results(case, reply_events):
     return results
 
 
+def _interim_read_results(case, reply_events):
+    results = []
+    for index, reply in enumerate(case.get('replies', ())):
+        ranges = reply.get('required_read_ranges')
+        if not ranges:
+            continue
+        before = reply_events[index]['before'] if index < len(reply_events) else {}
+        if before.get('status') != 'needs_input' or before.get('artifacts') or before.get('result'):
+            results.extend([False] * len(ranges))
+        else:
+            results.extend(multiturn_read_coverage.measure(case, before, ranges))
+    return results
+
+
 def _partial_matches(partial, rule):
     return (all(re.search(pattern, partial) for pattern in rule.get('partial_has', ()))
             and not any(re.search(pattern, partial) for pattern in rule.get('partial_omits', ()))
@@ -253,6 +271,14 @@ def score(case, final, files, turns, calls):
         supported = claim_support(case, final, claim_report, turns)
         checks['claim_sources'] = all(supported)
     reply_events = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
+    read_coverage = multiturn_read_coverage.measure(
+        case, final, case['required_read_ranges'], artifact=case['artifact'] if file_delivery else None
+    ) if case.get('required_read_ranges') else []
+    if read_coverage:
+        checks['read_ranges'] = all(read_coverage)
+    interim_read = _interim_read_results(case, reply_events)
+    if interim_read:
+        checks['intermediate_read_ranges'] = all(interim_read)
     interim_supported = _interim_claim_results(case, reply_events)
     if interim_supported:
         checks['intermediate_claim_sources'] = all(interim_supported)
@@ -314,6 +340,10 @@ def score(case, final, files, turns, calls):
     if interim_supported:
         metrics.update(intermediate_claim_sources_supported=sum(interim_supported),
                        intermediate_claim_sources_required=len(interim_supported))
+    if read_coverage:
+        metrics.update(read_ranges_covered=sum(read_coverage), read_ranges_required=len(read_coverage))
+    if interim_read:
+        metrics.update(intermediate_read_ranges_covered=sum(interim_read), intermediate_read_ranges_required=len(interim_read))
     return checks, metrics
 
 

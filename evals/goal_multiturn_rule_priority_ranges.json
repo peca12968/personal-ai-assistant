@@ -1,0 +1,242 @@
+[
+  {
+    "id": "earlier_rule_has_explicit_priority",
+    "file_delivery": true,
+    "artifact": "audio-handoff.md",
+    "prompt": "請做展音展 A7 外賓場的正式字幕交件單 audio-handoff.md。兩份都標示當期有效。讀兩份規則及本場索引，按索引明示的適用優先依據選定本批交件順序。掃描日只記何時掃描，不作優先依據。交件單只列「交件順序」「留檔桌」各一行，每行附直接來源。採用某版時附那版的規則原行與正式採用依據。若兩份現行規則互斥且索引沒有可用優先依據，先列有來源的留檔桌和待查的交件順序，只問本批採用哪版，收到前不寫檔。",
+    "documents": [
+      {
+        "name": "audio-ink.txt",
+        "content": "展音展 A7 外賓場｜墨砂版｜掃描日 11-12\n本規則於本批仍有效。\n交件順序：先核對外語字幕，再封入原聲清單。"
+      },
+      {
+        "name": "audio-cloud.txt",
+        "content": "展音展 A7 外賓場｜雲橋版｜掃描日 11-15\n本規則於本批仍有效。\n交件順序：先封入原聲清單，再核對外語字幕。"
+      },
+      {
+        "name": "audio-index.txt",
+        "content": "展音展 A7 外賓場索引\n本場交件順序以墨砂版優先。\n留檔桌：霧松台。"
+      }
+    ],
+    "must_match": [
+      "核對外語字幕.{0,10}再.{0,8}封入原聲清單",
+      "霧松台"
+    ],
+    "must_omit": [
+      "封入原聲清單.{0,10}再.{0,8}核對外語字幕"
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交件順序",
+        "claim": "核對外語字幕.{0,10}再.{0,8}封入原聲清單",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "先核對外語字幕，再封入原聲清單"
+          },
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "墨砂版優先"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "先封入原聲清單，再核對外語字幕"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?留檔桌",
+        "claim": "霧松台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 3,
+            "text": "霧松台"
+          }
+        ],
+        "forbidden_sources": []
+      }
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ]
+  },
+  {
+    "id": "current_rules_without_priority",
+    "file_delivery": true,
+    "artifact": "audio-handoff.md",
+    "prompt": "請做展音展 A7 外賓場的正式字幕交件單 audio-handoff.md。兩份都標示當期有效。讀兩份規則及本場索引，按索引明示的適用優先依據選定本批交件順序。掃描日只記何時掃描，不作優先依據。交件單只列「交件順序」「留檔桌」各一行，每行附直接來源。採用某版時附那版的規則原行與正式採用依據。若兩份現行規則互斥且索引沒有可用優先依據，先列有來源的留檔桌和待查的交件順序，只問本批採用哪版，收到前不寫檔。",
+    "documents": [
+      {
+        "name": "audio-ink.txt",
+        "content": "展音展 A7 外賓場｜墨砂版｜掃描日 11-12\n本規則於本批仍有效。\n交件順序：先核對外語字幕，再封入原聲清單。"
+      },
+      {
+        "name": "audio-cloud.txt",
+        "content": "展音展 A7 外賓場｜雲橋版｜掃描日 11-15\n本規則於本批仍有效。\n交件順序：先封入原聲清單，再核對外語字幕。"
+      },
+      {
+        "name": "audio-index.txt",
+        "content": "展音展 A7 外賓場索引\n本場交件順序的優先版別尚未登記。\n留檔桌：霧松台。"
+      }
+    ],
+    "must_match": [
+      "封入原聲清單.{0,10}再.{0,8}核對外語字幕",
+      "霧松台"
+    ],
+    "must_omit": [
+      "核對外語字幕.{0,10}再.{0,8}封入原聲清單"
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交件順序",
+        "claim": "封入原聲清單.{0,10}再.{0,8}核對外語字幕",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "先封入原聲清單，再核對外語字幕"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "正式採用雲橋版"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "先核對外語字幕，再封入原聲清單"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?留檔桌",
+        "claim": "霧松台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 3,
+            "text": "霧松台"
+          }
+        ],
+        "forbidden_sources": []
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "交件|墨砂|雲橋",
+          "採用|選|以哪|適用|優先"
+        ],
+        "question_excludes": [
+          "哪.{0,8}留檔|留檔桌.{0,7}(?:哪|什麼|何處)"
+        ],
+        "answer": "本批 A7 外賓場的交件順序正式採用雲橋版，留檔桌依本場索引。",
+        "partial_fields": [
+          {
+            "labels": [
+              "留檔桌"
+            ],
+            "value_forms": [
+              "霧松台"
+            ]
+          },
+          {
+            "labels": [
+              "交件順序"
+            ],
+            "value_forms": [
+              "(?:待查|待確認|未定|待選|待補)(?:(?:[：:，,。.]|\\s)+.{1,130})?"
+            ]
+          }
+        ],
+        "partial_claim_sources": [
+          {
+            "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?留檔桌",
+            "claim": "霧松台",
+            "sources": [
+              {
+                "kind": "document",
+                "doc": 2,
+                "line": 3,
+                "text": "霧松台"
+              }
+            ],
+            "forbidden_sources": []
+          }
+        ],
+        "restore_before": true,
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ]
+      }
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ]
+  }
+]

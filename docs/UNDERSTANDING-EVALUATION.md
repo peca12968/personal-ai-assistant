@@ -673,6 +673,7 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_restored_guidance.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_partial_question_withdrawal.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_field_version_handoff.json
+.venv/Scripts/python scripts/evaluate_multiturn_delivery.py --suite evals/goal_multiturn_rule_priority_ranges.json
 .venv/Scripts/python scripts/evaluate_multiturn_delivery.py --output data/evaluations/新的多輪測量
 ```
 
@@ -688,9 +689,11 @@ data/learning/runtime/Scripts/python scripts/evaluate_native_roles.py preflight 
 
 恢復依據的案例可在預設答覆加入 `partial_has` 及 `partial_omits`，核對實際答覆前保存的暫表。該步須等待補充且沒有成果或已保存文件。最後另驗收是否恢復交付、是否按新值重算，以及是否引用重新確認的答覆。舊值恰好相同時，仍按答覆步驟分辨來源。
 
-要跨逐行文字與 Markdown 表格核對同一暫表，可在 `replies` 或 `expected_question` 加入 `partial_fields`。例如 `[{"labels":["待維護件數","待維護筆數與件數"],"value_forms":["待查","待確認"]}]`。欄名須由題庫完整列出，欄值須完整符合其中一個形式。支援逐行的「欄名：值」、欄名作表頭的表格，以及明列「欄位」和「值」的表格。同一欄每次出現都須符合；別欄的待查值、引文、程式碼區塊及相關的歧義表格無法替欄位得分。可並用原文字規約。檢查來源時仍使用來源規約。舊題庫與其評分紀錄照原規約讀取。
+要跨逐行文字與 Markdown 表格核對同一暫表，可在 `replies` 或 `expected_question` 加入 `partial_fields`。例如 `[{"labels":["待維護件數","待維護筆數與件數"],"value_forms":["待查","待確認"]}]`。欄名須由題庫完整列出，欄值須完整符合其中一個形式。支援逐行的「欄名：值」和「欄名｜值」、欄名作表頭的表格，以及明列「欄位」和「值」的表格。同一欄每次出現都須符合；別欄的待查值、引文、程式碼區塊及相關的歧義表格無法替欄位得分。可並用原文字規約。檢查來源時仍使用來源規約。保存的舊評分照當時規約讀取。
 
 在個別預設答覆加上 `partial_claim_sources`，可用與 `claim_sources` 相同的同行規約核對答覆前的現行暫表。評分使用該次待答快照的文件及更正，補答只可引用更早已保存的回覆。缺少當次快照或顯示歷史暫表時，這項評分失敗。報告以 `intermediate_claim_sources` 和相應通過數呈現，並保留欄值、待答還原與定稿引用各自的評分。直接模型與助理的對照可以用 `scripts/evaluate_multiturn_pair.py --suite evals/goal_multiturn_prior_reply_citations.json` 核對相同的暫表與引用規約。
+
+`required_read_ranges` 指定必須已讀的原文，例如 `[{"doc":0,"start_line":2,"end_line":4}]`。文件索引從 0 開始，依匯入順序排列，專用 CSV 排在一般文件之後。可在案例指定交付前範圍，或在個別預設答覆指定該次提問前範圍。評分以保存的工具結果及實際來源版本核對原文。逐份、批次或分頁取得同一完整區段都可通過。單有行號、讀取請求或長行的首尾頁無法得分；交付檔案首次保存後的查讀也無法補足。成績分別記為 `read_ranges` 和 `intermediate_read_ranges`，與交付內容、引用及指定工具分開。
 
 Windows 上若讀取中的檔案暫時拒絕替換，評估器會等待短暫間隔，再原子替換同一份已寫好的 UTF-8 暫存內容。重試間隔累計 1.55 秒，只處理錯誤碼 5 或 32。超過重試範圍或其他寫入錯誤時，先前的報告及本次暫存都會保留；請以報告狀態核對有無完成，暫存裡的回答仍屬本機證據。每次另用獨立暫存名稱，避免覆寫先前中斷的資料。實際引擎呼叫與接續仍依原側錄和鎖定規則；多輪評估另把共用寫入器納入收集器指紋。
 

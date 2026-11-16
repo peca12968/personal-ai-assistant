@@ -9,7 +9,7 @@ from assistant import document_table
 _FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
 _BULLET = re.compile(r'^(?:[-+*]|[0-9]+[.)])\s+')
 _STRONG = re.compile(r'\*\*([^*]+)\*\*|__([^_]+)__')
-_LABEL_VALUE = re.compile(r'(?P<label>[^：:]+)[：:]\s*(?P<value>.*)')
+_LABEL_VALUE = re.compile(r'(?P<label>[^：:｜]+)[：:｜]\s*(?P<value>.*)')
 _SOURCE_TAIL = re.compile(r'(?:\s*(?:\[D\d+:L\d+(?:-L?\d+)?\]|\[(?:補充|更正)#\d+\]))+\s*$')
 _LABEL_HEADERS = {'欄位', '項目'}
 _VALUE_HEADERS = {'值', '內容', '狀態', '目前值', '目前狀態', '結果'}
@@ -25,7 +25,7 @@ def validate(fields):
         labels, forms = field['labels'], field['value_forms']
         if not isinstance(labels, list) or not labels or any(
                 not isinstance(label, str) or not label or label.strip() != label
-                or any(char in label for char in ':：|\r\n') for label in labels):
+                or any(char in label for char in ':：|｜\r\n') for label in labels):
             raise ValueError('暫表欄名須是完整、非空的單行文字。')
         if len(set(labels)) != len(labels) or seen.intersection(labels):
             raise ValueError('同一暫表欄名只能對應一份規約。')
