@@ -15,6 +15,7 @@ PROOF = 'calculation_evidence'
 SOURCE_VERSION = 16
 SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SOURCE_VERSION)
 DOCUMENT_GROUP_VERSION = 1
+EXPLICIT_ZERO_VERSION = 1
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 _OPERAND_GUIDANCE = (
@@ -26,7 +27,9 @@ OPTIONAL_GUIDANCE = (
     _OPERAND_GUIDANCE +
     '一般算式可以保留已讀原行「本次影像組：架具備援量為 0 件」的分組前綴。'
     '此時 field 仍是「架具備援量」，quote 逐字保留該組、欄位、數值和單位。'
-    '先根據本次指示選定組別及適用文件，再引用各欄原文；明列 0 可計算，尚未登記仍待查。')
+    '先根據本次指示選定組別及適用文件，再引用各欄原文；明列 0 可計算，尚未登記仍待查。'
+    '若目標明定「已確認沒有備援」代表零台，可讓算式葉節點使用 0，'
+    '並以本次欄位的完整已確認缺項原句為 quote、原行為 citation。程式另核對目標的零值定義。')
 GUIDANCE = (
     _OPERAND_GUIDANCE + '\n本目標已要求逐項核對。計算只能用 calculate_expression 的 operands；'
     '每筆須有完整欄位名 field、單位 unit 或 conversion，quote 使用明確確認該欄的完整原句（去掉句末標點）。'
@@ -129,7 +132,7 @@ def _complete_excerpts(steps, scope, recheck):
 
 class Sources:
     def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *,
-                 version=SOURCE_VERSION, document_counts=None, document_groups=True):
+                 version=SOURCE_VERSION, document_counts=None, document_groups=True, explicit_zero=True):
         sequence = len(steps) + 1
         self.steps = steps
         self.excerpts = _complete_excerpts(steps, scope, recheck)
@@ -139,6 +142,7 @@ class Sources:
         self.recheck = recheck
         self.strict = required(objective)
         self.document_groups = document_groups and not self.strict
+        self.zero_rules = operand_evidence.explicit_zero_rules(objective) if explicit_zero and not self.strict else None
         self.version = version if self.strict else 1
         self.line_pages = (goal_calculation_lookup.LinePages(steps, scope, self.documents)
                            if self.version >= 7 else None)
@@ -200,6 +204,19 @@ class Sources:
 
     def confirm(self, row):
         text, _ = self.literal(row['citation'])
+        if zero := row.get('explicit_zero'):
+            group = row.get('document_group', {}).get('name')
+            for _, _, note in self.order:
+                for rule in operand_evidence.explicit_zero_rules(note, include_comma_clauses=True):
+                    if (rule['phrase'] == zero['phrase']
+                            and not operand_evidence.matches_zero_rule(rule, zero['rule']['unit'])):
+                        raise ValueError('已有較新的使用者更正，請先核對明確缺項與目前規則。')
+                for _, clause, question in _clauses(note):
+                    if question:
+                        continue
+                    current = (re.sub(rf'^{re.escape(group)}\s*[：:]\s*', '', clause) if group else clause)
+                    if _later_change(current, row['field']) or zero['phrase'] in current and _REVISION.search(current):
+                        raise ValueError('已有較新的使用者更正，請先核對明確缺項與目前規則。')
         if not self.strict:
             return
         unit_end = row.get('unit_end', row.get('conversion', {}).get('unit_end'))
@@ -215,9 +232,9 @@ class Sources:
 
     def calculate(self, args, cancel=None):
         expression = {'expression': args['expression']}
-        validate(args, document_groups=self.document_groups)
+        validate(args, document_groups=self.document_groups, explicit_zero=self.zero_rules is not None)
         bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user,
-                                      ordinary=True, document_groups=self.document_groups)
+                                      ordinary=True, document_groups=self.document_groups, zero_rules=self.zero_rules)
         applied = []
         for row in bound:
             if selection := self.confirm(row):
@@ -226,6 +243,8 @@ class Sources:
                  'recheck_sha256': self.recheck['sha256'] if self.recheck else None}
         if any('document_group' in row for row in bound):
             proof['document_group_version'] = DOCUMENT_GROUP_VERSION
+        if any('explicit_zero' in row for row in bound):
+            proof['explicit_zero_version'] = EXPLICIT_ZERO_VERSION
         if self.version >= 2:
             proof['source_adoptions'] = applied
         if self.version >= 3:
@@ -341,11 +360,12 @@ def _document_counts(scope, documents, saved):
     return saved
 
 
-def validate(args, *, document_groups=True):
+def validate(args, *, document_groups=True, explicit_zero=True):
     if not isinstance(args, dict) or args.keys() != {'expression', 'operands'}:
         raise ValueError('逐項核對的算式須提供 expression 及 operands。')
     expression_math.validate({'expression': args['expression']})
-    operand_evidence.validate(args['operands'], args['expression'], None, ordinary=True, document_groups=document_groups)
+    operand_evidence.validate(args['operands'], args['expression'], None, ordinary=True,
+                              document_groups=document_groups, explicit_zero=explicit_zero)
 
 
 def _label(value, limit):
@@ -487,8 +507,11 @@ def validate_saved(db, *, replies_present, guidance_present, checked_rechecks, a
             recheck = _recheck(prior, guidance, checked_rechecks.get(gid, {}))
             document_group_version = receipt.get('document_group_version')
             document_groups = type(document_group_version) is int and document_group_version == DOCUMENT_GROUP_VERSION
+            explicit_zero_version = receipt.get('explicit_zero_version')
+            explicit_zero = type(explicit_zero_version) is int and explicit_zero_version == EXPLICIT_ZERO_VERSION
             context = Sources(objective, prior, history.get(step['sequence'], scope), replies, guidance,
-                              recheck, docs.values(), version=version, document_counts=counts, document_groups=document_groups)
+                              recheck, docs.values(), version=version, document_counts=counts,
+                              document_groups=document_groups, explicit_zero=explicit_zero)
             if calculated:
                 expected = context.calculate(args)
                 if any(digest(seen.get(key)) != digest(value) for key, value in expected.items()):

@@ -5,6 +5,7 @@ import re
 from fractions import Fraction
 
 from . import document_units, exact_math
+from .goal_guidance_sources import standalone_clauses
 
 _DOCUMENT = re.compile(r'\[D([1-9][0-9]{0,11}):L([1-9][0-9]{0,11})\]')
 _USER = re.compile(r'\[(?:補充|更正)#[1-9][0-9]{0,3}\]')
@@ -24,6 +25,16 @@ _DOCUMENT_GROUP = re.compile(
     r'(?P<name>(?:本次|本批|本輪|當次|當批)[ \t]*[A-Za-z0-9０-９㐀-鿿_-]{1,32}(?:組|隊|班))'
     r'[ \t]*[：:][ \t]*')
 _UNCERTAIN_GROUP = re.compile(r'待查|待定|待確認|未確認|未登記|待補|假設|暫定|試算|預估|舊版|前次|或者|或是')
+_ZERO_UNITS = r'台|臺|件|個|支|張|片|套|箱|盒|袋|組|份|瓶|包|卷|冊|本|人|次'
+_ZERO_STATEMENT = re.compile(r'(?:已確認|確認|確定)(?:為)?(?:沒有|無)[A-Za-z㐀-鿿]{0,24}\Z')
+_ZERO_AMBIGUITY = re.compile(
+    r'無法|登記|資料|紀錄|記錄|清單|表單|[台臺]帳|依據|佐證|提供|填|證據|回報|查到|發現|'
+    r'未|暫|疑|待|或|但|若|估|可能|確認|不|仍|歷史|前次|前批|舊版')
+_ZERO_RULE = re.compile(
+    rf'(?:(?:文字|原文|狀態)\s*)?「(?P<phrase>[^「」\r\n]{{1,40}})」\s*'
+    rf'(?:代表|表示|等於|視為|計為|記為)\s*(?:(?:確定|確認)\s*為?)?'
+    rf'(?P<amount>[0-9０-９]+|[零一二兩三四五六七八九十]+)\s*(?P<unit>{_ZERO_UNITS})')
+_RULE_COMMA = re.compile(r'(?![0-9])')
 
 
 def _leaves(node, path=''):
@@ -108,7 +119,53 @@ def _operand_field(quote, token, field, *, ordinary, document_group):
         return (offset + lo, offset + hi), group
 
 
-def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, document_groups=False):
+def _confirmed_absence(phrase):
+    return (bool(_ZERO_STATEMENT.fullmatch(phrase))
+            and not _ZERO_AMBIGUITY.search(re.sub(r'^(?:已確認|確認|確定)', '', phrase)))
+
+
+def explicit_zero_rules(text, *, include_comma_clauses=False):
+    rules = []
+    source_sha256 = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    comma_before = _RULE_COMMA if include_comma_clauses else None
+    for offset, quote, question in standalone_clauses(text, comma_before=comma_before):
+        match = _ZERO_RULE.fullmatch(quote)
+        if not question and match and _confirmed_absence(match['phrase']):
+            rules.append({'citation': _OBJECTIVE, 'quote': quote, 'quote_start': offset,
+                          'phrase': match['phrase'], 'unit': match['unit'], 'declared_amount': match['amount'],
+                          'source_sha256': source_sha256})
+    return rules
+
+
+def matches_zero_rule(rule, unit):
+    return rule['declared_amount'] in {'0', '０', '零'} and (unit is None or rule['unit'] == unit)
+
+
+def _absence_lexeme(row, value):
+    """Find a literal, complete named absence claim for a zero operand."""
+    if (not _DOCUMENT.fullmatch(row['citation']) or 'conversion' in row or exact_math.parse(value) != 0
+            or not isinstance(field := row.get('field'), str)
+            or not re.fullmatch(r'[^「」：:\r\n\0]{1,80}', field) or field.strip() != field):
+        return None
+    quote = row['quote']
+    group = _DOCUMENT_GROUP.match(quote)
+    if group and _UNCERTAIN_GROUP.search(group['name']):
+        return None
+    offset = group.end() if group else 0
+    prefix = re.match(rf'(?:(?:欄位)?「(?P<quoted>{re.escape(field)})」|(?P<bare>{re.escape(field)}))'
+                      r'[ \t]*[：:]?[ \t]*', quote[offset:])
+    if not prefix:
+        return None
+    start = offset + prefix.end()
+    phrase = quote[start:].removesuffix('。').removesuffix('.').rstrip()
+    if not _confirmed_absence(phrase):
+        return None
+    lo, hi = prefix.span('quoted' if prefix['quoted'] is not None else 'bare')
+    return {'phrase': phrase, 'start': start, 'end': start + len(phrase),
+            'field_start': offset + lo, 'field_end': offset + hi}, group
+
+
+def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, document_groups=False, explicit_zero=False):
     leaves = {path: value for path, value in _leaves(expression) if path not in omitted_paths}
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
@@ -136,6 +193,8 @@ def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, docu
                 or any(ch in quote for ch in '\0\r\n')):
             raise ValueError('運算元證據須提供一段最多 180 字的逐字短句。')
         pattern, factor = _spec(row)
+        if explicit_zero and _absence_lexeme(row, leaves[path]):
+            continue
         token, _ = _numeric_match(quote, leaves[path], pattern, factor)
         if 'field' in row:
             _operand_field(quote, token, row['field'], ordinary=ordinary,
@@ -206,7 +265,7 @@ def displayed_choice_quantities(text):
     return values
 
 
-def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_groups=False):
+def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_groups=False, zero_rules=None):
     leaves = dict(_leaves(expression))
     bound = []
     for row in rows:
@@ -221,6 +280,21 @@ def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_g
         start = text.find(quote)
         if start < 0 or text.find(quote, start + 1) >= 0:
             raise ValueError(f'運算元 {label} 的短句在該來源無法唯一定位。')
+        if zero_rules is not None and (absence := _absence_lexeme(row, leaves[path])):
+            lexeme, group = absence
+            rules = [rule for rule in zero_rules if rule['phrase'] == lexeme['phrase']]
+            if (len(rules) != 1 or not matches_zero_rule(rules[0], row.get('unit'))
+                    or text[:start].strip() or text[start + len(quote):].strip() not in {'', '。', '.'}):
+                raise ValueError('零值須引用完整的已確認缺項原句及唯一適用的目標換算規則，單位須一致。')
+            receipt = {**row, 'source_sha256': sha, 'quote_start': start, 'quote_end': start + len(quote),
+                       'field_start': start + lexeme['field_start'], 'field_end': start + lexeme['field_end'],
+                       'explicit_zero': {'phrase': lexeme['phrase'], 'phrase_start': start + lexeme['start'],
+                                         'phrase_end': start + lexeme['end'], 'exact': '0', 'rule': rules[0]}}
+            if group:
+                receipt['document_group'] = {'name': group['name'], 'start': start + group.start('name'),
+                                             'end': start + group.end('name')}
+            bound.append(receipt)
+            continue
         pattern, factor = _spec(row)
         token, number = _numeric_match(quote, leaves[path], pattern, factor)
         low, high = token.span('number')

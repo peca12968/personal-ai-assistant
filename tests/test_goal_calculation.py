@@ -206,6 +206,80 @@ class GoalCalculationTests(unittest.TestCase):
                 self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
                 validate_database(self.store.path)
 
+    def test_ordinary_zero_from_confirmed_absence_binds_document_and_declared_rule(self):
+        line = '本批紙材組：備紙量確認無備紙。'
+        rule = '原文「確認無備紙」表示 0 張'
+        objective = f'交付本批紙材組總張數。{rule}。'
+        did = self.attach(f'本批紙材組：常備量 12 張。\n{line}', '紙材.txt')
+        self.create(objective, checked=False, files=True)
+        formula = action('calculate_expression', expression={'operation': 'sum', 'values': ['12', '0']}, operands=[
+            {'path': '/values/0', 'citation': f'[D{did}:L1]', 'quote': '本批紙材組：常備量 12 張',
+             'field': '常備量', 'unit': '張'},
+            {'path': '/values/1', 'citation': f'[D{did}:L2]', 'quote': line,
+             'field': '備紙量', 'unit': '張'},
+        ])
+        body = f'本批紙材組合計 12 張。[D{did}:L1-L2]'
+        goal = self.run_actions(
+            action('read', document_id=did, start_line=1, end_line=2), formula,
+            action('write_artifact', filename='紙材.md', content=body),
+            action('deliver', filenames=['紙材.md'], report=body))
+        self.assertEqual(goal['status'], 'report_ready')
+        observation = goal['steps'][1]['observation']
+        self.assertEqual(observation['exact'], '12')
+        proof = observation[goal_calculation.PROOF]
+        self.assertEqual(proof['explicit_zero_version'], 1)
+        receipt = proof['operands'][1]
+        zero = receipt['explicit_zero']
+        self.assertEqual(line[zero['phrase_start']:zero['phrase_end']], '確認無備紙')
+        self.assertEqual(line[receipt['field_start']:receipt['field_end']], '備紙量')
+        self.assertEqual(receipt['document_group']['name'], '本批紙材組')
+        self.assertEqual((zero['exact'], zero['rule']['unit'], zero['rule']['citation']), ('0', '張', '[目標]'))
+        self.assertEqual(zero['rule']['quote'], rule)
+        start = zero['rule']['quote_start']
+        self.assertEqual(objective[start:start + len(rule)], rule)
+        self.assertEqual(zero['rule']['source_sha256'], hashlib.sha256(objective.encode('utf-8')).hexdigest())
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('紙材.md').read_bytes(), body.encode('utf-8'))
+        zero['rule']['quote_start'] -= 1
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=2',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_ordinary_zero_requires_one_applicable_rule_and_current_complete_confirmation(self):
+        base_rule = '文字「已確認沒有備援」代表確定為零台。'
+        line = '備援量已確認沒有備援'
+        cases = [
+            ('核對備援量。', line, line, '備援量', '台', False, None),
+            (base_rule + '「已確認沒有備援」表示 2 台。', line, line, '備援量', '台', False, None),
+            ('假如只是試算，' + base_rule, line, line, '備援量', '台', False, None),
+            (base_rule, line, line, '備援量', '箱', False, None),
+            (base_rule, line, line, '援量', '台', False, None),
+            (base_rule, line + '，結果仍待核', line, '備援量', '台', False, None),
+            (base_rule, '前批放映組：' + line, line, '備援量', '台', False, None),
+            (base_rule, '備援量尚未登記', '備援量尚未登記', '備援量', '台', False, None),
+            (base_rule.replace('備援」', '備援清單」'), line + '清單', line + '清單', '備援量', '台', False, None),
+            (base_rule, line, line, '備援量', '台', True, None),
+            (base_rule, line, line, '備援量', '台', False, '備援量正式改為 2 台。'),
+            (base_rule, line, line, '備援量', '台', False, '更正，原文「已確認沒有備援」表示 2 台。'),
+        ]
+        for objective, text, quote, field, unit, strict, guidance in cases:
+            with self.subTest(objective=objective, text=text, quote=quote, unit=unit, strict=strict, guidance=guidance):
+                did = self.attach(text + '。', '備料.txt')
+                self.create(objective, checked=strict)
+                self.run_actions(action('read', document_id=did, start_line=1, end_line=1))
+                if guidance:
+                    current = goal_guidance.snapshot(self.store, self.sid, self.gid)
+                    goal_guidance.save(self.store, self.sid, self.gid, guidance,
+                                       expected_fingerprint=current['fingerprint'])
+                result = self.run_actions(action('calculate_expression', expression='0', operands=[
+                    {'path': '', 'citation': f'[D{did}:L1]', 'quote': quote, 'field': field, 'unit': unit},
+                ]))
+                self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
+                validate_database(self.store.path)
+
     def test_rechecked_partial_keeps_the_original_question_and_reuses_the_new_calculation(self):
         self.create()
         rows = [{'label': '總件數', 'calculation_step': 2, 'unit': '件'}]

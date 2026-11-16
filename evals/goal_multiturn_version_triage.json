@@ -1,0 +1,314 @@
+[
+  {
+    "id": "locate_current_failure",
+    "first_steps": 1,
+    "prompt": "替印刷打樣組排查本批預覽圖停止輸出的原因，最後交付 r19-triage.md。目前先讀 pitch-r18.txt 暫查，但先保留進度，等我補充本批正式版本後才可定稿。定稿只列四行：第一個失敗步驟、錯誤訊息、取件桌、下一步。各行附直接來源。按紀錄順序找第一個實際失敗的步驟，未執行的步驟仍標為未執行。如果正式版本第一個失敗步驟的紀錄不齊，先在暫表列已核對的取件桌和待查的第一個失敗步驟，只問需要補哪一筆當期步驟紀錄，收到前先不寫定稿。",
+    "guidance": "更正，本批正式排查 pitch-r19.txt。只用這版找當期失敗步驟、錯誤訊息和取件桌。R18 只供暫查，不納入交付。檔名和交付欄位沿用原要求。",
+    "file_delivery": true,
+    "artifact": "r19-triage.md",
+    "documents": [
+      {
+        "name": "pitch-r18.txt",
+        "content": "前批打樣圖轉檔／R18\n掃描原稿：失敗（原稿尺寸不符）。\n字型載入：未執行。\n縮圖轉檔：未執行。\n取件桌：朝日台。\n預覽輸出：未執行。\n處置順序：調整掃描尺寸後才能做縮圖。"
+      },
+      {
+        "name": "pitch-r19.txt",
+        "content": "本批打樣圖轉檔／R19\n掃描原稿：成功。\n字型載入：成功。\n縮圖轉檔：失敗（色彩描述檔無法讀取）。\n取件桌：青松台。\n預覽輸出：未執行。\n處置順序：先核對完整轉檔紀錄中第一個失敗步驟的錯誤訊息，再重跑該步驟與預覽輸出。"
+      }
+    ],
+    "must_match": [
+      "縮圖轉檔",
+      "色彩描述檔無法讀取",
+      "青松台",
+      "(?:重跑|重新.{0,5}執行).{0,40}(?:預覽|輸出)"
+    ],
+    "must_omit": [
+      "原稿尺寸不符|朝日台|R18|r18"
+    ],
+    "required_tools": [
+      "read",
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?第一個失敗步驟",
+        "claim": "縮圖轉檔",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "縮圖轉檔：失敗"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?錯誤訊息",
+        "claim": "色彩描述檔無法讀取",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "色彩描述檔無法讀取"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?取件桌",
+        "claim": "青松台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 5,
+            "text": "青松台"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?下一步",
+        "claim": "重跑|重新.{0,5}執行",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 7,
+            "text": "再重跑該步驟與預覽輸出"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "await_current_step",
+    "first_steps": 1,
+    "prompt": "替印刷打樣組排查本批預覽圖停止輸出的原因，最後交付 r19-triage.md。目前先讀 pitch-r18.txt 暫查，但先保留進度，等我補充本批正式版本後才可定稿。定稿只列四行：第一個失敗步驟、錯誤訊息、取件桌、下一步。各行附直接來源。按紀錄順序找第一個實際失敗的步驟，未執行的步驟仍標為未執行。如果正式版本第一個失敗步驟的紀錄不齊，先在暫表列已核對的取件桌和待查的第一個失敗步驟，只問需要補哪一筆當期步驟紀錄，收到前先不寫定稿。",
+    "guidance": "更正，本批正式排查 pitch-r19.txt。只用這版找當期失敗步驟、錯誤訊息和取件桌。R18 只供暫查，不納入交付。檔名和交付欄位沿用原要求。",
+    "file_delivery": true,
+    "artifact": "r19-triage.md",
+    "documents": [
+      {
+        "name": "pitch-r18.txt",
+        "content": "前批打樣圖轉檔／R18\n掃描原稿：失敗（原稿尺寸不符）。\n字型載入：未執行。\n縮圖轉檔：未執行。\n取件桌：朝日台。\n預覽輸出：未執行。\n處置順序：調整掃描尺寸後才能做縮圖。"
+      },
+      {
+        "name": "pitch-r19.txt",
+        "content": "本批打樣圖轉檔／R19\n掃描原稿：成功。\n字型載入：成功。\n縮圖轉檔：結果與錯誤訊息尚未歸檔。\n取件桌：青松台。\n預覽輸出：未執行。\n處置順序：先核對完整轉檔紀錄中第一個失敗步驟的錯誤訊息，再重跑該步驟與預覽輸出。"
+      }
+    ],
+    "must_match": [
+      "縮圖轉檔",
+      "色彩描述檔無法讀取",
+      "青松台",
+      "(?:重跑|重新.{0,5}執行).{0,40}(?:預覽|輸出)"
+    ],
+    "must_omit": [
+      "原稿尺寸不符|朝日台|R18|r18"
+    ],
+    "required_tools": [
+      "read",
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?第一個失敗步驟",
+        "claim": "縮圖轉檔",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "縮圖轉檔實際結果為失敗"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?錯誤訊息",
+        "claim": "色彩描述檔無法讀取",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "色彩描述檔無法讀取"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?取件桌",
+        "claim": "青松台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 5,
+            "text": "青松台"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?下一步",
+        "claim": "重跑|重新.{0,5}執行",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 7,
+            "text": "再重跑該步驟與預覽輸出"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "原稿尺寸不符"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "朝日台"
+          }
+        ]
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "縮圖轉檔|縮圖.{0,3}階段",
+          "結果|成功|失敗|錯誤訊息"
+        ],
+        "question_excludes": [
+          "原稿尺寸|朝日台|取件桌|R18|r18"
+        ],
+        "answer": "本批 R19 的縮圖轉檔實際結果為失敗，錯誤訊息是「色彩描述檔無法讀取」。",
+        "partial_fields": [
+          {
+            "labels": [
+              "取件桌"
+            ],
+            "value_forms": [
+              "青松台"
+            ]
+          },
+          {
+            "labels": [
+              "第一個失敗步驟",
+              "第一個實際失敗步驟"
+            ],
+            "value_forms": [
+              "(?:待查|待補|待確認|尚未(?:確認|判定)|無法(?:確認|判定))[^。]{0,60}",
+              "[^。]{0,35}縮圖轉檔[^。]{0,25}(?:待查|待補|待確認|尚未確認)[^。]{0,25}",
+              "(?:待查|待補|待確認|尚未(?:確認|判定)|無法(?:確認|判定))[。.]?[^。]{0,105}(?:。[^。]{0,105}){0,2}"
+            ]
+          }
+        ],
+        "partial_omits": [
+          "原稿尺寸不符|朝日台|色彩描述檔無法讀取|R18|r18",
+          "(?:掃描原稿|字型載入|縮圖轉檔|預覽輸出)\\s*(?:已|確實|[：:]\\s*)?失敗"
+        ],
+        "restore_before": true
+      }
+    ]
+  }
+]
