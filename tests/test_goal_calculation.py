@@ -185,6 +185,163 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('完整且已確認', result['steps'][2]['observation']['error'])
         self.assertEqual(result['partial_result'], '總件數：待查')
 
+    def test_document_title_chooses_unique_shared_field_and_restores_file_with_detached_copy(self):
+        revised = self.attach('複點說明。\n批次量：24 袋。', '晚班清點.txt')
+        self.create(files=True)
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=2),
+                         action('ask', question='本次以哪份清點為準？'))
+        self.reply('就用晚班清點那份。每袋件數沿用原先。')
+        rows = [{'label': '總件數', 'calculation_step': 5, 'unit': '件'},
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門。'}]
+        result = self.run_actions(
+            self.formula(),
+            self.formula(quantity='24', citation=f'[D{revised}:L2]', quote='批次量：24 袋'),
+            action('write_artifact', filename='新版.json', calculation_report=rows),
+            action('deliver', filenames=['新版.json'], calculation_report=rows))
+        self.assertIn(f'目前採用 [D{revised}:L2]', result['steps'][3]['observation']['error'])
+        self.assertIn('72 件', result['result'])
+        proof, = result['steps'][4]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(proof['spoken_selection']['ask_sequence'], 3)
+        self.assertEqual(proof['spoken_selection']['question'], '本次以哪份清點為準？')
+        self.assertEqual(proof['spoken_selection']['name'], '晚班清點')
+        original = artifacts.directory(self.store, self.gid).joinpath('新版.json').read_bytes()
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('新版.json').read_bytes(), original)
+        with restored.connect() as db:
+            obs = result['steps'][4]['observation']
+            obs[goal_calculation.PROOF]['source_adoptions'][0]['spoken_selection']['name'] = '假文件'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(obs, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_short_alias_uses_the_line_bound_in_original_question_only(self):
+        revised = self.attach('批次量：25 袋。\n批次量：27 袋。', '夜間記錄.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=2),
+                         action('ask', question=f'批次量要採用「初查」{self.cite(1)} 還是「晚班」[D{revised}:L2]？'))
+        self.reply('晚班。')
+        result = self.run_actions(
+            self.formula(quantity='25', citation=f'[D{revised}:L1]', quote='批次量：25 袋'),
+            self.formula(quantity='27', citation=f'[D{revised}:L2]', quote='批次量：27 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 5, 'unit': '件'}]))
+        self.assertIn(f'目前採用 [D{revised}:L2]', result['steps'][3]['observation']['error'])
+        self.assertIn('81 件', result['result'])
+        validate_database(self.store.path)
+
+    def test_deictic_reply_requires_one_question_reference(self):
+        revised = self.attach('批次量：25 袋。', '新查點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question=f'批次量採用 {self.cite(1)} 還是 [D{revised}:L1]？'))
+        self.reply('就用剛才那份。')
+        self.run_actions(
+            self.formula(),
+            action('ask', question=f'本次要採用 [D{revised}:L1] 嗎？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        waiting = autonomy.get_goal(self.store, self.sid, self.gid)
+        self.assertIn('採用尚待核對', waiting['steps'][3]['observation']['error'])
+        self.assertIn('窗口：北門', waiting['partial_result'])
+        self.reply('剛才那份。')
+        result = self.run_actions(
+            self.formula(quantity='25', citation=f'[D{revised}:L1]', quote='批次量：25 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 6, 'unit': '件'}]))
+        self.assertIn('75 件', result['result'])
+        self.assertIn('[補充#5]', result['result'])
+        validate_database(self.store.path)
+
+    def test_same_title_keeps_both_versions_pending_until_exact_source_selection(self):
+        ids = []
+        for subdir, amount in [('west', 19), ('east', 22)]:
+            path = self.root / subdir / '複點.txt'
+            path.parent.mkdir()
+            path.write_text(f'批次量：{amount} 袋。', encoding='utf-8')
+            ids.append(self.store.attach_document(self.sid, path))
+        self.create()
+        self.run_actions(self.initial(), *(action('read', document_id=did, start_line=1, end_line=1) for did in ids),
+                         action('ask', question=f'批次量要用 [D{ids[0]}:L1] 還是 [D{ids[1]}:L1]？'))
+        self.reply('就用複點那份。')
+        result = self.run_actions(
+            self.formula(quantity='19', citation=f'[D{ids[0]}:L1]', quote='批次量：19 袋'),
+            action('ask', question=f'批次量要用 [D{ids[0]}:L1] 還是 [D{ids[1]}:L1]？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        self.assertIn('採用尚待核對', result['steps'][4]['observation']['error'])
+        self.assertIn('總件數：待查', result['partial_result'])
+        restored = self.restore()
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid)['partial_result'], result['partial_result'])
+
+    def test_named_adoption_during_waiting_recheck_keeps_the_original_question(self):
+        revised = self.attach('晚班點收說明。\n批次量：26 袋。', '晚班複點.txt')
+        self.create()
+        question = '交班員是誰？'
+        self.run_actions(self.initial(), self.formula(),
+                         action('ask', question=question, calculation_report=[
+                             {'label': '總件數', 'calculation_step': 2, 'unit': '件'}]))
+        snap = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        updated = goal_guidance.save(self.store, self.sid, self.gid, '欄位「批次量」改用晚班複點那份。',
+                                     expected_fingerprint=snap['fingerprint'])
+        calculated = json.loads(self.formula(quantity='26', citation=f'[D{revised}:L2]', quote='批次量：26 袋'))
+        del calculated['note']
+        engine = ScriptedEngine(
+            json.dumps({'tool': 'read_ranges', 'args': {'ranges': [
+                {'document_id': revised, 'start_line': 1, 'end_line': 2}]}}, ensure_ascii=False),
+            json.dumps(calculated, ensure_ascii=False),
+            json.dumps({'calculation_report': [{'label': '總件數', 'calculation_step': 5, 'unit': '件'}],
+                        'withdrawal_source': None}, ensure_ascii=False))
+        review = goal_partial_recheck.run(self.store, self.sid, self.gid, engine,
+                                           expected_fingerprint=updated['fingerprint'])
+        self.assertEqual(review['goal']['question'], question)
+        self.assertIn('needed_document_coverage', engine.prompts[0])
+        self.assertIn('78 件', review['goal']['partial_result'])
+        self.store = self.restore()
+        self.reply('交班員：徐遠棠。')
+        final = self.run_actions(action('finish', calculation_report=[
+            {'label': '總件數', 'recheck_calculation': 1, 'unit': '件'},
+            {'label': '交班員', 'citation': '[補充#3]', 'quote': '交班員：徐遠棠'}]))
+        self.assertIn('採用依據 [更正#1]', final['result'])
+        self.assertIn('78 件', final['result'])
+        validate_database(self.store.path)
+
+    def test_named_unread_document_uses_one_exhaustive_field_lookup(self):
+        revised = self.attach('新紀錄。\n箱碼：A31。\n批次量：20 袋。', '現場複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('ask', question='批次量要採用哪一份文件？'))
+        self.reply('就用現場複點那份。')
+        engine = ScriptedEngine(
+            action('find_document_text', document_id=revised, query='批次量', start_line=1),
+            self.formula(quantity='20', citation=f'[D{revised}:L3]', quote='批次量：20 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 4, 'unit': '件'}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=3)
+        self.assertIn('needs_lookup', engine.prompts[0])
+        self.assertEqual([s['action']['tool'] for s in result['steps'][2:]], [
+            'find_document_text', 'calculate_expression', 'finish'])
+        self.assertIn('60 件', result['result'])
+        self.assertNotIn('箱碼', result['result'])
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        self.assertEqual(autonomy.get_goal(restored, self.sid, self.gid)['result'], result['result'])
+
+    def test_filename_choice_stays_pending_with_two_lines_for_one_field(self):
+        revised = self.attach('批次量：25 袋。\n批次量：26 袋。', '現場複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question='批次量要採哪一份？'))
+        self.reply('就用現場複點那份。')
+        result = self.run_actions(
+            self.formula(),
+            action('find_document_text', document_id=revised, query='批次量', start_line=1),
+            self.formula(quantity='25', citation=f'[D{revised}:L1]', quote='批次量：25 袋'),
+            action('ask', question=f'批次量採用 [D{revised}:L1] 或 [D{revised}:L2]？', calculation_report=[
+                {'label': '總件數', 'pending': True}]))
+        self.assertEqual([row['action']['tool'] for row in result['steps'][3:]], [
+            'invalid', 'find_document_text', 'invalid', 'ask'])
+        self.assertIn('總件數：待查', result['partial_result'])
+        validate_database(self.store.path)
+
     def test_adopted_document_blocks_old_calculation_and_preserves_independent_evidence(self):
         revised = self.attach('班別：晚班。\n批次量：21 袋。\n窗口：南門。', '晚班複點.txt')
         self.create(files=True)

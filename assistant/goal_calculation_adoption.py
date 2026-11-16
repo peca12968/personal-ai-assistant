@@ -121,12 +121,12 @@ def _resolve(selection, versions, literal, valid_clause):
 
 
 class Review:
-    def __init__(self, order, user, scope, literal, valid_clause):
+    def __init__(self, order, user, scope, literal, valid_clause, *, names=None):
         versions = {row['document_id']: row for row in scope}
         self.notes = []
         for position, citation, text in order:
             records, direct, altered = [], [], False
-            if not re.search(_LINE, text):
+            if names is None and not re.search(_LINE, text):
                 self.notes.append((position, citation, [], (), text))
                 continue
             for offset, clause, question in clauses(text):
@@ -138,12 +138,20 @@ class Review:
                     altered = True
                     continue
                 selected = _selection(clause) if not question else None
-                if selected is None:
-                    if not question:
-                        direct.append(clause)
-                    continue
-                altered = True
-                entry = _resolve(selected, versions, literal, valid_clause)
+                if selected is not None:
+                    entry = _resolve(selected, versions, literal, valid_clause)
+                elif names is not None and not question and not _NONOPERATIVE.search(prefix) and not re.search(_LINE, clause):
+                    entry = names.resolve(citation, clause)
+                    if entry is not None and (refs := entry.pop('references', None)):
+                        adopted = _resolve({'refs': refs, 'field': entry['field'], 'description': None,
+                                            'retain': False, 'undecided': False}, versions, literal, valid_clause)
+                        entry.update(adopted)
+                else:
+                    entry = None
+                if selected is not None or entry is not None:
+                    altered = True
+                elif not question:
+                    direct.append(clause)
                 if entry is not None:
                     records.append({**entry, 'user_citation': citation, 'user_sha256': user[citation][1],
                                     'user_quote': clause, 'user_quote_start': offset})
@@ -162,6 +170,8 @@ class Review:
 
     def preview(self, direct_change):
         fields = {row['field'] for _, _, records, _, _ in self.notes for row in records}
+        fields.update(field for _, _, records, _, _ in self.notes for row in records
+                      for field in row.get('field_candidates', ()))
         fields.update(item['field'] for _, _, records, _, _ in self.notes
                       for row in records if row['field'] is None for item in row['candidates'] if 'field' in item)
         result = []
@@ -173,7 +183,7 @@ class Review:
             if active and active[2] is not None:
                 _, citation, row = active
                 if (row.get('field') is None and field is not None and row['status'] == 'pending'
-                        and not any(item.get('field') == field for item in row['candidates'])):
+                        and not _applies(row, field)):
                     continue
                 result.append({**row, 'field': field, 'user_citation': citation})
         return result
@@ -182,6 +192,8 @@ class Review:
 def _applies(row, field):
     if row['field'] is not None:
         return row['field'] == field
+    if 'field_candidates' in row:
+        return field in row['field_candidates']
     candidates = row['candidates']
     return any('field' not in item or item['field'] == field for item in candidates)
 

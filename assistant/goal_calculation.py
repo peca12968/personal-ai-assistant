@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from . import (artifacts, expression_math, goal_calculation_adoption, goal_guidance_sources, goal_reply_sources,
+from . import (artifacts, expression_math, goal_calculation_adoption, goal_calculation_names, goal_guidance_sources, goal_reply_sources,
                goal_sources, operand_evidence)
 from .acceptance import strict_json
 from .goal_stages import digest
@@ -12,7 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 2
+SOURCE_VERSION = 3
+SOURCE_VERSIONS = (1, 2, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -25,8 +26,14 @@ GUIDANCE = (
     '每筆須有完整欄位名 field、單位 unit 或 conversion，quote 使用明確確認該欄的完整原句（去掉句末標點）。'
     '未決、候選、被更正或撤回的數字不能代入。只算有證據的部分。'
     'calculation_source_adoptions 是從已保存的引用選擇核對到的欄位與來源。'
+    '口語只給文件名時，先看它能否由原問題和已讀欄位唯一核對。'
+    'needs_lookup 是已確定文件及欄位但尚缺查找，請用 find_document_text 的該筆 args。'
     '採用的單行須直接引用該行，工具會附補答或更正。缺行先查讀，只有真正未決才問。'
-    '單欄換版後只重算受影響算式，沿用仍適用的舊版欄位。'
+    'calculation_source_adoptions 的 field 是該次選擇的完整適用範圍。'
+    '選定新文件名只更換該欄，原文件已讀且仍屬本批的規則、數字及事實繼續使用，'
+    '即使新文件沒有重複列出也直接完成計算及交付。'
+    '同名或同欄多筆時，choices 已指出需要確認的來源，保留其他欄位，只問要採用哪一筆。'
+    '已知兩筆都屬候選時毋須再作數量比較。'
     '交付、寫檔及附暫表提問使用 calculation_report 陣列，替換 report、content 或 partial_result。'
     '計算列 {"label":"總件數","calculation_step":3,"unit":"件"} 只送實際步驟號，不送答案。'
     '獨立事實列 {"label":"窗口","citation":"[D1:L4]","quote":"窗口：北門"} 使用完整逐字原句。'
@@ -90,7 +97,8 @@ def _complete_excerpts(steps, scope, recheck):
 
 
 class Sources:
-    def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *, version=SOURCE_VERSION):
+    def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *,
+                 version=SOURCE_VERSION, document_counts=None):
         sequence = len(steps) + 1
         self.steps = steps
         self.excerpts = _complete_excerpts(steps, scope, recheck)
@@ -100,7 +108,12 @@ class Sources:
         self.recheck = recheck
         self.strict = required(objective)
         self.version = version if self.strict else 1
-        self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause)
+        self.document_counts = _document_counts(scope, self.documents, document_counts) if self.version >= 3 else None
+        names = (goal_calculation_names.Names(
+            steps, scope, replies, self.excerpts, self.documents, self.document_counts, self.literal,
+            lambda text: goal_calculation_adoption._literal_field(text, _valid_clause), _clauses)
+            if self.version >= 3 and self.order else None)
+        self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause, names=names)
                           if self.version >= 2 else None)
 
     def source_adoptions(self):
@@ -144,6 +157,8 @@ class Sources:
                  'recheck_sha256': self.recheck['sha256'] if self.recheck else None}
         if self.version >= 2:
             proof['source_adoptions'] = applied
+        if self.version >= 3:
+            proof['document_counts'] = self.document_counts
         return {**expression_math.calculate(expression, cancel), PROOF: proof}
 
     def rows(self, rows):
@@ -184,7 +199,8 @@ class Sources:
                     raise ValueError('事實列須使用完整原句與原始引用。')
                 text, _ = self.literal(citation)
                 start = text.find(quote)
-                if (start < 0 or text.find(quote, start + 1) >= 0 or not _valid_clause(text, start, quote)
+                clause = quote.removesuffix('。') if self.version >= 3 else quote
+                if (start < 0 or text.find(quote, start + 1) >= 0 or not _valid_clause(text, start, clause)
                         or not re.match(rf'(?:欄位「{re.escape(label)}」|{re.escape(label)})(?:[:：]|\s|確認為|已確認為|正式改為|為)', quote)):
                     raise ValueError('事實列須引用唯一完整且目前確認同一欄位的原句。')
                 selected = self.confirm_fact(label, citation)
@@ -233,6 +249,23 @@ class Sources:
         if changed:
             raise ValueError(f'欄位「{label}」另有較新的確認或更正。請引用現行值，或標示待查。')
         return None
+
+
+def _document_counts(scope, documents, saved):
+    if saved is None:
+        return [{'document_id': row['document_id'], 'line_count': len(
+            documents.get((row['document_id'], row['name'], row['sha256']), ()))}
+            for row in scope]
+    if (not isinstance(saved, list) or len(saved) != len(scope)
+            or any(not isinstance(item, dict) or item.keys() != {'document_id', 'line_count'}
+                   or type(item['document_id']) is not int or type(item['line_count']) is not int
+                   or not 0 <= item['line_count'] <= 8 * 1024 * 1024 for item in saved)):
+        raise ValueError('算式的文件行數與來源範圍不符。')
+    for row, item in zip(scope, saved, strict=True):
+        lines = documents.get((row['document_id'], row['name'], row['sha256']))
+        if row['document_id'] != item['document_id'] or lines is not None and len(lines) != item['line_count']:
+            raise ValueError('算式的文件行數與匯入副本不符。')
+    return saved
 
 
 def validate(args):
@@ -301,7 +334,10 @@ def prepare(action, sources):
     if tool == 'deliver':
         artifacts.validate_names(args['filenames'])
         expected_files = check_deliveries(args['filenames'], output, sources.steps)
-    return {**action, 'args': args}, {'version': sources.version, 'rows': rows}, expected_files
+    receipt = {'version': sources.version, 'rows': rows}
+    if sources.version >= 3:
+        receipt['document_counts'] = sources.document_counts
+    return {**action, 'args': args}, receipt, expected_files
 
 
 def check_deliveries(names, output, steps):
@@ -367,12 +403,15 @@ def validate_saved(db, *, replies_present, guidance_present, checked_rechecks, a
                 raise ValueError('算式或成果步驟順序不符。')
             receipt = seen.get(PROOF if calculated else RECEIPT)
             version = receipt.get('version') if isinstance(receipt, dict) else None
-            if type(version) is not int or version not in (1, SOURCE_VERSION):
+            if type(version) is not int or version not in SOURCE_VERSIONS:
                 raise ValueError('保存的算式或成果核對版本不符。')
+            counts = receipt.get('document_counts')
+            if version >= 3 and counts is None:
+                raise ValueError('口語來源核對缺少保存的文件範圍。')
             prior = steps[:index]
             recheck = _recheck(prior, guidance, checked_rechecks.get(gid, {}))
             context = Sources(objective, prior, history.get(step['sequence'], scope), replies, guidance,
-                              recheck, docs.values(), version=version)
+                              recheck, docs.values(), version=version, document_counts=counts)
             if calculated:
                 expected = context.calculate(args)
                 if any(digest(seen.get(key)) != digest(value) for key, value in expected.items()):
