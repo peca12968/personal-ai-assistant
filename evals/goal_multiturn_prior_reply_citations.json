@@ -1,0 +1,158 @@
+[
+  {
+    "id": "proofing_diagnosis_before_lamp_code",
+    "prompt": "做本批印樣的故障覆查卡 proofing.md。先讀已匯入的 proofing.txt；先只問本批要覆查哪項現象。選定後，若尚缺本批試照燈號，第二問只問燈號，暫表先列已確認的覆查項目及作業台，附各自依據，燈號標待查。收到燈號才定稿，四行依序用「覆查項目」「處置步驟」「作業台」「試照燈號」欄名，每行附直接來源。依選定現象的本批處置規則；勿把舊樣張的建議當作當期步驟。",
+    "documents": [
+      {
+        "name": "proofing.txt",
+        "content": "印樣工坊本批覆查指引\n字邊重影：先清潔壓紙輪，再用新樣張重測。\n頁角偏斜：先重設對齊尺。\n舊樣張的字邊重影備註：沿用第一次樣張；本批不用此備註。\n本批作業台：白芒台。\n本批試照燈號尚未登記。"
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "現象|哪.{0,6}覆查|覆查.{0,8}哪"
+        ],
+        "question_excludes": [
+          "燈號|作業台"
+        ],
+        "answer": "本批正式覆查字邊重影。"
+      },
+      {
+        "question_has": [
+          "燈號"
+        ],
+        "question_excludes": [
+          "作業台|哪.{0,8}現象|覆查.{0,8}哪"
+        ],
+        "answer": "本批試照燈號是 LP-42。",
+        "partial_fields": [
+          {
+            "labels": [
+              "試照燈號"
+            ],
+            "value_forms": [
+              "待查|未登記|尚未登記|待確認|待補",
+              "(?:待查|待確認|待補)[。.]?\\s*尚未登記"
+            ]
+          }
+        ],
+        "partial_omits": [
+          "沿用第一次樣張|LP-42"
+        ],
+        "partial_claim_sources": [
+          {
+            "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?覆查項目",
+            "claim": "字邊重影",
+            "sources": [
+              {
+                "kind": "reply",
+                "index": 0,
+                "text": "覆查字邊重影"
+              }
+            ],
+            "forbidden_sources": [
+              {
+                "kind": "document",
+                "doc": 0,
+                "line": 4,
+                "text": "沿用第一次樣張"
+              }
+            ]
+          },
+          {
+            "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?作業台",
+            "claim": "白芒台",
+            "sources": [
+              {
+                "kind": "document",
+                "doc": 0,
+                "line": 5,
+                "text": "白芒台"
+              }
+            ],
+            "forbidden_sources": []
+          }
+        ]
+      }
+    ],
+    "file_delivery": true,
+    "artifact": "proofing.md",
+    "must_match": [
+      "字邊重影",
+      "清潔壓紙輪",
+      "新樣張",
+      "白芒台",
+      "LP-42"
+    ],
+    "must_omit": [
+      "沿用第一次樣張|重設對齊尺"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?覆查項目",
+        "claim": "字邊重影",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "覆查字邊重影"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 4,
+            "text": "沿用第一次樣張"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?處置步驟",
+        "claim": "清潔壓紙輪.{0,24}新樣張",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "清潔壓紙輪"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 4,
+            "text": "沿用第一次樣張"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?作業台",
+        "claim": "白芒台",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "白芒台"
+          }
+        ],
+        "forbidden_sources": []
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?試照燈號",
+        "claim": "LP-42",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 1,
+            "text": "LP-42"
+          }
+        ],
+        "forbidden_sources": []
+      }
+    ]
+  }
+]

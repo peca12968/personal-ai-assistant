@@ -40,7 +40,7 @@ def cases_for(suite):
         if case.keys() - FIELDS or (case.get('expected_question') and case['file_delivery']):
             raise ValueError('配對題只接受相同公開回合、共同成果及待答條件。')
         if any(reply.keys() - {'question_has', 'question_forms', 'question_excludes', 'answer',
-                               'partial_has', 'partial_omits', 'partial_fields'}
+                               'partial_has', 'partial_omits', 'partial_fields', 'partial_claim_sources'}
                for reply in case.get('replies', ())):
             raise ValueError('配對題不使用還原等產品專屬條件。')
     return cases
@@ -110,8 +110,10 @@ def collect_direct(path, case, suite, frozen, engine):
         if not rule or not multi.question_matches(question, rule):
             break
         source = {'citation': f'[補充#{sequence}]', 'answer': rule['answer'], 'ask_sequence': sequence}
-        state['reply_sources'].append(source)
         before = {'status': 'needs_input', 'steps': [step], 'partial_result': partial, 'result': '', 'artifacts': []}
+        if rule.get('partial_claim_sources'):
+            before.update(sources=state['sources'], reply_sources=state['reply_sources'].copy())
+        state['reply_sources'].append(source)
         row['turns'].append({'kind': 'reply', 'saved': True, 'before': before, 'text': rule['answer'],
                              'extra_parts': [pattern for pattern in rule.get('question_excludes', ())
                                              if re.search(pattern, question)]})

@@ -72,6 +72,34 @@ def _validate_partial(rule, *, final_question=False):
         re.compile(pattern)
 
 
+def _validate_claim_sources(case, claims, reply_count):
+    for claim in claims:
+        re.compile(claim['claim'])
+        if not claim['claim'] or not claim['sources']:
+            raise ValueError('同列引用驗收須明列主張及其支持來源。')
+        if 'row_selector' in claim:
+            _required_patterns([claim['row_selector']], '主張列格式須明確辨識欄位。')
+        for source in [*claim['sources'], *claim.get('forbidden_sources', ())]:
+            kind = source['kind']
+            if kind == 'document':
+                if not 0 <= source['doc'] < len(case.get('documents', ())):
+                    raise ValueError('主張的文件編號超出題庫範圍。')
+                document = case['documents'][source['doc']]['content'].splitlines()
+                if not 1 <= source['line'] <= len(document):
+                    raise ValueError('主張的文件行號超出題庫範圍。')
+                original = document[source['line'] - 1]
+            elif kind == 'reply':
+                if not 0 <= source['index'] < reply_count:
+                    raise ValueError('主張的答覆序號超出當時可用的範圍。')
+                original = case['replies'][source['index']]['answer']
+            elif kind == 'guidance':
+                original = case.get('guidance', case.get('waiting_guidance', {}).get('text', ''))
+            else:
+                raise ValueError('主張支持來源類型不符。')
+            if not source['text'] or source['text'] not in original:
+                raise ValueError('主張支持內容不在指定合成來源中。')
+
+
 def validate_cases(cases):
     if not isinstance(cases, list) or not cases:
         raise ValueError('多輪任務題庫不能為空。')
@@ -111,43 +139,28 @@ def validate_cases(cases):
         replies = case.get('replies', ())
         if len(replies) > 6:
             raise ValueError('每案最多六次固定答覆。')
-        for reply in replies:
+        for index, reply in enumerate(replies):
             autonomy.text(reply['answer'], 4000)
             _validate_question_rule(reply)
-            if 'restore_before' in reply and (reply['restore_before'] is not True or not _checks_partial(reply)):
+            if 'restore_before' in reply and (reply['restore_before'] is not True
+                    or not (_checks_partial(reply) or reply.get('partial_claim_sources'))):
                 raise ValueError('須指定待答暫表，才能在答覆前驗收備份還原。')
             _validate_partial(reply)
+            if 'partial_claim_sources' in reply:
+                claims = reply['partial_claim_sources']
+                if not isinstance(claims, list) or not claims:
+                    raise ValueError('暫表引用驗收至少需要一項主張。')
+                _validate_claim_sources(case, claims, index)
         for pattern in case.get('must_match', []) + case.get('must_omit', []):
             re.compile(pattern)
         for source in case.get('source_lines', ()):
             document = case['documents'][source.get('doc', 0)]
             if not source['text'] or source['text'] not in document['content'].splitlines()[source['line'] - 1]:
                 raise ValueError('核對條件未指向合成文件的指定行。')
-        for claim in case.get('claim_sources', ()):
-            re.compile(claim['claim'])
-            if not claim['claim'] or not claim['sources'] or 'expected_json' in case:
-                raise ValueError('同列引用驗收須明列主張及其支持來源，並使用文字成果。')
-            if 'row_selector' in claim:
-                _required_patterns([claim['row_selector']], '主張列格式須明確辨識欄位。')
-            for source in [*claim['sources'], *claim.get('forbidden_sources', ())]:
-                kind = source['kind']
-                if kind == 'document':
-                    if not 0 <= source['doc'] < len(case.get('documents', ())):
-                        raise ValueError('主張的文件編號超出題庫範圍。')
-                    document = case['documents'][source['doc']]['content'].splitlines()
-                    if not 1 <= source['line'] <= len(document):
-                        raise ValueError('主張的文件行號超出題庫範圍。')
-                    original = document[source['line'] - 1]
-                elif kind == 'reply':
-                    if not 0 <= source['index'] < len(replies):
-                        raise ValueError('主張的答覆序號超出題庫範圍。')
-                    original = replies[source['index']]['answer']
-                elif kind == 'guidance':
-                    original = case['guidance'] if 'guidance' in case else case['waiting_guidance']['text']
-                else:
-                    raise ValueError('主張支持來源類型不符。')
-                if not source['text'] or source['text'] not in original:
-                    raise ValueError('主張支持內容不在指定合成來源中。')
+        claims = case.get('claim_sources', ())
+        if claims and 'expected_json' in case:
+            raise ValueError('同列引用驗收須使用文字成果。')
+        _validate_claim_sources(case, claims, len(replies))
     return cases
 
 
@@ -157,28 +170,31 @@ def question_matches(question, rule):
     return all(re.search(pattern, question) for pattern in rule['question_has'])
 
 
-def claim_support(case, final, report, turns):
+def claim_support(case, state, report, turns, *, claims=None):
     replies = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
 
     def supports(source, line):
         if source['kind'] == 'document':
-            source_id = final['sources'][source['doc']]['document_id']
+            documents = state.get('sources', ())
+            if source['doc'] >= len(documents):
+                return False
+            source_id = documents[source['doc']]['document_id']
             return any(int(doc) == source_id and int(start) <= source['line'] <= int(end or start)
                        for doc, start, end in CITATION.findall(line))
         if source['kind'] == 'guidance':
             guidance = case['guidance'] if 'guidance' in case else case['waiting_guidance']['text']
             return any(note['content'] == guidance and note['citation'] in line
-                       for note in final.get('guidance_sources', ()))
+                       for note in state.get('guidance_sources', ()))
         index = source['index']
         if index >= len(replies):
             return False
         sequence = replies[index]['before']['steps'][-1]['sequence']
         return any(reply['ask_sequence'] == sequence and reply['answer'] == case['replies'][index]['answer']
-                   and reply['citation'] in line for reply in final.get('reply_sources', ()))
+                   and reply['citation'] in line for reply in state.get('reply_sources', ()))
 
     result = []
     lines = [(line, USER_CITATION.sub('', CITATION.sub('', line))) for line in report.splitlines()]
-    for claim in case.get('claim_sources', ()):
+    for claim in (case.get('claim_sources', ()) if claims is None else claims):
         selector = claim.get('row_selector', claim['claim'])
         matching = [(line, content) for line, content in lines if re.search(selector, content)]
         result.append(bool(matching) and all(
@@ -187,6 +203,22 @@ def claim_support(case, final, report, turns):
             and not any(supports(source, line) for source in claim.get('forbidden_sources', ()))
             for line, content in matching))
     return result
+
+
+def _interim_claim_results(case, reply_events):
+    results = []
+    for index, reply in enumerate(case.get('replies', ())):
+        claims = reply.get('partial_claim_sources')
+        if not claims:
+            continue
+        before = reply_events[index]['before'] if index < len(reply_events) else {}
+        if (before.get('status') != 'needs_input' or before.get('artifacts') or before.get('result')
+                or before.get('partial_result_historical')):
+            results.extend([False] * len(claims))
+            continue
+        results.extend(claim_support(
+            case, before, before.get('partial_result', ''), reply_events[:index], claims=claims))
+    return results
 
 
 def _partial_matches(partial, rule):
@@ -221,6 +253,9 @@ def score(case, final, files, turns, calls):
         supported = claim_support(case, final, claim_report, turns)
         checks['claim_sources'] = all(supported)
     reply_events = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
+    interim_supported = _interim_claim_results(case, reply_events)
+    if interim_supported:
+        checks['intermediate_claim_sources'] = all(interim_supported)
     checkpoints = [(index, rule) for index, rule in enumerate(case.get('replies', ())) if _checks_partial(rule)]
     if checkpoints:
         def checkpoint_passes(index, rule):
@@ -232,7 +267,7 @@ def score(case, final, files, turns, calls):
                     and _partial_matches(partial, rule))
 
         checks['intermediate_waiting'] = all(checkpoint_passes(index, rule) for index, rule in checkpoints)
-    restores = [index for index, rule in checkpoints if rule.get('restore_before')]
+    restores = [index for index, rule in enumerate(case.get('replies', ())) if rule.get('restore_before')]
     if restores:
         checks['restored_waiting'] = all(index < len(reply_events) and reply_events[index].get('restored') is True
                                          for index in restores)
@@ -276,6 +311,9 @@ def score(case, final, files, turns, calls):
                'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
     if case.get('claim_sources'):
         metrics.update(claim_sources_supported=sum(supported), claim_sources_required=len(supported))
+    if interim_supported:
+        metrics.update(intermediate_claim_sources_supported=sum(interim_supported),
+                       intermediate_claim_sources_required=len(interim_supported))
     return checks, metrics
 
 

@@ -1,0 +1,302 @@
+[
+  {
+    "id": "adopt_matching_step",
+    "prompt": "幫渡河展演的本批水台組做一份交接單 handoff.md。先讀晨版 river-am.txt，暫留進度，等我補充本批最後採用的規則才可以定稿。定稿分三行，使用「點件步驟」「包裝人」「交接台」欄名，每行附當前適用的直接來源。點件步驟引用規則所在原行及另列的適用組別行。如果本批點件規則仍有適用範圍問題，暫表先列已確認的兩欄，並標點件步驟待查；只問本批該用哪份點件規則，收到前暫不寫檔。",
+    "first_steps": 1,
+    "guidance": "更正，點件步驟這一欄改按 river-next.txt 的本批規則。包裝人照 river-am.txt 晨版，交接台正式改為青棚台。",
+    "file_delivery": true,
+    "artifact": "handoff.md",
+    "documents": [
+      {
+        "name": "river-am.txt",
+        "content": "渡河展演水台組｜晨版\n點件適用範圍：本批水台組。\n點件步驟：逐件對晨版點件卡。\n包裝人：林語澄。\n交接台：青布桌。"
+      },
+      {
+        "name": "river-next.txt",
+        "content": "渡河展演｜新版\n點件適用範圍：僅本批水台組。\n點件步驟：先掃描器材牌，再核對雙人點件卡。\n包裝人：文桂岑。\n交接台：桃影台。"
+      }
+    ],
+    "must_match": [
+      "掃描器材牌",
+      "雙人點件卡",
+      "林語澄",
+      "青棚台"
+    ],
+    "must_omit": [
+      "晨版點件卡|文桂岑|青布桌|桃影台"
+    ],
+    "required_tools": [
+      "read",
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?點件步驟",
+        "claim": "掃描器材牌.{0,24}雙人點件卡",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "僅本批水台組"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "雙人點件卡"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "晨版點件卡"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?包裝人",
+        "claim": "林語澄",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 4,
+            "text": "林語澄"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "文桂岑"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交接台",
+        "claim": "青棚台",
+        "sources": [
+          {
+            "kind": "guidance",
+            "text": "交接台正式改為青棚台"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "青布桌"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 5,
+            "text": "桃影台"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "exclude_nonmatching_step",
+    "prompt": "幫渡河展演的本批水台組做一份交接單 handoff.md。先讀晨版 river-am.txt，暫留進度，等我補充本批最後採用的規則才可以定稿。定稿分三行，使用「點件步驟」「包裝人」「交接台」欄名，每行附當前適用的直接來源。點件步驟引用規則所在原行及另列的適用組別行。如果本批點件規則仍有適用範圍問題，暫表先列已確認的兩欄，並標點件步驟待查；只問本批該用哪份點件規則，收到前暫不寫檔。",
+    "first_steps": 1,
+    "guidance": "更正，點件步驟這一欄改按 river-next.txt 的本批規則。包裝人照 river-am.txt 晨版，交接台正式改為青棚台。",
+    "file_delivery": true,
+    "artifact": "handoff.md",
+    "documents": [
+      {
+        "name": "river-am.txt",
+        "content": "渡河展演水台組｜晨版\n點件適用範圍：本批水台組。\n點件步驟：逐件對晨版點件卡。\n包裝人：林語澄。\n交接台：青布桌。"
+      },
+      {
+        "name": "river-next.txt",
+        "content": "渡河展演｜新版\n點件適用範圍：僅本批場外組。\n點件步驟：先掃描器材牌，再核對雙人點件卡。\n包裝人：文桂岑。\n交接台：桃影台。"
+      }
+    ],
+    "must_match": [
+      "晨版點件卡",
+      "林語澄",
+      "青棚台"
+    ],
+    "must_omit": [
+      "掃描器材牌|雙人點件卡|文桂岑|青布桌|桃影台"
+    ],
+    "required_tools": [
+      "read",
+      "write_artifact",
+      "deliver"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?點件步驟",
+        "claim": "晨版點件卡",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "本批水台組"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "晨版點件卡"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "依晨版"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 3,
+            "text": "雙人點件卡"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?包裝人",
+        "claim": "林語澄",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 4,
+            "text": "林語澄"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 4,
+            "text": "文桂岑"
+          }
+        ]
+      },
+      {
+        "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交接台",
+        "claim": "青棚台",
+        "sources": [
+          {
+            "kind": "guidance",
+            "text": "交接台正式改為青棚台"
+          }
+        ],
+        "forbidden_sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 5,
+            "text": "青布桌"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 5,
+            "text": "桃影台"
+          }
+        ]
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "點件",
+          "規則|沿用|使用|採用|晨版"
+        ],
+        "question_excludes": [
+          "包裝人|交接台|青棚台"
+        ],
+        "answer": "確認本批水台組的點件步驟依晨版。包裝人與交接台維持前面已確認的內容。",
+        "partial_fields": [
+          {
+            "labels": [
+              "包裝人"
+            ],
+            "value_forms": [
+              "林語澄"
+            ]
+          },
+          {
+            "labels": [
+              "交接台"
+            ],
+            "value_forms": [
+              "青棚台"
+            ]
+          },
+          {
+            "labels": [
+              "點件步驟"
+            ],
+            "value_forms": [
+              "(?:待查|待確認|未定|待選|待補)(?:(?:[：:，,。.]|\\s)+.{1,105})?"
+            ]
+          }
+        ],
+        "partial_omits": [
+          "掃描器材牌|雙人點件卡|晨版點件卡|文桂岑|青布桌|桃影台"
+        ],
+        "restore_before": true,
+        "partial_claim_sources": [
+          {
+            "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?包裝人",
+            "claim": "林語澄",
+            "sources": [
+              {
+                "kind": "document",
+                "doc": 0,
+                "line": 4,
+                "text": "林語澄"
+              }
+            ],
+            "forbidden_sources": [
+              {
+                "kind": "document",
+                "doc": 1,
+                "line": 4,
+                "text": "文桂岑"
+              }
+            ]
+          },
+          {
+            "row_selector": "^(?:[-*]\\s+|\\|\\s*)?(?:\\*\\*)?交接台",
+            "claim": "青棚台",
+            "sources": [
+              {
+                "kind": "guidance",
+                "text": "交接台正式改為青棚台"
+              }
+            ],
+            "forbidden_sources": [
+              {
+                "kind": "document",
+                "doc": 0,
+                "line": 5,
+                "text": "青布桌"
+              },
+              {
+                "kind": "document",
+                "doc": 1,
+                "line": 5,
+                "text": "桃影台"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

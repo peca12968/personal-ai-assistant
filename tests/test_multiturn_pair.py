@@ -12,7 +12,10 @@ class PairTests(unittest.TestCase):
     def test_comparison_collects_both_paths_binds_calls_and_keeps_rubric_out_of_requests(self):
         case = {'id': 'room_record', 'file_delivery': False, 'prompt': '先問核對人。再依文件及答覆交付。',
                 'documents': [{'name': 'room.txt', 'content': '收件室青廳。'}],
-                'replies': [{'question_has': ['核對人'], 'question_excludes': ['收件室'], 'answer': '核對人為溫奕行。'}],
+                'replies': [{'question_has': ['核對人'], 'question_excludes': ['收件室'], 'answer': '核對人為溫奕行。',
+                             'partial_claim_sources': [{'claim': '收件室青廳', 'sources': [
+                                 {'kind': 'document', 'doc': 0, 'line': 1, 'text': '收件室青廳'}
+                             ]}]}],
                 'must_match': ['溫奕行', '青廳'], 'must_omit': ['grader-only-marker']}
 
         class FakeEngine:
@@ -25,12 +28,14 @@ class PairTests(unittest.TestCase):
                 self.receipts.append({'settings': {'model': 'known', 'reasoning effort': 'medium'},
                                       'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest()})
                 if self.is_direct:
-                    commands = [{'status': 'ask', 'question': '核對人與收件室？'},
+                    commands = [{'status': 'ask', 'question': '核對人與收件室？',
+                                 'partial_result': '收件室青廳 [D2:L1]'},
                                 {'status': 'finish', 'report': '溫奕行 [補充#1]，青廳 [D1:L1]。'}]
                 else:
-                    commands = [{'tool': 'ask', 'args': {'question': '核對人是誰？'}, 'note': '補資料'},
-                                {'tool': 'read', 'args': {'document_id': 1, 'start_line': 1, 'end_line': 1}, 'note': '查讀'},
-                                {'tool': 'finish', 'args': {'report': '溫奕行 [補充#1]，青廳 [D1:L1]。'}, 'note': '交付'}]
+                    commands = [{'tool': 'read', 'args': {'document_id': 1, 'start_line': 1, 'end_line': 1}, 'note': '查讀'},
+                                {'tool': 'ask', 'args': {'question': '核對人是誰？',
+                                                         'partial_result': '收件室青廳 [D1:L1]'}, 'note': '補資料'},
+                                {'tool': 'finish', 'args': {'report': '溫奕行 [補充#2]，青廳 [D1:L1]。'}, 'note': '交付'}]
                 return json.dumps(commands[len(self.receipts) - 1], ensure_ascii=False)
 
         with TemporaryDirectory() as scratch:
@@ -44,6 +49,7 @@ class PairTests(unittest.TestCase):
                 assistant = pair.collect_arm(root / 'assistant', 'assistant', case, suite, frozen, protocol)
             self.assertTrue(direct['checks']['content'])
             self.assertFalse(direct['checks']['clarification'])
+            self.assertFalse(direct['checks']['intermediate_claim_sources'])
             self.assertTrue(all(assistant['checks'].values()), assistant)
             for arm in pair.ARMS:
                 trace = json.loads((root / arm / 'trace.json').read_text(encoding='utf-8'))

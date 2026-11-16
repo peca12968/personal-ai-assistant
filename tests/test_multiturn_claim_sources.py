@@ -189,6 +189,60 @@ class MultiturnClaimSourcesTests(unittest.TestCase):
                 self.assertTrue(checks['intermediate_waiting'])
                 self.assertTrue(checks['restored_waiting'])
 
+    def test_waiting_citations_use_the_same_row_and_the_sources_at_that_checkpoint(self):
+        rule = self.case['replies'][1]
+        rule.update(partial_has=['待查'], restore_before=True, partial_claim_sources=[
+            {'claim': '每箱.{0,6}9 件', 'sources': [
+                {'kind': 'document', 'doc': 0, 'line': 2, 'text': '每箱 9 件'},
+                {'kind': 'guidance', 'text': '本批改採新版'},
+            ], 'forbidden_sources': [{'kind': 'document', 'doc': 0, 'line': 1, 'text': '新版'}]},
+            {'claim': '前次確認.{0,6}4 箱', 'sources': [
+                {'kind': 'reply', 'index': 0, 'text': '先確認 4 箱'},
+            ]},
+        ])
+        self.final.update(status='report_ready', result='總件數 72 件 [D7:L2] [補充#5] [更正#1]',
+                          steps=[{'action': {'tool': 'finish'}}])
+        partial = '每箱：9 件 [D7:L2] [更正#1]\n前次確認：4 箱 [補充#2]\n總量：待查'
+        before = self.turns[1]['before']
+        before.update(status='needs_input', artifacts=[], result='', partial_result=partial,
+                      sources=self.final['sources'], guidance_sources=self.final['guidance_sources'],
+                      reply_sources=self.final['reply_sources'][:1])
+        self.turns[1]['restored'] = True
+        validate_cases([self.case])
+        guidance = {'kind': 'guidance', 'saved': True}
+        checks, metrics = score(self.case, self.final, [], [guidance, *self.turns], [])
+        self.assertTrue(all(checks.values()), checks)
+        self.assertEqual((metrics['intermediate_claim_sources_supported'],
+                          metrics['intermediate_claim_sources_required']), (2, 2))
+        for change in (
+            {'partial_result': partial.replace('[D7:L2]', '[D7:L1]')},
+            {'partial_result': partial.replace('[D7:L2]', '[D7:L1-L2]')},
+            {'partial_result': partial.replace('[D7:L2]', '\n來源 [D7:L2]')},
+            {'partial_result': partial.replace('[補充#2]', '[補充#5]')},
+            {'guidance_sources': []}, {'reply_sources': []}, {'partial_result_historical': True},
+        ):
+            with self.subTest(change=change):
+                candidate = [self.turns[0], {**self.turns[1], 'before': {**before, **change}}]
+                failed, measured = score(self.case, self.final, [], candidate, [])
+                self.assertTrue(failed['intermediate_waiting'])
+                self.assertTrue(failed['claim_sources'])
+                self.assertFalse(failed['intermediate_claim_sources'])
+                self.assertLess(measured['intermediate_claim_sources_supported'], 2)
+        self.assertFalse(score(self.case, self.final, [], self.turns[:1], [])[0]['intermediate_claim_sources'])
+
+    def test_waiting_citation_rubric_rejects_current_and_later_replies(self):
+        self.case['replies'][0]['partial_claim_sources'] = [
+            {'claim': '每箱 9 件', 'sources': [{'kind': 'document', 'doc': 0, 'line': 2, 'text': '每箱 9 件'}]}
+        ]
+        self.case['replies'][0]['restore_before'] = True
+        validate_cases([self.case])
+        claim = self.case['replies'][0]['partial_claim_sources'][0]
+        for index, answer in enumerate((self.old_answer, self.answer)):
+            with self.subTest(index=index):
+                claim['sources'] = [{'kind': 'reply', 'index': index, 'text': answer}]
+                with self.assertRaisesRegex(ValueError, '超出當時可用'):
+                    validate_cases([self.case])
+
     def test_structured_waiting_rejects_pending_from_another_cell_or_literal_example(self):
         self.case.pop('guidance')
         self.case.pop('claim_sources')
