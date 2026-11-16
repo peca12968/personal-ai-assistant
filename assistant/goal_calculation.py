@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 7
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, SOURCE_VERSION)
+SOURCE_VERSION = 8
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -38,6 +38,8 @@ GUIDANCE = (
     '即使新文件沒有重複列出也直接完成計算及交付。'
     '同名或同欄多筆時，choices 已指出需要確認的來源，保留其他欄位，只問要採用哪一筆。'
     '已知兩筆都屬候選時毋須再作數量比較。'
+    '短答數值及單位對到唯一同欄原行時，value_choice 會核對它。計算仍引用該文件原行。'
+    '若同數同單位、無吻合或有候選待核，只問原候選採用哪一筆，保留已核對的獨立欄位。'
     '「第二份」等短答依保存的問題列出的同欄候選順序；採用已核對的原行。'
     '原問以文件名、已配對短稱或混合引用列選項時，依 ordinal.options 的現況。'
     '有 needs_lookup 時先查指定欄位，等各候選都核對後才採用已選的序號。'
@@ -126,7 +128,8 @@ class Sources:
             steps, scope, replies, self.excerpts, self.documents, self.document_counts, self.literal,
             self._field_labels, _clauses,
             ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change,
-            named_ordinals=self.version >= 5, paged_lookup=self.version >= 6, line_pages=self.line_pages)
+            named_ordinals=self.version >= 5, paged_lookup=self.version >= 6, line_pages=self.line_pages,
+            field_quantity=self._field_quantity if self.version >= 8 else None)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause,
                                                          names=names, multi_fields=self.version >= 7)
@@ -137,6 +140,15 @@ class Sources:
         if self.version < 7 and len(fields) != 1:
             return ()
         return tuple(dict.fromkeys(record[0] for record in fields))
+
+    def _field_quantity(self, citation, field):
+        text, sha = self.literal(citation)
+        record = goal_calculation_adoption._literal_field(text, _valid_clause, field)
+        if record and record[0] == field and record[3]:
+            _, quote, offset, _ = record
+            if quantity := operand_evidence.choice_quantity(quote, field=field):
+                return {**quantity, 'quote': quote, 'quote_start': offset, 'source_sha256': sha}
+        return None
 
     def source_adoptions(self):
         return self.adoptions.preview(_later_change) if self.adoptions else []

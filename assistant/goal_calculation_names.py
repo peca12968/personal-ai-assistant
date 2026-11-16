@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import document_ranges, goal_calculation_lookup, goal_calculation_order, goal_sources
+from . import document_ranges, goal_calculation_lookup, goal_calculation_order, goal_sources, operand_evidence
 
 
 _LINE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}\]'
@@ -18,6 +18,7 @@ _DEICTIC = {'剛才', '方才', '剛剛', '前面', '上面', '上一個', '那�
 _ORDINAL = re.compile(r'第[一二三四五六七八1-8](?:個|筆|份|版)?')
 _BAD_TEXT = re.compile(r'[\x00-\x1f\[\]「」『』“”"\'、，,！？?!。；;]')
 _PENDING = 'pending'
+_VALUE_VERB = re.compile(r'^(?:就用|採用|選用|選擇)\s*')
 _AMOUNT = re.compile(r'[-+０-９0-9]+(?:[.．][0-9０-９]+)?\s*(?:袋|匣|份|項|瓶|箱|件|人|趟|克|公斤|g|kg)$')
 
 
@@ -100,7 +101,7 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
-                 line_pages=None):
+                 line_pages=None, field_quantity=None):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -116,6 +117,7 @@ class Names:
         self.named_ordinals = named_ordinals
         self.paged_lookup = paged_lookup
         self.line_pages = line_pages
+        self.field_quantity = field_quantity
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -375,11 +377,32 @@ class Names:
                 row.update(status='competing_lines' if matches else 'field_not_found', matching_lines=matches)
         return missing
 
-    def _resolve_named_ordinal(self, reply, claimed_field, name, selection):
+    def _matching_value(self, rows, field, reply_quantity):
+        matches = []
+        for position, row in enumerate(rows, 1):
+            quantity = self.field_quantity(row['citation'], field)
+            if not quantity:
+                row['status'] = 'quantity_unverified'
+                continue
+            row['quantity'] = quantity
+            actual = (quantity['exact'], quantity['unit'])
+            shown = (operand_evidence.displayed_choice_quantities(row['name'] or '')
+                     if row['displayed_citation'] else [])
+            if shown:
+                row['displayed_quantities'] = shown
+            if any(actual != (value['exact'], value['unit']) for value in shown):
+                row['status'] = 'displayed_quantity_conflict'
+            elif actual == (reply_quantity['exact'], reply_quantity['unit']):
+                matches.append(position)
+        return matches
+
+    def _resolve_named_choice(self, reply, claimed_field, name, selection):
         question = reply['question']
         options = goal_calculation_order.named_options(question, _LINE, self.clauses)
+        mode, number = selection
+        by_value = mode == 'quantity'
         if not options:
-            return self._resolve_ordinal(reply, claimed_field, name, selection, permit=False)
+            return None if by_value else self._resolve_ordinal(reply, claimed_field, name, selection, permit=False)
         sequence = reply['ask_sequence']
         scope = self.history.get(sequence, self.scope)
         rows, documents = self._displayed_candidates(options, scope, question)
@@ -391,17 +414,19 @@ class Names:
             if observed and observed in prompt:
                 field, possible = observed, {observed}
 
-        mode, number = selection
-        position = len(rows) if mode == 'last' else number
+        position = None if by_value else len(rows) if mode == 'last' else number
         basis = {'name': name, 'question': question, 'ask_sequence': sequence,
                  'question_references': [option['displayed_citation'] for option in options if option['displayed_citation']],
                  'candidate_documents': sorted({row['document_id'] for row in rows if row['document_id'] is not None}),
-                 'selected_documents': [],
-                 'ordinal': {'mode': mode, 'position': position, 'options': rows}}
+                 'selected_documents': []}
+        if by_value:
+            basis['value_choice'] = {'reply_quantity': number, 'position': None, 'options': rows}
+        else:
+            basis['ordinal'] = {'mode': mode, 'position': position, 'options': rows}
         result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': sorted(possible),
                   'spoken_selection': basis}
         reason = 'choice_order_unresolved'
-        if 1 <= position <= len(rows):
+        if by_value or 1 <= position <= len(rows):
             reason = 'choice_field_unresolved'
             if claimed_field and claimed_field != field:
                 reason = 'reply_field_conflict'
@@ -412,10 +437,21 @@ class Names:
                 needed = self._fill_displayed_lines(rows, documents, field)
                 refs = [row['citation'] for row in rows]
                 if all(row['status'] is None for row in rows) and len(set(refs)) == len(refs):
-                    chosen = rows[position - 1]
-                    basis['selected_documents'] = [chosen['document_id']]
-                    result['references'] = (chosen['citation'],)
-                    return result
+                    if by_value:
+                        matches = self._matching_value(rows, field, number)
+                        basis['value_choice']['matching_positions'] = matches
+                        if any(row['status'] for row in rows):
+                            reason = 'choice_quantity_unverified'
+                        elif len(matches) == 1:
+                            position = matches[0]
+                            basis['value_choice']['position'] = position
+                        else:
+                            reason = 'choice_quantity_ambiguous' if matches else 'choice_quantity_no_match'
+                    if position is not None:
+                        chosen = rows[position - 1]
+                        basis['selected_documents'] = [chosen['document_id']]
+                        result['references'] = (chosen['citation'],)
+                        return result
                 if needed and all(row['status'] in (None, 'needs_lookup', 'needs_read', 'needs_line') for row in rows):
                     result.update(needed[0])
         result['choices'] = [row['citation'] or row['name'] for row in rows]
@@ -424,10 +460,16 @@ class Names:
 
     def resolve(self, citation, clause):
         reply = self.replies.get(citation)
+        if reply is not None and self.field_quantity is not None:
+            answer = reply['answer'].strip()
+            if clause in (answer, answer.removesuffix('。').rstrip()):
+                value = _VALUE_VERB.sub('', clause.removesuffix('.').rstrip())
+                if quantity := operand_evidence.choice_quantity(value):
+                    return self._resolve_named_choice(reply, None, clause, ('quantity', quantity))
         if reply is not None and self.ordinal_guidance is not None and (parsed := _parts(clause, True)):
             field, name, _ = parsed
             if selection := goal_calculation_order.parse(name):
-                return (self._resolve_named_ordinal(reply, field, name, selection) if self.named_ordinals
+                return (self._resolve_named_choice(reply, field, name, selection) if self.named_ordinals
                         else self._resolve_ordinal(reply, field, name, selection))
         question = _question(reply, self.clauses)
         parsed = _parts(clause, question is not None)

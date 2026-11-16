@@ -17,6 +17,9 @@ _REQUIRED_KEYS = {'path', 'citation', 'quote'}
 _OPTIONAL_KEYS = {'conversion', 'field'}
 _UNIT = re.compile(r'[A-Za-zµμ%°㐀-鿿][A-Za-zµμ%°㐀-鿿0-9^²³/·]{0,15}')
 _UNIT_END = r'(?=$|[\s,，。；;、！!？?：:）)\]」』】]|\.(?!\S))'
+_CHOICE_QUANTITY = re.compile(_NUMBER + rf'[ \t\u3000]*(?P<unit>{_UNIT.pattern})\Z')
+_OPTION_NOTE = re.compile(r'(?:（(?P<wide>[^()（）]{1,40})）|\((?P<ascii>[^()（）]{1,40})\))\Z')
+_LINE_NAME = re.compile(r'第[ \t]*[0-9０-９一二三四五六七八九十百]+[ \t]*[行筆列]\Z')
 
 
 def _leaves(node, path=''):
@@ -154,6 +157,35 @@ def field_position(quote, number_start, field, *, ordinary):
                 quote[:number_start]):
             return match.span('name')
     return _field_position(quote, number_start, field)
+
+
+def choice_quantity(text, *, field=None, displayed=False):
+    normalized = text.translate(_NUMERIC_CHARS)
+    if field is not None or displayed:
+        token = _CHOICE_QUANTITY.search(normalized)
+    else:
+        token = _CHOICE_QUANTITY.fullmatch(normalized)
+    if not token:
+        return None
+    try:
+        exact = str(exact_math.parse(token['number']))
+        if field is not None:
+            field_position(text, token.start('number'), field, ordinary=True)
+    except ValueError:
+        return None
+    return {'number': text[token.start('number'):token.end('number')], 'exact': exact,
+            'unit': text[token.start('unit'):token.end('unit')]}
+
+
+def displayed_choice_quantities(text):
+    values = []
+    if note := _OPTION_NOTE.search(text):
+        text = text[:note.start()].rstrip()
+        if value := choice_quantity((note['wide'] or note['ascii']).strip()):
+            values.append(value)
+    if not _LINE_NAME.search(text) and (value := choice_quantity(text, displayed=True)):
+        values.insert(0, value)
+    return values
 
 
 def bind(rows, expression, excerpts, user_sources, *, ordinary=False):
