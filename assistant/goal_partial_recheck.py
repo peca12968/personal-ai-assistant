@@ -99,13 +99,17 @@ def _read(db, goal, steps, replies, guidance, row, previous):
     receipt = strict_json(raw)
     fields = {'input_sha256', 'result'}
     if (not isinstance(receipt, dict) or not fields <= receipt.keys()
-            or receipt.keys() - fields - {'tools', 'reuse', 'calculation_report'}
+            or receipt.keys() - fields - {'tools', 'reuse', 'calculation_report', 'calculation_source_version'}
             or sha != digest([goal['id'], sequence, number, receipt])):
         raise ValueError('暫表重核紀錄的內容指紋不符。')
     objective = goal['objective']
     verified_report = goal_calculation.required(objective)
     if verified_report != ('calculation_report' in receipt):
         raise ValueError('暫表重核缺少逐項核對的成果。')
+    version = receipt.get('calculation_source_version', 1)
+    if 'calculation_source_version' in receipt and (
+            not verified_report or type(version) is not int or version != goal_calculation.SOURCE_VERSION):
+        raise ValueError('暫表重核的算式來源版本不符。')
     _, excerpts, prior_replies, sources, evidence_hash = _inputs(objective, steps, replies, guidance, sequence, number)
     if receipt['input_sha256'] != evidence_hash:
         raise ValueError('暫表重核的依據已改變。')
@@ -122,7 +126,8 @@ def _read(db, goal, steps, replies, guidance, row, previous):
     scope = _scope(goal, steps, sequence) if verified_report or 'tools' in receipt else []
     copies = _copies(db, goal, scope)
     def context(records):
-        return _checked_context(objective, steps[:sequence], scope, prior_replies, sources, previous, copies, records)
+        return _checked_context(objective, steps[:sequence], scope, prior_replies, sources, previous,
+                                copies, records, version=version)
 
     if 'tools' in receipt:
         user_sources = operand_evidence.user_texts(objective, prior_replies, sources, sequence + 1)
@@ -219,10 +224,12 @@ def carried(db, goal, steps, replies, guidance):
     return None
 
 
-def _checked_context(objective, steps, scope, replies, guidance, previous, copies, records):
+def _checked_context(objective, steps, scope, replies, guidance, previous, copies, records, *,
+                     version=goal_calculation.SOURCE_VERSION):
     temporary = [{'sequence': len(steps) + index, 'action': {'tool': item['tool'], 'args': item['args']},
                   'observation': item['result']} for index, item in enumerate(records, 1)]
-    return goal_calculation.Sources(objective, [*steps, *temporary], scope, replies, guidance, previous, copies)
+    return goal_calculation.Sources(objective, [*steps, *temporary], scope, replies, guidance, previous, copies,
+                                    version=version)
 
 
 def _check_calculation_selection(rows, selected):
@@ -258,6 +265,10 @@ def _review(engine, payload, excerpts, replies, guidance, steps, store, sid, sco
     for remaining in range(goal_recheck_tools.MAX_ACTIONS, -1, -1):
         if cancel is not None and cancel.is_set():
             raise ValueError('已停止暫表重核。')
+        context = (_checked_context(payload['objective'], steps, scope, replies, guidance, previous, copies, records)
+                   if verified_report else None)
+        if context:
+            observations['calculation_source_adoptions'] = context.source_adoptions()
         raw = engine.answer(instructions + json.dumps(
             {**observations,
              'recheck_tools': [{**row, 'sequence': sequence + index} for index, row in enumerate(records, 1)]
@@ -274,7 +285,6 @@ def _review(engine, payload, excerpts, replies, guidance, steps, store, sid, sco
                 if not isinstance(value, dict) or value.keys() != {'calculation_report', 'withdrawal_source'}:
                     raise ValueError('核對暫表須以 calculation_report 提供成果。')
                 rows = value['calculation_report']
-                context = _checked_context(payload['objective'], steps, scope, replies, guidance, previous, copies, records)
                 checked_rows = context.rows(rows)
                 _check_calculation_selection(rows, selected)
                 value = {'partial_result': goal_calculation.render(checked_rows),
@@ -284,8 +294,7 @@ def _review(engine, payload, excerpts, replies, guidance, steps, store, sid, sco
             raise ValueError('本次暫表重核工具已用完。')
         tool, args = value['tool'], value['args']
         docs = store.documents(sid, include_content=True, document_ids=[row['document_id'] for row in scope]) if tool == 'read_ranges' else []
-        if verified_report and tool == 'calculate_expression':
-            context = _checked_context(payload['objective'], steps, scope, replies, guidance, previous, copies, records)
+        if context and tool == 'calculate_expression':
             observation = context.calculate(args, cancel)
         else:
             observation = goal_recheck_tools.execute(tool, args, docs, scope, excerpts, user_sources, cancel)
@@ -321,6 +330,7 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
         receipt = {'input_sha256': evidence_hash, 'result': result}
         if rows is not None:
             receipt['calculation_report'] = rows
+            receipt['calculation_source_version'] = goal_calculation.SOURCE_VERSION
         if previous:
             receipt['reuse'] = {'sha256': previous['sha256'], 'calculations': selected}
         if records:

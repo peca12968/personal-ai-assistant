@@ -3,7 +3,8 @@ import json
 import re
 from pathlib import Path
 
-from . import artifacts, expression_math, goal_guidance_sources, goal_reply_sources, goal_sources, operand_evidence
+from . import (artifacts, expression_math, goal_calculation_adoption, goal_guidance_sources, goal_reply_sources,
+               goal_sources, operand_evidence)
 from .acceptance import strict_json
 from .goal_stages import digest
 
@@ -11,6 +12,7 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
+SOURCE_VERSION = 2
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -22,6 +24,9 @@ GUIDANCE = (
     OPTIONAL_GUIDANCE + '\n本目標已要求逐項核對。計算只能用 calculate_expression 的 operands；'
     '每筆須有完整欄位名 field、單位 unit 或 conversion，quote 使用明確確認該欄的完整原句（去掉句末標點）。'
     '未決、候選、被更正或撤回的數字不能代入。只算有證據的部分。'
+    'calculation_source_adoptions 是從已保存的引用選擇核對到的欄位與來源。'
+    '採用的單行須直接引用該行，工具會附補答或更正。缺行先查讀，只有真正未決才問。'
+    '單欄換版後只重算受影響算式，沿用仍適用的舊版欄位。'
     '交付、寫檔及附暫表提問使用 calculation_report 陣列，替換 report、content 或 partial_result。'
     '計算列 {"label":"總件數","calculation_step":3,"unit":"件"} 只送實際步驟號，不送答案。'
     '獨立事實列 {"label":"窗口","citation":"[D1:L4]","quote":"窗口：北門"} 使用完整逐字原句。'
@@ -39,7 +44,6 @@ _RECHECK_FIELDS = {'label', 'recheck_calculation', 'unit'}
 _UNCONFIRMED = re.compile(r'尚未|未確認|待確認|待查|未定|待定|候選|暫估|暫定|約莫|估計|預估|推測|可能|假如|假設|如果|是否|撤回|取消|不再採用|未採用|不採用|不作準|不算|歷史|舊版|前批|上一批|上次|原值|舊值|草案|引述|轉述|試算')
 _UNCERTAIN_PREFIX = re.compile(r'假如|假設|如果|若是|若採|若用|僅作示例|只是假設|引述|轉述')
 _REVISION = re.compile(r'改為|改成|更正為|改用|為準|撤回|取消|不再|不採|不算|待確認|未確認')
-_COMMA = re.compile(r'(?![0-9])')
 _UNSAFE_LABEL = re.compile(r'[\x00-\x1f\x7f\[\]<>#|＝=]')
 
 
@@ -48,7 +52,7 @@ def required(objective):
 
 
 def _clauses(text):
-    return goal_guidance_sources.standalone_clauses(text, comma_before=_COMMA)
+    return goal_calculation_adoption.clauses(text)
 
 
 def _valid_clause(text, start, quote):
@@ -86,7 +90,7 @@ def _complete_excerpts(steps, scope, recheck):
 
 
 class Sources:
-    def __init__(self, objective, steps, scope, replies, guidance, recheck, documents):
+    def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *, version=SOURCE_VERSION):
         sequence = len(steps) + 1
         self.steps = steps
         self.excerpts = _complete_excerpts(steps, scope, recheck)
@@ -95,6 +99,12 @@ class Sources:
         self.documents = {(row['id'], row['name'], row['sha256']): row['content'].splitlines() for row in documents}
         self.recheck = recheck
         self.strict = required(objective)
+        self.version = version if self.strict else 1
+        self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause)
+                          if self.version >= 2 else None)
+
+    def source_adoptions(self):
+        return self.adoptions.preview(_later_change) if self.adoptions else []
 
     def literal(self, citation):
         text, sha = operand_evidence.source_text(citation, self.excerpts, self.user)
@@ -120,16 +130,21 @@ class Sources:
         remainder = text[row['quote_end']:]
         if _later_change(remainder, row['field']):
             raise ValueError('同一來源後段另有更正或待確認值，請先核對欄位。')
-        self.confirm_fact(row['field'], row['citation'])
+        return self.confirm_fact(row['field'], row['citation'])
 
     def calculate(self, args, cancel=None):
         expression = {'expression': args['expression']}
         validate(args)
         bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user, ordinary=True)
+        applied = []
         for row in bound:
-            self.confirm(row)
-        return {**expression_math.calculate(expression, cancel),
-                PROOF: {'version': 1, 'operands': bound, 'recheck_sha256': self.recheck['sha256'] if self.recheck else None}}
+            if selection := self.confirm(row):
+                applied.append({'path': row['path'], **selection})
+        proof = {'version': self.version, 'operands': bound,
+                 'recheck_sha256': self.recheck['sha256'] if self.recheck else None}
+        if self.version >= 2:
+            proof['source_adoptions'] = applied
+        return {**expression_math.calculate(expression, cancel), PROOF: proof}
 
     def rows(self, rows):
         if not isinstance(rows, list) or not 1 <= len(rows) <= 12:
@@ -150,15 +165,19 @@ class Sources:
                 bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user, ordinary=True)
                 if bound != proof['operands']:
                     raise ValueError('算式來源與目前可核對的證據不一致。')
+                sources = []
                 for item in bound:
-                    self.confirm(item)
+                    selection = self.confirm(item)
+                    entry = {'欄位': item['field'], '原文': item['quote'], '引用': item['citation']}
+                    if selection:
+                        entry['採用依據'] = selection['user_citation']
+                    sources.append(entry)
                 unit = _label(row['unit'], 16)
                 if not re.fullmatch(r'[^\W\d_][\w%°µ/^²³·-]*|[%°]', unit):
                     raise ValueError('結果單位須為簡短單位名稱。')
                 output.append({'欄位': label, '精確結果': observation['exact'], '單位': unit,
                                '算式': _formula(args['expression']),
-                               '來源': [{'欄位': item['field'], '原文': item['quote'], '引用': item['citation']}
-                                        for item in bound]})
+                               '來源': sources})
             elif row.keys() == _FACT_FIELDS:
                 citation, quote = row['citation'], row['quote']
                 if not isinstance(citation, str) or not isinstance(quote, str) or not 1 <= len(quote) <= 180:
@@ -168,8 +187,11 @@ class Sources:
                 if (start < 0 or text.find(quote, start + 1) >= 0 or not _valid_clause(text, start, quote)
                         or not re.match(rf'(?:欄位「{re.escape(label)}」|{re.escape(label)})(?:[:：]|\s|確認為|已確認為|正式改為|為)', quote)):
                     raise ValueError('事實列須引用唯一完整且目前確認同一欄位的原句。')
-                self.confirm_fact(label, citation)
-                output.append({'欄位': label, '原文': quote, '引用': citation})
+                selected = self.confirm_fact(label, citation)
+                entry = {'欄位': label, '原文': quote, '引用': citation}
+                if selected:
+                    entry['採用依據'] = selected['user_citation']
+                output.append(entry)
             elif row.keys() == _PENDING_FIELDS and row['pending'] is True:
                 output.append({'欄位': label, '狀態': '待查'})
             else:
@@ -193,8 +215,24 @@ class Sources:
 
     def confirm_fact(self, label, citation):
         position = next((offset for offset, key, _ in self.order if key == citation), -1)
-        if any(offset > position and _later_change(body, label) for offset, _, body in self.order):
+        if self.adoptions is None:
+            changed = any(offset > position and _later_change(body, label) for offset, _, body in self.order)
+        else:
+            latest = self.adoptions.effective(label, _later_change)
+            if not latest or latest[0] < position:
+                return None
+            note_position, _, selection = latest
+            if selection:
+                if selection['status'] != 'adopted':
+                    raise ValueError(f'欄位「{label}」的文件採用尚待核對。請先查讀缺行或確認採用範圍。')
+                target = selection['candidates'][0]['citation']
+                if citation != target:
+                    raise ValueError(f'欄位「{label}」目前採用 {target}。請改用該原行或保留待查。')
+                return selection
+            changed = note_position > position
+        if changed:
             raise ValueError(f'欄位「{label}」另有較新的確認或更正。請引用現行值，或標示待查。')
+        return None
 
 
 def validate(args):
@@ -218,6 +256,11 @@ def _formula(node):
     return '(' + separator.join(_formula(child) for child in node['values']) + ')'
 
 
+def _cited_text(row):
+    adoption = f'（採用依據 {row["採用依據"]}）' if '採用依據' in row else ''
+    return f'{row["原文"]} {row["引用"]}{adoption}'
+
+
 def render(rows, filename=None):
     if filename and Path(filename).suffix.lower() == '.json':
         return json.dumps(rows, ensure_ascii=False, indent=2) + '\n'
@@ -225,10 +268,10 @@ def render(rows, filename=None):
     for row in rows:
         label = row['欄位']
         if '精確結果' in row:
-            evidence = '；'.join(f'{item["原文"]} {item["引用"]}' for item in row['來源'])
+            evidence = '；'.join(map(_cited_text, row['來源']))
             lines.append(f'{label}：{row["算式"]} ＝ {row["精確結果"]} {row["單位"]}。{evidence}')
         elif '引用' in row:
-            lines.append(f'{row["原文"]} {row["引用"]}')
+            lines.append(_cited_text(row))
         else:
             lines.append(f'{label}：待查')
     return '\n'.join(lines)
@@ -258,7 +301,7 @@ def prepare(action, sources):
     if tool == 'deliver':
         artifacts.validate_names(args['filenames'])
         expected_files = check_deliveries(args['filenames'], output, sources.steps)
-    return {**action, 'args': args}, {'version': 1, 'rows': rows}, expected_files
+    return {**action, 'args': args}, {'version': sources.version, 'rows': rows}, expected_files
 
 
 def check_deliveries(names, output, steps):
@@ -322,10 +365,14 @@ def validate_saved(db, *, replies_present, guidance_present, checked_rechecks, a
                 continue
             if step['sequence'] != index + 1:
                 raise ValueError('算式或成果步驟順序不符。')
+            receipt = seen.get(PROOF if calculated else RECEIPT)
+            version = receipt.get('version') if isinstance(receipt, dict) else None
+            if type(version) is not int or version not in (1, SOURCE_VERSION):
+                raise ValueError('保存的算式或成果核對版本不符。')
             prior = steps[:index]
             recheck = _recheck(prior, guidance, checked_rechecks.get(gid, {}))
             context = Sources(objective, prior, history.get(step['sequence'], scope), replies, guidance,
-                              recheck, docs.values())
+                              recheck, docs.values(), version=version)
             if calculated:
                 expected = context.calculate(args)
                 if any(digest(seen.get(key)) != digest(value) for key, value in expected.items()):

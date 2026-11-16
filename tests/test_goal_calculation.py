@@ -185,6 +185,158 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('完整且已確認', result['steps'][2]['observation']['error'])
         self.assertEqual(result['partial_result'], '總件數：待查')
 
+    def test_adopted_document_blocks_old_calculation_and_preserves_independent_evidence(self):
+        revised = self.attach('班別：晚班。\n批次量：21 袋。\n窗口：南門。', '晚班複點.txt')
+        self.create(files=True)
+        old = [{'label': '總件數', 'calculation_step': 3, 'unit': '件'}]
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=3),
+                         self.formula(), action('ask', question='本批以哪份複點為準？', calculation_report=old))
+        self.reply(f'本次以晚班複點的 [D{revised}:L2] 為準。窗口照用 {self.cite(4)}。')
+        rows = [{'label': '總件數', 'calculation_step': 8, 'unit': '件'},
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]
+        engine = ScriptedEngine(
+            self.formula(),
+            action('write_artifact', filename='早班.json', calculation_report=old),
+            self.formula(quantity='21', citation=self.cite(3), quote='退回量：21 袋'),
+            self.formula(quantity='21', citation=f'[D{revised}:L2]', quote='批次量：21 袋'),
+            action('write_artifact', filename='晚班.json', calculation_report=rows),
+            action('deliver', filenames=['晚班.json'], calculation_report=rows),
+        )
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=6)
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in result['steps'][4:7]], ['invalid'] * 3)
+        self.assertIn(f'目前採用 [D{revised}:L2]', result['steps'][4]['observation']['error'])
+        self.assertIn(f'目前採用 [D{revised}:L2]', result['steps'][5]['observation']['error'])
+        self.assertIn('calculation_source_adoptions', engine.prompts[0])
+        proof = result['steps'][7]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual([(row['path'], row['user_citation']) for row in proof], [('/values/0', '[補充#4]')])
+        self.assertIn('21 袋', result['result'])
+        directory = artifacts.directory(self.store, self.gid)
+        content = directory.joinpath('晚班.json').read_bytes()
+        first, second = json.loads(content)
+        self.assertEqual(first['精確結果'], '63')
+        self.assertEqual(first['來源'][0]['採用依據'], '[補充#4]')
+        self.assertEqual(first['來源'][1]['引用'], self.cite(2))
+        self.assertEqual(second['引用'], self.cite(4))
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('晚班.json').read_bytes(), content)
+        with restored.connect() as db:
+            obs = result['steps'][7]['observation']
+            obs[goal_calculation.PROOF]['source_adoptions'][0]['user_quote_start'] += 1
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=8',
+                       (json.dumps(obs, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_selected_document_during_partial_recheck_survives_restore_and_independent_reply(self):
+        revised = self.attach('批次量：24 袋。', '新複點.txt')
+        self.create()
+        question = '交班員是誰？'
+        self.run_actions(self.initial(), self.formula(),
+                         action('ask', question=question, calculation_report=[
+                             {'label': '總件數', 'calculation_step': 2, 'unit': '件'}]))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        revised_note = goal_guidance.save(self.store, self.sid, self.gid, f'欄位「批次量」改用 [D{revised}:L1]。',
+                                          expected_fingerprint=snapshot['fingerprint'])
+        calculate = json.loads(self.formula(quantity='24', citation=f'[D{revised}:L1]', quote='批次量：24 袋'))
+        del calculate['note']
+        engine = ScriptedEngine(
+            json.dumps({'tool': 'read_ranges', 'args': {'ranges': [
+                {'document_id': revised, 'start_line': 1, 'end_line': 1}]}}, ensure_ascii=False),
+            json.dumps(calculate, ensure_ascii=False),
+            json.dumps({'calculation_report': [{'label': '總件數', 'calculation_step': 5, 'unit': '件'}],
+                        'withdrawal_source': None}, ensure_ascii=False))
+        rechecked = goal_partial_recheck.run(self.store, self.sid, self.gid, engine,
+                                              expected_fingerprint=revised_note['fingerprint'])
+        self.assertEqual(rechecked['goal']['question'], question)
+        self.assertIn('72 件', rechecked['goal']['partial_result'])
+        self.assertIn('採用依據 [更正#1]', rechecked['goal']['partial_result'])
+        self.store = self.restore()
+        self.reply('交班員：冉希言。')
+        result = self.run_actions(action('finish', calculation_report=[
+            {'label': '總件數', 'recheck_calculation': 1, 'unit': '件'},
+            {'label': '交班員', 'citation': '[補充#3]', 'quote': '交班員：冉希言'},
+        ]))
+        self.assertIn('72 件', result['result'])
+        self.assertIn('採用依據 [更正#1]', result['result'])
+        self.assertEqual(len(result['steps']), 4)
+        validate_database(self.store.path)
+
+    def test_unread_selection_blocks_only_named_field_until_read(self):
+        revised = self.attach('批次量：18 袋。', '複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('ask', question='批次量要採哪一份？'))
+        self.reply(f'欄位「批次量」改用 [D{revised}:L1]。')
+        waiting = [{'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                   {'label': '總件數', 'pending': True}]
+        result = self.run_actions(
+            self.formula(),
+            action('read_ranges', ranges=[{'document_id': revised, 'start_line': 1, 'end_line': 1}]),
+            self.formula(quantity='18', citation=f'[D{revised}:L1]', quote='批次量：18 袋'),
+            action('finish', calculation_report=[waiting[0], {'label': '總件數', 'calculation_step': 5, 'unit': '件'}]))
+        self.assertIn('採用尚待核對', result['steps'][2]['observation']['error'])
+        self.assertIn('窗口：北門', result['result'])
+        self.assertIn('54 件', result['result'])
+        validate_database(self.store.path)
+
+    def test_competing_sources_keep_only_dependent_rows_pending_until_short_choice(self):
+        revised = self.attach('批次量：19 袋。', '複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question='本批採哪一筆？'))
+        self.reply(f'欄位「批次量」還沒決定用 {self.cite(1)} 或 [D{revised}:L1]。')
+        result = self.run_actions(
+            self.formula(),
+            self.formula(quantity='19', citation=f'[D{revised}:L1]', quote='批次量：19 袋'),
+            action('ask', question='請確認批次量採早班還是複點？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True},
+            ]))
+        self.assertEqual(result['status'], 'needs_input')
+        self.assertEqual([step['action']['tool'] for step in result['steps'][3:5]], ['invalid'] * 2)
+        self.assertEqual(result['partial_result'], f'窗口：北門 {self.cite(4)}\n總件數：待查')
+        self.store = self.restore()
+        self.reply(f'就用 [D{revised}:L1] 那行。')
+        current = self.run_actions(
+            self.formula(quantity='19', citation=f'[D{revised}:L1]', quote='批次量：19 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 7, 'unit': '件'}]))
+        self.assertIn('57 件', current['result'])
+        self.assertIn('[補充#6]', current['result'])
+        self.assertNotIn('[補充#3]', current['result'])
+        validate_database(self.store.path)
+
+    def test_quoted_hypothetical_choice_does_not_replace_document(self):
+        revised = self.attach('批次量：23 袋。', '複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question='是否已正式調整？'))
+        self.reply(f'如果要試算，批次量改用 [D{revised}:L1]。他只說「批次量改用 [D{revised}:L1]」。')
+        result = self.run_actions(self.formula(),
+                                  action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 4, 'unit': '件'}]))
+        self.assertIn('51 件', result['result'])
+        self.assertNotIn('採用依據', result['result'])
+        validate_database(self.store.path)
+
+    def test_citation_adoption_and_later_literal_correction_each_supersede_in_order(self):
+        revised = self.attach('批次量：19 袋。', '複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('read', document_id=revised, start_line=1, end_line=1),
+                         action('ask', question='本批採哪一筆？'))
+        self.reply(f'就用 [D{revised}:L1]。')
+        self.run_actions(self.formula(quantity='19', citation=f'[D{revised}:L1]', quote='批次量：19 袋'),
+                         action('ask', question='是否有更新的現場正式數量？'))
+        self.reply('批次量正式改為 22 袋。')
+        result = self.run_actions(
+            self.formula(quantity='19', citation=f'[D{revised}:L1]', quote='批次量：19 袋'),
+            self.formula(quantity='22', citation='[補充#5]', quote='批次量正式改為 22 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 7, 'unit': '件'}]))
+        self.assertEqual(result['steps'][5]['action']['tool'], 'invalid')
+        self.assertIn('66 件', result['result'])
+        self.assertIn('[補充#5]', result['result'])
+        self.assertNotIn('[補充#3]', result['result'])
+        validate_database(self.store.path)
+
     def test_delivery_rejects_changed_saved_file_even_with_consistent_new_hash(self):
         self.create(files=True)
         rows = [{'label': '總件數', 'calculation_step': 2, 'unit': '件'}]

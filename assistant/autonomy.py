@@ -608,6 +608,11 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             elif required_filename:
                 payload['artifact_filename_requirement'] = required_filename
             reply_sources = goal.get('reply_sources', ())
+            current_calculations = (goal_calculation.Sources(
+                goal['objective'], goal['steps'], goal['sources'], reply_sources, guidance_sources,
+                recheck_evidence, documents) if checked_calculations else None)
+            if current_calculations and (adoptions := current_calculations.source_adoptions()):
+                payload['calculation_source_adoptions'] = adoptions
             delivery_change = goal.get('delivery_mode_change')
             if delivery_change:
                 payload['delivery_mode_change'] = delivery_change
@@ -791,7 +796,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                         and isinstance(candidate['tool'], str) and isinstance(candidate['args'], dict)
                         and (checked_calculations or
                              (candidate['tool'] == 'calculate_expression' and 'operands' in candidate['args']))):
-                    calc_sources = goal_calculation.Sources(
+                    calc_sources = current_calculations or goal_calculation.Sources(
                         goal['objective'], goal['steps'], goal['sources'], reply_sources, guidance_sources,
                         recheck_evidence, documents)
                     candidate, verified_rows, expected_files = goal_calculation.prepare(candidate, calc_sources)

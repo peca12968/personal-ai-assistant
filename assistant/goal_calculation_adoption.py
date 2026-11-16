@@ -1,0 +1,195 @@
+"""Resolve explicit single-line document selections in checked ordinary goals."""
+import re
+
+from .goal_guidance_sources import standalone_clauses
+
+
+_CITATION = r'\[D(?P<document>[1-9][0-9]{0,11}):L[1-9][0-9]{0,11}\]'
+_LINE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}\]'
+_REF_LIST = rf'{_LINE}(?:\s*(?:或|、)\s*{_LINE}){{0,3}}'
+_SCOPE = r'(?:本次|這次|本輪|本批|這批|目前)'
+_NAME = r'[^\s「」『』“”\[\]：:；;、，,。！？?!]{1,60}'
+_QUOTED_NAME = r'[^「」『』“”\[\]：:；;、，,。！？?!\r\n]{1,80}'
+_FIELD = rf'(?:(?:欄位)?「(?P<quoted>{_QUOTED_NAME})」|(?P<bare>{_NAME}?))'
+_DESCRIPTION = r'[^「」『』“”\[\]：:；;、，,。！？?!\r\n]{1,80}'
+_USE = r'(?:正式)?(?:改採|改用|採用|就用|就照|還沒決定用|尚未決定用|未定用|撤回採用|取消採用|不再採用)'
+_KEEP = r'(?:繼續沿用|仍沿用|照用|沿用|維持)'
+_VIA = re.compile(rf'(?:(?:{_FIELD})\s*)?以\s*(?:(?P<description>{_DESCRIPTION})\s*)?'
+                  rf'(?P<refs>{_REF_LIST})\s*為準')
+_CHOICE = re.compile(rf'(?:{_FIELD}\s*)?(?P<verb>{_USE}|{_KEEP})\s*'
+                     rf'(?:(?P<description>{_DESCRIPTION})\s*)?(?P<refs>{_REF_LIST})'
+                     r'\s*(?:為準|這一行|這行|那一行|那行|這筆|那筆)?')
+_LABEL = re.compile(rf'{_FIELD}\s*[：:]\s*\S')
+_ASSIGNMENT = re.compile(rf'{_FIELD}\s*(?:已確認為|確認為|為)\s*\S')
+_RATE = re.compile(rf'(?P<label>每{_NAME})\s+-?[0-9０-９]')
+_COMMA = re.compile(r'(?![0-9])')
+_NONOPERATIVE = re.compile(r'如果|假如|假設|僅作示例|試算|暫定|暫估|暫用|引述|轉述|是否|能否|先別|別用|不採|不用|未採用')
+_QUOTED_REFERENCE = re.compile(rf'「[^」]*{_LINE}[^」]*」|『[^』]*{_LINE}[^』]*』|“[^”]*{_LINE}[^”]*”|'
+                               rf'"[^"]*{_LINE}[^"]*"|`[^`]*{_LINE}[^`]*`')
+_SOURCE_WORDS = {'新版', '新版本', '最新', '新資料', '這一行', '這行', '該行', '原行', '該版', '最新資料'}
+_UNKNOWN_WORDS = ('還沒決定', '尚未決定', '未定', '撤回', '取消', '不再採用')
+_RETENTION = frozenset({'繼續沿用', '仍沿用', '照用', '沿用', '維持'})
+
+
+def clauses(text):
+    return standalone_clauses(text, comma_before=_COMMA)
+
+
+def _selection(clause):
+    source = re.sub(rf'^{_SCOPE}(?=\s*(?:以|{_USE}|{_KEEP}))\s*', '', clause)
+    match = _VIA.fullmatch(source) or _CHOICE.fullmatch(source)
+    if not match:
+        return None
+    verb = match.groupdict().get('verb') or ''
+    if _NONOPERATIVE.search(source):
+        return None
+    field = match['quoted'] or match['bare']
+    if match['quoted'] is None and field == '正式':
+        field = None
+    if field and (re.match(r'^(?:不|別|先別|未|舊|歷史)', field) or field in {'若', '先', '先暫', '只可'}):
+        return None
+    refs = tuple(dict.fromkeys(re.findall(_LINE, match['refs'])))
+    return {'field': field, 'quoted': match['quoted'] is not None, 'refs': refs,
+            'description': match['description'], 'retain': verb in _RETENTION,
+            'undecided': any(word in verb for word in _UNKNOWN_WORDS)}
+
+
+def _literal_field(text, valid_clause):
+    found = []
+    for start, clause, question in clauses(text):
+        if question:
+            continue
+        if match := _LABEL.match(clause) or _ASSIGNMENT.match(clause):
+            field = (match['quoted'] or match['bare']).strip()
+        elif match := _RATE.match(clause):
+            field = match['label']
+        else:
+            continue
+        found.append((field, clause, start, valid_clause(text, start, clause)))
+    return found[0] if len(found) == 1 else None
+
+
+def _description_conflicts(description, filename):
+    if not description:
+        return False
+    name = description.strip().removesuffix('的').strip()
+    return name not in _SOURCE_WORDS and name not in {filename, filename.rsplit('.', 1)[0]}
+
+
+def _resolve(selection, versions, literal, valid_clause):
+    candidates, unknown = [], False
+    for reference in selection['refs']:
+        document = int(re.fullmatch(_CITATION, reference)['document'])
+        attached = versions.get(document)
+        info = {'citation': reference}
+        candidates.append(info)
+        if attached is None or _description_conflicts(selection['description'], attached['name']):
+            info['status'] = 'outside_scope' if attached is None else 'document_name_mismatch'
+            unknown = True
+            continue
+        try:
+            text, sha = literal(reference)
+        except ValueError:
+            info['status'] = 'unread'
+            unknown = True
+            continue
+        found = _literal_field(text, valid_clause)
+        if not found:
+            info['status'] = 'field_unconfirmed'
+            unknown = True
+            continue
+        field, quote, start, confirmed = found
+        info.update(field=field, quote=quote, quote_start=start, source_sha256=sha,
+                    status='available' if confirmed else 'field_unconfirmed')
+        unknown |= not confirmed
+
+    field = selection['field']
+    read_fields = {row['field'] for row in candidates if 'field' in row}
+    if selection['retain'] and not selection['quoted'] and field and read_fields and field not in read_fields:
+        # A colloquial reminder about another field must not expand this selection.
+        return None
+    if field is None and len(read_fields) == 1:
+        field = next(iter(read_fields))
+    status = 'adopted'
+    if not field or unknown:
+        status = 'pending'
+    elif read_fields != {field}:
+        status = 'field_mismatch'
+    elif selection['undecided'] or len(candidates) != 1:
+        status = 'competing'
+    return {'field': field, 'status': status, 'candidates': candidates}
+
+
+class Review:
+    def __init__(self, order, user, scope, literal, valid_clause):
+        versions = {row['document_id']: row for row in scope}
+        self.notes = []
+        for position, citation, text in order:
+            records, direct, altered = [], [], False
+            if not re.search(_LINE, text):
+                self.notes.append((position, citation, [], (), text))
+                continue
+            for offset, clause, question in clauses(text):
+                prefix = re.split(r'[。；;!?！？\r\n]', text[:offset])[-1]
+                inert = re.search(_LINE, clause) and (
+                    question or _QUOTED_REFERENCE.search(clause) or _NONOPERATIVE.search(clause)
+                    or _NONOPERATIVE.search(prefix) or prefix.strip().startswith(('若', '倘若', '要是')))
+                if inert:
+                    altered = True
+                    continue
+                selected = _selection(clause) if not question else None
+                if selected is None:
+                    if not question:
+                        direct.append(clause)
+                    continue
+                altered = True
+                entry = _resolve(selected, versions, literal, valid_clause)
+                if entry is not None:
+                    records.append({**entry, 'user_citation': citation, 'user_sha256': user[citation][1],
+                                    'user_quote': clause, 'user_quote_start': offset})
+            self.notes.append((position, citation, records, tuple(direct), None if altered else text))
+
+    def effective(self, field, direct_change):
+        latest = None
+        for position, citation, records, direct, original in self.notes:
+            relevant = [row for row in records if _applies(row, field)]
+            changed = (direct_change(original, field) if original is not None
+                       else any(direct_change(clause, field) for clause in direct))
+            if changed or relevant:
+                latest = (position, citation, {'status': 'competing', 'candidates': relevant} if relevant and changed
+                          else _combine(relevant) if relevant else None)
+        return latest
+
+    def preview(self, direct_change):
+        fields = {row['field'] for _, _, records, _, _ in self.notes for row in records}
+        fields.update(item['field'] for _, _, records, _, _ in self.notes
+                      for row in records if row['field'] is None for item in row['candidates'] if 'field' in item)
+        result = []
+        for field in sorted(fields, key=lambda key: (key is None, key or '')):
+            active = (self.effective(field, direct_change) if field else next(
+                ((pos, citation, _combine([row for row in records if row['field'] is None]))
+                 for pos, citation, records, _, _ in reversed(self.notes)
+                 if any(row['field'] is None for row in records)), None))
+            if active and active[2] is not None:
+                _, citation, row = active
+                if (row.get('field') is None and field is not None and row['status'] == 'pending'
+                        and not any(item.get('field') == field for item in row['candidates'])):
+                    continue
+                result.append({**row, 'field': field, 'user_citation': citation})
+        return result
+
+
+def _applies(row, field):
+    if row['field'] is not None:
+        return row['field'] == field
+    candidates = row['candidates']
+    return any('field' not in item or item['field'] == field for item in candidates)
+
+
+def _combine(records):
+    if len(records) == 1:
+        return records[0]
+    key = lambda row: (row['status'], tuple(item['citation'] for item in row['candidates']))
+    if all(key(row) == key(records[0]) for row in records):
+        return records[-1]
+    return {'status': 'competing', 'candidates': records}
