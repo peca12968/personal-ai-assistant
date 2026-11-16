@@ -99,11 +99,12 @@ def read_waiting(db, gid, question, *, guidance=()):
     return {}
 
 
-def validate_saved(db, *, reply_sources_present, guidance_sources_present=False):
+def validate_saved(db, *, reply_sources_present, guidance_sources_present=False, checked_rechecks=None):
     query = '''SELECT DISTINCT g.id,g.status,g.question,g.notes FROM autonomous_goals g
         JOIN autonomous_steps s ON s.goal_id=g.id
         WHERE s.action_json LIKE '%"partial_result"%' OR s.observation_json LIKE '%"partial_result"%'
-        OR s.observation_json LIKE '%"question_citations"%' '''
+        OR s.observation_json LIKE '%"question_citations"%'
+        OR s.observation_json LIKE '%"recheck_evidence_sha256"%' '''
     if guidance_sources_present:
         query += ''' UNION SELECT g.id,g.status,g.question,g.notes FROM autonomous_goals g
             JOIN autonomous_guidance_sources c ON c.goal_id=g.id '''
@@ -113,21 +114,38 @@ def validate_saved(db, *, reply_sources_present, guidance_sources_present=False)
         steps = db.execute('SELECT sequence,action_json,observation_json FROM autonomous_steps '
                            'WHERE goal_id=? ORDER BY sequence', (gid,)).fetchall()
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps)) if guidance_sources_present else []
+        last_ask = None
+        rechecks = (checked_rechecks or {}).get(gid, {})
         for sequence, action_json, observation_json in steps:
             action, observation = json.loads(action_json), json.loads(observation_json)
+            prior_guidance = goal_guidance_sources.prior_sources(guidance, sequence)
+            available = excerpts
             partial = saved(action, observation)
-            if partial is not None:
-                expected = check_citations(partial, excerpts)
+            report = partial
+            if rechecks and 'citation_checks' in observation:
+                report = goal_reply_sources.saved_report(action, observation)
+            if 'recheck_evidence_sha256' in observation:
+                sha = observation['recheck_evidence_sha256']
+                proof = rechecks.get(sha) if isinstance(sha, str) else None
+                if (not proof or proof['ask_sequence'] != last_ask or not prior_guidance
+                        or proof['guidance_number'] != prior_guidance[-1]['number']
+                        or action.get('tool') not in goal_reply_sources.REPORT_FIELDS):
+                    raise ValueError('成果引用與有效的暫表重核紀錄不一致。')
+                available = [*excerpts, *proof['excerpts']]
+                report = goal_reply_sources.saved_report(action, observation)
+            if isinstance(report, str):
+                expected = check_citations(report, available)
                 if observation.get('citation_checks') != expected or any(not row['range_valid'] for row in expected):
                     raise ValueError('待補期間的成果引用與保存來源不一致。')
-            prior_guidance = goal_guidance_sources.prior_sources(guidance, sequence)
             if 'question_citations' in observation or (action.get('tool') == 'ask' and prior_guidance):
                 question = goal_reply_sources.checked_question(action, observation)
                 prior = [source for source in replies if source['ask_sequence'] < sequence]
-                expected = question_citations(question, excerpts, prior, prior_guidance)
+                expected = question_citations(question, available, prior, prior_guidance)
                 if (observation.get('question_citations') != expected
                         or (expected is None and 'question_citations' in observation)):
                     raise ValueError('問題引用與保存的來源不一致。')
+            if action.get('tool') == 'ask':
+                last_ask = sequence
             excerpts.extend(observation.get('excerpts', []))
         if status == 'needs_input':
             read_waiting(db, gid, current_question)

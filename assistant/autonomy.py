@@ -166,7 +166,7 @@ def goals(store, sid):
         return [dict(r) for r in db.execute('SELECT id,objective,status,updated_at FROM autonomous_goals WHERE session_id=? ORDER BY rowid DESC', (sid,))]
 
 
-def get_goal(store, sid, gid, *, include_reply_positions=False):
+def get_goal(store, sid, gid, *, include_reply_positions=False, include_recheck_evidence=False):
     with store.connect() as db:
         db.execute('BEGIN')
         row = db.execute('SELECT * FROM autonomous_goals WHERE session_id=? AND id=?', (sid, gid)).fetchone()
@@ -229,6 +229,10 @@ def get_goal(store, sid, gid, *, include_reply_positions=False):
                 reference = decision_table.waiting_reference_review(result['steps'], reply_sources, guidance_sources)
                 if reference is not None:
                     result['reference_review'] = reference
+        if include_recheck_evidence and sources_match:
+            carried = goal_partial_recheck.carried(db, result, result['steps'], reply_sources, guidance_sources)
+            if carried:
+                result['recheck_evidence'] = carried
         result['work_plan'] = work_plan.for_goal(result, current_sources)
     return result
 
@@ -349,7 +353,8 @@ def validate_action(value):
 
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
-            declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None, document_version_rules=None):
+            declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None, document_version_rules=None,
+            recheck_evidence=None):
     name, args = action['tool'], action['args']
     if pending_document_rule and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
             name == 'check_decision' and args == pending_document_rule):
@@ -443,9 +448,13 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'date_math':
         return date_tools.calculate(args)
     excerpts = [r for step in steps for r in step['observation'].get('excerpts', [])]
+    provenance = {}
+    if recheck_evidence:
+        excerpts.extend(recheck_evidence['excerpts'])
+        provenance['recheck_evidence_sha256'] = recheck_evidence['sha256']
     if name == 'ask':
         repair = decision_table.planned_reference_ask(args, steps, reply_sources, guidance_sources)
-        question = {'question': args['question']}
+        question = {'question': args['question'], **provenance}
         if 'plan_questions' in args:
             question['work_plan_question'] = work_plan_scope.bind_questions(args, steps)
         if repair is not None:
@@ -477,7 +486,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
     reply_checks = goal_reply_sources.citations(content, reply_sources)
     guidance_checks = goal_guidance_sources.citations(content, guidance_sources)
-    user_observation = report_data
+    user_observation = {**report_data, **provenance}
     if reply_checks:
         user_observation['reply_citations'] = reply_checks
     if guidance_checks:
@@ -530,7 +539,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
     failures = 0
     try:
         for _ in range(max_steps):
-            goal = get_goal(store, sid, gid, include_reply_positions=True)
+            goal = get_goal(store, sid, gid, include_reply_positions=True, include_recheck_evidence=True)
             if cancel.is_set():
                 reason = 'cancelled'
                 update(store, gid, 'paused', notice='已停止本機自主流程。')
@@ -575,6 +584,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            recheck_evidence = goal.get('recheck_evidence')
+            if recheck_evidence:
+                payload['pending_recheck_evidence'] = recheck_evidence
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
@@ -643,7 +655,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             unresolved_quantity = any(step['action']['tool'] == 'check_quantities' and
                                       step['observation'].get('adoption', {}).get('status') not in {None, 'adopted'}
                                       for step in payload['steps'])
-            has_excerpts = any(step['observation'].get('excerpts') for step in payload['steps'])
+            has_excerpts = (bool(recheck_evidence and recheck_evidence['excerpts'])
+                            or any(step['observation'].get('excerpts') for step in payload['steps']))
             withdrawals = goal.get('withdrawn_questions', ())
             if withdrawals:
                 payload['withdrawn_questions'] = [
@@ -717,6 +730,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  '採用最後現行欄值與這兩項逐字來源，直接依原需求交付，不重問或重建原表。'
                  if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('combined_reply')
                         for step in payload['steps']) else '') +
+                ('\n暫表重核的補讀原行及精確算式在 pending_recheck_evidence。'
+                 '可引用其原行。原問題的答覆或後續更正若變動了算式依據，按最新資料重算。'
+                 '當次仍適用的結果可沿用，避免重讀或重算。' if recheck_evidence else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE
@@ -763,7 +779,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
                                       reply_sources=reply_sources, guidance_sources=guidance_sources,
                                       declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
-                                      document_version_reply=document_version_reply, document_version_rules=document_version_rules)
+                                      document_version_reply=document_version_reply, document_version_rules=document_version_rules,
+                                      recheck_evidence=recheck_evidence)
                 if check is not None:
                     observation['source_check_step'] = check
                 if plan_check is not None:

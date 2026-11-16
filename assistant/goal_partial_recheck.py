@@ -6,7 +6,7 @@ from .acceptance import strict_json
 from .answer_runs import lease
 from .documents import check_citations
 from .goal_stages import digest
-from . import goal_guidance_sources, goal_partials, goal_reply_sources
+from . import goal_guidance_sources, goal_partials, goal_recheck_tools, goal_reply_sources, goal_sources, operand_evidence
 
 
 INSTRUCTIONS = '''你是使用者的個人 AI 助理。依保存於同一目標的資料，重核一份等待補答中的暫表。
@@ -57,19 +57,52 @@ def _result(value, excerpts, replies, guidance, sequence):
     return value
 
 
-def _read(gid, objective, steps, replies, guidance, row):
+def _scope(goal, steps, sequence):
+    sources = goal['sources'] if 'sources' in goal else strict_json(goal['sources_json'])
+    history = goal_sources.verify_history(steps, sources, {})
+    return history.get(sequence, sources)
+
+
+def _copies(db, goal, scope):
+    if not scope:
+        return []
+    ids = [row['document_id'] for row in scope]
+    placeholders = ','.join('?' for _ in ids)
+    rows = db.execute(f'SELECT id,name,sha256,content FROM documents WHERE session_id=? AND id IN ({placeholders})',
+                      (goal['session_id'], *ids))
+    return [dict(zip(('id', 'name', 'sha256', 'content'), row, strict=True)) for row in rows]
+
+
+def _latest(db, gid, sequence):
+    return db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
+        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=? ORDER BY guidance_number DESC LIMIT 1''',
+        (gid, sequence)).fetchone()
+
+
+def _read(db, goal, steps, replies, guidance, row):
     sequence, number, raw, sha = row
     if (type(sequence) is not int or type(number) is not int or not 1 <= sequence <= len(steps)
             or not 1 <= number <= len(guidance) or not isinstance(raw, str) or len(raw) > 100_000):
         raise ValueError('暫表重核的保存範圍不符。')
     receipt = strict_json(raw)
-    if (not isinstance(receipt, dict) or set(receipt) != {'input_sha256', 'result'}
-            or sha != digest([gid, sequence, number, receipt])):
+    fields = {'input_sha256', 'result'}
+    if (not isinstance(receipt, dict) or set(receipt) not in (fields, fields | {'tools'})
+            or sha != digest([goal['id'], sequence, number, receipt])):
         raise ValueError('暫表重核紀錄的內容指紋不符。')
+    objective = goal['objective']
     _, excerpts, prior_replies, sources, evidence_hash = _inputs(objective, steps, replies, guidance, sequence, number)
     if receipt['input_sha256'] != evidence_hash:
         raise ValueError('暫表重核的依據已改變。')
-    return _result(receipt['result'], excerpts, prior_replies, sources, sequence)
+    checked = None
+    if 'tools' in receipt:
+        scope = _scope(goal, steps, sequence)
+        user_sources = operand_evidence.user_texts(objective, prior_replies, sources, sequence + 1)
+        extra, calculations = goal_recheck_tools.replay(receipt['tools'], _copies(db, goal, scope), scope,
+                                                       excerpts, user_sources)
+        excerpts.extend(extra)
+        checked = {'sha256': sha, 'ask_sequence': sequence, 'guidance_number': number,
+                   'excerpts': extra, 'calculations': calculations}
+    return _result(receipt['result'], excerpts, prior_replies, sources, sequence), checked
 
 
 def waiting(db, goal, steps, replies, guidance, *, sources_match):
@@ -83,17 +116,53 @@ def waiting(db, goal, steps, replies, guidance, *, sources_match):
         details.update(partial_result_historical=True, partial_source_changed=True)
     if not guidance or guidance[-1]['steps_seen'] < sequence or 'partial_result' not in details:
         return details
-    row = db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
-        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=? ORDER BY guidance_number DESC LIMIT 1''',
-        (goal['id'], sequence)).fetchone()
+    row = _latest(db, goal['id'], sequence)
     if row:
-        result = _read(goal['id'], goal['objective'], steps, replies, guidance, row)
+        result, _ = _read(db, goal, steps, replies, guidance, row)
         details.update(partial_result=result['partial_result'], partial_recheck_sha256=row[3])
         if sources_match and row[1] == guidance[-1]['number']:
             del details['partial_result_historical']
             if result['withdrawal_source']:
                 details['partial_withdrawal_source'] = result['withdrawal_source']
     return details
+
+
+def carried(db, goal, steps, replies, guidance):
+    if not guidance or goal['status'] == 'needs_input':
+        return None
+    ask = next((step for step in reversed(steps) if step['action']['tool'] == 'ask'), None)
+    if ask is None or guidance[-1]['steps_seen'] != ask['sequence']:
+        return None
+    row = _latest(db, goal['id'], ask['sequence'])
+    if row and row[1] == guidance[-1]['number']:
+        _, checked = _read(db, goal, steps, replies, guidance, row)
+        return checked
+    return None
+
+
+def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, scope, cancel):
+    records = []
+    excerpts = list(excerpts)
+    user_sources = operand_evidence.user_texts(payload['objective'], replies, guidance, sequence + 1)
+    observations = {**payload, 'documents': scope}
+    instructions = INSTRUCTIONS + '\n\n' + goal_recheck_tools.GUIDANCE + '\n\n目標與已保存資料：\n'
+    for remaining in range(goal_recheck_tools.MAX_ACTIONS, -1, -1):
+        if cancel is not None and cancel.is_set():
+            raise ValueError('已停止暫表重核。')
+        raw = engine.answer(instructions + json.dumps(
+            {**observations, 'recheck_tools': records, 'tools_remaining': remaining}, ensure_ascii=False), cancel)
+        if not isinstance(raw, str) or len(raw) > 100_000:
+            raise ValueError('暫表重核的回覆格式或長度不符。')
+        value = strict_json(raw)
+        if not isinstance(value, dict) or set(value) != {'tool', 'args'}:
+            return _result(value, excerpts, replies, guidance, sequence), records
+        if not remaining:
+            raise ValueError('本次暫表重核工具已用完。')
+        tool, args = value['tool'], value['args']
+        docs = store.documents(sid, include_content=True, document_ids=[row['document_id'] for row in scope]) if tool == 'read_ranges' else []
+        observation = goal_recheck_tools.execute(tool, args, docs, scope, excerpts, user_sources, cancel)
+        records.append({'tool': tool, 'args': args, 'result': observation})
+        excerpts.extend(observation.get('excerpts', ()))
 
 
 def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
@@ -113,13 +182,14 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
             steps = _steps(db, gid)
         payload, excerpts, replies, sources, evidence_hash = _inputs(
             goal['objective'], steps, goal.get('reply_sources', ()), guidance, sequence, number)
-        if cancel is not None and cancel.is_set():
-            raise ValueError('已停止暫表重核。')
-        raw = engine.answer(INSTRUCTIONS + '\n\n目標與已保存資料：\n' + json.dumps(payload, ensure_ascii=False), cancel)
-        if not isinstance(raw, str) or len(raw) > 100_000:
-            raise ValueError('暫表重核的回覆格式或長度不符。')
-        receipt = {'input_sha256': evidence_hash,
-                   'result': _result(strict_json(raw), excerpts, replies, sources, sequence)}
+        scope = _scope(goal, steps, sequence)
+        result, records = _review(engine, payload, excerpts, replies, sources, sequence, store, sid, scope, cancel)
+        receipt = {'input_sha256': evidence_hash, 'result': result}
+        if records:
+            receipt['tools'] = records
+        encoded = json.dumps(receipt, ensure_ascii=False)
+        if len(encoded) > 100_000:
+            raise ValueError('暫表重核紀錄超過保存上限。')
         sha = digest([gid, sequence, number, receipt])
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -129,13 +199,15 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
                 raise ValueError('重核期間的問題或來源已變更，請重新載入暫表。')
             db.execute('''INSERT INTO autonomous_partial_rechecks
                 (goal_id,ask_sequence,guidance_number,receipt_json,receipt_sha256) VALUES (?,?,?,?,?)''',
-                (gid, sequence, number, json.dumps(receipt, ensure_ascii=False), sha))
+                (gid, sequence, number, encoded, sha))
             return _snapshot(db, sid, gid)
 
 
 def validate_saved(db, *, replies_present):
-    for gid, objective, notes in db.execute('''SELECT g.id,g.objective,g.notes FROM autonomous_goals g
-        WHERE EXISTS(SELECT 1 FROM autonomous_partial_rechecks r WHERE r.goal_id=g.id)'''):
+    verified = {}
+    for gid, objective, notes, sid, sources_json in db.execute('''SELECT g.id,g.objective,g.notes,g.session_id,g.sources_json
+        FROM autonomous_goals g WHERE EXISTS(SELECT 1 FROM autonomous_partial_rechecks r WHERE r.goal_id=g.id)'''):
+        goal = {'id': gid, 'objective': objective, 'session_id': sid, 'sources_json': sources_json}
         steps = [{'sequence': s, 'action': strict_json(a), 'observation': strict_json(o)}
                  for s, a, o in db.execute('''SELECT sequence,action_json,observation_json FROM autonomous_steps
                                           WHERE goal_id=? ORDER BY sequence''', (gid,))]
@@ -143,4 +215,7 @@ def validate_saved(db, *, replies_present):
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps))
         for row in db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
             FROM autonomous_partial_rechecks WHERE goal_id=? ORDER BY ask_sequence,guidance_number''', (gid,)):
-            _read(gid, objective, steps, replies, guidance, row)
+            _, checked = _read(db, goal, steps, replies, guidance, row)
+            if checked is not None:
+                verified.setdefault(gid, {})[row[3]] = checked
+    return verified

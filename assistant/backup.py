@@ -209,11 +209,13 @@ def validate_database(path):
             from .quantity_report import validate_saved as validate_quantity_reports
             validate_quantity_reports(db, replies_present='autonomous_reply_sources' in actual_tables,
                                       guidance_present=guidance_present, scope_present=quantity_scope_tables <= actual_tables)
-            validate_partials(db, reply_sources_present='autonomous_reply_sources' in actual_tables,
-                              guidance_sources_present=guidance_present)
+            reply_sources_present = 'autonomous_reply_sources' in actual_tables
+            checked_rechecks = {}
             if 'autonomous_partial_rechecks' in actual_tables:
                 from .goal_partial_recheck import validate_saved as validate_rechecks
-                validate_rechecks(db, replies_present='autonomous_reply_sources' in actual_tables)
+                checked_rechecks = validate_rechecks(db, replies_present=reply_sources_present)
+            validate_partials(db, reply_sources_present=reply_sources_present,
+                              guidance_sources_present=guidance_present, checked_rechecks=checked_rechecks)
             from .goal_reply_sources import validate_saved as validate_reply_sources
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
             from .goal_guidance_sources import validate_saved as validate_guidance_sources
