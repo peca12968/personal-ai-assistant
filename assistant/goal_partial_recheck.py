@@ -19,6 +19,15 @@ INSTRUCTIONS = '''你是使用者的個人 AI 助理。依保存於同一目標�
 仍待答、有附帶條件或無法明確判斷時填 null。不要替使用者作答、提出新問題、操作文件或產出定稿。
 只回傳 JSON 物件 {"partial_result":"更新的暫表", "withdrawal_source":null}。'''
 
+REUSE_GUIDANCE = (
+    '前次重核的已讀原行也在 document_excerpts。文件版本相符，這些行可直接引用。'
+    '仍以最新更正判斷原行是否適用。'
+    'previous_recheck.calculations 是前次已核算的候選結果，每個有 id。'
+    '只有同一欄位的公式、運算元、單位與適用來源都仍有效時，才在最終 JSON 的 reuse_calculations 列出該 id。'
+    '例如 {"partial_result":"更新的暫表","withdrawal_source":null,"reuse_calculations":[1]}。'
+    '沒有沿用算式時用空清單。若任何相關條件變更，先用目前適用的證據重算或將結果標為待查。'
+)
+
 
 def _inputs(objective, steps, replies, guidance, sequence, number):
     prior = steps[:sequence]
@@ -73,36 +82,61 @@ def _copies(db, goal, scope):
     return [dict(zip(('id', 'name', 'sha256', 'content'), row, strict=True)) for row in rows]
 
 
-def _latest(db, gid, sequence):
-    return db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
-        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=? ORDER BY guidance_number DESC LIMIT 1''',
-        (gid, sequence)).fetchone()
+def _choices(numbers, previous):
+    available = previous['calculations'] if previous else []
+    if (not isinstance(numbers, list) or len(numbers) > len(available)
+            or any(type(number) is not int or not 1 <= number <= len(available) for number in numbers)
+            or len(set(numbers)) != len(numbers)):
+        raise ValueError('沿用算式須指定前次重核提供的不重複編號。')
+    return [available[number - 1] for number in numbers]
 
 
-def _read(db, goal, steps, replies, guidance, row):
+def _read(db, goal, steps, replies, guidance, row, previous):
     sequence, number, raw, sha = row
     if (type(sequence) is not int or type(number) is not int or not 1 <= sequence <= len(steps)
             or not 1 <= number <= len(guidance) or not isinstance(raw, str) or len(raw) > 100_000):
         raise ValueError('暫表重核的保存範圍不符。')
     receipt = strict_json(raw)
     fields = {'input_sha256', 'result'}
-    if (not isinstance(receipt, dict) or set(receipt) not in (fields, fields | {'tools'})
+    if (not isinstance(receipt, dict) or not fields <= receipt.keys()
+            or receipt.keys() - fields - {'tools', 'reuse'}
             or sha != digest([goal['id'], sequence, number, receipt])):
         raise ValueError('暫表重核紀錄的內容指紋不符。')
     objective = goal['objective']
     _, excerpts, prior_replies, sources, evidence_hash = _inputs(objective, steps, replies, guidance, sequence, number)
     if receipt['input_sha256'] != evidence_hash:
         raise ValueError('暫表重核的依據已改變。')
-    checked = None
+    extra, calculations = [], []
+    if 'reuse' in receipt:
+        link = receipt['reuse']
+        if (not previous or not isinstance(link, dict) or set(link) != {'sha256', 'calculations'}
+                or link['sha256'] != previous['sha256'] or previous['ask_sequence'] != sequence
+                or previous['guidance_number'] >= number):
+            raise ValueError('沿用證據必須連到同一原問的前次重核。')
+        extra.extend(previous['excerpts'])
+        calculations.extend(_choices(link['calculations'], previous))
     if 'tools' in receipt:
         scope = _scope(goal, steps, sequence)
         user_sources = operand_evidence.user_texts(objective, prior_replies, sources, sequence + 1)
-        extra, calculations = goal_recheck_tools.replay(receipt['tools'], _copies(db, goal, scope), scope,
-                                                       excerpts, user_sources)
-        excerpts.extend(extra)
+        read, calculated = goal_recheck_tools.replay(receipt['tools'], _copies(db, goal, scope), scope,
+                                                     [*excerpts, *extra], user_sources)
+        extra.extend(read)
+        calculations.extend(row for row in calculated if row not in calculations)
+    checked = None
+    if receipt.keys() & {'tools', 'reuse'}:
         checked = {'sha256': sha, 'ask_sequence': sequence, 'guidance_number': number,
                    'excerpts': extra, 'calculations': calculations}
-    return _result(receipt['result'], excerpts, prior_replies, sources, sequence), checked
+    return _result(receipt['result'], [*excerpts, *extra], prior_replies, sources, sequence), checked
+
+
+def _history(db, goal, steps, replies, guidance, sequence):
+    latest = previous = None
+    for row in db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
+        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=? ORDER BY guidance_number''',
+        (goal['id'], sequence)):
+        result, previous = _read(db, goal, steps, replies, guidance, row, previous)
+        latest = row[1], row[3], result, previous
+    return latest
 
 
 def waiting(db, goal, steps, replies, guidance, *, sources_match):
@@ -116,11 +150,11 @@ def waiting(db, goal, steps, replies, guidance, *, sources_match):
         details.update(partial_result_historical=True, partial_source_changed=True)
     if not guidance or guidance[-1]['steps_seen'] < sequence or 'partial_result' not in details:
         return details
-    row = _latest(db, goal['id'], sequence)
-    if row:
-        result, _ = _read(db, goal, steps, replies, guidance, row)
-        details.update(partial_result=result['partial_result'], partial_recheck_sha256=row[3])
-        if sources_match and row[1] == guidance[-1]['number']:
+    latest = _history(db, goal, steps, replies, guidance, sequence)
+    if latest:
+        number, sha, result, _ = latest
+        details.update(partial_result=result['partial_result'], partial_recheck_sha256=sha)
+        if sources_match and number == guidance[-1]['number']:
             del details['partial_result_historical']
             if result['withdrawal_source']:
                 details['partial_withdrawal_source'] = result['withdrawal_source']
@@ -133,19 +167,26 @@ def carried(db, goal, steps, replies, guidance):
     ask = next((step for step in reversed(steps) if step['action']['tool'] == 'ask'), None)
     if ask is None or guidance[-1]['steps_seen'] != ask['sequence']:
         return None
-    row = _latest(db, goal['id'], ask['sequence'])
-    if row and row[1] == guidance[-1]['number']:
-        _, checked = _read(db, goal, steps, replies, guidance, row)
-        return checked
+    latest = _history(db, goal, steps, replies, guidance, ask['sequence'])
+    if latest and latest[0] == guidance[-1]['number']:
+        return latest[3]
     return None
 
 
-def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, scope, cancel):
+def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, scope, previous, cancel):
     records = []
     excerpts = list(excerpts)
     user_sources = operand_evidence.user_texts(payload['objective'], replies, guidance, sequence + 1)
     observations = {**payload, 'documents': scope}
-    instructions = INSTRUCTIONS + '\n\n' + goal_recheck_tools.GUIDANCE + '\n\n目標與已保存資料：\n'
+    instructions = INSTRUCTIONS + '\n\n' + goal_recheck_tools.GUIDANCE
+    if previous:
+        excerpts.extend(previous['excerpts'])
+        observations['document_excerpts'] = list(excerpts)
+        observations['previous_recheck'] = {
+            'guidance_number': previous['guidance_number'],
+            'calculations': [{'id': number, **row} for number, row in enumerate(previous['calculations'], 1)]}
+        instructions += '\n\n' + REUSE_GUIDANCE
+    instructions += '\n\n目標與已保存資料：\n'
     for remaining in range(goal_recheck_tools.MAX_ACTIONS, -1, -1):
         if cancel is not None and cancel.is_set():
             raise ValueError('已停止暫表重核。')
@@ -155,7 +196,9 @@ def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, 
             raise ValueError('暫表重核的回覆格式或長度不符。')
         value = strict_json(raw)
         if not isinstance(value, dict) or set(value) != {'tool', 'args'}:
-            return _result(value, excerpts, replies, guidance, sequence), records
+            selected = value.pop('reuse_calculations', []) if isinstance(value, dict) else []
+            _choices(selected, previous)
+            return _result(value, excerpts, replies, guidance, sequence), records, selected
         if not remaining:
             raise ValueError('本次暫表重核工具已用完。')
         tool, args = value['tool'], value['args']
@@ -180,11 +223,16 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
         number = guidance[-1]['number']
         with store.connect() as db:
             steps = _steps(db, gid)
+            latest = _history(db, goal, steps, goal.get('reply_sources', ()), guidance, sequence)
         payload, excerpts, replies, sources, evidence_hash = _inputs(
             goal['objective'], steps, goal.get('reply_sources', ()), guidance, sequence, number)
         scope = _scope(goal, steps, sequence)
-        result, records = _review(engine, payload, excerpts, replies, sources, sequence, store, sid, scope, cancel)
+        previous = latest[3] if latest else None
+        result, records, selected = _review(
+            engine, payload, excerpts, replies, sources, sequence, store, sid, scope, previous, cancel)
         receipt = {'input_sha256': evidence_hash, 'result': result}
+        if previous:
+            receipt['reuse'] = {'sha256': previous['sha256'], 'calculations': selected}
         if records:
             receipt['tools'] = records
         encoded = json.dumps(receipt, ensure_ascii=False)
@@ -213,9 +261,12 @@ def validate_saved(db, *, replies_present):
                                           WHERE goal_id=? ORDER BY sequence''', (gid,))]
         replies = goal_reply_sources.read(db, gid, notes) if replies_present else []
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps))
+        ask = previous = None
         for row in db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
             FROM autonomous_partial_rechecks WHERE goal_id=? ORDER BY ask_sequence,guidance_number''', (gid,)):
-            _, checked = _read(db, goal, steps, replies, guidance, row)
-            if checked is not None:
-                verified.setdefault(gid, {})[row[3]] = checked
+            if row[0] != ask:
+                ask, previous = row[0], None
+            _, previous = _read(db, goal, steps, replies, guidance, row, previous)
+            if previous is not None:
+                verified.setdefault(gid, {})[row[3]] = previous
     return verified

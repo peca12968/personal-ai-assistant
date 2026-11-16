@@ -235,6 +235,70 @@ class GoalPartialRecheckTests(unittest.TestCase):
             goal_partial_recheck.run(self.store, self.sid, self.gid, engine, expected_fingerprint=current['fingerprint'])
         self.assertEqual(goal_replies.snapshot(self.store, self.sid, self.gid), current)
 
+    def test_recheck_reuses_same_ask_evidence_and_recalculates_a_changed_operand(self):
+        changed, _, first_waiting, read, calc, report = self.prepare_recount()
+        first = goal_partial_recheck.run(
+            self.store, self.sid, self.gid, ScriptedEngine(read, json.dumps(calc), self.result(text=report)),
+            expected_fingerprint=first_waiting['fingerprint'])
+        prior_sha = first['goal']['partial_recheck_sha256']
+        second_waiting = self.save('台面正式改為赤榆台。新版匣數、每匣件數及總件數沿用，見證人照原問題。')
+        second_text = f'台面：赤榆台 [更正#2]。新計數 17 匣 [D{changed}:L2]，共 34 件。見證人待補。'
+        output = json.loads(self.result(text=second_text))
+        for invalid in ([True], [2], [1, 1]):
+            output['reuse_calculations'] = invalid
+            with self.subTest(selection=invalid), self.assertRaisesRegex(ValueError, '不重複編號'):
+                goal_partial_recheck.run(
+                    self.store, self.sid, self.gid, ScriptedEngine(json.dumps(output)),
+                    expected_fingerprint=second_waiting['fingerprint'])
+        output['reuse_calculations'] = [1]
+        engine = ScriptedEngine(json.dumps(output))
+        second = goal_partial_recheck.run(self.store, self.sid, self.gid, engine,
+                                             expected_fingerprint=second_waiting['fingerprint'])
+        self.assertEqual(len(engine.prompts), 1)
+        self.assertIn('新計數是 17 匣', engine.prompts[0])
+        self.assertIn('"exact": "34"', engine.prompts[0])
+        self.assertEqual(second['goal']['question'], self.question)
+        with self.store.connect() as db:
+            raw, = db.execute('SELECT receipt_json FROM autonomous_partial_rechecks WHERE goal_id=? AND guidance_number=2',
+                              (self.gid,)).fetchone()
+            saved = json.loads(raw)
+        self.assertEqual(saved['reuse'], {'sha256': prior_sha, 'calculations': [1]})
+        self.assertNotIn('tools', saved)
+
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'carry-restored')
+        restored = Store(self.root / 'carry-restored' / 'assistant.sqlite3')
+        self.assertEqual(second, goal_replies.snapshot(restored, self.sid, self.gid))
+        goal_replies.save(restored, self.sid, self.gid, '周霽羽', expected_fingerprint=second['fingerprint'])
+        finished = autonomy.run_goal(restored, self.sid, self.gid, ScriptedEngine(
+            action('finish', report=second_text.replace('見證人待補', '見證人周霽羽 [補充#2]'))), max_steps=1)
+        self.assertEqual(finished['status'], 'report_ready')
+        self.assertEqual(finished['steps'][-1]['observation']['recheck_evidence_sha256'],
+                         second['goal']['partial_recheck_sha256'])
+        validate_database(restored.path)
+
+        third_waiting = self.save('本批匣數正式改為 19 匣，台面和每匣件數保持。請重算。')
+        calc['args']['expression']['values'][0] = '19'
+        calc['args']['operands'][0].update(citation='[更正#3]', quote='19 匣')
+        output = json.loads(self.result(text='台面：赤榆台 [更正#2]。本批 19 匣 [更正#3]，共 38 件。見證人待補。'))
+        output['reuse_calculations'] = []
+        engine = ScriptedEngine(json.dumps(calc), json.dumps(output))
+        third = goal_partial_recheck.run(self.store, self.sid, self.gid, engine,
+                                            expected_fingerprint=third_waiting['fingerprint'])
+        self.assertIn('"exact": "38"', engine.prompts[1])
+        self.assertEqual(third['goal']['question'], self.question)
+        goal_replies.save(self.store, self.sid, self.gid, '周霽羽', expected_fingerprint=third['fingerprint'])
+        carried = autonomy.get_goal(self.store, self.sid, self.gid, include_recheck_evidence=True)['recheck_evidence']
+        self.assertEqual([row['result']['exact'] for row in carried['calculations']], ['38'])
+        validate_database(self.store.path)
+
+        with restored.connect() as db:
+            saved['reuse']['sha256'] = '0' * 64
+            db.execute('UPDATE autonomous_partial_rechecks SET receipt_json=?,receipt_sha256=? WHERE goal_id=? AND guidance_number=2',
+                       (json.dumps(saved), digest([self.gid, 2, 2, saved]), self.gid))
+        with self.assertRaisesRegex(ValueError, '同一原問的前次重核'):
+            validate_database(restored.path)
+
     def test_cli_is_an_explicit_fingerprinted_entry_point(self):
         previous = self.save('本批台面正式改為青石台。')
         args = ['assistant', '--data-dir', str(self.root), '--session', self.sid, '--recheck-goal-partial', self.gid]
