@@ -580,6 +580,72 @@ class FormGeometryTests(unittest.TestCase):
             self.assertEqual(app.open_chat_goal_btn.winfo_manager(), '')
             self.assertEqual(app.sid, other_sid)
 
+    def test_chat_reply_draft_uses_only_selected_user_text_and_preserves_an_open_draft(self):
+        from assistant.engine import Assistant
+        from assistant.goal_reply_ui import GoalReplyWindow
+        from assistant.gui import App
+        from test_autonomy import ScriptedEngine, action
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '晴溪 Q4 的展件')
+            other = autonomy.create_goal(store, sid, '晴溪 Q40 的展件')
+            before = autonomy.run_goal(store, sid, gid, ScriptedEngine(action('ask', question='封條顏色是什麼？')))
+            other_before = autonomy.get_goal(store, sid, other)
+            quote = '封條顏色為銀灰。'
+            store.add_message(sid, 'user', '較早的非本輪文字。' + quote)
+            Assistant(store, ScriptedEngine(quote)).ask(
+                sid, '查看「晴溪 Q4」目前等我回答哪個問題？🙂 ' + quote)
+            app = App(self.root, store, SimpleNamespace(answer=lambda *args: self.fail('draft staging started inference')))
+            self.assertEqual(app.chat_reply_draft_btn.winfo_manager(), 'pack')
+            app.input.insert('1.0', '我的聊天草稿 ')
+            editors = []
+
+            def hidden_view(*args, **kwargs):
+                view = AutonomousWindow(*args, **kwargs)
+                view.window.withdraw()
+                return view
+
+            def hidden_editor(*args, **kwargs):
+                view = GoalReplyWindow(*args, **kwargs)
+                view.window.withdraw()
+                editors.append(view)
+                return view
+
+            def select(start):
+                app.chat.tag_remove('sel', '1.0', 'end')
+                app.chat.tag_add('sel', start, f'{start}+{len(quote)}c')
+
+            with patch('assistant.autonomy_ui.AutonomousWindow', side_effect=hidden_view), \
+                 patch('assistant.goal_reply_ui.GoalReplyWindow', side_effect=hidden_editor):
+                old = app.chat.search(quote, '1.0', stopindex='end')
+                selected = app.chat.search(quote, f'{old}+1c', stopindex='end')
+                model = app.chat.search(quote, f'{selected}+1c', stopindex='end')
+                self.assertTrue(old and selected and model)
+                for invalid in (old, model):
+                    select(invalid)
+                    app.chat_reply_draft_btn.invoke()
+                    self.assertEqual(app.autonomous_windows, [])
+                    self.assertIn('使用者訊息', app.status.get())
+                select(selected)
+                app.chat_reply_draft_btn.invoke()
+                editor, = editors
+                self.assertEqual(editor.gid, gid)
+                self.assertEqual(editor.content.get('1.0', 'end-1c'), quote)
+                self.assertIn('所選原文', editor.notice.get())
+                editor.content.delete('1.0', 'end')
+                editor.content.insert('1.0', '我已編輯的草稿 ')
+                select(selected)
+                app.chat_reply_draft_btn.invoke()
+                self.assertEqual(editors, [editor])
+                self.assertEqual(editor.content.get('1.0', 'end-1c'), '我已編輯的草稿 ')
+                self.assertIn('已保留原草稿', editor.notice.get())
+            self.assertEqual(app.input.get('1.0', 'end-1c'), '我的聊天草稿 ')
+            self.assertEqual(autonomy.get_goal(store, sid, gid), before)
+            self.assertEqual(autonomy.get_goal(store, sid, other), other_before)
+            self.assertEqual(app.autonomous_windows[0].selected_id(), gid)
+
     def test_autonomous_csv_selection_result_view_and_explicit_full_export(self):
         import json
         with tempfile.TemporaryDirectory() as tmp:

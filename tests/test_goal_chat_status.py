@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from assistant import answer_runs, autonomy as a, goal_guidance, goal_replies
-from assistant.autonomy_status import chat_goal_target, goal_context
+from assistant.autonomy_status import chat_goal_target, chat_reply_draft, goal_context
 from assistant.backup import create_backup, restore_backup
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
@@ -302,6 +302,50 @@ class GoalChatStatusTests(unittest.TestCase):
         self.assertNotIn('reference', missing)
         other = self.store.new_session()
         self.assertNotIn('reference', goal_context(self.store, other, short))
+
+    def test_chat_draft_requires_exact_user_span_and_original_question_generation(self):
+        gid = a.create_goal(self.store, self.sid, '北橋 K8 的交接')
+        question = '封條顏色是什麼？'
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=question)))
+        quote = '封條顏色為銀灰。'
+        request = '查看「北橋 K8」現在等我回答哪個問題？🙂 ' + quote
+        answer = Assistant(self.store, ScriptedEngine('請核對原文。')).ask(self.sid, request)
+        mid = answer['user_message_id']
+        offset = request.index(quote)
+        before = a.get_goal(self.store, self.sid, gid)
+        draft = chat_reply_draft(self.store, self.sid, answer['id'], mid, offset, quote)
+        self.assertEqual((draft['goal_id'], draft['text'], draft['user_message_id']), (gid, quote, mid))
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
+        for wrong_mid, wrong_offset, wrong_text in (
+                (answer['id'], offset, quote), (mid, offset + 1, quote), (mid, offset, '封條顏色為紅色。')):
+            with self.assertRaisesRegex(ValueError, '使用者訊息'):
+                chat_reply_draft(self.store, self.sid, answer['id'], wrong_mid, wrong_offset, wrong_text)
+        with self.assertRaisesRegex(ValueError, '使用者訊息'):
+            chat_reply_draft(self.store, self.store.new_session(), answer['id'], mid, offset, quote)
+
+        goal_replies.save(self.store, self.sid, gid, '暫用紅色。', expected_fingerprint=draft['fingerprint'])
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=question)))
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            chat_reply_draft(self.store, self.sid, answer['id'], mid, offset, quote)
+        self.assertEqual(chat_goal_target(self.store, self.sid, answer['id']), gid)
+
+    def test_chat_draft_cannot_use_an_unchanged_ask_after_sources_change(self):
+        path = self.root / 'stock.txt'
+        path.write_text('封條按本批清單核對。', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        gid = a.create_goal(self.store, self.sid, '松臺 C2 的點收')
+        question = '封條顏色是什麼？'
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=question)))
+        quote = '封條顏色為銀灰。'
+        request = '查看「松臺 C2」目前等我回答哪個問題？' + quote
+        answer = Assistant(self.store, ScriptedEngine(question)).ask(self.sid, request)
+        path.write_text('封條改用另一批。', encoding='utf-8')
+        self.store.attach_document(self.sid, path)
+        before = a.get_goal(self.store, self.sid, gid)
+        self.assertEqual(before['question'], question)
+        with self.assertRaisesRegex(ValueError, '已變更'):
+            chat_reply_draft(self.store, self.sid, answer['id'], answer['user_message_id'], request.index(quote), quote)
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
 
     def test_choice_rechecked_before_recording_and_keeps_same_source_on_retry(self):
         gids, _, prior = self._candidate_answer()

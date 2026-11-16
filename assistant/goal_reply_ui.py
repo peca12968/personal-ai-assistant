@@ -130,6 +130,18 @@ class GoalReplyWindow:
         except Exception as exc:
             self.notice.set('回答已保存，但未能啟動接續；可回原視窗查看並開始。' + str(exc))
 
+    def stage_chat_draft(self, draft):
+        if self.content.get('1.0', 'end-1c'):
+            self.notice.set('答覆視窗已有未保存文字，已保留原草稿。')
+            return
+        self.reload()
+        if (draft['goal_id'] != self.gid or self.current is None
+                or self.current['fingerprint'] != draft['fingerprint']):
+            self.notice.set('待答問題或工作條件已變更，請核對目前問題。')
+            return
+        self.content.insert('1.0', draft['text'])
+        self.notice.set(f'已帶入本對話你的第 {draft["user_message_id"]} 則訊息的所選原文，請核對後保存。')
+
     def withdraw(self):
         if self.current is None:
             return

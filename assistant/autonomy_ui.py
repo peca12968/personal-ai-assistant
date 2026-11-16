@@ -25,6 +25,7 @@ class AutonomousWindow:
         self.discuss_report = discuss_report
         self.busy = False
         self.active_goal = None
+        self.reply_editors = []
         self.goal_draft_result = None
         self.draft_origin = None
         self.cancel = threading.Event()
@@ -449,12 +450,27 @@ class AutonomousWindow:
         gid=self.selected_id()
         return GoalGuidanceWindow(self.window,self.store,self.sid,gid,lambda:self.refresh(gid))
 
-    def add_reply(self):
+    def add_reply(self, *, draft=None):
         if self.busy:
             return
         from .goal_reply_ui import GoalReplyWindow
-        return GoalReplyWindow(self.window, self.store, self.sid, self.selected_id(),
-                               prepare_resume=self.reply_budget, saved=self.reply_saved)
+        gid = self.selected_id()
+        self.reply_editors = [editor for editor in self.reply_editors if editor.window.winfo_exists()]
+        editor = None
+        if draft:
+            if draft['goal_id'] != gid:
+                return
+            open_editors = [view for view in reversed(self.reply_editors) if view.gid == gid]
+            editor = next((view for view in open_editors if view.content.get('1.0', 'end-1c')),
+                          open_editors[0] if open_editors else None)
+        if editor is None:
+            editor = GoalReplyWindow(self.window, self.store, self.sid, gid,
+                                     prepare_resume=self.reply_budget, saved=self.reply_saved)
+            self.reply_editors.append(editor)
+        if draft:
+            editor.stage_chat_draft(draft)
+            editor.window.lift()
+        return editor
 
     def reply_budget(self):
         if self.busy:

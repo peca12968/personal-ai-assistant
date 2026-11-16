@@ -96,7 +96,7 @@ class App:
         chat_frame = tk.Frame(main, bg=PANEL)
         chat_frame.grid(row=0, column=0, sticky="nsew")
         self.chat = tk.Text(chat_frame, bg=PANEL, fg=FG, insertbackground=FG,
-            wrap="word", padx=22, pady=20, relief="flat", state="disabled",
+            wrap="word", padx=22, pady=20, relief="flat", state="disabled", exportselection=False,
             font=("Microsoft JhengHei UI", 11), spacing3=8, height=12)
         scroll = ttk.Scrollbar(chat_frame, command=self.chat.yview)
         self.chat.configure(yscrollcommand=scroll.set)
@@ -114,6 +114,7 @@ class App:
         self.context_btn = ttk.Button(feedback, text="查看本次參考", command=self.inspect_context)
         self.context_btn.pack(side="left")
         self.open_chat_goal_btn = ttk.Button(feedback, text='開啟這項工作', command=self.open_chat_goal)
+        self.chat_reply_draft_btn = ttk.Button(feedback, text='帶入答覆草稿', command=self.open_chat_reply_draft)
         self.input = tk.Text(main, height=4, bg=PANEL, fg=FG, insertbackground=FG,
             wrap="word", relief="flat", padx=12, pady=10, font=("Microsoft JhengHei UI", 11))
         self.input.grid(row=2, column=0, sticky="ew")
@@ -187,24 +188,53 @@ class App:
         return existing
 
     def _refresh_chat_goal(self):
-        from .autonomy_status import chat_goal_target
+        from .autonomy_status import chat_goal_link
         try:
-            gid = chat_goal_target(self.store, self.sid, self.last_answer)
+            link = chat_goal_link(self.store, self.sid, self.last_answer)
         except (ValueError, OSError, sqlite3.Error):
-            gid = None
-        if gid:
+            link = None
+        if link:
             self.open_chat_goal_btn.pack(side='left', padx=(6, 0))
         else:
             self.open_chat_goal_btn.pack_forget()
-        return gid
+        if link and link['reply_basis']:
+            self.chat_reply_draft_btn.pack(side='left', padx=(6, 0))
+        else:
+            self.chat_reply_draft_btn.pack_forget()
+        return link
 
     def open_chat_goal(self):
         if self.busy or self.closing:
             return
-        gid = self._refresh_chat_goal()
-        if gid is not None and self.autonomous_goals(self.sid, gid).listing.exists(gid):
-            return
+        if link := self._refresh_chat_goal():
+            gid = link['goal_id']
+            if self.autonomous_goals(self.sid, gid).listing.exists(gid):
+                return
         self.status.set('目前無法核對這項工作，請重新查詢。')
+
+    def open_chat_reply_draft(self):
+        if self.busy or self.closing:
+            return
+        from .autonomy_status import chat_reply_draft
+        link = self._refresh_chat_goal()
+        selected = self.chat.tag_ranges('sel')
+        span = self.chat_user_ranges.get(link['user_message_id']) if link else None
+        if (not span or len(selected) != 2 or self.chat.compare(selected[0], '<', span[0])
+                or self.chat.compare(selected[1], '>', span[1])):
+            self.status.set('請在這次回答所對應的使用者訊息中選取答案，再按「帶入答覆草稿」。')
+            return
+        offset = len(self.chat.get(span[0], selected[0]))
+        try:
+            draft = chat_reply_draft(self.store, self.sid, self.last_answer, link['user_message_id'],
+                                     offset, self.chat.get(*selected))
+        except (ValueError, UnicodeError, OSError, sqlite3.Error) as exc:
+            self.status.set(str(exc))
+            return
+        view = self.autonomous_goals(self.sid, draft['goal_id'])
+        if view.listing.exists(draft['goal_id']) and view.add_reply(draft=draft):
+            self.status.set('請在原工作的答覆視窗核對草稿。')
+        else:
+            self.status.set('目前無法打開此工作的答覆視窗，請回原工作核對。')
 
     def discuss_goal_report(self, sid, gid):
         if self.closing or self.busy:
@@ -288,9 +318,13 @@ class App:
         self.chat.configure(state="normal")
         label = {"user": "你", "assistant": "助理", "note": "提示"}[role]
         self.chat.insert("end", label + "\n", role)
-        self.chat.insert("end", text + "\n\n")
+        start = self.chat.index('end-1c')
+        self.chat.insert("end", text)
+        end = self.chat.index('end-1c')
+        self.chat.insert("end", "\n\n")
         self.chat.configure(state="disabled")
         self.chat.see("end")
+        return start, end
 
     def render(self):
         self.refresh_image_notice()
@@ -313,13 +347,16 @@ class App:
         from .document_calculation import scenario_ids
         document_scenarios = scenario_ids(self.store, rows)
         self.last_answer = None
+        self.chat_user_ranges = {}
         if not rows:
             self.append("note", "告訴我你想完成什麼。\n我可以協助釐清需求、規劃步驟、分析問題與檢查解法。\n\n你可以在「管理長期記憶」保存偏好，並對回答留下更正。")
         for row in rows:
             content = row['content']
             if row['id'] in document_scenarios:
                 content = f'文件試算回答 #{row["id"]}\n' + content
-            self.append(row["role"], content)
+            span = self.append(row["role"], content)
+            if row['role'] == 'user':
+                self.chat_user_ranges[row['id']] = span
             attempt = attempts.get(row['id'])
             if attempt and attempt['status'] != 'succeeded':
                 self.append('note', '回答狀態：' + ('本機流程尚未保存完成狀態。' if attempt['status'] == 'running' else
@@ -350,7 +387,8 @@ class App:
         self.busy = busy
         state = "disabled" if busy else "normal"
         for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn,
-                       self.context_btn, self.open_chat_goal_btn, self.retry_btn, self.chat_goal_btn):
+                       self.context_btn, self.open_chat_goal_btn, self.chat_reply_draft_btn,
+                       self.retry_btn, self.chat_goal_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
         if hasattr(self, 'image_btn'):

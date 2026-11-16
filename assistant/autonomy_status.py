@@ -219,41 +219,85 @@ def _choice_matches(db, sid, question, before):
     return list(actual.values()), {'name': name, 'status': 'ambiguous' if actual else 'not_found', 'selection': proof}
 
 
-def chat_goal_target(store, sid, answer_id):
-    """Resolve a desktop link to the saved, single goal on the current answer."""
+def _chat_goal_link(db, sid, answer_id):
     if type(answer_id) is not int or answer_id <= 0:
         return None
+    source = _latest_completed_answer(db, sid)
+    if source is None or source[0]['id'] != answer_id:
+        return None
+    row, context = source
+    summary = context.get('autonomous_goals')
+    if not isinstance(summary, dict):
+        return None
+    reference, goals = summary.get('reference'), summary.get('goals')
+    if (not isinstance(reference, dict) or reference.get('status') != 'matched'
+            or not isinstance(goals, list) or len(goals) != 1 or not isinstance(goals[0], dict)):
+        return None
+    saved = goals[0]
+    gid = saved.get('id')
+    if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
+        return None
+    current = db.execute('SELECT objective FROM autonomous_goals WHERE session_id=? AND id=?',
+                         (sid, gid)).fetchone()
+    if current is None or current['objective'][:400] != saved.get('objective'):
+        return None
+    if 'selection' in reference:
+        resolved = _choice_matches(db, sid, row['request'], row['user_id'])
+        if resolved is None or resolved != ([gid], reference):
+            return None
+    else:
+        name = _requested_name(row['request'])
+        if (not name or name != reference.get('name')
+                or (_key(name) != gid and not _label_rank(current['objective'], _key(name)))):
+            return None
+    return {'goal_id': gid, 'user_message_id': row['user_id'], 'request': row['request'],
+            'reply_basis': saved.get('reply_basis')}
+
+
+def chat_goal_link(store, sid, answer_id):
+    """Resolve a desktop link to the saved, single goal on the current answer."""
     with store.connect() as db:
         db.execute('BEGIN')
-        source = _latest_completed_answer(db, sid)
-        if source is None or source[0]['id'] != answer_id:
-            return None
-        row, context = source
-        summary = context.get('autonomous_goals')
-        if not isinstance(summary, dict):
-            return None
-        reference, goals = summary.get('reference'), summary.get('goals')
-        if (not isinstance(reference, dict) or reference.get('status') != 'matched'
-                or not isinstance(goals, list) or len(goals) != 1 or not isinstance(goals[0], dict)):
-            return None
-        saved = goals[0]
-        gid = saved.get('id')
-        if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
-            return None
-        current = db.execute('SELECT objective FROM autonomous_goals WHERE session_id=? AND id=?',
-                             (sid, gid)).fetchone()
-        if current is None or current['objective'][:400] != saved.get('objective'):
-            return None
-        if 'selection' in reference:
-            resolved = _choice_matches(db, sid, row['request'], row['user_id'])
-            if resolved is None or resolved != ([gid], reference):
-                return None
-        else:
-            name = _requested_name(row['request'])
-            if (not name or name != reference.get('name')
-                    or (_key(name) != gid and not _label_rank(current['objective'], _key(name)))):
-                return None
-        return gid
+        return _chat_goal_link(db, sid, answer_id)
+
+
+def chat_goal_target(store, sid, answer_id):
+    link = chat_goal_link(store, sid, answer_id)
+    return link['goal_id'] if link else None
+
+
+def _reply_basis(db, sid, gid, sources):
+    from .goal_conversation import digest
+    row = db.execute('''SELECT g.question,g.notes,g.sources_json,
+        s.sequence,s.action_json,s.observation_json FROM autonomous_goals g
+        JOIN autonomous_steps s ON s.goal_id=g.id
+        WHERE g.session_id=? AND g.id=? AND g.status='needs_input' AND g.question<>''
+        ORDER BY s.sequence DESC LIMIT 1''', (sid, gid)).fetchone()
+    if row is None or json.loads(row['action_json']).get('tool') != 'ask':
+        return None
+    return digest([gid, list(row), sources])
+
+
+def chat_reply_draft(store, sid, answer_id, user_message_id, offset, content):
+    """Bind the user's selected verbatim text to the exact reviewed goal ask."""
+    from .autonomy import signature
+    from .goal_guidance import _snapshot
+    if (type(offset) is not int or offset < 0 or not isinstance(content, str)
+            or not 1 <= len(content) <= 4000 or not content.strip() or '\0' in content):
+        raise ValueError('請選取 1 到 4000 字的答案文字。')
+    with store.connect() as db:
+        db.execute('BEGIN')
+        link = _chat_goal_link(db, sid, answer_id)
+        if (not link or type(user_message_id) is not int or link['user_message_id'] != user_message_id
+                or link['request'][offset:offset + len(content)] != content):
+            raise ValueError('請在這次回答所對應的使用者訊息中選取答案。')
+        gid = link['goal_id']
+        sources = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
+        if not link['reply_basis'] or _reply_basis(db, sid, gid, sources) != link['reply_basis']:
+            raise ValueError('待答問題或工作條件已變更，請重新查看原工作。')
+        current = _snapshot(db, sid, gid)
+        return {'goal_id': gid, 'text': content, 'user_message_id': user_message_id,
+                'fingerprint': current['fingerprint']}
 
 
 def goal_context(store, sid, question='', *, before=None):
@@ -324,4 +368,7 @@ def _goal_context(db, sid, question, before):
     result = {'goals': goals, 'limited': len(rows) > 3}
     if reference:
         result['reference'] = reference
+        if reference['status'] == 'matched' and goals[0]['recorded_question']:
+            if basis := _reply_basis(db, sid, goals[0]['id'], sources):
+                goals[0]['reply_basis'] = basis
     return result
