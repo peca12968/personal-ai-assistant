@@ -20,12 +20,30 @@ _READ = r'(?:查讀|讀取|閱讀|讀|使用|沿用|採用|用|引用|依照|依
 _REQUEST = re.compile(
     r'(?:(?:本次|這次|本階段)\s*)?(?:(?:請|麻煩|幫我)\s*)?'
     rf'(?:(?P<revoke>不再|不用|不要|無須|不必|不得|請勿|勿)(?:再)?\s*{_READ}?|(?:先\s*)?{_READ})\s*'
-    r'(?:上(?:一個|一)?階段|前一階段)(?:實際)?(?:已經|已)?交付的\s*'
-    rf'(?:「(?P<quoted>{_NAME})」|`(?P<code>{_NAME})`|(?P<plain>{_PLAIN}))'
-    r'(?:\s*(?:內|中|裡|的內容|的欄位|的資料).{0,400})?', re.IGNORECASE,
+    r'(?:上(?:一個|一)?階段|前一階段)(?:實際)?(?:已經|已)?交付的\s*', re.IGNORECASE,
 )
+_FILENAME = re.compile(rf'「(?P<quoted>{_NAME})」|`(?P<code>{_NAME})`|(?P<plain>{_PLAIN})', re.IGNORECASE)
+_JOIN = re.compile(r'\s*(?:[、，,]|以及|與|和|及|跟)\s*')
+_FIELDS = re.compile(r'\s*(?:內|中|裡|的內容|的欄位|的資料).{0,400}')
 _MARKER = re.compile(r'\[上一階段檔案#[^\]\r\n]{0,32}\]')
 _DECISIONS = {'ask', 'finish', 'write_artifact', 'deliver'}
+
+
+def _filenames(clause, start):
+    names = []
+    while match := _FILENAME.match(clause, start):
+        name = match['quoted'] or match['code'] or match['plain']
+        try:
+            names.append(artifacts.filename(name))
+        except ValueError:
+            return []
+        if match.end() == len(clause) or _FIELDS.fullmatch(clause, match.end()):
+            return names
+        connector = _JOIN.match(clause, match.end())
+        if connector is None:
+            break
+        start = connector.end()
+    return []
 
 
 def requested(objective, replies, guidance, sequence):
@@ -35,18 +53,14 @@ def requested(objective, replies, guidance, sequence):
     selected = {}
     for _, source in [(-1, objective), *sorted(updates)]:
         for _, clause, is_question in goal_guidance_sources.standalone_clauses(source):
-            match = _REQUEST.fullmatch(clause)
+            match = _REQUEST.match(clause)
             if is_question or match is None:
                 continue
-            name = match['quoted'] or match['code'] or match['plain']
-            try:
-                artifacts.filename(name)
-            except ValueError:
-                continue
-            if match['revoke']:
-                selected.pop(name.casefold(), None)
-            else:
-                selected[name.casefold()] = name
+            for name in _filenames(clause, match.end()):
+                if match['revoke']:
+                    selected.pop(name.casefold(), None)
+                else:
+                    selected[name.casefold()] = name
     return selected
 
 

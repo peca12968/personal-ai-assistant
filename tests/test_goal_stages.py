@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant import artifacts, goal_guidance
+from assistant import artifacts, goal_guidance, goal_stage_files
 from assistant import autonomy as a
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.autonomy_status import goal_context
@@ -148,6 +148,64 @@ class GoalStageTests(unittest.TestCase):
         result = a.run_goal(self.store,self.sid,child,engine,max_steps=1)
         self.assertEqual(result['status'],'needs_input')
         self.assertNotIn('未交付的內部草稿',engine.prompts[0])
+
+    def test_one_request_reads_multiple_deliveries_and_preserves_each_source_on_restore(self):
+        parent = a.create_goal(self.store,self.sid,'交付本批資料。',file_delivery=True)
+        a.run_goal(self.store,self.sid,parent,ScriptedEngine(
+            action('write_artifact',filename='names.json',content='{"驗收人":"庭嵐"}'),
+            action('write_artifact',filename='點交與查驗.md',content='本批交付方式：雙人核簽。'),
+            action('write_artifact',filename='secret.txt',content='未交付草稿'),
+            action('deliver',filenames=['names.json','點交與查驗.md'],report='已交付本批資料。'),
+        ),max_steps=4)
+        child = a.create_goal(self.store,self.sid,'請查讀上一階段已交付的「names.json」和「點交與查驗.md」。',parent_id=parent)
+        engine = ScriptedEngine(action('ask',question='請重匯兩份檔案。'),action('ask',question='還缺哪個檔案？'))
+        paused = a.run_goal(self.store,self.sid,child,engine,max_steps=2)
+        self.assertEqual(paused['status'],'paused')
+        reads = [step['observation']['previous_file'] for step in paused['steps']]
+        self.assertEqual([read['filename'] for read in reads],['names.json','點交與查驗.md'])
+        catalog = json.loads(engine.prompts[0].split('目標與已觀察資料：\n')[1])['previous_stage_files']
+        self.assertEqual(catalog,[
+            {'available':True,'filename':'names.json'},{'available':True,'filename':'點交與查驗.md'},
+        ])
+        self.assertNotIn('未交付草稿','\n'.join(engine.prompts))
+        backup = create_backup(self.store.path,self.root/'combined.paibackup')
+        restore_backup(backup['path'],self.root/'combined-restored')
+        restored = Store(self.root/'combined-restored'/'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored,self.sid,child),paused)
+        view = goal_guidance.snapshot(restored,self.sid,child)
+        goal_guidance.save(restored,self.sid,child,'不用再查讀上一階段已交付的點交與查驗.md。交付方式改成封盒。',
+                           expected_fingerprint=view['fingerprint'])
+        continue_engine = ScriptedEngine(
+            action('finish',report='兩欄照舊。[上一階段檔案#2]'),
+            action('finish',report='驗收人庭嵐。[上一階段檔案#1]\n交付方式封盒。[更正#1]'),
+        )
+        result = a.run_goal(restored,self.sid,child,continue_engine,max_steps=2)
+        self.assertEqual(result['steps'][2]['action']['tool'],'invalid')
+        self.assertEqual(result['status'],'report_ready')
+        self.assertNotIn('雙人核簽','\n'.join(continue_engine.prompts))
+        self.assertIn('庭嵐',continue_engine.prompts[0])
+        proof = result['steps'][-1]['observation']['previous_file_citations']
+        self.assertEqual([citation['filename'] for citation in proof],['names.json'])
+        validate_database(restored.path)
+
+    def test_stage_file_lists_require_definite_valid_filenames_and_preserve_embedded_joiners(self):
+        for join in ('、','，',',','與','和','及','以及','跟'):
+            with self.subTest(join=join):
+                objective = f'用上一階段已交付的「甲和乙.md」{join}`新 名單.json` 內的欄位。'
+                self.assertEqual(list(goal_stage_files.requested(objective,[],[],1)),['甲和乙.md','新 名單.json'])
+        for tail in (
+            'A.md 或 B.md',
+            'A.md 和',
+            'A.md 和 .\\B.md',
+            'A.md 和 NUL.txt',
+            'A.md 和 （其他可用文件）',
+        ):
+            with self.subTest(tail=tail):
+                self.assertEqual(goal_stage_files.requested('請讀上一階段已交付的 '+tail+'。',[],[],1),{})
+        objective = '用上一階段已交付的 A.md、B.md 與 C.md。'
+        guidance = [{'notes_start':3,'steps_seen':1,'content':'本階段請勿再讀上一階段已交付的 A.md 和 B.md。'}]
+        self.assertEqual(list(goal_stage_files.requested(objective,[],guidance,1)),['a.md','b.md','c.md'])
+        self.assertEqual(list(goal_stage_files.requested(objective,[],guidance,2)),['c.md'])
 
     def test_saved_user_guidance_can_revoke_and_restore_previous_file_read_scope(self):
         parent = self.delivered_parent()
