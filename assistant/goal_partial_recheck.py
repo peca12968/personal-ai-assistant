@@ -56,7 +56,7 @@ def _result(value, excerpts, replies, guidance, sequence):
         raise ValueError('暫表重核需回傳暫表文字與撤下建議欄位。')
     partial, withdrawal = value['partial_result'], value['withdrawal_source']
     goal_partials.validate(partial)
-    if any(not item['range_valid'] for item in check_citations(partial, excerpts)):
+    if any(not item['range_valid'] for item in check_citations(partial, excerpts, allow_joined_lines=True)):
         raise ValueError('暫表含未查讀的來源位置。')
     goal_reply_sources.citations(partial, replies)
     goal_guidance_sources.citations(partial, guidance)
@@ -280,6 +280,8 @@ def _review(engine, payload, excerpts, replies, guidance, steps, store, sid, sco
                 if lookup := row.pop('needs_lookup', None):
                     did = lookup['document_id']
                     row['needed_document_coverage'] = {'document_id': did, 'line_count': counts[did]}
+                if segmented := row.pop('needs_line', None):
+                    row['pending_character_read'] = segmented
             observations['calculation_source_adoptions'] = adoptions
         raw = engine.answer(instructions + json.dumps(
             {**observations,

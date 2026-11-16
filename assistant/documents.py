@@ -209,10 +209,10 @@ def _character_ranges(excerpts, doc_id, line_number):
         else:
             continue  # Old partial excerpts have no attributable character offsets.
         groups.setdefault((row.get('sha256'), total), []).append((low, high))
-    return groups.values()
+    return groups
 
 
-def check_citations(answer, excerpts):
+def check_citations(answer, excerpts, *, allow_joined_lines=False):
     """Check only source/range existence, never claim semantic support."""
     checks = []
     for match in re.finditer(r"\[D\d+[^\]\r\n]{0,80}\]", answer):
@@ -223,7 +223,7 @@ def check_citations(answer, excerpts):
         if characters:
             doc_id, line, start = (int(characters[n]) for n in (1, 2, 3))
             end = int(characters[4] or characters[3])
-            valid = line >= 1 and any(_covers(ranges, start, end) for ranges in _character_ranges(excerpts, doc_id, line))
+            valid = line >= 1 and any(_covers(ranges, start, end) for ranges in _character_ranges(excerpts, doc_id, line).values())
         elif parsed:
             doc_id, start = int(parsed[1]), int(parsed[2])
             end = int(parsed[3] or parsed[2])
@@ -232,5 +232,13 @@ def check_citations(answer, excerpts):
                 if row['document_id'] == doc_id and not row.get('partial_line', False):
                     groups.setdefault(row.get('sha256'), []).append((row['start_line'], row['end_line']))
             valid = any(_covers(intervals, start, end) for intervals in groups.values())
+            if allow_joined_lines and not valid:
+                partial = {row['start_line'] for row in excerpts if row['document_id'] == doc_id
+                           and row.get('partial_line') is True and start <= row['start_line'] <= end}
+                for line in partial:
+                    for (sha, total), ranges in _character_ranges(excerpts, doc_id, line).items():
+                        if sha and _covers(ranges, 1, total):
+                            groups.setdefault(sha, []).append((line, line))
+                valid = any(_covers(intervals, start, end) for intervals in groups.values())
         checks.append({"citation": token, "range_valid": valid})
     return checks

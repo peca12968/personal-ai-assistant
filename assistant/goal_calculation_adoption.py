@@ -54,7 +54,7 @@ def _selection(clause):
             'undecided': any(word in verb for word in _UNKNOWN_WORDS)}
 
 
-def _literal_field(text, valid_clause):
+def literal_fields(text, valid_clause):
     found = []
     for start, clause, question in clauses(text):
         if question:
@@ -66,6 +66,15 @@ def _literal_field(text, valid_clause):
         else:
             continue
         found.append((field, clause, start, valid_clause(text, start, clause)))
+    return found
+
+
+def _literal_field(text, valid_clause, requested=None):
+    found = literal_fields(text, valid_clause)
+    if requested:
+        targeted = [record for record in found if record[0] == requested]
+        if targeted:
+            found = targeted
     return found[0] if len(found) == 1 else None
 
 
@@ -76,7 +85,7 @@ def _description_conflicts(description, filename):
     return name not in _SOURCE_WORDS and name not in {filename, filename.rsplit('.', 1)[0]}
 
 
-def _resolve(selection, versions, literal, valid_clause):
+def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
     candidates, unknown = [], False
     for reference in selection['refs']:
         document = int(re.fullmatch(_CITATION, reference)['document'])
@@ -93,7 +102,7 @@ def _resolve(selection, versions, literal, valid_clause):
             info['status'] = 'unread'
             unknown = True
             continue
-        found = _literal_field(text, valid_clause)
+        found = _literal_field(text, valid_clause, selection['field'] if multi_fields else None)
         if not found:
             info['status'] = 'field_unconfirmed'
             unknown = True
@@ -121,7 +130,7 @@ def _resolve(selection, versions, literal, valid_clause):
 
 
 class Review:
-    def __init__(self, order, user, scope, literal, valid_clause, *, names=None):
+    def __init__(self, order, user, scope, literal, valid_clause, *, names=None, multi_fields=False):
         versions = {row['document_id']: row for row in scope}
         self.notes = []
         for position, citation, text in order:
@@ -139,12 +148,13 @@ class Review:
                     continue
                 selected = _selection(clause) if not question else None
                 if selected is not None:
-                    entry = _resolve(selected, versions, literal, valid_clause)
+                    entry = _resolve(selected, versions, literal, valid_clause, multi_fields=multi_fields)
                 elif names is not None and not question and not _NONOPERATIVE.search(prefix) and not re.search(_LINE, clause):
                     entry = names.resolve(citation, clause)
                     if entry is not None and (refs := entry.pop('references', None)):
                         adopted = _resolve({'refs': refs, 'field': entry['field'], 'description': None,
-                                            'retain': False, 'undecided': False}, versions, literal, valid_clause)
+                                            'retain': False, 'undecided': False}, versions, literal, valid_clause,
+                                           multi_fields=multi_fields)
                         entry.update(adopted)
                 else:
                     entry = None

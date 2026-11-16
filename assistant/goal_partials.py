@@ -55,7 +55,7 @@ def saved(action, observation):
 
 
 def question_citations(question, excerpts, reply_sources, guidance_sources=()):
-    documents = check_citations(question, excerpts)
+    documents = check_citations(question, excerpts, allow_joined_lines=True)
     if any(not item['range_valid'] for item in documents):
         raise ValueError('問題有未讀取的來源行號，請先讀取或改以文字描述缺漏。')
     replies = goal_reply_sources.citations(question, reply_sources, label='問題')
@@ -135,7 +135,7 @@ def validate_saved(db, *, reply_sources_present, guidance_sources_present=False,
                 available = [*excerpts, *proof['excerpts']]
                 report = goal_reply_sources.saved_report(action, observation)
             if isinstance(report, str):
-                expected = check_citations(report, available)
+                expected = check_citations(report, available, allow_joined_lines=True)
                 if observation.get('citation_checks') != expected or any(not row['range_valid'] for row in expected):
                     raise ValueError('待補期間的成果引用與保存來源不一致。')
             if 'question_citations' in observation or (action.get('tool') == 'ask' and prior_guidance):

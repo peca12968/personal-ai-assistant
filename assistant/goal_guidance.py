@@ -411,7 +411,7 @@ def append_followup_question(db, goal, notes, sequence, question, note, *, parti
         observation['work_plan_question'] = work_plan_scope.bind_questions(action['args'], steps)
     if partial_result is not None:
         goal_partials.validate(partial_result)
-        checks = check_citations(partial_result, excerpts)
+        checks = check_citations(partial_result, excerpts, allow_joined_lines=True)
         if any(not item['range_valid'] for item in checks):
             raise ValueError('更正後暫表引用的文件行尚未查讀。')
         action['args']['partial_result'] = partial_result

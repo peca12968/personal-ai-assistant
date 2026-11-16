@@ -446,7 +446,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return retrieve_documents(args['query'], documents, max_excerpts=4, max_chars=8000, reference_query='')
     if name == 'read':
         rows, requests, _ = document_ranges.select_ranges(
-            f"[D{args['document_id']}:L{args['start_line']}-L{args['end_line']}]", documents, 1, 10000)
+            f"[D{args['document_id']}:L{args['start_line']}-L{args['end_line']}]", documents, 1, document_ranges.READ_CHAR_BUDGET)
         return {'excerpts': rows, 'requested_ranges': requests}
     if name == 'read_ranges':
         return document_ranges.read_batch(documents, args)
@@ -492,7 +492,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         content = report_data.pop('report')
     else:
         content = args[goal_reply_sources.REPORT_FIELDS[name]]
-    checks = check_citations(content, excerpts)
+    checks = check_citations(content, excerpts, allow_joined_lines=True)
     if any(not row['range_valid'] for row in checks):
         raise ValueError('成果有未讀取的來源行號，請先讀取或修正引用。')
     reply_checks = goal_reply_sources.citations(content, reply_sources)

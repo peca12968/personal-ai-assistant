@@ -1,7 +1,7 @@
 """Verify a complete field lookup across saved, source-bound pages."""
 from bisect import bisect_left
 
-from . import document_ranges
+from . import document_lines, document_ranges
 from .goal_stages import digest
 
 
@@ -128,7 +128,7 @@ def coverage(steps, document, query, count, *, originals, seen, literal):
     numbers = [hit['line_number'] for hit in hits]
     missing = [number for number in numbers if number not in seen]
     if missing:
-        return {'missing_lines': missing}
+        return {'missing_lines': missing, 'line_chars': {hit['line_number']: hit['line_chars'] for hit in hits}}
     did = document['document_id']
     for number, hit in zip(numbers, hits, strict=True):
         text, sha = literal(f'[D{did}:L{number}]')
@@ -138,3 +138,56 @@ def coverage(steps, document, query, count, *, originals, seen, literal):
         'document_id': did, 'source_sha256': document['sha256'], 'query': query,
         'searched_line_count': count, 'total_matching_lines': total, 'pages': evidence,
     }}
+
+
+class LinePages:
+    """Rebuild only complete same-version lines from saved character reads."""
+
+    def __init__(self, steps, scope, originals):
+        sources = {row['document_id']: row for row in scope}
+        grouped = {}
+        for step in steps:
+            action = step['action']
+            if action['tool'] != 'read_line':
+                continue
+            source = sources.get(action['args']['document_id'])
+            if source is None:
+                continue
+            page = document_lines.verified_page(step, [source])
+            key = (page['document_id'], page['start_line'])
+            lines = originals.get((page['document_id'], page['name'], page['sha256']))
+            if lines is not None:
+                if (page['start_line'] > len(lines) or
+                        page['line_chars'] != len(lines[page['start_line'] - 1])):
+                    raise ValueError('分段讀行的大小與匯入副本不一致。')
+                line = lines[page['start_line'] - 1]
+                prefix = f'L{page["start_line"]}: '
+                if page['text'] != prefix + line[page['start_char'] - 1:page['end_char']]:
+                    raise ValueError('分段讀行的文字與匯入副本不一致。')
+            if page['partial_line']:
+                grouped.setdefault(key, {})[step['sequence']] = page
+
+        self.excerpts, self.proofs, self.continuations = [], [], {}
+        for (did, number), pages in sorted(grouped.items()):
+            merged, next_start, used = document_lines.join_pages(pages)
+            if merged is None:
+                self.continuations[did, number] = next_start
+                continue
+            self.excerpts.append(merged)
+            self.proofs.append({'document_id': did, 'line_number': number, 'source_sha256': merged['sha256'],
+                                'pages': [{'sequence': step, 'sha256': digest(pages[step])} for step in used]})
+
+    def next_read(self, did, missing, sizes):
+        ranges, used = [], 0
+        for number in missing:
+            total = sizes[number] + len(f'L{number}: ')
+            if (did, number) in self.continuations or total > document_ranges.READ_CHAR_BUDGET:
+                if not ranges:
+                    return {'needs_line': {'document_id': did, 'line_number': number,
+                                           'start_char': self.continuations.get((did, number), 1)}}
+                break
+            if used + total > document_ranges.READ_CHAR_BUDGET or len(ranges) == document_ranges.MAX_RANGES:
+                break
+            ranges.append({'document_id': did, 'start_line': number, 'end_line': number})
+            used += total
+        return {'needs_read': {'ranges': ranges}}

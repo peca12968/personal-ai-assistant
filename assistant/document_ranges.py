@@ -5,6 +5,7 @@ from itertools import zip_longest
 
 MAX_RANGES = 8
 MAX_LINES = 200
+READ_CHAR_BUDGET = 10000
 MATCHES_PER_PAGE = 6
 LOOKUP_CHAR_BUDGET = 8000
 LOOKUP_MAX_SOURCES = 4
@@ -114,7 +115,7 @@ def read_batch(documents, args):
     validate_batch(args)
     query = ' '.join(f"[D{row['document_id']}:L{row['start_line']}-L{row['end_line']}]"
                      for row in args['ranges'])
-    excerpts, requests, _ = select_ranges(query, documents, MAX_RANGES, 10000)
+    excerpts, requests, _ = select_ranges(query, documents, MAX_RANGES, READ_CHAR_BUDGET)
     return {'excerpts': excerpts, 'requested_ranges': requests}
 
 

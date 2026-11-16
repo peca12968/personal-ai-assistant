@@ -277,6 +277,82 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('66 件', result['result'])
         validate_database(self.store.path)
 
+    def segmented_source(self, ending, *, files=False):
+        long_line = '紀錄曾提到批次量。' + '測' * 10190 + '。' + ending
+        late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 7)),
+                                     long_line, '區位：木架。', '批次量：22 袋。', '結尾。']), '複點.txt')
+        self.create(files=files)
+        rank_question = f'批次量用「原單」{self.cite(1)} 還是複點？'
+        self.run_actions(self.initial(), action('ask', question=rank_question))
+        self.reply('第二份。')
+        return late
+
+    def test_character_pages_close_long_note_and_keep_legacy_report_citations(self):
+        late = self.segmented_source('仍待交班。', files=True)
+        late_ref = f'[D{late}:L10]'
+        rows = [{'label': '總件數', 'calculation_step': 9, 'unit': '件'},
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]
+        engine = ScriptedEngine(
+            action('find_document_text', document_id=late, query='批次量', start_line=1),
+            action('find_document_text', document_id=late, query='批次量', start_line=8),
+            action('read_line', document_id=late, line_number=8, start_char=8001),
+            action('read_line', document_id=late, line_number=8, start_char=1),
+            self.formula(quantity='22', citation=late_ref, quote='批次量：22 袋'),
+            action('read_line', document_id=late, line_number=8, start_char=4001),
+            self.formula(quantity='22', citation=late_ref, quote='批次量：22 袋'),
+            action('write_artifact', filename='核對.json', calculation_report=rows),
+            action('deliver', filenames=['核對.json'], calculation_report=rows))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=9)
+        for index, start in [(2, 1), (3, 1), (4, 4001), (5, 4001)]:
+            payload = json.loads(engine.prompts[index].rsplit('目標與已觀察資料：\n', 1)[1])
+            self.assertEqual(payload['calculation_source_adoptions'][0]['needs_line'],
+                             {'document_id': late, 'line_number': 8, 'start_char': start})
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][6]['action']['tool'], 'invalid')
+        proof, = result['steps'][8]['observation'][goal_calculation.PROOF]['line_page_proofs']
+        self.assertEqual((proof['document_id'], proof['line_number']), (late, 8))
+        self.assertEqual([row['sequence'] for row in proof['pages']], [6, 8, 5])
+        self.assertIn('66 件', result['result'])
+        self.assertIn('窗口：北門', result['result'])
+        name = '核對.json'
+        saved = artifacts.directory(self.store, self.gid).joinpath(name).read_bytes()
+        self.store.detach_document(self.sid, late)
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(name).read_bytes(), saved)
+        with restored.connect() as db:
+            observation = result['steps'][4]['observation']
+            body = observation['excerpts'][0]['text']
+            observation['excerpts'][0]['text'] = body.replace('測', '改', 1)
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_formal_field_in_late_character_page_requires_choice_and_survives_backup(self):
+        late = self.segmented_source('核簽點：金栗臺。批次量：29 袋。')
+        first, second = f'[D{late}:L8]', f'[D{late}:L10]'
+        result = self.run_actions(
+            action('find_document_text', document_id=late, query='批次量', start_line=1),
+            action('find_document_text', document_id=late, query='批次量', start_line=8),
+            *(action('read_line', document_id=late, line_number=8, start_char=start)
+              for start in (1, 4001, 8001)),
+            action('ask', question=f'批次量要採用 {first} 還是 {second}？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        self.assertEqual(result['status'], 'needs_input')
+        self.assertIn('總件數：待查', result['partial_result'])
+        self.assertEqual([row['citation'] for row in result['steps'][-1]['observation']['question_citations']['documents']],
+                         [first, second])
+        self.reply('第一筆。')
+        final = self.run_actions(self.formula(quantity='29', citation=first, quote='批次量：29 袋'),
+                                 action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 9,
+                                                                         'unit': '件'}]))
+        self.assertEqual(final['status'], 'report_ready')
+        self.assertIn('87 件', final['result'])
+        self.assertIn(first, final['result'])
+        self.assertEqual(autonomy.get_goal(self.restore(), self.sid, self.gid)['result'], final['result'])
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),

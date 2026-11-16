@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from . import (artifacts, expression_math, goal_calculation_adoption, goal_calculation_names, goal_guidance_sources, goal_reply_sources,
+from . import (artifacts, expression_math, goal_calculation_adoption, goal_calculation_lookup, goal_calculation_names, goal_guidance_sources, goal_reply_sources,
                goal_sources, operand_evidence)
 from .acceptance import strict_json
 from .goal_stages import digest
@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 6
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, SOURCE_VERSION)
+SOURCE_VERSION = 7
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -29,6 +29,8 @@ GUIDANCE = (
     '口語只給文件名時，先看它能否由原問題和已讀欄位唯一核對。'
     'needs_lookup 是已確定文件及欄位但尚缺查找，直接用 find_document_text 的該筆 args，'
     '其中 start_line 已指向要補的頁。needs_read 表示頁面齊全但仍缺完整原行，依其 ranges 用 read_ranges。'
+    'needs_line 表示該命中須分段取得，使用 read_line 的精確 args 並依 start_char 接續。'
+    '等同版本整行字元無缺口才把它當完整原行；只看到首段或最後一段時仍可能有正式欄位。'
     '命中字面可以只是附註，要等工具辨認同欄原文後才採用。'
     '採用的單行須直接引用該行，工具會附補答或更正。缺行先查讀，只有真正未決才問。'
     'calculation_source_adoptions 的 field 是該次選擇的完整適用範圍。'
@@ -43,7 +45,7 @@ GUIDANCE = (
     '若順序未能確認，針對受影響欄位列出二至八個明確選項，各附一個原行引用，再問使用哪筆。'
     '交付、寫檔及附暫表提問使用 calculation_report 陣列，替換 report、content 或 partial_result。'
     '計算列 {"label":"總件數","calculation_step":3,"unit":"件"} 只送實際步驟號，不送答案。'
-    '獨立事實列 {"label":"窗口","citation":"[D1:L4]","quote":"窗口：北門"} 使用完整逐字原句。'
+    '獨立事實列 {"label":"窗口","citation":"[D1:L4]","quote":"窗口：北門"} 使用完整逐字原句。label 要和引用原句的欄名完全相同。'
     '缺漏、撤回、候選或未決欄位一律用待查列 {"label":"扣除量","pending":true}，'
     '即使可引用撤回原句也只用待查列。label 只填欄名，說明及引用可放在 ask 的 question。'
     '留下有依據的獨立事實列，只問會影響交付的待補欄位。'
@@ -115,15 +117,26 @@ class Sources:
         self.recheck = recheck
         self.strict = required(objective)
         self.version = version if self.strict else 1
+        self.line_pages = (goal_calculation_lookup.LinePages(steps, scope, self.documents)
+                           if self.version >= 7 else None)
+        if self.line_pages is not None:
+            self.excerpts.extend(self.line_pages.excerpts)
         self.document_counts = _document_counts(scope, self.documents, document_counts) if self.version >= 3 else None
         names = (goal_calculation_names.Names(
             steps, scope, replies, self.excerpts, self.documents, self.document_counts, self.literal,
-            lambda text: goal_calculation_adoption._literal_field(text, _valid_clause), _clauses,
+            self._field_labels, _clauses,
             ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change,
-            named_ordinals=self.version >= 5, paged_lookup=self.version >= 6)
+            named_ordinals=self.version >= 5, paged_lookup=self.version >= 6, line_pages=self.line_pages)
             if self.version >= 3 and self.order else None)
-        self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause, names=names)
+        self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause,
+                                                         names=names, multi_fields=self.version >= 7)
                           if self.version >= 2 else None)
+
+    def _field_labels(self, text):
+        fields = goal_calculation_adoption.literal_fields(text, _valid_clause)
+        if self.version < 7 and len(fields) != 1:
+            return ()
+        return tuple(dict.fromkeys(record[0] for record in fields))
 
     def source_adoptions(self):
         return self.adoptions.preview(_later_change) if self.adoptions else []
@@ -168,6 +181,8 @@ class Sources:
             proof['source_adoptions'] = applied
         if self.version >= 3:
             proof['document_counts'] = self.document_counts
+        if self.line_pages and self.line_pages.proofs:
+            proof['line_page_proofs'] = self.line_pages.proofs
         return {**expression_math.calculate(expression, cancel), PROOF: proof}
 
     def rows(self, rows):
@@ -346,6 +361,8 @@ def prepare(action, sources):
     receipt = {'version': sources.version, 'rows': rows}
     if sources.version >= 3:
         receipt['document_counts'] = sources.document_counts
+    if sources.line_pages and sources.line_pages.proofs:
+        receipt['line_page_proofs'] = sources.line_pages.proofs
     return {**action, 'args': args}, receipt, expected_files
 
 

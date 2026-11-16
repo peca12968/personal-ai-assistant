@@ -98,8 +98,9 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 
 
 class Names:
-    def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_at, clauses, *,
-                 ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False):
+    def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
+                 ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
+                 line_pages=None):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -108,12 +109,13 @@ class Names:
         self.documents = documents
         self.counts = {row['document_id']: row['line_count'] for row in counts}
         self.literal = literal
-        self.field_at = field_at
+        self.field_labels = field_labels
         self.clauses = clauses
         self.ordinal_guidance = ordinal_guidance
         self.direct_change = direct_change
         self.named_ordinals = named_ordinals
         self.paged_lookup = paged_lookup
+        self.line_pages = line_pages
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -140,11 +142,8 @@ class Names:
             ref = f'[D{did}:L{number}]'
             if ref not in self.observed:
                 text, _ = self.literal(ref)
-                self.observed[ref] = self.field_at(text)
-            record = self.observed[ref]
-            if record:
-                field, *_ = record
-                result.append((field, ref))
+                self.observed[ref] = self.field_labels(text)
+            result.extend((field, ref) for field in self.observed[ref])
         return result
 
     def _possibilities(self, scope, refs):
@@ -271,6 +270,8 @@ class Names:
             if 'next_page' in covered:
                 return {'needs_lookup': {**first, 'start_line': covered['next_page']}}
             if 'missing_lines' in covered:
+                if self.line_pages is not None:
+                    return self.line_pages.next_read(did, covered['missing_lines'], covered['line_chars'])
                 return {'needs_read': {'ranges': [
                     {'document_id': did, 'start_line': number, 'end_line': number}
                     for number in covered['missing_lines'][:document_ranges.MAX_RANGES]]}}
@@ -415,7 +416,7 @@ class Names:
                     basis['selected_documents'] = [chosen['document_id']]
                     result['references'] = (chosen['citation'],)
                     return result
-                if needed and all(row['status'] in (None, 'needs_lookup', 'needs_read') for row in rows):
+                if needed and all(row['status'] in (None, 'needs_lookup', 'needs_read', 'needs_line') for row in rows):
                     result.update(needed[0])
         result['choices'] = [row['citation'] or row['name'] for row in rows]
         result['reason'] = reason
