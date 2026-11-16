@@ -110,9 +110,9 @@ def _read(db, goal, steps, replies, guidance, row, previous):
     if 'reuse' in receipt:
         link = receipt['reuse']
         if (not previous or not isinstance(link, dict) or set(link) != {'sha256', 'calculations'}
-                or link['sha256'] != previous['sha256'] or previous['ask_sequence'] != sequence
+                or link['sha256'] != previous['sha256'] or previous['ask_sequence'] > sequence
                 or previous['guidance_number'] >= number):
-            raise ValueError('沿用證據必須連到同一原問的前次重核。')
+            raise ValueError('沿用證據必須連到同一原問的前次重核或已使用該證據的分問。')
         extra.extend(previous['excerpts'])
         calculations.extend(_choices(link['calculations'], previous))
     if 'tools' in receipt:
@@ -129,14 +129,40 @@ def _read(db, goal, steps, replies, guidance, row, previous):
     return _result(receipt['result'], [*excerpts, *extra], prior_replies, sources, sequence), checked
 
 
+def _bridge(steps, guidance, sequence, verified):
+    ask = steps[sequence - 1]
+    if ask['sequence'] != sequence or ask['action']['tool'] != 'ask':
+        return None
+    sha = ask['observation'].get('recheck_evidence_sha256')
+    proof = verified.get(sha) if isinstance(sha, str) else None
+    if not proof or proof['ask_sequence'] >= sequence:
+        return None
+    # Each intervening ask used this exact receipt while its guidance was
+    # current. A newer ask without the marker ends this route of evidence.
+    for step in steps[proof['ask_sequence']:sequence]:
+        if step['action']['tool'] != 'ask':
+            continue
+        prior = goal_guidance_sources.prior_sources(guidance, step['sequence'])
+        if (step['observation'].get('recheck_evidence_sha256') != sha or not prior
+                or prior[-1]['number'] != proof['guidance_number']):
+            return None
+    return proof
+
+
 def _history(db, goal, steps, replies, guidance, sequence):
-    latest = previous = None
+    latest, verified = {}, {}
     for row in db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
-        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=? ORDER BY guidance_number''',
+        FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence<=? ORDER BY ask_sequence,guidance_number''',
         (goal['id'], sequence)):
-        result, previous = _read(db, goal, steps, replies, guidance, row, previous)
-        latest = row[1], row[3], result, previous
-    return latest
+        ask = row[0]
+        if type(ask) is not int or not 1 <= ask <= len(steps):
+            raise ValueError('暫表重核的保存範圍不符。')
+        previous = latest[ask][3] if ask in latest else _bridge(steps, guidance, ask, verified)
+        result, checked = _read(db, goal, steps, replies, guidance, row, previous)
+        latest[ask] = row[1], row[3], result, checked
+        if checked is not None:
+            verified[row[3]] = checked
+    return latest.get(sequence), verified
 
 
 def waiting(db, goal, steps, replies, guidance, *, sources_match):
@@ -150,7 +176,7 @@ def waiting(db, goal, steps, replies, guidance, *, sources_match):
         details.update(partial_result_historical=True, partial_source_changed=True)
     if not guidance or guidance[-1]['steps_seen'] < sequence or 'partial_result' not in details:
         return details
-    latest = _history(db, goal, steps, replies, guidance, sequence)
+    latest, _ = _history(db, goal, steps, replies, guidance, sequence)
     if latest:
         number, sha, result, _ = latest
         details.update(partial_result=result['partial_result'], partial_recheck_sha256=sha)
@@ -165,11 +191,17 @@ def carried(db, goal, steps, replies, guidance):
     if not guidance or goal['status'] == 'needs_input':
         return None
     ask = next((step for step in reversed(steps) if step['action']['tool'] == 'ask'), None)
-    if ask is None or guidance[-1]['steps_seen'] != ask['sequence']:
+    if ask is None:
         return None
-    latest = _history(db, goal, steps, replies, guidance, ask['sequence'])
-    if latest and latest[0] == guidance[-1]['number']:
-        return latest[3]
+    sequence = ask['sequence']
+    if guidance[-1]['steps_seen'] != sequence and not ask['observation'].get('recheck_evidence_sha256'):
+        return None
+    latest, verified = _history(db, goal, steps, replies, guidance, sequence)
+    if latest:
+        return latest[3] if latest[0] == guidance[-1]['number'] else None
+    previous = _bridge(steps, guidance, sequence, verified)
+    if previous and previous['guidance_number'] == guidance[-1]['number']:
+        return previous
     return None
 
 
@@ -222,12 +254,13 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
         guidance = goal['guidance_sources']
         number = guidance[-1]['number']
         with store.connect() as db:
+            db.execute('BEGIN')
             steps = _steps(db, gid)
-            latest = _history(db, goal, steps, goal.get('reply_sources', ()), guidance, sequence)
+            latest, verified = _history(db, goal, steps, goal.get('reply_sources', ()), guidance, sequence)
         payload, excerpts, replies, sources, evidence_hash = _inputs(
             goal['objective'], steps, goal.get('reply_sources', ()), guidance, sequence, number)
         scope = _scope(goal, steps, sequence)
-        previous = latest[3] if latest else None
+        previous = latest[3] if latest else _bridge(steps, guidance, sequence, verified)
         result, records, selected = _review(
             engine, payload, excerpts, replies, sources, sequence, store, sid, scope, previous, cancel)
         receipt = {'input_sha256': evidence_hash, 'result': result}
@@ -261,12 +294,10 @@ def validate_saved(db, *, replies_present):
                                           WHERE goal_id=? ORDER BY sequence''', (gid,))]
         replies = goal_reply_sources.read(db, gid, notes) if replies_present else []
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps))
-        ask = previous = None
-        for row in db.execute('''SELECT ask_sequence,guidance_number,receipt_json,receipt_sha256
-            FROM autonomous_partial_rechecks WHERE goal_id=? ORDER BY ask_sequence,guidance_number''', (gid,)):
-            if row[0] != ask:
-                ask, previous = row[0], None
-            _, previous = _read(db, goal, steps, replies, guidance, row, previous)
-            if previous is not None:
-                verified.setdefault(gid, {})[row[3]] = previous
+        _, checked = _history(db, goal, steps, replies, guidance, len(steps))
+        if checked:
+            verified[gid] = checked
+        if db.execute('SELECT 1 FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence>? LIMIT 1',
+                      (gid, len(steps))).fetchone():
+            raise ValueError('暫表重核的保存範圍不符。')
     return verified

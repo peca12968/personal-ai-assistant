@@ -127,8 +127,9 @@ def validate_saved(db, *, reply_sources_present, guidance_sources_present=False,
             if 'recheck_evidence_sha256' in observation:
                 sha = observation['recheck_evidence_sha256']
                 proof = rechecks.get(sha) if isinstance(sha, str) else None
-                if (not proof or proof['ask_sequence'] != last_ask or not prior_guidance
+                if (not proof or not last_ask or proof['ask_sequence'] > last_ask[0] or not prior_guidance
                         or proof['guidance_number'] != prior_guidance[-1]['number']
+                        or (proof['ask_sequence'] != last_ask[0] and sha != last_ask[1])
                         or action.get('tool') not in goal_reply_sources.REPORT_FIELDS):
                     raise ValueError('成果引用與有效的暫表重核紀錄不一致。')
                 available = [*excerpts, *proof['excerpts']]
@@ -145,7 +146,7 @@ def validate_saved(db, *, reply_sources_present, guidance_sources_present=False,
                         or (expected is None and 'question_citations' in observation)):
                     raise ValueError('問題引用與保存的來源不一致。')
             if action.get('tool') == 'ask':
-                last_ask = sequence
+                last_ask = sequence, observation.get('recheck_evidence_sha256')
             excerpts.extend(observation.get('excerpts', []))
         if status == 'needs_input':
             read_waiting(db, gid, current_question)

@@ -586,7 +586,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
             recheck_evidence = goal.get('recheck_evidence')
             if recheck_evidence:
-                payload['pending_recheck_evidence'] = recheck_evidence
+                payload['pending_recheck_evidence'] = {
+                    **recheck_evidence,
+                    'calculations': [{'expression': row['args']['expression'], 'observation': row['result']}
+                                     for row in recheck_evidence['calculations']]}
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
@@ -731,7 +734,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                  if any(step['action']['tool'] == 'check_decision' and step['action']['args'].get('combined_reply')
                         for step in payload['steps']) else '') +
                 ('\n暫表重核的補讀原行及精確算式在 pending_recheck_evidence。'
-                 '可引用其原行。原問題的答覆或後續更正若變動了算式依據，按最新資料重算。'
+                 '可引用其原行。逐一核對各次答覆、更正或其後的重算結果。'
+                 '只重算實際改變的算式，已由較新工具核對的項目採最新結果。'
+                 '一般重算用 calculate 或 calculate_expression，後者的 args 只填 expression。'
+                 '已核對算式 observation 中的運算元來源留在成果引用。'
                  '當次仍適用的結果可沿用，避免重讀或重算。' if recheck_evidence else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +

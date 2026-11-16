@@ -147,7 +147,11 @@ class GoalPartialRecheckTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM autonomous_partial_rechecks').fetchone()[0], 0)
 
-    def prepare_recount(self):
+    def prepare_recount(self, *, attach_later_version=False):
+        if attach_later_version:
+            later = self.root / 'third.txt'
+            later.write_text('第三版重點。\n實際 22 匣。', encoding='utf-8')
+            self.third_document = self.store.attach_document(self.sid, later)
         recount = self.root / 'recount.txt'
         recount.write_text('本批補點資料。\n新計數是 17 匣。', encoding='utf-8')
         changed = self.store.attach_document(self.sid, recount)
@@ -298,6 +302,81 @@ class GoalPartialRecheckTests(unittest.TestCase):
                        (json.dumps(saved), digest([self.gid, 2, 2, saved]), self.gid))
         with self.assertRaisesRegex(ValueError, '同一原問的前次重核'):
             validate_database(restored.path)
+
+    def prepare_second_question(self, *, attach_later_version=False):
+        changed, _, waiting, read, calc, report = self.prepare_recount(attach_later_version=attach_later_version)
+        first = goal_partial_recheck.run(self.store, self.sid, self.gid,
+            ScriptedEngine(read, json.dumps(calc), self.result(text=report)), expected_fingerprint=waiting['fingerprint'])
+        goal_replies.save(self.store, self.sid, self.gid, '見證人周霽羽。正式新增寄送時段欄，須等我提供後定稿。',
+                          expected_fingerprint=first['fingerprint'])
+        partial = report.replace('見證人待補。', '見證人周霽羽 [補充#2]。寄送時段待補。')
+        two = autonomy.run_goal(self.store, self.sid, self.gid, ScriptedEngine(
+            action('ask', question='確認本批寄送時段？', partial_result=partial)), max_steps=1)
+        self.assertEqual(two['status'], 'needs_input')
+        self.assertEqual(two['steps'][-1]['observation']['recheck_evidence_sha256'],
+                         first['goal']['partial_recheck_sha256'])
+        return two, changed, first['goal']['partial_recheck_sha256']
+
+    def test_followup_question_carries_verified_evidence_after_restore(self):
+        two, changed, proof = self.prepare_second_question()
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'after-second-ask')
+        restored = Store(self.root / 'after-second-ask' / 'assistant.sqlite3')
+        current = goal_replies.snapshot(restored, self.sid, self.gid)
+        goal_replies.save(restored, self.sid, self.gid, '寄送時段 12:10 至 12:40。', expected_fingerprint=current['fingerprint'])
+        final_engine = ScriptedEngine(action(
+            'finish', report=f'17 匣 [D{changed}:L2]，共 34 件。見證人周霽羽 [補充#2]，12:10 至 12:40 [補充#3]。'))
+        final = autonomy.run_goal(restored, self.sid, self.gid, final_engine, max_steps=1)
+        self.assertEqual(final['status'], 'report_ready')
+        payload = json.loads(final_engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+        calculation, = payload['pending_recheck_evidence']['calculations']
+        self.assertEqual(set(calculation), {'expression', 'observation'})
+        self.assertEqual(calculation['observation']['exact'], '34')
+        self.assertEqual(final['steps'][-1]['observation']['recheck_evidence_sha256'], proof)
+        self.assertEqual([row['question'] for row in final['reply_sources']], [self.question, two['question']])
+        validate_database(restored.path)
+
+        with restored.connect() as db:
+            observation = two['steps'][-1]['observation'].copy()
+            del observation['recheck_evidence_sha256']
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(observation, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '成果引用與保存來源不一致'):
+            validate_database(restored.path)
+
+    def test_cross_ask_recheck_updates_version_and_binds_earlier_sources(self):
+        two, changed, earlier = self.prepare_second_question(attach_later_version=True)
+        did = self.third_document
+        updated = self.save(f'匣數正式改採新版 [D{did}:L2]，其他不更動，請重算。')
+        self.assertEqual(updated['goal']['question'], two['question'])
+        read = json.dumps({'tool': 'read_ranges', 'args': {'ranges': [
+            {'document_id': did, 'start_line': 2, 'end_line': 2}]}})
+        calc = json.dumps({'tool': 'calculate_expression', 'args': {
+            'expression': {'operation': 'product', 'values': ['22', '2']}, 'operands': [
+                {'path': '/values/0', 'citation': f'[D{did}:L2]', 'quote': '22 匣'},
+                {'path': '/values/1', 'citation': '[目標]', 'quote': '每匣2件'}]}})
+        revised = json.loads(self.result(text=f'新版 22 匣 [D{did}:L2]，共 44 件。周霽羽 [補充#2]。寄送時段待補。'))
+        revised['reuse_calculations'] = []
+        engine = ScriptedEngine(read, calc, json.dumps(revised))
+        waiting = goal_partial_recheck.run(self.store, self.sid, self.gid, engine,
+                                               expected_fingerprint=updated['fingerprint'])
+        self.assertIn('新計數是 17 匣', engine.prompts[0])
+        self.assertEqual(waiting['goal']['question'], two['question'])
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'rechecked-second')
+        restored = Store(self.root / 'rechecked-second' / 'assistant.sqlite3')
+        self.assertEqual(waiting, goal_replies.snapshot(restored, self.sid, self.gid))
+        goal_replies.save(restored, self.sid, self.gid, '寄送時段 12:10 至 12:40。', expected_fingerprint=waiting['fingerprint'])
+        scoped = autonomy.get_goal(restored, self.sid, self.gid, include_recheck_evidence=True)['recheck_evidence']
+        self.assertEqual([r['result']['exact'] for r in scoped['calculations']], ['44'])
+        self.assertEqual({row['document_id'] for row in scoped['excerpts']}, {changed, did})
+        self.assertEqual(scoped['ask_sequence'], 3)
+        with restored.connect() as db:
+            raw, = db.execute('SELECT receipt_json FROM autonomous_partial_rechecks WHERE goal_id=? AND ask_sequence=3',
+                              (self.gid,)).fetchone()
+        saved = json.loads(raw)
+        self.assertEqual(saved['reuse'], {'sha256': earlier, 'calculations': []})
+        validate_database(restored.path)
 
     def test_cli_is_an_explicit_fingerprinted_entry_point(self):
         previous = self.save('本批台面正式改為青石台。')
