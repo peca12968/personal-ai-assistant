@@ -15,7 +15,7 @@ from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
 from scripts.evaluate_cross_task_boundaries import prepare
-from scripts.evaluate_understanding import fingerprint, save_report
+from scripts.evaluate_understanding import RUNNER_PATH as REPORT_WRITER_PATH, fingerprint, save_report
 
 SUITE = ROOT / 'evals/goal_multiturn_delivery.json'
 CONTEXT = '\n\n目標與已觀察資料：\n'
@@ -25,7 +25,7 @@ MAX_GOAL_STEPS = 24
 
 
 def signature(suite):
-    paths = (Path(__file__), ROOT / 'scripts/evaluate_cross_task_boundaries.py')
+    paths = (Path(__file__), ROOT / 'scripts/evaluate_cross_task_boundaries.py', REPORT_WRITER_PATH)
     return {**fingerprint(suite), 'collector_sha256': hashlib.sha256(b''.join(path.read_bytes() for path in paths)).hexdigest()}
 
 

@@ -26,6 +26,55 @@ def grade(r, id='one', passed=True, reviewer='development_agent'):
 
 
 class ReportIntegrityTests(unittest.TestCase):
+    def test_report_retries_only_the_staged_replacement_after_windows_sharing_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'trace.json'
+            save_report(path, {'status': 'running'})
+            original = path.read_bytes()
+            outcome = {'status': 'returned', 'raw': '固定合成答覆'}
+            replace = Path.replace
+            attempts = []
+
+            def replace_locked(temporary, target):
+                attempts.append((temporary, temporary.read_bytes()))
+                self.assertEqual(path.read_bytes(), original)
+                if len(attempts) <= 2:
+                    error = PermissionError('destination is temporarily open')
+                    error.winerror = (5, 32)[len(attempts) - 1]
+                    raise error
+                return replace(temporary, target)
+
+            with patch.object(Path, 'replace', replace_locked), patch('scripts.evaluate_understanding.sleep') as wait:
+                save_report(path, outcome)
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(len(set(attempts)), 1)
+            self.assertEqual(wait.call_count, 2)
+            self.assertEqual(json.loads(path.read_bytes()), outcome)
+            self.assertFalse(attempts[0][0].exists())
+
+    def test_report_keeps_previous_and_staged_evidence_when_replace_cannot_finish(self):
+        for winerror, waits in ((5, 5), (None, 0)):
+            with self.subTest(winerror=winerror), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'trace.json'
+                save_report(path, {'status': 'running'})
+                original = path.read_bytes()
+                old_staging = path.with_name('trace.json.tmp')
+                old_staging.write_bytes(b'previous interrupted attempt')
+                error = PermissionError('destination remains unavailable')
+                if winerror is not None:
+                    error.winerror = winerror
+                outcome = {'status': 'returned', 'raw': '保留合成答覆'}
+                with patch.object(Path, 'replace', side_effect=error) as commit, patch(
+                        'scripts.evaluate_understanding.sleep') as wait:
+                    with self.assertRaises(PermissionError):
+                        save_report(path, outcome)
+                self.assertEqual(wait.call_count, waits)
+                self.assertEqual(commit.call_count, waits + 1)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(old_staging.read_bytes(), b'previous interrupted attempt')
+                staged, = path.parent.glob('trace.json.*.tmp')
+                self.assertEqual(json.loads(staged.read_bytes()), outcome)
+
     def test_duplicate_unknown_and_missing_case_identity_cannot_fake_completion(self):
         for changed in ('duplicate_result','unknown_result','duplicate_ids','empty_ids','nonstring_id','overfull'):
             r=report()

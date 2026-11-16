@@ -7,6 +7,8 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from time import sleep
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -213,8 +215,19 @@ def save_report(path, report):
     if len(raw) > MAX_JSON_BYTES:
         raise ValueError('評估報告超過32 MiB，保留先前已保存內容；請減少每次案例選取。')
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.tmp')
-    temporary.write_bytes(raw)
+    temporary = path.with_name(f'{path.name}.{uuid4().hex}.tmp')
+    with temporary.open('xb') as stream:
+        stream.write(raw)
+    # A Windows reader can temporarily deny replacement. Keep the same staged
+    # bytes and leave both files intact if the destination remains unavailable.
+    for delay in (0.05, 0.1, 0.2, 0.4, 0.8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32):
+                raise
+            sleep(delay)
     temporary.replace(path)
 
 
