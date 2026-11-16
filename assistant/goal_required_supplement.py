@@ -1,12 +1,15 @@
-"""Bind an explicit replacement to a genuinely absent line in a waiting goal."""
+"""Bind explicitly selected source lines in an ordinary waiting goal."""
 import json
 import re
 
 from . import (conversation_history, document_ranges, goal_guidance_sources, goal_reply_sources, goal_required_reads,
                goal_sources, goal_stages, work_plan)
+from .documents import check_citations
 
 GUIDANCE = ('required_document_supplement是使用者為原缺行明確指定的補件。先查讀replacement原行，'
             '核對它是否支持本次工作及該欄。使用實際補件行號引用，原已讀文件中仍適用的欄位繼續沿用。'
+            '若紀錄有replaces，該步所指的補件已被本次replacement取代。只用目前有效的補件作為現行依據。'
+            '若目前補件不適用，在暫表將該欄標為待查，引用目前補件原行說明不適用原因，只問正確的原文。'
             '舊提問及暫表可供查閱；只有仍未解決的缺口才另行提問。')
 
 _REQUEST = re.compile(
@@ -21,6 +24,11 @@ _GAP = re.compile(
 _ID_MISSING = re.compile(
     r'\bD(?P<doc>[1-9][0-9]{0,11})\s*的?\s*(?:匯入副本\s*)?(?:缺少|尚缺|缺漏)\s*'
     r'第\s*(?P<first>[0-9]{1,12})\s*(?:(?:至|到|[-–])\s*(?:第\s*)?(?P<last>[0-9]{1,12})\s*)?行')
+_DESCRIBED_REQUEST = re.compile(
+    r'(?:(?:請|麻煩|能否|可否|可以))?(?:提供|補上|補齊|補充|貼上)'
+    r'(?P<label>[A-Za-z0-9㐀-鿿-]{1,110})(?:原文|全文|內容)')
+_PENDING = re.compile(r'待查|待補|待提供|仍缺|尚缺|缺少|未核定|未確認|不適用')
+_CITATION = re.compile(r'\[D(\d{1,12}):L(\d{1,12})(?:-L(\d{1,12})|:C\d{1,12}(?:-C\d{1,12})?)?\]')
 
 
 def _question_ranges(question, sources):
@@ -76,6 +84,79 @@ def target(goal, step):
     return ranges
 
 
+def _read_range(step):
+    return step['action']['args']['replacement']
+
+
+def correction_targets(goal, ask):
+    action, observation = ask['action'], ask['observation']
+    if action['tool'] != 'ask' or action['args'].keys() - {'question', 'partial_result'}:
+        return []
+    question = goal_reply_sources.checked_question(action, observation)
+    references = _question_ranges(question, goal['sources'])
+    if not references:
+        clauses = goal_guidance_sources.standalone_clauses(question)
+        request = _DESCRIBED_REQUEST.fullmatch(re.sub(r'\s+', '', clauses[0][1])) if len(clauses) == 1 else None
+        if not request or _OTHER_REQUEST.search(request['label']):
+            return []
+    partial = observation.get('partial_result', '')
+    steps = goal['steps']
+    latest = {}
+    for step in steps:
+        if step['action']['tool'] == goal_sources.REQUIRED_SUPPLEMENT:
+            missing = step['action']['args']['missing']
+            latest[tuple(missing[key] for key in document_ranges.BATCH_FIELDS)] = step
+    required = goal_required_reads.bound_requirements(goal)
+    sources = {row['document_id']: row for row in goal['sources']}
+    candidates = []
+    for step in latest.values():
+        did, low, high = (_read_range(step)[key] for key in document_ranges.BATCH_FIELDS)
+        old_scope = tuple(step['action']['args']['missing'][key] for key in document_ranges.BATCH_FIELDS)
+        if references and any(
+                not (doc == did and low <= first <= last <= high
+                     or doc == old_scope[0] and old_scope[1] <= first <= last <= old_scope[2])
+                for doc, first, last in references):
+            continue
+        intervals = [(start, end) for doc, start, end, binding in required
+                     if doc == did and binding == step['sequence']]
+        if any(goal_required_reads._missing(intervals, low, high)):
+            continue
+        source = sources.get(did)
+        if source is None:
+            continue
+        excerpts = [row for prior in steps if not prior['observation'].get('error')
+                    for row in prior['observation'].get('excerpts', ())
+                    if (row['document_id'], row.get('name'), row.get('sha256')) == (did, source['name'], source['sha256'])]
+        citation = f'[D{did}:L{low}-L{high}]'
+        if not check_citations(citation, excerpts, allow_joined_lines=True)[0]['range_valid']:
+            continue
+        if any(_PENDING.search(row) and any(
+            int(match[1]) == did and low <= int(match[2]) <= int(match[3] or match[2]) <= high
+            and check_citations(match[0], excerpts, allow_joined_lines=True)[0]['range_valid']
+            for match in _CITATION.finditer(row)) for row in partial.splitlines()):
+            candidates.append(step)
+    return candidates if len(candidates) == 1 else []
+
+
+def correction_target(goal, ask, origin):
+    return next((step for step in correction_targets(goal, ask)
+                 if origin in (step['action']['args']['missing'], _read_range(step))), None)
+
+
+def _receipt(ask, source, original, added, missing, replacement, counts, *, previous=None):
+    args = {'guidance': source['citation'], 'original_sources': original, 'added_sources': added,
+            'missing': missing, 'replacement': replacement}
+    note = '綁定使用者指定的缺行補件'
+    if previous is not None:
+        args['replaces'] = previous['sequence']
+        note = '依使用者指定更換不適用的補件'
+    action = {'tool': goal_sources.REQUIRED_SUPPLEMENT, 'args': args, 'note': note}
+    observation = {'status': 'pending_read', 'ask_sequence': ask['sequence'],
+                   'ask_sha256': goal_stages.digest([ask['sequence'], ask['action'], ask['observation']]), **counts}
+    observation['supplement_sha256'] = goal_stages.digest([action, observation, source['sha256']])
+    return action, observation, goal_sources.merge_sources(original, added)
+
+
 def bind(goal, ask, source, added, original_line_count, replacement_line_count):
     original = goal['sources']
     missing, replacement, chosen = goal_sources.plan_mapping(source['content'])
@@ -93,15 +174,28 @@ def bind(goal, ask, source, added, original_line_count, replacement_line_count):
         raise ValueError('請指定目前對話中已匯入的新補件副本。')
     if type(replacement_line_count) is not int or replacement_line_count < replacement['end_line']:
         raise ValueError('補件副本未包含指定的完整行。')
-    merged = goal_sources.merge_sources(original, added)
-    args = {'guidance': source['citation'], 'original_sources': original, 'added_sources': added,
-            'missing': missing, 'replacement': replacement}
-    action = {'tool': goal_sources.REQUIRED_SUPPLEMENT, 'args': args, 'note': '綁定使用者指定的缺行補件'}
-    observation = {'status': 'pending_read', 'ask_sequence': ask['sequence'],
-                   'ask_sha256': goal_stages.digest([ask['sequence'], ask['action'], ask['observation']]),
-                   'original_line_count': original_line_count, 'replacement_line_count': replacement_line_count}
-    observation['supplement_sha256'] = goal_stages.digest([action, observation, source['sha256']])
-    return action, observation, merged
+    return _receipt(ask, source, original, added, missing, replacement,
+                    {'original_line_count': original_line_count, 'replacement_line_count': replacement_line_count})
+
+
+def bind_correction(goal, ask, source, added, replacement_line_count):
+    origin, replacement, chosen = goal_sources.plan_mapping(source['content'])
+    previous = correction_target(goal, ask, origin)
+    if (previous is None or source['steps_seen'] != ask['sequence']
+            or (chosen is not None and chosen != ask['observation']['question'])):
+        raise ValueError('更換補件須對應目前待答問題與仍有效的補件。')
+    old_mapping = _read_range(previous)
+    if old_mapping == replacement or replacement == previous['action']['args']['missing']:
+        raise ValueError('請指定另一段完整且適用的補件原文。')
+    if type(replacement_line_count) is not int or replacement_line_count < replacement['end_line']:
+        raise ValueError('補件副本未包含指定的完整行。')
+    original = goal['sources']
+    known = {row['document_id'] for row in original}
+    did = replacement['document_id']
+    if [row['document_id'] for row in added] != ([] if did in known else [did]):
+        raise ValueError('請指定目前對話中已匯入的補件副本。')
+    return _receipt(ask, source, original, added, previous['action']['args']['missing'],
+                    replacement, {'replacement_line_count': replacement_line_count}, previous=previous)
 
 
 def line_count(documents, source):
@@ -140,10 +234,14 @@ def validate_saved(db, *, replies_present, guidance_present, withdrawals_present
             goal = {'id': gid, 'objective': objective, 'sources': args['original_sources'], 'steps': steps[:index],
                     'guidance_sources': [row for row in guidance if row['notes_start'] < source['notes_start']],
                     'reply_sources': [row for row in replies if row['ask_sequence'] < ask['sequence']]}
-            for count_key, range_key, scope in (
-                ('original_line_count', 'missing', args['original_sources']),
-                ('replacement_line_count', 'replacement', args['added_sources']),
-            ):
+            correction = 'replaces' in args
+            if correction and type(args['replaces']) is not int:
+                raise ValueError('保存的原文補件缺少有效的被取代對應。')
+            replacement_scope = goal_sources.merge_sources(args['original_sources'], args['added_sources'])
+            counts = [('replacement_line_count', 'replacement', replacement_scope)]
+            if not correction:
+                counts.append(('original_line_count', 'missing', args['original_sources']))
+            for count_key, range_key, scope in counts:
                 if not isinstance(args.get(range_key), dict):
                     raise ValueError('保存的補件缺少範圍。')
                 document = next((row for row in scope if row['document_id'] == args[range_key].get('document_id')), None)
@@ -152,8 +250,13 @@ def validate_saved(db, *, replies_present, guidance_present, withdrawals_present
                 actual = line_count(documents, document)
                 if actual is not None and actual != obs.get(count_key):
                     raise ValueError('保存的原文補件行數與匯入副本不一致。')
-            expected_action, expected, merged = bind(
-                goal, ask, source, args['added_sources'], obs.get('original_line_count'), obs.get('replacement_line_count'))
+            if correction:
+                expected_action, expected, merged = bind_correction(
+                    goal, ask, source, args['added_sources'], obs.get('replacement_line_count'))
+            else:
+                expected_action, expected, merged = bind(
+                    goal, ask, source, args['added_sources'],
+                    obs.get('original_line_count'), obs.get('replacement_line_count'))
             note = goal_guidance_sources.note(source['content'], source['steps_seen'], source['recorded_at'])
             condition = {**goal, 'sources': merged, 'notes': notes[:source['notes_start'] + len(note)]}
             if history_sha is not None:

@@ -241,6 +241,116 @@ class GoalRequiredSupplementTests(unittest.TestCase):
                 self.attach(f'{gid}.txt','補件候選。')
                 self.assertFalse(goal_guidance.snapshot(self.store,self.sid,gid).get('required_document_supplement'))
 
+    def mismatched_supplement_waiting(self, *, question='請提供適用於 Q6 本輪的正式檢修處置原文。', cite=True):
+        original,gid,_ = self.waiting()
+        wrong = self.attach('old/procedure.txt','僅適用 Q5。請把檢修中的樣本移走。')
+        self.supplement(gid,original,wrong)
+        reference = f'[D{wrong}:L1]' if cite else ''
+        waiting = autonomy.run_goal(self.store,self.sid,gid,ScriptedEngine(
+            action('read',document_id=wrong,start_line=1,end_line=1),
+            action('ask',question=question,partial_result=(
+                f'工作桌：紫安桌。[D{original}:L1]\n檢修處置：待查，該補件僅適用 Q5。{reference}')),
+        ),max_steps=2)
+        self.assertEqual(waiting['status'],'needs_input')
+        return original,wrong,gid,waiting
+
+    def test_replaces_a_read_inapplicable_supplement_and_restores_the_same_goal(self):
+        original,wrong,gid,waiting = self.mismatched_supplement_waiting()
+        new = self.attach('current/procedure.txt','Q6 正式處置：換備用輪。')
+        stale = goal_guidance.snapshot(self.store,self.sid,gid)
+        self.assertTrue(stale['required_supplement_correction'])
+        unselected = self.attach('extra.txt','另案處置。')
+        command = f'補件 [D{original}:L2] 改由 [D{new}:L1]\n請撤下目前問題。'
+        with self.assertRaises(goal_guidance.StaleGuidance):
+            goal_guidance.save(self.store,self.sid,gid,command,expected_fingerprint=stale['fingerprint'])
+        for left,right,missing,new_line in ((original,new,1,1),(original,new,2,2),(original,wrong,2,1)):
+            with self.subTest(left=left,right=right,missing=missing,new_line=new_line),self.assertRaises(ValueError):
+                self.supplement(gid,left,right,missing=missing,replacement=new_line)
+        self.assertEqual(autonomy.get_goal(self.store,self.sid,gid),waiting)
+        self.supplement(gid,original,new)
+        bound = autonomy.get_goal(self.store,self.sid,gid)
+        self.assertEqual(bound['steps'][:-1],waiting['steps'])
+        self.assertEqual([row['ask_sequence'] for row in bound['withdrawn_questions']],[2,5])
+        self.assertEqual([row['document_id'] for row in bound['sources']],[original,wrong,new])
+        self.assertNotIn(unselected,[row['document_id'] for row in bound['sources']])
+        step = bound['steps'][-1]
+        self.assertEqual(step['action']['args']['replaces'],3)
+        self.assertEqual(goal_required_reads.requirements(bound),[(original,1,1),(new,1,1)])
+        backup = create_backup(self.store.path,self.root/'corrected.paibackup')
+        restore_backup(backup['path'],self.root/'corrected')
+        copy = Store(self.root/'corrected'/'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(copy,self.sid,gid),bound)
+        body = f'工作桌：紫安桌。[D{original}:L1]\n檢修處置：換備用輪。[D{new}:L1]'
+        done = autonomy.run_goal(copy,self.sid,gid,ScriptedEngine(
+            action('write_artifact',filename='note.md',content='尚未查讀。'),
+            action('write_artifact',filename='note.md',content=body),
+            action('deliver',filenames=['note.md'],report='已交付。'),
+        ),max_steps=3)
+        self.assertEqual(done['status'],'report_ready')
+        self.assertEqual(done['steps'][-3]['action']['args']['ranges'],[
+            {'document_id':new,'start_line':1,'end_line':1},
+        ])
+        backup = create_backup(copy.path,self.root/'complete.paibackup')
+        restore_backup(backup['path'],self.root/'complete')
+        restored = Store(self.root/'complete'/'assistant.sqlite3')
+        artifacts.rebuild(restored,self.sid,gid)
+        self.assertEqual((artifacts.directory(restored,gid)/'note.md').read_bytes(),body.encode('utf-8'))
+
+        action_row = step['action']
+        for invalid_parent in (2,True):
+            with self.subTest(invalid_parent=invalid_parent):
+                changed = {**action_row,'args':{**action_row['args'],'replaces':invalid_parent}}
+                with copy.connect() as db:
+                    db.execute('UPDATE autonomous_steps SET action_json=? WHERE goal_id=? AND sequence=?',
+                               (json.dumps(changed,ensure_ascii=False),gid,step['sequence']))
+                with self.assertRaisesRegex(ValueError,'原文補件'):
+                    validate_database(copy.path)
+
+    def test_requires_one_current_source_question_and_linked_partial(self):
+        for question,cite in (
+            ('請提供本輪正式檢修處置原文。誰負責？',True),
+            ('請提供本輪正式檢修處置原文。',False),
+            ('請提供本輪正式檢修處置原文及簽收員姓名。',True),
+        ):
+            with self.subTest(question=question,cite=cite):
+                self.sid = self.store.new_session()
+                original,_,gid,waiting = self.mismatched_supplement_waiting(question=question,cite=cite)
+                candidate = self.attach('next/procedure.txt','本輪處置：換備用輪。')
+                self.assertFalse(goal_guidance.snapshot(self.store,self.sid,gid).get('required_supplement_correction'))
+                with self.assertRaises(ValueError):
+                    self.supplement(gid,original,candidate)
+                self.assertEqual(autonomy.get_goal(self.store,self.sid,gid),waiting)
+
+    def test_multiple_corrections_keep_a_separately_requested_old_range(self):
+        original,old,gid,_ = self.mismatched_supplement_waiting()
+        another_old = self.attach('other/procedure.txt','僅適用 Q4。')
+        self.supplement(gid,original,another_old)
+        next_waiting = autonomy.run_goal(self.store,self.sid,gid,ScriptedEngine(
+            action('read',document_id=another_old,start_line=1,end_line=1),
+            action('ask',question='請提供本輪正式檢修處置原文。',
+                   partial_result=f'檢修處置：待查。[D{another_old}:L1]'),
+        ),max_steps=2)
+        self.assertEqual(next_waiting['status'],'needs_input')
+        with self.assertRaises(ValueError):
+            self.supplement(gid,old,original,missing=1,replacement=1)
+        # The explicitly reselected section is already present in the frozen source scope.
+        self.supplement(gid,another_old,old,missing=1)
+        goal = autonomy.get_goal(self.store,self.sid,gid,include_reply_positions=True)
+        args = goal['steps'][-1]['action']['args']
+        self.assertEqual(args['replaces'],6)
+        self.assertEqual(args['added_sources'],[])
+        self.assertEqual(args['missing'],{'document_id':original,'start_line':2,'end_line':2})
+        self.assertEqual(goal_required_reads.requirements(goal),[(original,1,1),(old,1,1)])
+
+        # A distinct instruction to read the previous physical range survives the remap.
+        revised = {**goal,'guidance_sources':[*goal['guidance_sources'],{
+            'notes_start':len(goal['notes']),'steps_seen':8,'content':f'完整查讀 [D{another_old}:L1]。',
+        }]}
+        self.assertEqual(goal_required_reads.requirements(revised),[
+            (original,1,1),(old,1,1),(another_old,1,1),
+        ])
+        validate_database(self.store.path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -107,41 +107,52 @@ def _directives(text, names, pattern):
 
 
 def requirements(goal):
+    return list(dict.fromkeys((did, low, high) for did, low, high, _ in bound_requirements(goal)))
+
+
+def bound_requirements(goal):
+    """Track which supplement supplies each range, including shared source lines."""
     supplements = [step for step in goal.get('steps', ()) if goal_sources.supplement_step(step)]
     initial = supplements[0]['action']['args']['original_sources'] if supplements else goal['sources']
     names, pattern = _named_pattern(initial)
     updates = [(row['notes_start'], row.get('steps_seen', 0), row['content']) for row in goal.get('guidance_sources', ())]
     updates.extend((row['notes_start'], row['ask_sequence'], row['answer']) for row in goal.get('reply_sources', ()))
     active = []
+    bindings = {}
     remaining = iter(supplements)
     supplement = next(remaining, None)
     for _, sequence, source in [(-1, 0, goal['objective']), *sorted(updates), (0, float('inf'), '')]:
         while supplement is not None and supplement['sequence'] <= sequence:
             args = supplement['action']['args']
             if supplement['action']['tool'] == goal_sources.REQUIRED_SUPPLEMENT:
-                active = _mapped_ranges(active, args['missing'], args['replacement'])
+                previous = args.get('replaces')
+                if previous is not None and (type(previous) is not int or previous not in bindings):
+                    raise ValueError('保存的原文補件缺少被取代的對應。')
+                missing = args['missing'] if previous is None else bindings[previous]
+                active = _mapped_ranges(active, missing, args['replacement'], previous, supplement['sequence'])
+                bindings[supplement['sequence']] = args['replacement']
             names, pattern = _named_pattern(goal_sources.merge_sources(args['original_sources'], args['added_sources']))
             supplement = next(remaining, None)
         for waive, (did, low, high) in _directives(source, names, pattern):
             if waive:
-                active = [(doc, start, end) for doc, first, last in active
+                active = [(doc, start, end, binding) for doc, first, last, binding in active
                           for start, end in (_missing([(low, high)], first, last) if doc == did else [(first, last)])]
-            elif (did, low, high) not in active:
-                active.append((did, low, high))
+            elif (did, low, high, None) not in active:
+                active.append((did, low, high, None))
     return active
 
 
-def _mapped_ranges(active, missing, replacement):
+def _mapped_ranges(active, missing, replacement, previous, current):
     did, low, high = (missing[key] for key in document_ranges.BATCH_FIELDS)
     shift = replacement['start_line'] - low
     result = []
-    for doc, start, end in active:
+    for doc, start, end, binding in active:
         first, last = max(low, start), min(high, end)
-        if doc != did or first > last:
-            result.append((doc, start, end))
+        if binding != previous or doc != did or first > last:
+            result.append((doc, start, end, binding))
             continue
-        result.extend((doc, left, right) for left, right in _missing([(low, high)], start, end))
-        result.append((replacement['document_id'], first + shift, last + shift))
+        result.extend((doc, left, right, binding) for left, right in _missing([(low, high)], start, end))
+        result.append((replacement['document_id'], first + shift, last + shift, current))
     return result
 
 

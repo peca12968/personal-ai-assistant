@@ -119,12 +119,19 @@ def _snapshot(db, sid, gid, *, include_reply_positions=False, include_work_plan=
             and waiting_step + 3 + review['file_delivery'] <= MAX_STEPS):
         plan_supplement = work_plan.can_supplement_question(steps)
         ordinary_target = [] if plan_supplement else _ordinary_missing_target(db, goal, steps, sources)
-        if plan_supplement or ordinary_target:
+        original = json.loads(goal['sources_json'])
+        correction_target = []
+        if not (plan_supplement or ordinary_target) and steps[-1]['observation'].get('question') == goal['question']:
+            scope_goal = {**goal, 'sources': original, 'steps': steps, 'reply_sources': sources}
+            correction_target = goal_required_supplement.correction_targets(scope_goal, steps[-1])
+        if plan_supplement or ordinary_target or correction_target:
             files = signature(db.execute('SELECT id,name,sha256 FROM documents WHERE session_id=? ORDER BY id', (sid,)))
-            original = json.loads(goal['sources_json'])
-            if goal_sources.matching_scope(original, files, scoped=True) and any(row not in original for row in files):
+            if goal_sources.matching_scope(original, files, scoped=True) and (
+                    correction_target or any(row not in original for row in files)):
                 if plan_supplement:
                     result['plan_document_supplement'] = True
+                elif correction_target:
+                    result['required_supplement_correction'] = True
                 else:
                     result['required_document_supplement'] = True
                 result['supplement_documents'] = files
@@ -176,6 +183,8 @@ def eligibility(value):
                       '請以「」括住完整原句。只有一個問題時可寫「請撤下目前問題。」')
     if value.get('required_document_supplement'):
         return True, '可用「補件 [D2:L2] 改由 [D3:L1]」，下一行寫「請撤下目前問題。」'
+    if value.get('required_supplement_correction'):
+        return True, '可用「補件 [原缺行] 改由 [新補件行號]」，下一行寫「請撤下目前問題。」'
     if question := value.get('report_colloquial_question'):
         if question.get('ordered', {}).get('answers'):
             if not value['sources_match']:
@@ -395,20 +404,26 @@ def _save_required_document_supplement(db, current, notes, content):
     gid, sid = goal['id'], goal['session_id']
     missing, replacement, _ = goal_sources.plan_mapping(content)
     original = json.loads(goal['sources_json'])
-    missing_id, replacement_id = missing['document_id'], replacement['document_id']
-    previous = next((row for row in original if row['document_id'] == missing_id), None)
-    if previous is None:
-        raise ValueError('缺行須屬於目前目標的原匯入副本。')
-    old_copy = _document(db, sid, missing_id)
-    new_copy = _document(db, sid, replacement_id)
-    added = signature([new_copy]) if new_copy is not None else []
-    old_count = goal_required_supplement.line_count({missing_id: old_copy}, previous)
+    new_copy = _document(db, sid, replacement['document_id'])
+    new_scope = signature([new_copy]) if new_copy is not None else []
     new_count = len(new_copy['content'].splitlines()) if new_copy is not None else None
     steps = _steps(db, gid)
     guidance = goal_guidance_sources.read(db, gid, notes, count)
     source = guidance[-1]
-    action, observation, merged = goal_required_supplement.bind(
-        {**goal, 'sources': original, 'steps': steps}, steps[-1], source, added, old_count, new_count)
+    scope_goal = {**goal, 'sources': original, 'steps': steps}
+    if current.get('required_supplement_correction'):
+        added = [row for row in new_scope if row not in original]
+        action, observation, merged = goal_required_supplement.bind_correction(
+            scope_goal, steps[-1], source, added, new_count)
+    else:
+        missing_id = missing['document_id']
+        previous = next((row for row in original if row['document_id'] == missing_id), None)
+        if previous is None:
+            raise ValueError('缺行須屬於目前目標的原匯入副本。')
+        old_copy = _document(db, sid, missing_id)
+        old_count = goal_required_supplement.line_count({missing_id: old_copy}, previous)
+        action, observation, merged = goal_required_supplement.bind(
+            scope_goal, steps[-1], source, new_scope, old_count, new_count)
     sources_json = json.dumps(merged, ensure_ascii=False)
     _append_step(db, {**goal, 'sources_json': sources_json}, notes, count + 1, action, observation)
     options = goal_question_withdrawals.options(db, gid, goal['question'], count, guidance)
@@ -715,14 +730,15 @@ def save(store, sid, gid, content, *, expected_fingerprint):
             raise ValueError('請先在目前問題指定要更正的欄位，或回答「都不改」。')
         plan_supplement = current.get('plan_document_supplement') and content.startswith('補件')
         mapped = goal_sources.is_plan_mapping(content)
-        required_supplement = current.get('required_document_supplement') and mapped
+        required_paths = current.keys() & {'required_document_supplement', 'required_supplement_correction'}
+        required_supplement = bool(required_paths) and mapped
         if current['goal']['status'] == 'needs_input' and mapped and not (plan_supplement or required_supplement):
-            raise ValueError('目前提問無法用這筆補件撤下。請核對提問與實際缺行。')
+            raise ValueError('目前提問無法用這筆補件撤下。請核對提問、缺行與目前補件。')
         allowed, reason = eligibility(current)
         if not allowed:
             raise ValueError(reason)
         supplement = 'document_supplement' in current and re.match(r'^補件(?:[ \t]|$)', content)
-        if (current.keys() & {'plan_document_supplement', 'required_document_supplement'}
+        if ((current.get('plan_document_supplement') or required_paths)
                 and not current['sources_match'] and not (plan_supplement or required_supplement)):
             raise ValueError('請先指定缺行與補件的對應範圍。')
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
