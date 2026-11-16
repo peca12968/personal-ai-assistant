@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 5
-SOURCE_VERSIONS = (1, 2, 3, 4, SOURCE_VERSION)
+SOURCE_VERSION = 6
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -27,7 +27,9 @@ GUIDANCE = (
     '未決、候選、被更正或撤回的數字不能代入。只算有證據的部分。'
     'calculation_source_adoptions 是從已保存的引用選擇核對到的欄位與來源。'
     '口語只給文件名時，先看它能否由原問題和已讀欄位唯一核對。'
-    'needs_lookup 是已確定文件及欄位但尚缺查找，請用 find_document_text 的該筆 args。'
+    'needs_lookup 是已確定文件及欄位但尚缺查找，直接用 find_document_text 的該筆 args，'
+    '其中 start_line 已指向要補的頁。needs_read 表示頁面齊全但仍缺完整原行，依其 ranges 用 read_ranges。'
+    '命中字面可以只是附註，要等工具辨認同欄原文後才採用。'
     '採用的單行須直接引用該行，工具會附補答或更正。缺行先查讀，只有真正未決才問。'
     'calculation_source_adoptions 的 field 是該次選擇的完整適用範圍。'
     '選定新文件名只更換該欄，原文件已讀且仍屬本批的規則、數字及事實繼續使用，'
@@ -118,7 +120,7 @@ class Sources:
             steps, scope, replies, self.excerpts, self.documents, self.document_counts, self.literal,
             lambda text: goal_calculation_adoption._literal_field(text, _valid_clause), _clauses,
             ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change,
-            named_ordinals=self.version >= 5)
+            named_ordinals=self.version >= 5, paged_lookup=self.version >= 6)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause, names=names)
                           if self.version >= 2 else None)

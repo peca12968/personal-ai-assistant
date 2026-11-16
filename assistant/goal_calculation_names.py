@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import document_ranges, goal_calculation_order, goal_sources
+from . import document_ranges, goal_calculation_lookup, goal_calculation_order, goal_sources
 
 
 _LINE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}\]'
@@ -99,7 +99,7 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_at, clauses, *,
-                 ordinal_guidance=None, direct_change=None, named_ordinals=False):
+                 ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -113,6 +113,8 @@ class Names:
         self.ordinal_guidance = ordinal_guidance
         self.direct_change = direct_change
         self.named_ordinals = named_ordinals
+        self.paged_lookup = paged_lookup
+        self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
 
@@ -253,12 +255,32 @@ class Names:
         count = self.counts.get(did)
         seen = self._lines(document)
         if count is not None and len(seen) == count:
-            return [ref for label, ref in self._fields(document, seen) if label == field]
+            return {'matches': [ref for label, ref in self._fields(document, seen) if label == field]}
+        key = (did, field)
+        if key not in self.field_lookups:
+            self.field_lookups[key] = self._inspect_lookup(document, field, count, seen)
+        return self.field_lookups[key]
+
+    def _inspect_lookup(self, document, field, count, seen):
+        did = document['document_id']
         originals = self.documents.get((did, document['name'], document['sha256']))
+        first = {'document_id': did, 'query': field, 'start_line': 1}
+        if self.paged_lookup:
+            covered = goal_calculation_lookup.coverage(
+                self.steps, document, field, count, originals=originals, seen=seen, literal=self.literal)
+            if 'next_page' in covered:
+                return {'needs_lookup': {**first, 'start_line': covered['next_page']}}
+            if 'missing_lines' in covered:
+                return {'needs_read': {'ranges': [
+                    {'document_id': did, 'start_line': number, 'end_line': number}
+                    for number in covered['missing_lines'][:document_ranges.MAX_RANGES]]}}
+            matches = [ref for label, ref in self._fields(document, covered['numbers']) if label == field]
+            return {'matches': matches, 'lookup_evidence': covered['lookup_evidence']}
+
         checked = _complete_lookup(self.steps, document, field, count, self.literal, originals)
         if checked is None:
-            return None
-        return [ref for label, ref in self._fields(document, (number for number, _ in checked)) if label == field]
+            return {'needs_lookup': first}
+        return {'matches': [ref for label, ref in self._fields(document, (n for n, _ in checked)) if label == field]}
 
     def _displayed_candidates(self, options, scope, question):
         documents = {doc['document_id']: doc for doc in scope}
@@ -337,14 +359,19 @@ class Names:
                 if not matches:
                     row['status'] = 'unverified_line_or_field'
                 continue
-            matches = self._field_lines(doc, field)
+            looked_up = self._field_lines(doc, field)
+            matches = looked_up.get('matches')
             if matches is None:
-                row['status'] = 'needs_lookup'
-                missing.append({'document_id': doc['document_id'], 'query': field, 'start_line': 1})
-            elif len(matches) != 1:
-                row.update(status='competing_lines' if matches else 'field_not_found', matching_lines=matches)
-            else:
+                instruction, = looked_up.keys()
+                row['status'] = instruction
+                missing.append(looked_up)
+                continue
+            if 'lookup_evidence' in looked_up:
+                row['lookup_evidence'] = looked_up['lookup_evidence']
+            if len(matches) == 1:
                 row['citation'] = matches[0]
+            else:
+                row.update(status='competing_lines' if matches else 'field_not_found', matching_lines=matches)
         return missing
 
     def _resolve_named_ordinal(self, reply, claimed_field, name, selection):
@@ -388,8 +415,8 @@ class Names:
                     basis['selected_documents'] = [chosen['document_id']]
                     result['references'] = (chosen['citation'],)
                     return result
-                if needed and all(row['status'] in (None, 'needs_lookup') for row in rows):
-                    result['needs_lookup'] = needed[0]
+                if needed and all(row['status'] in (None, 'needs_lookup', 'needs_read') for row in rows):
+                    result.update(needed[0])
         result['choices'] = [row['citation'] or row['name'] for row in rows]
         result['reason'] = reason
         return result
@@ -451,18 +478,13 @@ class Names:
         if selected_refs:
             result['references'] = selected_refs
             return result
-        count = self.counts.get(did)
-        seen = self._lines(document)
-        if count is not None and len(seen) == count and (not seen or min(seen) == 1 and max(seen) == count):
-            hits = self._fields(document, seen)
-        else:
-            originals = self.documents.get((did, document['name'], document['sha256']))
-            checked = _complete_lookup(self.steps, document, field, count, self.literal, originals)
-            if checked is None:
-                result['needs_lookup'] = {'document_id': did, 'query': field, 'start_line': 1}
-                return result
-            hits = self._fields(document, (number for number, _ in checked))
-        matches = [ref for label, ref in hits if label == field]
+        looked_up = self._field_lines(document, field)
+        matches = looked_up.get('matches')
+        if matches is None:
+            result.update(looked_up)
+            return result
+        if 'lookup_evidence' in looked_up:
+            basis['lookup_evidence'] = looked_up['lookup_evidence']
         if len(matches) == 1:
             result['references'] = tuple(matches)
         elif matches:

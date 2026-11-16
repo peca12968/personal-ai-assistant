@@ -185,6 +185,114 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('完整且已確認', result['steps'][2]['observation']['error'])
         self.assertEqual(result['partial_result'], '總件數：待查')
 
+    def test_paged_named_ordinal_replays_both_pages_after_detach(self):
+        content = '\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),
+                             '時段：晚班。', '批次量：22 袋。', '結束。'])
+        revised = self.attach(content, '晚班盤點.txt')
+        self.create(files=True)
+        self.run_actions(self.initial(),
+                         action('ask', question=f'批次量要採用「原值」{self.cite(1)} 還是晚班盤點？'))
+        self.reply('第二份。')
+        ref = f'[D{revised}:L10]'
+        rows = [{'label': '總件數', 'calculation_step': 6, 'unit': '件'},
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]
+        engine = ScriptedEngine(
+            action('find_document_text', document_id=revised, query='批次量', start_line=1),
+            self.formula(),
+            action('find_document_text', document_id=revised, query='批次量', start_line=8),
+            self.formula(quantity='22', citation=ref, quote='批次量：22 袋'),
+            action('write_artifact', filename='盤點.json', calculation_report=rows),
+            action('deliver', filenames=['盤點.json'], calculation_report=rows))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=6)
+        payload = json.loads(engine.prompts[1].rsplit('目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(payload['calculation_source_adoptions'][0]['needs_lookup']['start_line'], 8)
+        self.assertIn('採用尚待核對', result['steps'][3]['observation']['error'])
+        proof, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        page_proof = proof['spoken_selection']['ordinal']['options'][1]['lookup_evidence']
+        self.assertEqual([row['step_sequence'] for row in page_proof['pages']], [3, 5])
+        self.assertEqual([row['start_line'] for row in page_proof['pages']], [1, 8])
+        self.assertEqual(page_proof['total_matching_lines'], 8)
+        self.assertIn('66 件', result['result'])
+        original = artifacts.directory(self.store, self.gid).joinpath('盤點.json').read_bytes()
+        self.store.detach_document(self.sid, revised)
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('盤點.json').read_bytes(), original)
+        with restored.connect() as db:
+            page = result['steps'][4]['observation']
+            page['matches'][0]['match_start_char'] += 1
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(page, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '欄位查找結果'):
+            validate_database(restored.path)
+
+    def test_paged_named_choice_requires_real_cursors_and_keeps_two_fields_competing(self):
+        content = '\n'.join(['摘要。', '批次量：21 袋。', *(f'附記{i}：批次量待覆核。' for i in range(1, 7)),
+                             '區位：木架。', '批次量：24 袋。', '結尾。'])
+        revised = self.attach(content, '複點.txt')
+        other = self.attach(content, '另一區.txt')
+        self.create()
+        self.run_actions(self.initial(), action('ask', question='本批批次量採用清單還是複點？'))
+        self.reply('第二份。')
+        engine = ScriptedEngine(
+            action('find_document_text', sources=[
+                {'document_id': revised, 'queries': [{'query': '批次量', 'start_line': 1}]},
+                {'document_id': other, 'queries': [{'query': '批次量', 'start_line': 8}]}]),
+            self.formula(),
+            action('find_document_text', document_id=revised, queries=[{'query': '批次量', 'start_line': 8}]),
+            self.formula(quantity='24', citation=f'[D{revised}:L10]', quote='批次量：24 袋'),
+            action('ask', question=f'批次量要採用 [D{revised}:L2] 還是 [D{revised}:L10]？', calculation_report=[
+                {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'},
+                {'label': '總件數', 'pending': True}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=5)
+        self.assertIn('採用尚待核對', result['steps'][3]['observation']['error'])
+        state = json.loads(engine.prompts[3].rsplit('目標與已觀察資料：\n', 1)[1])
+        candidate = state['calculation_source_adoptions'][0]['spoken_selection']['ordinal']['options'][1]
+        self.assertEqual(candidate['status'], 'competing_lines')
+        self.assertEqual(candidate['matching_lines'], [f'[D{revised}:L2]', f'[D{revised}:L10]'])
+        self.assertIn('採用尚待核對', result['steps'][5]['observation']['error'])
+        self.assertIn('窗口：北門', result['partial_result'])
+        validate_database(self.store.path)
+
+    def test_paged_named_lookup_requests_only_missing_full_original_line(self):
+        late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 7)),
+                                     '附錄：' + '測' * 8300 + '批次量另列。',
+                                     '區位：木架。', '批次量：22 袋。', '結尾。']), '複點.txt')
+        self.create()
+        self.run_actions(self.initial(), action('ask', question='批次量要採用哪一份文件？'))
+        self.reply('就用複點那份。')
+        engine = ScriptedEngine(
+            action('find_document_text', document_id=late, query='批次量', start_line=1),
+            action('find_document_text', document_id=late, query='批次量', start_line=8),
+            action('read_ranges', ranges=[{'document_id': late, 'start_line': 8, 'end_line': 8}]),
+            self.formula(quantity='22', citation=f'[D{late}:L10]', quote='批次量：22 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 6, 'unit': '件'}]))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=5)
+        self.assertFalse(result['steps'][3]['observation']['matches'][0]['full_line_provided'])
+        suggestion = json.loads(engine.prompts[2].rsplit('目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(suggestion['calculation_source_adoptions'][0]['needs_read'],
+                         {'ranges': [{'document_id': late, 'start_line': 8, 'end_line': 8}]})
+        adoption, = result['steps'][5]['observation'][goal_calculation.PROOF]['source_adoptions']
+        self.assertEqual(len(adoption['spoken_selection']['lookup_evidence']['pages']), 2)
+        self.assertIn('66 件', result['result'])
+        validate_database(self.store.path)
+
+    def test_paged_lookup_cannot_continue_after_import_changes(self):
+        name = '複點.txt'
+        late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),
+                                     '區位：木架。', '批次量：22 袋。']), name)
+        self.create()
+        self.run_actions(self.initial(), action('ask', question=f'批次量用「原單」{self.cite(1)} 還是複點？'))
+        self.reply('第二份。')
+        self.run_actions(action('find_document_text', document_id=late, query='批次量', start_line=1))
+        replaced = self.attach('附記：批次量待更新。\n批次量：26 袋。', name)
+        self.assertEqual(replaced, late)
+        engine = ScriptedEngine(action('find_document_text', document_id=late, query='批次量', start_line=8))
+        paused = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=1)
+        self.assertEqual(paused['status'], 'paused')
+        self.assertEqual(len(paused['steps']), 3)
+        self.assertEqual(engine.prompts, [])
+
     def test_hypothetical_named_numbered_question_does_not_confirm_current_source(self):
         revised = self.attach('批次量：23 袋。', '晚班.txt')
         self.create()
