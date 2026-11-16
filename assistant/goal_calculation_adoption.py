@@ -152,6 +152,12 @@ def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
     return {'field': field, 'status': status, 'candidates': candidates}
 
 
+def _adopt_named(entry, versions, literal, valid_clause, multi_fields):
+    if entry is not None and (refs := entry.pop('references', None)):
+        selection = {'refs': refs, 'field': entry['field'], 'description': None, 'retain': False, 'undecided': False}
+        entry.update(_resolve(selection, versions, literal, valid_clause, multi_fields=multi_fields))
+
+
 class Review:
     def __init__(self, order, user, scope, literal, valid_clause, *, names=None, multi_fields=False):
         versions = {row['document_id']: row for row in scope}
@@ -174,11 +180,7 @@ class Review:
                     entry = _resolve(selected, versions, literal, valid_clause, multi_fields=multi_fields)
                 elif names is not None and not question and not re.search(_LINE, clause):
                     entry = names.resolve(citation, clause, offset, inert=bool(_NONOPERATIVE.search(prefix)))
-                    if entry is not None and (refs := entry.pop('references', None)):
-                        adopted = _resolve({'refs': refs, 'field': entry['field'], 'description': None,
-                                            'retain': False, 'undecided': False}, versions, literal, valid_clause,
-                                           multi_fields=multi_fields)
-                        entry.update(adopted)
+                    _adopt_named(entry, versions, literal, valid_clause, multi_fields)
                 else:
                     entry = None
                 if selected is not None or entry is not None:
@@ -188,6 +190,15 @@ class Review:
                 if entry is not None:
                     records.append({**entry, 'user_citation': citation, 'user_sha256': user[citation][1],
                                     'user_quote': clause, 'user_quote_start': offset})
+            if names is not None and (confirmation := names.confirmation(citation)):
+                entry, offset, clause = confirmation
+                field = entry['field']
+                if not (any(_applies(row, field) for row in records)
+                        or any(names.direct_change(item, field) for item in direct)):
+                    _adopt_named(entry, versions, literal, valid_clause, multi_fields)
+                    records.append({**entry, 'user_citation': citation, 'user_sha256': user[citation][1],
+                                    'user_quote': clause, 'user_quote_start': offset})
+                    altered = True
             self.notes.append((position, citation, records, tuple(direct), None if altered else text))
 
     def effective(self, field, direct_change):

@@ -2,7 +2,8 @@
 import re
 import unicodedata
 
-from . import document_ranges, goal_calculation_lookup, goal_calculation_order, goal_sources, operand_evidence
+from . import (document_ranges, goal_calculation_confirmation, goal_calculation_lookup,
+               goal_calculation_order, goal_sources, operand_evidence)
 
 
 _LINE = r'\[D[1-9][0-9]{0,11}:L[1-9][0-9]{0,11}\]'
@@ -103,7 +104,7 @@ def _complete_lookup(steps, document, field, count, literal, originals):
 class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
-                 line_pages=None, field_quantity=None, reply_assignments=None):
+                 line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -121,6 +122,7 @@ class Names:
         self.line_pages = line_pages
         self.field_quantity = field_quantity
         self.reply_assignments = reply_assignments
+        self.confirm_single_line = confirm_single_line
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -187,10 +189,12 @@ class Names:
         selected = set().union(*(known.get(did, set()) for did in ids)) if ids else set()
         return None, selected
 
+    def _choice_guidance(self, reply):
+        return (row for row in reversed(self.ordinal_guidance)
+                if row['steps_seen'] >= reply['ask_sequence'] and row['notes_start'] < reply['notes_start'])
+
     def _changed_order(self, reply, field):
-        for source in reversed(self.ordinal_guidance):
-            if source['steps_seen'] < reply['ask_sequence'] or source['notes_start'] >= reply['notes_start']:
-                continue
+        for source in self._choice_guidance(reply):
             text = source['content']
             if (goal_calculation_order.reordered(text, self.clauses)
                     or field and self.direct_change(text, field)):
@@ -460,6 +464,67 @@ class Names:
         result['choices'] = [row['citation'] or row['name'] for row in rows]
         result['reason'] = reason
         return result
+
+    def confirmation(self, citation):
+        reply = self.replies.get(citation) if self.confirm_single_line else None
+        if reply is None:
+            return None
+        proposal = goal_calculation_confirmation.question_source(reply['question'], self.clauses)
+        if proposal is None:
+            return None
+        field, ref = proposal['field'], proposal['citation']
+        sequence = reply['ask_sequence']
+        scope = self.history.get(sequence, self.scope)
+        did, line = proposal['document_id'], proposal['line_number']
+        document = next((row for row in scope if row['document_id'] == did), None)
+        offset, clause, status, whole = goal_calculation_confirmation.response(reply['answer'], self.clauses)
+        companions = [] if whole else self.reply_assignments(reply['answer'], offset, field)
+        if companions is None:
+            return None
+        basis = {'name': clause, 'question': reply['question'], 'ask_sequence': sequence,
+                 'question_references': [ref], 'candidate_documents': [did], 'selected_documents': [],
+                 'confirmation': {**proposal, 'reply_status': status}}
+        if companions:
+            basis['confirmation']['companion_clauses'] = companions
+        result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': [field],
+                  'choices': [ref], 'spoken_selection': basis}
+        reason = 'confirmation_unconfirmed'
+        if any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply)):
+            return None
+        if changed := self._changed_order(reply, field):
+            result['changed_by'] = changed
+            reason = 'confirmation_question_changed'
+        elif status == 'declined':
+            reason = 'confirmation_declined'
+        elif status == 'affirmed' and (whole or companions):
+            reason = self._confirm_proposal(result, proposal, scope, document)
+        if reason:
+            result['reason'] = reason
+        return result, offset, clause
+
+    def _confirm_proposal(self, result, proposal, scope, document):
+        did, line, field, ref = (proposal[key] for key in ('document_id', 'line_number', 'field', 'citation'))
+        title, shown_line = proposal['displayed_title'], proposal['displayed_line']
+        if (document is None or line > self.counts.get(did, 0)
+                or shown_line is not None and shown_line != line
+                or title and did not in self._exact_title_ids(title, scope)):
+            return 'confirmation_reference_conflict'
+        if line not in self._lines(document):
+            originals = self.documents.get((did, document['name'], document['sha256']))
+            size = len(originals[line - 1]) if originals is not None else 0
+            result.update(self.line_pages.next_read(did, [line], {line: size}))
+            return 'confirmation_not_read'
+        if (field, ref) not in self._fields(document, {line}):
+            return 'confirmation_field_conflict'
+        if shown := proposal['displayed_quantities']:
+            quantity = self.field_quantity(ref, field)
+            if not quantity or any((item['exact'], item['unit']) != (quantity['exact'], quantity['unit'])
+                                   for item in shown):
+                return 'confirmation_quantity_conflict'
+            result['spoken_selection']['confirmation']['source_quantity'] = quantity
+        result['references'] = (ref,)
+        result['spoken_selection']['selected_documents'] = [did]
+        return None
 
     def _compound_quantity_choice(self, reply, clause, offset, quantity, *, blocked, standalone):
         entry = self._resolve_named_choice(reply, None, clause, ('quantity', quantity))

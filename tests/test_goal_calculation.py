@@ -505,6 +505,92 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertIn('窗口正式改為 南門 [補充#2]', result['result'])
         validate_database(self.store.path)
 
+    def prepare_single_confirmation(self, question, *, files=False):
+        revised = self.attach('批次量：29 袋。', '複查.txt')
+        self.create(files=files)
+        ref = f'[D{revised}:L1]'
+        original = question.format(ref=ref)
+        result = self.run_actions(action('read_ranges', ranges=[
+            {'document_id': self.doc, 'start_line': 1, 'end_line': 4},
+            {'document_id': revised, 'start_line': 1, 'end_line': 1}]),
+            action('ask', question=original))
+        self.assertEqual(result['status'], 'needs_input')
+        return ref, original
+
+    def test_single_confirmation_binds_ack_and_independent_correction_after_restore(self):
+        ref, question = self.prepare_single_confirmation(
+            '請確認批次量是否正式採用《複查》的第 1 行（29 袋）{ref}？', files=True)
+        reply = '窗口正式改為 南門；好！'
+        self.reply(reply)
+        filename = '單筆選定.json'
+        rows = [{'label': '總件數', 'calculation_step': 3, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#2]', 'quote': '窗口正式改為 南門'}]
+        active = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            action('write_artifact', filename=filename, calculation_report=rows),
+            action('deliver', filenames=[filename], calculation_report=rows))
+        self.assertEqual(active['status'], 'report_ready')
+        self.assertIn('87 件', active['result'])
+        self.assertIn('窗口正式改為 南門 [補充#2]', active['result'])
+        saved = active['steps'][2]['observation']
+        adopted, = saved[goal_calculation.PROOF]['source_adoptions']
+        evidence = adopted['spoken_selection']['confirmation']
+        self.assertEqual(adopted['user_quote_start'], reply.index('好'))
+        self.assertEqual(question[evidence['question_start']:evidence['question_end']], ref)
+        self.assertEqual(evidence['reply_status'], 'affirmed')
+        self.assertEqual(evidence['displayed_quantities'][0]['exact'], '29')
+        self.assertEqual(evidence['source_quantity']['quote'], '批次量：29 袋')
+        self.assertEqual(evidence['companion_clauses'][0]['quote_start'], 0)
+        original = artifacts.directory(self.store, self.gid).joinpath(filename).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(filename).read_bytes(), original)
+        with restored.connect() as db:
+            evidence['question_start'] += 1
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(saved, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_single_confirmation_checks_declines_conditions_and_question_discrepancies(self):
+        question = '是否採用 {ref} 的 29 袋作為批次量？'
+        cases = [(question, '不是。', 'confirmation_declined'),
+                 (question, '對，但須等收件人同意。', 'confirmation_unconfirmed'),
+                 (question, '「好」。', 'confirmation_unconfirmed'),
+                 ('批次量要採用 29 箱 {ref} 嗎？', '對。', 'confirmation_quantity_conflict'),
+                 ('批次量是否採用《另一份文件》第 1 行 {ref}？', '好。', 'confirmation_reference_conflict'),
+                 ('批次量是否採用《複查》第 2 行 {ref}？', '好。', 'confirmation_reference_conflict')]
+        for proposed, reply, reason in cases:
+            with self.subTest(reply=reply, question=proposed):
+                ref, _ = self.prepare_single_confirmation(proposed)
+                self.reply(reply)
+                engine = ScriptedEngine(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+                    action('ask', question='批次量正式採用哪一行？', calculation_report=[
+                        {'label': '總件數', 'pending': True},
+                        {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]))
+                active = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+                payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+                self.assertEqual(payload['calculation_source_adoptions'][0]['reason'], reason)
+                self.assertEqual(active['steps'][2]['action']['tool'], 'invalid')
+                self.assertEqual(active['status'], 'needs_input')
+                self.assertIn('窗口：北門', active['partial_result'])
+                validate_database(self.store.path)
+
+    def test_single_confirmation_never_replaces_a_saved_formal_update(self):
+        ref, _ = self.prepare_single_confirmation('批次量是否正式採用 29 袋 {ref}？')
+        checkpoint = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '批次量正式改為 18 袋。',
+                           expected_fingerprint=checkpoint['fingerprint'])
+        self.reply('對。')
+        result = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            self.formula(quantity='18', citation='[更正#1]', quote='批次量正式改為 18 袋'),
+            action('finish', calculation_report=[{'label': '總件數', 'calculation_step': 4, 'unit': '件'}]))
+        self.assertIn('另有較新的', result['steps'][2]['observation']['error'])
+        self.assertIn('54 件', result['result'])
+        proof = result['steps'][3]['observation'][goal_calculation.PROOF]
+        self.assertEqual(proof['source_adoptions'], [])
+        self.assertEqual(proof['operands'][0]['citation'], '[更正#1]')
+        validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),

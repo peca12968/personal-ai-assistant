@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 9
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, SOURCE_VERSION)
+SOURCE_VERSION = 10
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -40,6 +40,8 @@ GUIDANCE = (
     '已知兩筆都屬候選時毋須再作數量比較。'
     '短答數值及單位對到唯一同欄原行時，value_choice 會核對它。計算仍引用該文件原行。'
     '同一答覆若帶有獨立欄位的明確更正，數值選擇和該欄更正各自生效。更正欄用補答原句及補答引用。'
+    '只問一份原行是否採用時，confirmation 會核對「對」「好」之類的短答。'
+    '明確確認後使用所採原行；否定或有保留條件時只追問受影響的欄位。'
     '若同數同單位、無吻合或有候選待核，只問原候選採用哪一筆，保留已核對的獨立欄位。'
     '「第二份」等短答依保存的問題列出的同欄候選順序；採用已核對的原行。'
     '原問以文件名、已配對短稱或混合引用列選項時，依 ordinal.options 的現況。'
@@ -131,7 +133,8 @@ class Sources:
             ordinal_guidance=guidance if self.version >= 4 else None, direct_change=_later_change,
             named_ordinals=self.version >= 5, paged_lookup=self.version >= 6, line_pages=self.line_pages,
             field_quantity=self._field_quantity if self.version >= 8 else None,
-            reply_assignments=self._reply_assignments if self.version >= 9 else None)
+            reply_assignments=self._reply_assignments if self.version >= 9 else None,
+            confirm_single_line=self.version >= 10)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause,
                                                          names=names, multi_fields=self.version >= 7)
