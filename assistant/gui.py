@@ -113,6 +113,7 @@ class App:
         self.bad_btn.pack(side="left", padx=6)
         self.context_btn = ttk.Button(feedback, text="查看本次參考", command=self.inspect_context)
         self.context_btn.pack(side="left")
+        self.open_chat_goal_btn = ttk.Button(feedback, text='開啟這項工作', command=self.open_chat_goal)
         self.input = tk.Text(main, height=4, bg=PANEL, fg=FG, insertbackground=FG,
             wrap="word", relief="flat", padx=12, pady=10, font=("Microsoft JhengHei UI", 11))
         self.input.grid(row=2, column=0, sticky="ew")
@@ -181,8 +182,29 @@ class App:
                                         discuss_report=self.discuss_goal_report)
             self.autonomous_windows.append(existing)
         if gid:
-            existing.refresh(gid)
+            existing.reveal_goal(gid)
         existing.window.lift()
+        return existing
+
+    def _refresh_chat_goal(self):
+        from .autonomy_status import chat_goal_target
+        try:
+            gid = chat_goal_target(self.store, self.sid, self.last_answer)
+        except (ValueError, OSError, sqlite3.Error):
+            gid = None
+        if gid:
+            self.open_chat_goal_btn.pack(side='left', padx=(6, 0))
+        else:
+            self.open_chat_goal_btn.pack_forget()
+        return gid
+
+    def open_chat_goal(self):
+        if self.busy or self.closing:
+            return
+        gid = self._refresh_chat_goal()
+        if gid is not None and self.autonomous_goals(self.sid, gid).listing.exists(gid):
+            return
+        self.status.set('目前無法核對這項工作，請重新查詢。')
 
     def discuss_goal_report(self, sid, gid):
         if self.closing or self.busy:
@@ -306,6 +328,7 @@ class App:
                 self.last_answer = row["id"]
         if rows and rows[-1]['role'] != 'assistant':
             self.last_answer = None
+        self._refresh_chat_goal()
 
     def new_session(self):
         if self.busy:
@@ -326,7 +349,8 @@ class App:
     def set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn, self.context_btn, self.retry_btn, self.chat_goal_btn):
+        for widget in (self.send_btn, self.new_btn, self.session_list, self.good_btn, self.bad_btn,
+                       self.context_btn, self.open_chat_goal_btn, self.retry_btn, self.chat_goal_btn):
             widget.configure(state=state)
         self.stop_btn.configure(state="normal" if busy else "disabled")
         if hasattr(self, 'image_btn'):

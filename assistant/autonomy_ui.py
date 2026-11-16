@@ -246,6 +246,14 @@ class AutonomousWindow:
             self.listing.selection_set(selected)
             self.select()
 
+    def reveal_goal(self, gid):
+        self.refresh(gid)
+        if self.listing.exists(gid):
+            self.window.update_idletasks()
+            self.listing.see(gid)
+            self.layout.reveal(self.listing)
+            self.listing.focus_set()
+
     def new_goal(self):
         if self.busy:
             return

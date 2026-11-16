@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from assistant import answer_runs, autonomy as a, goal_guidance, goal_replies
-from assistant.autonomy_status import goal_context
+from assistant.autonomy_status import chat_goal_target, goal_context
 from assistant.backup import create_backup, restore_backup
 from assistant.engine import Assistant, EngineError
 from assistant.store import Store
@@ -237,6 +237,7 @@ class GoalChatStatusTests(unittest.TestCase):
 
     def test_short_choice_keeps_original_id_and_displays_latest_state_after_restore(self):
         gids, questions, prior = self._candidate_answer()
+        self.assertIsNone(chat_goal_target(self.store, self.sid, prior['id']))
         question = '夜間盤點那件，現在要補哪項資料？'
         snapshot = goal_context(self.store, self.sid, question)
         self.assertEqual(snapshot['reference']['selection'], {'answer_id': prior['id'], 'label': '夜間盤點', 'goal_id': gids[1]})
@@ -259,8 +260,22 @@ class GoalChatStatusTests(unittest.TestCase):
         current = restored.answer_context(answer['id'])['autonomous_goals']
         self.assertEqual(current['reference']['selection'], snapshot['reference']['selection'])
         self.assertEqual((current['goals'][0]['next_action'], current['goals'][0]['recorded_question']), ('resume', ''))
+        self.assertEqual(chat_goal_target(restored, self.sid, answer['id']), gids[1])
+        self.assertIsNone(chat_goal_target(restored, self.sid, prior['id']))
+        self.assertIsNone(chat_goal_target(restored, restored.new_session(), answer['id']))
         self.assertEqual(a.get_goal(restored, self.sid, duplicate)['status'], 'pending')
         self.assertEqual(a.get_goal(restored, self.sid, gids[0])['question'], questions[0])
+        # Even matching mirrored answers cannot substitute a different goal for
+        # the one selected from the previous visible list.
+        substituted = restored.answer_context(answer['id'])
+        selected = substituted['autonomous_goals']
+        selected['reference']['selection']['goal_id'] = duplicate
+        selected['goals'][0]['id'] = duplicate
+        text = json.dumps(substituted, ensure_ascii=False)
+        with restored.connect() as db:
+            db.execute('UPDATE answer_runs SET context_json=? WHERE answer_message_id=?', (text, answer['id']))
+            db.execute('UPDATE answer_contexts SET payload=? WHERE message_id=?', (text, answer['id']))
+        self.assertIsNone(chat_goal_target(restored, self.sid, answer['id']))
 
     def test_nonnumbered_or_unshown_options_cannot_select_and_intervening_turn_ends_scope(self):
         gids, _, prior = self._candidate_answer(numbered=False)

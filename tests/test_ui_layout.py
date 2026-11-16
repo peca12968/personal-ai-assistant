@@ -525,6 +525,61 @@ class FormGeometryTests(unittest.TestCase):
             self.assertEqual(app.autonomous_windows[0].selected_id(), gid)
             self.assertEqual(autonomy.get_goal(store, old_sid, gid)['status'], 'pending')
 
+    def test_chat_opens_exact_older_goal_and_keeps_current_drafts(self):
+        from assistant.engine import Assistant
+        from assistant.gui import App
+        from assistant import goal_replies
+        from test_autonomy import ScriptedEngine, action
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'assistant.sqlite3')
+            sid = store.new_session()
+            gid = autonomy.create_goal(store, sid, '晴溪 Q4 的展件清單')
+            original = '封條是什麼顏色？'
+            autonomy.run_goal(store, sid, gid, ScriptedEngine(action('ask', question=original)))
+            for i in range(8):
+                newer = autonomy.create_goal(store, sid, f'晴溪 Q4{i} 的展件清單')
+            answer = Assistant(store, ScriptedEngine(original)).ask(sid, '查看「晴溪 Q4」目前等我回答哪個問題？')
+            view = goal_replies.snapshot(store, sid, gid)
+            goal_replies.save(store, sid, gid, '銀灰。', expected_fingerprint=view['fingerprint'])
+            current = '到館時間是什麼？'
+            before = autonomy.run_goal(store, sid, gid, ScriptedEngine(action('ask', question=current)))
+            rival_before = autonomy.get_goal(store, sid, newer)
+            app = App(self.root, store, SimpleNamespace(answer=lambda *args: self.fail('navigation started inference')))
+            self.assertEqual(app.last_answer, answer['id'])
+            self.assertEqual(app.open_chat_goal_btn.winfo_manager(), 'pack')
+            app.input.insert('1.0', '保留我的聊天草稿 ')
+            view = AutonomousWindow(self.root, store, sid, None, initial_objective='保留我的工作草稿 ')
+            self.allocate(view)
+            app.autonomous_windows.append(view)
+            view.refresh(newer)
+
+            app.set_busy(True)
+            app.open_chat_goal_btn.invoke()
+            self.assertEqual(view.selected_id(), newer)
+            app.set_busy(False)
+            app.open_chat_goal_btn.invoke()
+            self.assertEqual(app.autonomous_windows, [view])
+            self.assertEqual(view.selected_id(), gid)
+            self.assertIn('需要你的補充：' + current, view.output.get('1.0', 'end'))
+            self.assertEqual(str(view.reply['state']), 'normal')
+            self.assertGreater(view.listing.yview()[0], 0)
+            self.assertEqual(app.input.get('1.0', 'end-1c'), '保留我的聊天草稿 ')
+            self.assertEqual(view.objective.get('1.0', 'end-1c'), '保留我的工作草稿 ')
+            self.assertEqual(autonomy.get_goal(store, sid, gid), before)
+            self.assertEqual(autonomy.get_goal(store, sid, newer), rival_before)
+
+            view.refresh(newer)
+            store.add_message(sid, 'user', '下一題尚未回答。')
+            app.open_chat_goal_btn.invoke()
+            self.assertEqual(app.open_chat_goal_btn.winfo_manager(), '')
+            self.assertEqual(view.selected_id(), newer)
+            other_sid = store.new_session()
+            app.drafts.switch(other_sid)
+            app.render()
+            self.assertEqual(app.open_chat_goal_btn.winfo_manager(), '')
+            self.assertEqual(app.sid, other_sid)
+
     def test_autonomous_csv_selection_result_view_and_explicit_full_export(self):
         import json
         with tempfile.TemporaryDirectory() as tmp:

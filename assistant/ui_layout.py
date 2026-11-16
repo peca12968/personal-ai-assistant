@@ -52,8 +52,10 @@ class ScrollableForm(ttk.Frame):
             return 'break'
 
     def _focus(self, event):
-        widget = event.widget
         # Keyboard navigation must also reveal controls outside the viewport.
+        self.reveal(event.widget)
+
+    def reveal(self, widget):
         if not str(widget).startswith(str(self.body) + '.'):
             return
         top = widget.winfo_rooty() - self.body.winfo_rooty()

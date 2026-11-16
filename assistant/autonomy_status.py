@@ -112,12 +112,12 @@ def _choice_request(question):
     return head, None, bool(lead or suffix)
 
 
-def _choice_origin(db, sid, before):
+def _latest_completed_answer(db, sid, before=None):
     from .local_answer_receipts import load_context, MAX_JSON_BYTES, MAX_TEXT_BYTES
     rows = db.execute('''WITH tail AS (
         SELECT id,role,content FROM messages WHERE session_id=? AND (? IS NULL OR id<?)
         ORDER BY id DESC LIMIT 1)
-        SELECT tail.id,tail.content,u.content AS request,c.payload FROM tail
+        SELECT tail.id,tail.content,u.id AS user_id,u.content AS request,c.payload FROM tail
         JOIN answer_runs r ON r.answer_message_id=tail.id AND r.session_id=? AND r.status='succeeded'
         JOIN messages u ON u.id=r.user_message_id AND u.session_id=r.session_id AND u.role='user'
         JOIN answer_contexts c ON c.message_id=tail.id AND c.payload=r.context_json
@@ -133,6 +133,14 @@ def _choice_origin(db, sid, before):
         return None
     if not isinstance(context, dict) or context.get('current_request') != row['request']:
         return None
+    return row, context
+
+
+def _choice_origin(db, sid, before):
+    source = _latest_completed_answer(db, sid, before)
+    if source is None:
+        return None
+    row, context = source
     summary = context.get('autonomous_goals')
     if not isinstance(summary, dict):
         return None
@@ -209,6 +217,43 @@ def _choice_matches(db, sid, question, before):
             return [gid], {'name': name, 'status': 'matched', 'selection': {**proof, 'goal_id': gid}}
         return [], {'name': name, 'status': 'not_found', 'selection': proof}
     return list(actual.values()), {'name': name, 'status': 'ambiguous' if actual else 'not_found', 'selection': proof}
+
+
+def chat_goal_target(store, sid, answer_id):
+    """Resolve a desktop link to the saved, single goal on the current answer."""
+    if type(answer_id) is not int or answer_id <= 0:
+        return None
+    with store.connect() as db:
+        db.execute('BEGIN')
+        source = _latest_completed_answer(db, sid)
+        if source is None or source[0]['id'] != answer_id:
+            return None
+        row, context = source
+        summary = context.get('autonomous_goals')
+        if not isinstance(summary, dict):
+            return None
+        reference, goals = summary.get('reference'), summary.get('goals')
+        if (not isinstance(reference, dict) or reference.get('status') != 'matched'
+                or not isinstance(goals, list) or len(goals) != 1 or not isinstance(goals[0], dict)):
+            return None
+        saved = goals[0]
+        gid = saved.get('id')
+        if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
+            return None
+        current = db.execute('SELECT objective FROM autonomous_goals WHERE session_id=? AND id=?',
+                             (sid, gid)).fetchone()
+        if current is None or current['objective'][:400] != saved.get('objective'):
+            return None
+        if 'selection' in reference:
+            resolved = _choice_matches(db, sid, row['request'], row['user_id'])
+            if resolved is None or resolved != ([gid], reference):
+                return None
+        else:
+            name = _requested_name(row['request'])
+            if (not name or name != reference.get('name')
+                    or (_key(name) != gid and not _label_rank(current['objective'], _key(name)))):
+                return None
+        return gid
 
 
 def goal_context(store, sid, question='', *, before=None):
