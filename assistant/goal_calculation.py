@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 13
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, SOURCE_VERSION)
+SOURCE_VERSION = 14
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, SOURCE_VERSION)
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 OPTIONAL_GUIDANCE = (
@@ -46,6 +46,9 @@ GUIDANCE = (
     '核對成立就使用保存的原行，否則只問仍待查的條件或採用來源。'
     '等候通知後需要由使用者報告同一人已同意，多次等候可依 deferred_replies 核對。'
     '其他人的同意可保留為補答原文，指定人仍須明確同意才採用原行。'
+    'confirmation.approval_group 保存同一原行需要多人同意的原條件與各次補答。'
+    'awaiting 只列仍須確認的人，若有一位就只問該人是否已同意採用同一原行作為該欄。'
+    '所有指定人都已核對且採用狀態成立時，用保存的原行完成交付。'
     '若同數同單位、無吻合或有候選待核，只問原候選採用哪一筆，保留已核對的獨立欄位。'
     '「第二份」等短答依保存的問題列出的同欄候選順序；採用已核對的原行。'
     '原問以文件名、已配對短稱或混合引用列選項時，依 ordinal.options 的現況。'
@@ -139,7 +142,8 @@ class Sources:
             field_quantity=self._field_quantity if self.version >= 8 else None,
             reply_assignments=self._reply_assignments if self.version >= 9 else None,
             confirm_single_line=self.version >= 10, confirm_approval=self.version >= 11,
-            confirm_repeated_waits=self.version >= 12, confirm_other_approvals=self.version >= 13)
+            confirm_repeated_waits=self.version >= 12, confirm_other_approvals=self.version >= 13,
+            confirm_approval_groups=self.version >= 14)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause,
                                                          names=names, multi_fields=self.version >= 7)

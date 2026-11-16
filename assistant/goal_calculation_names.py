@@ -105,7 +105,8 @@ class Names:
     def __init__(self, steps, scope, replies, excerpts, documents, counts, literal, field_labels, clauses, *,
                  ordinal_guidance=None, direct_change=None, named_ordinals=False, paged_lookup=False,
                  line_pages=None, field_quantity=None, reply_assignments=None, confirm_single_line=False,
-                 confirm_approval=False, confirm_repeated_waits=False, confirm_other_approvals=False):
+                 confirm_approval=False, confirm_repeated_waits=False, confirm_other_approvals=False,
+                 confirm_approval_groups=False):
         self.steps = steps
         self.scope = scope
         self.history = goal_sources.verify_history(steps, scope, {}) if goal_sources.has_supplement(steps) else {}
@@ -127,6 +128,7 @@ class Names:
         self.confirm_approval = confirm_approval
         self.confirm_repeated_waits = confirm_repeated_waits
         self.confirm_other_approvals = confirm_other_approvals
+        self.confirm_approval_groups = confirm_approval_groups
         self.field_lookups = {}
         self.observed = {}
         self.documents_seen = {}
@@ -574,6 +576,121 @@ class Names:
             result['spoken_selection']['confirmation']['deferred_replies'] = evidence
         return None
 
+    def _approval_group(self, reply, proposal):
+        trail = []
+        sequences = [reply['ask_sequence'], *self._earlier_asks(reply['ask_sequence'])]
+        for sequence in sequences:
+            source = self.replies.get(f'[補充#{sequence}]')
+            if source is None:
+                break
+            prior = (proposal if source is reply else
+                     goal_calculation_confirmation.question_source(source['question'], self.clauses)
+                     or self._approval_proposal(source['question']))
+            if prior and prior['field'] != proposal['field']:
+                break
+            trail.append((source, prior))
+            if prior and 'approval' not in prior:
+                condition = goal_calculation_confirmation.waiting_group(source['answer'], self.clauses)
+                if condition:
+                    return condition, list(reversed(trail))
+        return None
+
+    def _group_source(self, reply, proposal, document, result):
+        scope = self.history.get(reply['ask_sequence'], self.scope)
+        original = next((row for row in scope if row['document_id'] == proposal['document_id']), None)
+        if original != document:
+            return {}, 'approval_proposal_changed'
+        scratch = {'spoken_selection': {'confirmation': {}}}
+        reason = self._confirm_proposal(scratch, proposal, scope, original)
+        result.update({key: scratch[key] for key in ('needs_read', 'needs_line') if key in scratch})
+        return scratch['spoken_selection']['confirmation'], reason
+
+    def _group_reports(self, trail, condition, document, result, group):
+        first, original = trail[0]
+        source, reason = self._group_source(first, original, document, result)
+        group['origin'].update(source)
+        if reason:
+            return None, reason
+        outstanding = set(condition['actors'])
+        last = None
+        for reply, proposal in trail[1:]:
+            if not proposal or proposal.get('citation') != original['citation']:
+                return None, 'approval_proposal_changed'
+            approval = proposal.get('approval')
+            if not approval or approval['verb'] != condition['verb']:
+                return None, 'approval_actor_or_action_changed'
+            source, reason = self._group_source(reply, proposal, document, result)
+            if reason:
+                return None, reason
+            for key, status in (('reported_pending', 'declined'), ('reported_other_approval', 'affirmed')):
+                notice = approval.get(key)
+                if notice and (last is None or last['status'] != status
+                               or any(last[name] != notice[name] for name in ('actor', 'verb'))
+                               or notice['citation'] not in (None, last['citation'])):
+                    return None, 'approval_wait_citation_conflict'
+            response = goal_calculation_confirmation.group_response(reply['answer'], self.clauses, approval)
+            if response is None:
+                return None, 'confirmation_unconfirmed'
+            report, whole = response
+            companions = [] if whole else self.reply_assignments(reply['answer'], report['quote_start'], original['field'])
+            if not whole and not companions:
+                return None, 'confirmation_unconfirmed'
+            last = {**report, **source, 'citation': reply['citation'], 'sha256': reply['sha256'],
+                    'ask_sequence': reply['ask_sequence'], 'question': reply['question'], 'proposal': proposal}
+            if companions:
+                last['companion_clauses'] = companions
+            group['reports'].append(last)
+            actor = last['actor']
+            if actor in condition['actors']:
+                if last['verb'] != condition['verb']:
+                    return None, 'approval_actor_or_action_changed'
+                if last['status'] == 'affirmed':
+                    outstanding.discard(actor)
+                else:
+                    outstanding.add(actor)
+                group['awaiting'] = [actor for actor in condition['actors'] if actor in outstanding]
+        return last, None
+
+    def _group_confirmation(self, reply, proposal, condition, trail):
+        first, original = trail[0]
+        boundary, field, ref = first['ask_sequence'], original['field'], original['citation']
+        if (any(self.direct_change(previous['answer'], field) for previous, _ in trail[:-1])
+                or any(self.direct_change(row['content'], field) for row in self._choice_guidance(reply, boundary))):
+            return None
+        sequence, did = reply['ask_sequence'], proposal['document_id']
+        scope = self.history.get(sequence, self.scope)
+        document = next((row for row in scope if row['document_id'] == did), None)
+        offset = len(reply['answer']) - len(reply['answer'].lstrip())
+        clause = reply['answer'].strip()
+        origin = {**condition, 'citation': first['citation'], 'sha256': first['sha256'], 'ask_sequence': boundary,
+                  'question': first['question'], 'proposal': original}
+        group = {'origin': origin, 'reports': [], 'awaiting': list(condition['actors'])}
+        proof = {**proposal, 'reply_status': 'unconfirmed', 'approval_group': group}
+        basis = {'name': clause, 'question': reply['question'], 'ask_sequence': sequence,
+                 'question_references': [ref], 'candidate_documents': [original['document_id']],
+                 'selected_documents': [], 'confirmation': proof}
+        result = {'field': field, 'status': _PENDING, 'candidates': [], 'field_candidates': [field],
+                  'choices': [ref], 'spoken_selection': basis}
+        changed = self._changed_order(reply, field, boundary)
+        last, reason = (None, 'confirmation_question_changed') if changed else self._group_reports(
+            trail, condition, document, result, group)
+        if changed:
+            result['changed_by'] = changed
+        if last:
+            offset, clause = last['quote_start'], last['quote']
+            basis['name'] = clause
+            proof['reply_status'] = last['status']
+        elif sequence == boundary:
+            offset, clause = condition['quote_start'], condition['quote']
+            basis['name'] = clause
+        if not reason and (not last or group['awaiting'] or last['actor'] not in condition['actors']):
+            reason = 'approval_group_pending'
+        if not reason:
+            reason = self._confirm_proposal(result, proposal, scope, document)
+        if reason:
+            result['reason'] = reason
+        return result, offset, clause
+
     def confirmation(self, citation):
         reply = self.replies.get(citation) if self.confirm_single_line else None
         if reply is None:
@@ -583,6 +700,8 @@ class Names:
             proposal = self._approval_proposal(reply['question'])
         if proposal is None:
             return None
+        if self.confirm_approval_groups and (group := self._approval_group(reply, proposal)):
+            return self._group_confirmation(reply, proposal, *group)
         approval = proposal.get('approval')
         field, ref = proposal['field'], proposal['citation']
         sequence = reply['ask_sequence']

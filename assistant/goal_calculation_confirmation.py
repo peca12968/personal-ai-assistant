@@ -39,6 +39,12 @@ _WAIT_OTHER_APPROVAL = re.compile(
 _WAIT_INSTRUCTIONS = {'請回覆確認', '請再回覆確認', '再回覆確認', '請回覆', '請再回覆'}
 _NOT_YET = {'還沒', '還沒有', '尚未', '仍未', '還在等'}
 _UNCLEAR_ACTOR = re.compile(r'不|未|尚|或|和|與|都|全部|可能|如果|要等|還要|還沒|沒有|已經|才能|同意|批准|核准')
+_GROUP_ACTOR = r'[\u3400-\u9fffA-Za-z0-9·・]{1,40}?'
+_GROUP_SEPARATOR = r'\s*(?:、|和|與|以及|及|跟)\s*'
+_GROUP_CONDITION = re.compile(
+    rf'(?:但(?:是)?\s*)?(?:(?:尚須|必須|仍須|需要|還要|要|得|先)\s*)?等(?:到)?\s*'
+    rf'(?P<actors>{_GROUP_ACTOR}(?:{_GROUP_SEPARATOR}{_GROUP_ACTOR}){{1,3}})\s*(?:都|皆)\s*{_PERMISSION}'
+    r'\s*(?:後)?\s*(?:(?:才(?:能|會)?|再)(?:採用|使用|用)|才行)?')
 
 
 def _amount(text):
@@ -177,6 +183,41 @@ def waiting_condition(answer, clauses):
         return None
     return {'actor': match['actor'], 'verb': match['verb'], 'quote': text, 'quote_start': offset,
             'choice_quote': pieces[0][1], 'choice_start': pieces[0][0]}
+
+
+def waiting_group(answer, clauses):
+    pieces = clauses(answer)
+    if len(pieces) != 2 or any(question for _, _, question in pieces) or pieces[0][1] not in _AFFIRMATIVE:
+        return None
+    offset, text, _ = pieces[1]
+    if not (match := _GROUP_CONDITION.fullmatch(text)):
+        return None
+    actors = re.split(_GROUP_SEPARATOR, match['actors'])
+    if (not 2 <= len(actors) <= 4 or len(set(actors)) != len(actors)
+            or any(not re.fullmatch(_GROUP_ACTOR, actor) or _UNCLEAR_ACTOR.search(actor) for actor in actors)):
+        return None
+    return {'actors': actors, 'verb': match['verb'], 'quote': text, 'quote_start': offset,
+            'choice_quote': pieces[0][1], 'choice_start': pieces[0][0]}
+
+
+def group_response(answer, clauses, approval):
+    reports = [(offset, text, match) for offset, text, question in clauses(answer)
+               if not question and (match := _APPROVAL_REPLY.fullmatch(text))]
+    if len(reports) > 1:
+        return None
+    if reports:
+        offset, text, match = reports[0]
+        actor, verb = match['actor'], match['verb']
+        if not re.fullmatch(_GROUP_ACTOR, actor) or _UNCLEAR_ACTOR.search(actor):
+            return None
+        status = 'affirmed' if match['state'] in {'已', '已經'} else 'declined'
+        whole = answer.strip() in (text, text + '。', text + '！', text + '!')
+    else:
+        offset, text, status, whole = approval_response(answer, clauses, approval, repeated=True)
+        actor, verb = approval['actor'], approval['verb']
+    if status == 'unconfirmed':
+        return None
+    return {'actor': actor, 'verb': verb, 'status': status, 'quote': text, 'quote_start': offset}, whole
 
 
 def approval_response(answer, clauses, approval, *, repeated=False):

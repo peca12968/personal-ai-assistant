@@ -856,6 +856,97 @@ class GoalCalculationTests(unittest.TestCase):
         self.assertEqual(active['steps'][5]['action']['tool'], 'invalid')
         validate_database(self.store.path)
 
+    def test_two_required_approvals_release_the_same_line_and_survive_restore(self):
+        ref = self.prepare_conditional_approval(files=True,
+            first_reply='好，但要等收件人和品質員都同意。')
+        self.reply('收件人已同意，窗口正式改為 南門。')
+        question = (f'已收到收件人同意的補答 [補充#3]。'
+                    f'等品質員同意採用 29 袋 {ref} 作為正式批次量後，請回覆確認。')
+        engine = ScriptedEngine(action('ask', question=question))
+        waiting = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=1)
+        preview = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+        adoption, = preview['calculation_source_adoptions']
+        self.assertEqual(adoption['status'], 'pending')
+        self.assertEqual(adoption['spoken_selection']['confirmation']['approval_group']['awaiting'], ['品質員'])
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.reply('品質員已同意。')
+        rows = [{'label': '總件數', 'calculation_step': 5, 'unit': '件'},
+                {'label': '窗口', 'citation': '[補充#3]', 'quote': '窗口正式改為 南門'}]
+        filename = '共同同意.json'
+        active = self.run_actions(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+            action('write_artifact', filename=filename, calculation_report=rows),
+            action('deliver', filenames=[filename], calculation_report=rows))
+        self.assertEqual(active['status'], 'report_ready')
+        self.assertIn('87 件', active['result'])
+        self.assertIn('窗口正式改為 南門 [補充#3]', active['result'])
+        stored = active['steps'][4]['observation']
+        adopted, = stored[goal_calculation.PROOF]['source_adoptions']
+        group = adopted['spoken_selection']['confirmation']['approval_group']
+        self.assertEqual(group['origin']['actors'], ['收件人', '品質員'])
+        self.assertEqual(group['origin']['citation'], '[補充#2]')
+        self.assertEqual(group['awaiting'], [])
+        self.assertEqual([(row['actor'], row['citation'], row['quote_start']) for row in group['reports']],
+                         [('收件人', '[補充#3]', 0), ('品質員', '[補充#4]', 0)])
+        original = artifacts.directory(self.store, self.gid).joinpath(filename).read_bytes()
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath(filename).read_bytes(), original)
+        with restored.connect() as db:
+            group['reports'][0]['quote_start'] += 1
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=5',
+                       (json.dumps(stored, ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_group_keeps_unverified_people_or_changed_sources_pending(self):
+        cases = [
+            ('收件人已同意。', '品質員', '同意', 1, '收件人已同意。', 'approval_group_pending'),
+            ('收件人已同意。', '品質員', '同意', 1, '主管已同意。', 'approval_group_pending'),
+            ('收件人已同意。', '品質員', '同意', 1, '品質員還沒同意。', 'approval_group_pending'),
+            ('收件人已同意。', '品質員', '同意', 1, '品質員只同意舊版。', 'confirmation_unconfirmed'),
+            ('「收件人已同意」。', '品質員', '同意', 1, '品質員已同意。', 'confirmation_unconfirmed'),
+            ('收件人已同意。', '品質員', '核准', 1, '品質員已核准。', 'approval_actor_or_action_changed'),
+            ('收件人已同意。', '品質員', '同意', 2, '品質員已同意。', 'approval_proposal_changed'),
+        ]
+        for first, actor, verb, line, reply, reason in cases:
+            with self.subTest(first=first, reply=reply, line=line):
+                ref = self.prepare_conditional_approval(first_reply='好，但要等收件人與品質員都同意。')
+                self.reply(first)
+                target = ref if line == 1 else ref.replace('L1', 'L2')
+                amount = '29' if line == 1 else '22'
+                self.run_actions(action('ask', question=f'{actor}是否已{verb}採用 {amount} 袋 {target} 作為正式批次量？'))
+                self.reply(reply)
+                engine = ScriptedEngine(self.formula(quantity='29', citation=ref, quote='批次量：29 袋'),
+                    action('ask', question='批次量的同意條件是否已成立？', calculation_report=[
+                        {'label': '總件數', 'pending': True},
+                        {'label': '窗口', 'citation': self.cite(4), 'quote': '窗口：北門'}]))
+                active = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+                payload = json.loads(engine.prompts[0].rsplit('目標與已觀察資料：\n', 1)[1])
+                self.assertEqual(payload['calculation_source_adoptions'][0]['reason'], reason)
+                self.assertEqual(active['steps'][4]['action']['tool'], 'invalid')
+                self.assertIn('窗口：北門', active['partial_result'])
+                validate_database(self.store.path)
+
+    def test_group_waiting_notice_requires_factual_report_and_preserves_direct_selection(self):
+        ref = self.prepare_conditional_approval(first_reply='好，但要等收件人、品質員都同意。')
+        self.reply('收件人已同意。')
+        self.run_actions(action('ask', question=
+            f'等品質員同意採用 29 袋 {ref} 作為正式批次量後，請回覆確認。'))
+        self.reply('對。')
+        self.assertEqual(self.run_actions(
+            self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]['action']['tool'], 'invalid')
+        for _ in range(2):
+            self.run_actions(action('ask', question=f'批次量是否採用 29 袋 {ref}？'))
+            self.reply('好。')
+            self.assertEqual(self.run_actions(
+                self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]['action']['tool'],
+                'invalid')
+        self.run_actions(action('ask', question='批次量請指定採用的原行？'))
+        self.reply(f'就用 {ref} 那行。')
+        self.assertEqual(self.run_actions(
+            self.formula(quantity='29', citation=ref, quote='批次量：29 袋'))['steps'][-1]['observation']['exact'], '87')
+        validate_database(self.store.path)
+
     def test_paged_lookup_cannot_continue_after_import_changes(self):
         name = '複點.txt'
         late = self.attach('\n'.join(['摘要。', *(f'附記{i}：批次量另列。' for i in range(1, 8)),
