@@ -6,7 +6,7 @@ from .acceptance import strict_json
 from .answer_runs import lease
 from .documents import check_citations
 from .goal_stages import digest
-from . import goal_guidance_sources, goal_partials, goal_recheck_tools, goal_reply_sources, goal_sources, operand_evidence
+from . import goal_calculation, goal_guidance_sources, goal_partials, goal_recheck_tools, goal_reply_sources, goal_sources, operand_evidence
 
 
 INSTRUCTIONS = '''你是使用者的個人 AI 助理。依保存於同一目標的資料，重核一份等待補答中的暫表。
@@ -99,29 +99,43 @@ def _read(db, goal, steps, replies, guidance, row, previous):
     receipt = strict_json(raw)
     fields = {'input_sha256', 'result'}
     if (not isinstance(receipt, dict) or not fields <= receipt.keys()
-            or receipt.keys() - fields - {'tools', 'reuse'}
+            or receipt.keys() - fields - {'tools', 'reuse', 'calculation_report'}
             or sha != digest([goal['id'], sequence, number, receipt])):
         raise ValueError('暫表重核紀錄的內容指紋不符。')
     objective = goal['objective']
+    verified_report = goal_calculation.required(objective)
+    if verified_report != ('calculation_report' in receipt):
+        raise ValueError('暫表重核缺少逐項核對的成果。')
     _, excerpts, prior_replies, sources, evidence_hash = _inputs(objective, steps, replies, guidance, sequence, number)
     if receipt['input_sha256'] != evidence_hash:
         raise ValueError('暫表重核的依據已改變。')
-    extra, calculations = [], []
+    extra, calculations, selected = [], [], []
     if 'reuse' in receipt:
         link = receipt['reuse']
         if (not previous or not isinstance(link, dict) or set(link) != {'sha256', 'calculations'}
                 or link['sha256'] != previous['sha256'] or previous['ask_sequence'] > sequence
                 or previous['guidance_number'] >= number):
             raise ValueError('沿用證據必須連到同一原問的前次重核或已使用該證據的分問。')
+        selected = link['calculations']
         extra.extend(previous['excerpts'])
-        calculations.extend(_choices(link['calculations'], previous))
+        calculations.extend(_choices(selected, previous))
+    scope = _scope(goal, steps, sequence) if verified_report or 'tools' in receipt else []
+    copies = _copies(db, goal, scope)
+    def context(records):
+        return _checked_context(objective, steps[:sequence], scope, prior_replies, sources, previous, copies, records)
+
     if 'tools' in receipt:
-        scope = _scope(goal, steps, sequence)
         user_sources = operand_evidence.user_texts(objective, prior_replies, sources, sequence + 1)
-        read, calculated = goal_recheck_tools.replay(receipt['tools'], _copies(db, goal, scope), scope,
-                                                     [*excerpts, *extra], user_sources)
+        read, calculated = goal_recheck_tools.replay(
+            receipt['tools'], copies, scope, [*excerpts, *extra], user_sources,
+            calculate_checked=(lambda args, records: context(records).calculate(args)) if verified_report else None)
         extra.extend(read)
         calculations.extend(row for row in calculated if row not in calculations)
+    if verified_report:
+        rows = context(receipt.get('tools', [])).rows(receipt['calculation_report'])
+        _check_calculation_selection(receipt['calculation_report'], selected)
+        if not isinstance(receipt['result'], dict) or receipt['result'].get('partial_result') != goal_calculation.render(rows):
+            raise ValueError('保存暫表與已核對的內容不一致。')
     checked = None
     if receipt.keys() & {'tools', 'reuse'}:
         checked = {'sha256': sha, 'ask_sequence': sequence, 'guidance_number': number,
@@ -205,7 +219,19 @@ def carried(db, goal, steps, replies, guidance):
     return None
 
 
-def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, scope, previous, cancel):
+def _checked_context(objective, steps, scope, replies, guidance, previous, copies, records):
+    temporary = [{'sequence': len(steps) + index, 'action': {'tool': item['tool'], 'args': item['args']},
+                  'observation': item['result']} for index, item in enumerate(records, 1)]
+    return goal_calculation.Sources(objective, [*steps, *temporary], scope, replies, guidance, previous, copies)
+
+
+def _check_calculation_selection(rows, selected):
+    if any('recheck_calculation' in row and row['recheck_calculation'] not in selected for row in rows):
+        raise ValueError('沿用的暫表算式必須列入 reuse_calculations。')
+
+
+def _review(engine, payload, excerpts, replies, guidance, steps, store, sid, scope, previous, cancel):
+    sequence = len(steps)
     records = []
     excerpts = list(excerpts)
     user_sources = operand_evidence.user_texts(payload['objective'], replies, guidance, sequence + 1)
@@ -218,33 +244,62 @@ def _review(engine, payload, excerpts, replies, guidance, sequence, store, sid, 
             'guidance_number': previous['guidance_number'],
             'calculations': [{'id': number, **row} for number, row in enumerate(previous['calculations'], 1)]}
         instructions += '\n\n' + REUSE_GUIDANCE
+    verified_report = goal_calculation.required(payload['objective'])
+    copies = (store.documents(sid, include_content=True, document_ids=[row['document_id'] for row in scope])
+              if verified_report else [])
+    if verified_report:
+        instructions += ('\n\n' + goal_calculation.GUIDANCE +
+                         '\n重核的最終 JSON 改回 {"calculation_report":[...],"withdrawal_source":null}。'
+                         '重核工具動作仍只有 tool 與 args。'
+                         'calculation_step 可引用先前正式步驟或本次已出現 sequence 的重核算式。'
+                         '若沿用前次重核，calculation_report 用 recheck_calculation 作為該算式的 id，'
+                         '並同時列入 reuse_calculations。')
     instructions += '\n\n目標與已保存資料：\n'
     for remaining in range(goal_recheck_tools.MAX_ACTIONS, -1, -1):
         if cancel is not None and cancel.is_set():
             raise ValueError('已停止暫表重核。')
         raw = engine.answer(instructions + json.dumps(
-            {**observations, 'recheck_tools': records, 'tools_remaining': remaining}, ensure_ascii=False), cancel)
+            {**observations,
+             'recheck_tools': [{**row, 'sequence': sequence + index} for index, row in enumerate(records, 1)]
+                              if verified_report else records,
+             'tools_remaining': remaining}, ensure_ascii=False), cancel)
         if not isinstance(raw, str) or len(raw) > 100_000:
             raise ValueError('暫表重核的回覆格式或長度不符。')
         value = strict_json(raw)
         if not isinstance(value, dict) or set(value) != {'tool', 'args'}:
             selected = value.pop('reuse_calculations', []) if isinstance(value, dict) else []
             _choices(selected, previous)
-            return _result(value, excerpts, replies, guidance, sequence), records, selected
+            rows = None
+            if verified_report:
+                if not isinstance(value, dict) or value.keys() != {'calculation_report', 'withdrawal_source'}:
+                    raise ValueError('核對暫表須以 calculation_report 提供成果。')
+                rows = value['calculation_report']
+                context = _checked_context(payload['objective'], steps, scope, replies, guidance, previous, copies, records)
+                checked_rows = context.rows(rows)
+                _check_calculation_selection(rows, selected)
+                value = {'partial_result': goal_calculation.render(checked_rows),
+                         'withdrawal_source': value['withdrawal_source']}
+            return _result(value, excerpts, replies, guidance, sequence), records, selected, rows
         if not remaining:
             raise ValueError('本次暫表重核工具已用完。')
         tool, args = value['tool'], value['args']
         docs = store.documents(sid, include_content=True, document_ids=[row['document_id'] for row in scope]) if tool == 'read_ranges' else []
-        observation = goal_recheck_tools.execute(tool, args, docs, scope, excerpts, user_sources, cancel)
+        if verified_report and tool == 'calculate_expression':
+            context = _checked_context(payload['objective'], steps, scope, replies, guidance, previous, copies, records)
+            observation = context.calculate(args, cancel)
+        else:
+            observation = goal_recheck_tools.execute(tool, args, docs, scope, excerpts, user_sources, cancel)
         records.append({'tool': tool, 'args': args, 'result': observation})
         excerpts.extend(observation.get('excerpts', ()))
 
 
 def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
-    from .goal_guidance import _snapshot, _steps, snapshot
+    from .goal_guidance import _snapshot, _steps
 
     with lease(store, gid):
-        current = snapshot(store, sid, gid)
+        with store.connect() as db:
+            db.execute('BEGIN')
+            current = _snapshot(db, sid, gid, include_reply_positions=True)
         goal = current['goal']
         if current['fingerprint'] != expected_fingerprint:
             raise ValueError('目標、問題或來源已變更，請重新載入暫表。')
@@ -261,9 +316,11 @@ def run(store, sid, gid, engine, *, expected_fingerprint, cancel=None):
             goal['objective'], steps, goal.get('reply_sources', ()), guidance, sequence, number)
         scope = _scope(goal, steps, sequence)
         previous = latest[3] if latest else _bridge(steps, guidance, sequence, verified)
-        result, records, selected = _review(
-            engine, payload, excerpts, replies, sources, sequence, store, sid, scope, previous, cancel)
+        result, records, selected, rows = _review(
+            engine, payload, excerpts, replies, sources, steps[:sequence], store, sid, scope, previous, cancel)
         receipt = {'input_sha256': evidence_hash, 'result': result}
+        if rows is not None:
+            receipt['calculation_report'] = rows
         if previous:
             receipt['reuse'] = {'sha256': previous['sha256'], 'calculations': selected}
         if records:
@@ -292,7 +349,7 @@ def validate_saved(db, *, replies_present):
         steps = [{'sequence': s, 'action': strict_json(a), 'observation': strict_json(o)}
                  for s, a, o in db.execute('''SELECT sequence,action_json,observation_json FROM autonomous_steps
                                           WHERE goal_id=? ORDER BY sequence''', (gid,))]
-        replies = goal_reply_sources.read(db, gid, notes) if replies_present else []
+        replies = goal_reply_sources.read(db, gid, notes, include_positions=True) if replies_present else []
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps))
         _, checked = _history(db, goal, steps, replies, guidance, len(steps))
         if checked:

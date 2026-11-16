@@ -15,6 +15,8 @@ _LITERAL = re.compile(_NUMBER + r'(?![\dA-Za-z_./+\-%])(?!,[0-9])')
 _FIELD = re.compile(r'欄位「(?P<name>[^「」\r\n\x00]{1,80})」[ \t]*(?:為|[:：])[ \t]*\Z')
 _REQUIRED_KEYS = {'path', 'citation', 'quote'}
 _OPTIONAL_KEYS = {'conversion', 'field'}
+_UNIT = re.compile(r'[A-Za-zµμ%°㐀-鿿][A-Za-zµμ%°㐀-鿿0-9^²³/·]{0,15}')
+_UNIT_END = r'(?=$|[\s,，。；;、！!？?：:）)\]」』】]|\.(?!\S))'
 
 
 def _leaves(node, path=''):
@@ -38,9 +40,20 @@ def _conversion_spec(conversion):
         if source not in scales or target not in scales or scales[source][0] != scales[target][0]:
             raise ValueError('換算須使用相同量綱的支援單位，或將百分比換成比例。')
         factor = scales[source][1] / scales[target][1]
-        boundary = r'(?=$|[\s,，。；;、！!？?：:）)\]」』】]|\.(?!\S))'
+        boundary = _UNIT_END
     pattern = re.compile(_NUMBER + rf'[ \t]*(?P<unit>{re.escape(source)})' + boundary)
     return pattern, factor
+
+
+def _spec(row):
+    if 'conversion' in row:
+        return _conversion_spec(row['conversion'])
+    if 'unit' not in row:
+        return _LITERAL, 1
+    unit = row['unit']
+    if not isinstance(unit, str) or not _UNIT.fullmatch(unit):
+        raise ValueError('運算元須附原文中的單一單位。')
+    return re.compile(_NUMBER + rf'[ 	]*(?P<unit>{re.escape(unit)})' + _UNIT_END), 1
 
 
 def _numeric_match(quote, value, pattern, factor):
@@ -75,14 +88,16 @@ def _field_position(quote, number_start, field):
     raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
 
 
-def validate(rows, expression, ranges, *, omitted_paths=()):
+def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False):
     leaves = {path: value for path, value in _leaves(expression) if path not in omitted_paths}
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
+    optional = _OPTIONAL_KEYS | {'unit'} if ordinary else _OPTIONAL_KEYS
     seen = set()
     for row in rows:
         if (not isinstance(row, dict) or not _REQUIRED_KEYS <= row.keys()
-                or row.keys() - _REQUIRED_KEYS - _OPTIONAL_KEYS
+                or row.keys() - _REQUIRED_KEYS - optional
+                or {'unit', 'conversion'} <= row.keys()
                 or not isinstance(row['path'], str) or row['path'] not in leaves or row['path'] in seen):
             raise ValueError('運算元證據須使用不同且實際存在的數字節點路徑。')
         path, citation, quote = row['path'], row['citation'], row['quote']
@@ -100,10 +115,10 @@ def validate(rows, expression, ranges, *, omitted_paths=()):
         if (not isinstance(quote, str) or not 1 <= len(quote) <= 180 or quote.strip() != quote
                 or any(ch in quote for ch in '\0\r\n')):
             raise ValueError('運算元證據須提供一段最多 180 字的逐字短句。')
-        pattern, factor = _conversion_spec(row['conversion']) if 'conversion' in row else (_LITERAL, 1)
+        pattern, factor = _spec(row)
         token, _ = _numeric_match(quote, leaves[path], pattern, factor)
         if 'field' in row:
-            _field_position(quote, token.start('number'), row['field'])
+            field_position(quote, token.start('number'), row['field'], ordinary=ordinary)
 
 
 def user_texts(objective, replies, guidance, sequence):
@@ -124,23 +139,39 @@ def _document_text(doc_line, excerpts):
     return next(iter(found))
 
 
-def bind(rows, expression, excerpts, user_sources):
+def source_text(citation, excerpts, user_sources):
+    if doc_line := _DOCUMENT.fullmatch(citation):
+        return _document_text(doc_line, excerpts)
+    if citation in user_sources:
+        return user_sources[citation]
+    raise ValueError('引文未引用本目標當時已保存的來源。')
+
+
+def field_position(quote, number_start, field, *, ordinary):
+    if ordinary and isinstance(field, str) and re.fullmatch(r'[^「」\r\n\0]{1,80}', field) and field.strip() == field:
+        if match := re.fullmatch(
+                rf'(?P<name>{re.escape(field)})(?:[ 	]*(?:[：:]|已確認為|確認為|正式改為|正式更正為|為|共)[ 	]*|[ 	]+)',
+                quote[:number_start]):
+            return match.span('name')
+    return _field_position(quote, number_start, field)
+
+
+def bind(rows, expression, excerpts, user_sources, *, ordinary=False):
     leaves = dict(_leaves(expression))
     bound = []
     for row in rows:
         path, citation, quote = row['path'], row['citation'], row['quote']
         label = path or '根'
-        doc_line = _DOCUMENT.fullmatch(citation)
-        if doc_line:
-            text, sha = _document_text(doc_line, excerpts)
-        elif citation in user_sources:
-            text, sha = user_sources[citation]
-        else:
-            raise ValueError(f'運算元 {label} 未引用本目標當時已保存的補充。')
+        try:
+            text, sha = source_text(citation, excerpts, user_sources)
+        except ValueError as exc:
+            if ordinary or _DOCUMENT.fullmatch(citation):
+                raise
+            raise ValueError(f'運算元 {label} 未引用本目標當時已保存的補充。') from exc
         start = text.find(quote)
         if start < 0 or text.find(quote, start + 1) >= 0:
             raise ValueError(f'運算元 {label} 的短句在該來源無法唯一定位。')
-        pattern, factor = _conversion_spec(row['conversion']) if 'conversion' in row else (_LITERAL, 1)
+        pattern, factor = _spec(row)
         token, number = _numeric_match(quote, leaves[path], pattern, factor)
         low, high = token.span('number')
         # Match within the complete source too, so a clipped quote cannot turn 17 into 7.
@@ -150,8 +181,11 @@ def bind(rows, expression, excerpts, user_sources):
         receipt = {**row, 'source_sha256': sha, 'quote_start': start, 'quote_end': start + len(quote),
                    'number_start': start + low, 'number_end': start + high, 'number': quote[low:high]}
         if 'field' in row:
-            field_start, field_end = _field_position(quote, low, row['field'])
+            field_start, field_end = field_position(quote, low, row['field'], ordinary=ordinary)
             receipt.update(field_start=start + field_start, field_end=start + field_end)
+        if 'unit' in row:
+            unit_start, unit_end = token.span('unit')
+            receipt.update(unit_start=start + unit_start, unit_end=start + unit_end)
         if 'conversion' in row:
             unit_start, unit_end = token.span('unit')
             receipt['conversion'] = {**row['conversion'], 'source_exact': str(number), 'factor_exact': str(factor),

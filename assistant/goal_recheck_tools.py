@@ -54,17 +54,19 @@ def execute(tool, args, documents, scope, excerpts, user_sources, cancel):
     raise ValueError('暫表重核只提供指定原行查讀及有逐字來源的精確計算。')
 
 
-def replay(records, documents, scope, excerpts, user_sources):
+def replay(records, documents, scope, excerpts, user_sources, *, calculate_checked=None):
     if not isinstance(records, list) or not 1 <= len(records) <= MAX_ACTIONS:
         raise ValueError('保存的暫表重核步數不符。')
     accumulated = list(excerpts)
     read_excerpts, calculations = [], []
-    for record in records:
+    for index, record in enumerate(records):
         if not isinstance(record, dict) or set(record) != {'tool', 'args', 'result'}:
             raise ValueError('保存的暫表重核工具格式不符。')
         tool, args, result = record['tool'], record['args'], record['result']
         if tool == 'calculate_expression':
-            if digest(result) != digest(_calculate(args, accumulated, user_sources)):
+            observed = (calculate_checked(args, records[:index]) if calculate_checked
+                        else _calculate(args, accumulated, user_sources))
+            if digest(result) != digest(observed):
                 raise ValueError('暫表重算與精確運算或原始數字不符。')
             calculations.append(record)
         elif tool == 'read_ranges':

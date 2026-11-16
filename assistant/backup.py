@@ -216,6 +216,9 @@ def validate_database(path):
                 checked_rechecks = validate_rechecks(db, replies_present=reply_sources_present)
             validate_partials(db, reply_sources_present=reply_sources_present,
                               guidance_sources_present=guidance_present, checked_rechecks=checked_rechecks)
+            from .goal_calculation import validate_saved as validate_calculations
+            validate_calculations(db, replies_present=reply_sources_present, guidance_present=guidance_present,
+                                  checked_rechecks=checked_rechecks, artifacts_present='autonomous_artifacts' in actual_tables)
             from .goal_reply_sources import validate_saved as validate_reply_sources
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
             from .goal_guidance_sources import validate_saved as validate_guidance_sources

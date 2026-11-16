@@ -158,14 +158,16 @@ def validate_names(names):
     return names
 
 
-def deliver(store, gid, names):
+def deliver(store, gid, names, *, expected=None):
     names = validate_names(names)
     with store.connect() as db:
         if not enabled(db, gid):
             raise ValueError('此目標目前採用文字交付，請在視窗交付文字。')
     # Check the whole selection before any reconstruction writes.
     for name in names:
-        _record(store, gid, name)
+        row = _record(store, gid, name)
+        if expected is not None and row['content'] != expected.get(name.casefold()):
+            raise ValueError('檔案登記的內容與目前已核對的成果不一致。')
     return [materialize(store, gid, name) for name in names]
 
 

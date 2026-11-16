@@ -16,7 +16,7 @@ from .answer_runs import lease
 from . import document_ranges
 from .documents import check_citations, retrieve_documents
 from . import goal_stages
-from . import goal_partials, goal_partial_recheck
+from . import goal_calculation, goal_partials, goal_partial_recheck
 from . import goal_guidance_sources
 from . import goal_question_withdrawals
 from . import goal_reply_sources
@@ -124,6 +124,8 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
     quantity_scope = quantity_evidence.declared_scope(objective)
     if type(file_delivery) is not bool:
         raise ValueError('交付文件選項需為布林值。')
+    if goal_calculation.required(objective) and quantity_report.required(objective):
+        raise ValueError('請選擇逐項核對算式或核對分版報告的一種交付格式。')
     if file_delivery and quantity_report.required(objective):
         raise ValueError('已核對分版報告須使用文字交付，請取消本機文件交付。')
     if type(from_chat) is not bool:
@@ -300,6 +302,8 @@ def validate_action(value):
     if name == 'calculate_expression':
         if isinstance(args, dict) and 'quantity_inputs' in args:
             quantity_evidence.validate_expression(args)
+        elif isinstance(args, dict) and 'operands' in args:
+            goal_calculation.validate(args)
         else:
             expression_math.validate(args)
         return value
@@ -354,7 +358,7 @@ def validate_action(value):
 
 def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None, reply_sources=(), guidance_sources=(),
             declared_rule_ranges=(), pending_document_rule=None, document_version_reply=None, document_version_rules=None,
-            recheck_evidence=None):
+            recheck_evidence=None, calculation_sources=None, expected_files=None):
     name, args = action['tool'], action['args']
     if pending_document_rule and name in {'ask', 'finish', 'deliver', 'check_decision'} and not (
             name == 'check_decision' and args == pending_document_rule):
@@ -402,7 +406,14 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
         return quantity_evidence.calculate_branches(args, steps, goal['sources'], work_plan.conditions(goal),
                                                     goal['objective'], reply_sources, guidance_sources, cancel,
                                                     declared=goal.get('quantity_adoption_scope'), goal=goal)
+    if name in {'calculate', 'calculate_expression'} and calculation_sources is not None and calculation_sources.strict:
+        if name != 'calculate_expression' or 'operands' not in args:
+            raise ValueError('本目標要求逐項核對，請改用 calculate_expression 並提供 operands。')
     if name == 'calculate_expression':
+        if 'operands' in args:
+            if calculation_sources is None:
+                raise ValueError('逐項核對運算元須有同一目標的已保存來源。')
+            return calculation_sources.calculate(args, cancel)
         if 'quantity_inputs' in args:
             goal = get_goal(store, sid, gid)
             return quantity_evidence.calculate_expression(args, steps, goal['sources'], work_plan.conditions(goal),
@@ -505,7 +516,7 @@ def execute(store, documents, action, steps, *, gid=None, sid=None, cancel=None,
     if name == 'write_artifact':
         return {'artifact': artifacts.write(store, gid, args['filename'], args['content']),
                 'citation_checks': checks, **user_observation}
-    receipts = artifacts.deliver(store, gid, args['filenames']) if name == 'deliver' else []
+    receipts = artifacts.deliver(store, gid, args['filenames'], expected=expected_files) if name == 'deliver' else []
     return {'report': content, 'citation_checks': checks,
             'artifacts': receipts,
             'review_note': '成果已產生；來源行號檢查不是語意正確或使用者驗收。', **user_observation}
@@ -572,6 +583,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 reason = 'needs_input'
                 break
             guidance_sources = goal.get('guidance_sources', ())
+            checked_calculations = goal_calculation.required(goal['objective'])
             payload = {'objective': goal['objective'],
                        'user_notes': goal_guidance_sources.prompt_notes(goal['notes'], guidance_sources),
                        'work_plan': goal['work_plan'],
@@ -588,8 +600,9 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             if recheck_evidence:
                 payload['pending_recheck_evidence'] = {
                     **recheck_evidence,
-                    'calculations': [{'expression': row['args']['expression'], 'observation': row['result']}
-                                     for row in recheck_evidence['calculations']]}
+                    'calculations': [{'expression': row['args']['expression'], 'observation': row['result'],
+                                      **({'id': index} if checked_calculations else {})}
+                                     for index, row in enumerate(recheck_evidence['calculations'], 1)]}
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
@@ -646,6 +659,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             if quantity_scope:
                 payload['quantity_adoption_scope'] = quantity_scope
             checked_report = quantity_report.required(goal['objective'])
+            if checked_calculations:
+                payload['checked_calculations_required'] = True
             if checked_report:
                 payload['quantity_report_required'] = True
             report_fields = (quantity_report_fields.observe(goal, goal['steps'], reply_sources, guidance_sources)
@@ -736,9 +751,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n暫表重核的補讀原行及精確算式在 pending_recheck_evidence。'
                  '可引用其原行。逐一核對各次答覆、更正或其後的重算結果。'
                  '只重算實際改變的算式，已由較新工具核對的項目採最新結果。'
-                 '一般重算用 calculate 或 calculate_expression，後者的 args 只填 expression。'
                  '已核對算式 observation 中的運算元來源留在成果引用。'
                  '當次仍適用的結果可沿用，避免重讀或重算。' if recheck_evidence else '') +
+                ('\n' + goal_calculation.GUIDANCE if checked_calculations else
+                 '\n' + goal_calculation.OPTIONAL_GUIDANCE if recheck_evidence or (has_excerpts and not checked_report) else '') +
                 ('\n' + DOCUMENT_CLAIMS_GUIDANCE
                  if has_excerpts else '') +
                 ('\n' + quantity_evidence.GUIDANCE
@@ -767,7 +783,19 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
             try:
                 if len(raw) > 20000:
                     raise ValueError('動作輸出過長。')
-                action = validate_action(strict_json(raw))
+                candidate = strict_json(raw)
+                verified_rows = None
+                expected_files = None
+                calc_sources = None
+                if (isinstance(candidate, dict) and set(candidate) == {'tool', 'args', 'note'}
+                        and isinstance(candidate['tool'], str) and isinstance(candidate['args'], dict)
+                        and (checked_calculations or
+                             (candidate['tool'] == 'calculate_expression' and 'operands' in candidate['args']))):
+                    calc_sources = goal_calculation.Sources(
+                        goal['objective'], goal['steps'], goal['sources'], reply_sources, guidance_sources,
+                        recheck_evidence, documents)
+                    candidate, verified_rows, expected_files = goal_calculation.prepare(candidate, calc_sources)
+                action = validate_action(candidate)
                 # Detach before execution: a tool may normalize/mutate its input.
                 # Invalid envelopes and unknown tools never become replayable context.
                 attempted = json.loads(json.dumps(action, ensure_ascii=False))
@@ -786,7 +814,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                                       reply_sources=reply_sources, guidance_sources=guidance_sources,
                                       declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
                                       document_version_reply=document_version_reply, document_version_rules=document_version_rules,
-                                      recheck_evidence=recheck_evidence)
+                                      recheck_evidence=recheck_evidence, calculation_sources=calc_sources,
+                                      expected_files=expected_files)
+                if verified_rows is not None:
+                    observation[goal_calculation.RECEIPT] = verified_rows
                 if check is not None:
                     observation['source_check_step'] = check
                 if plan_check is not None:
