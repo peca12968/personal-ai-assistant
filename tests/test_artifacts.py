@@ -131,6 +131,61 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual([row['name'] for row in state['steps'][-1]['observation']['artifacts']], ['current.txt'])
         self.assertEqual((f.directory(self.store, self.gid) / 'draft.txt').read_text(encoding='utf-8'), '早期結果')
 
+    def test_field_revision_matches_csv_cell_and_verified_cited_line(self):
+        source = self.root / 'weights.txt'
+        source.write_text('活動核定\n東架｜4 件｜每件 3 公斤\n西架｜4 件｜每件 3 公斤\n', encoding='utf-8')
+        doc = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '交付兩個獨立清單。', file_delivery=True)
+        header = '設備,件數,每件公斤,合計公斤,來源\n'
+        east = header + f'東架,4,3,12,[D{doc}:L2]\n'
+        west = header + f'西架,4,3,12,[D{doc}:L3]\n'
+        different_field = '設備,件數,合計公斤,來源\n' + f'東架,4,3,[D{doc}:L2]\n'
+        engine = ScriptedEngine(action('read', document_id=doc, start_line=2, end_line=3),
+                                action('write_artifact', filename='east.csv', content=east),
+                                action('write_artifact', filename='west.csv', content=west),
+                                action('write_artifact', filename='unbound.csv', content=different_field))
+        initial = a.run_goal(self.store, self.sid, gid, engine, max_steps=4)
+        notes = (
+            '舉例用「正式更正『西架』的『每件重量』為4公斤」。',
+            '正式更正「西架」的「每件重量」為4公斤，如果車已到。',
+            '正式更正「東架」的「每件重量」為 4000 公克，件數不變。',
+        )
+        for note in notes:
+            view = goal_guidance.snapshot(self.store, self.sid, gid)
+            goal_guidance.save(self.store, self.sid, gid, note, expected_fingerprint=view['fingerprint'])
+        fixed = ScriptedEngine(
+            action('deliver', filenames=['east.csv', 'west.csv'], report='舊批次'),
+            action('write_artifact', filename='renamed.csv', content=east.replace('\n', '\r\n')),
+            action('deliver', filenames=['west.csv', 'unbound.csv'], report='只交獨立成果'),
+        )
+        done = a.run_goal(self.store, self.sid, gid, fixed, max_steps=3)
+        self.assertEqual([step['action']['tool'] for step in done['steps'][-3:]], ['invalid', 'invalid', 'deliver'])
+        self.assertIn('未更新的已更正欄值', done['steps'][-2]['observation']['error'])
+        payload = json.loads(fixed.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        draft, = payload['superseded_artifacts']
+        self.assertEqual(draft['name'], 'east.csv')
+        evidence, = draft['field_revisions']
+        self.assertEqual((evidence['entity'], evidence['field'], evidence['value'], evidence['citation']),
+                         ('東架', '每件重量', '4000', '[更正#3]'))
+        self.assertEqual(evidence['previous_sources'][0]['citation'], f'[D{doc}:L2]')
+        self.assertEqual(done['steps'][:len(initial['steps'])], initial['steps'])
+        self.assertIn(goal_artifact_revision.DELIVERY_MARK, done['steps'][-1]['observation'])
+        self.assertEqual((f.directory(self.store, gid) / 'east.csv').read_bytes(), east.encode())
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'inferred')
+        restored = Store(self.root / 'inferred' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), done)
+        f.rebuild(restored, self.sid, gid)
+        self.assertEqual((f.directory(restored, gid) / 'west.csv').read_bytes(), west.encode())
+        with restored.connect() as db:
+            observation = done['steps'][-1]['observation'].copy()
+            observation[goal_artifact_revision.DELIVERY_MARK]['superseded'][0]['field_revisions'][0]['entity'] = '西架'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), gid, len(done['steps'])))
+        with self.assertRaisesRegex(ValueError, '更正後的交付核對'):
+            validate_database(restored.path)
+
     def test_csv_rejects_invalid_table_before_reserving_an_artifact(self):
         for body in ('A,A\n1,2\n', 'A, \n1,2\n', 'A,B\n1\n', 'A,B\n"x,2\n', 'A,B\n1,2,3\n'):
             with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'CSV'):

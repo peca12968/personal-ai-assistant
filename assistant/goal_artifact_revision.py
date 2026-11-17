@@ -4,10 +4,12 @@ import hashlib
 import json
 import re
 
-from . import artifact_names, delivery_preference, goal_guidance_sources, goal_reply_sources, goal_stages
+from . import artifact_names, delivery_preference, goal_artifact_fields, goal_guidance_sources, goal_reply_sources
+from . import goal_sources, goal_stages
 
 
 MARK = 'artifact_revision_question'
+DELIVERY_MARK = 'artifact_field_revision_check'
 GUIDANCE = (
     'superseded_artifacts 是使用者已正式更正後留下的舊檔。依現行更正更新受影響欄位，'
     '可沿用其他仍適用的來源及結果。把新版存為目前指定的檔名，再交付新版。'
@@ -87,7 +89,13 @@ def _context_at(goal, end, steps):
                for kind in ('guidance_sources', 'reply_sources')}}
 
 
-def superseded(goal):
+def _record(step, source):
+    receipt = step['observation']['artifact']
+    return {'name': receipt['name'], 'sha256': receipt['sha256'], 'write_step': step['sequence'],
+            'write_sha256': goal_stages.digest(step), 'citation': source['citation'], 'source_sha256': source['sha256']}
+
+
+def superseded(goal, *, fields=True):
     result = {}
     for note in goal.get('guidance_sources', ()):
         prior = goal['steps'][:note['steps_seen']]
@@ -101,10 +109,14 @@ def superseded(goal):
             key = expected['filename'].casefold() if expected else None
             names = {key} if key in written else set(written) if len(written) == 1 and expected is None else set()
         for key in sorted(names & written.keys()):
-            record = written[key]['observation']['artifact']
-            result[key] = {'name': record['name'], 'sha256': record['sha256'], 'write_step': written[key]['sequence'],
-                           'write_sha256': goal_stages.digest(written[key]),
-                           'citation': note['citation'], 'source_sha256': note['sha256']}
+            result[key] = _record(written[key], note)
+    if fields:
+        original_writes = _first_writes(goal['steps'])
+        guidance = {note['citation']: note for note in goal.get('guidance_sources', ())}
+        for key, revisions in goal_artifact_fields.provenance(goal, original_writes).items():
+            latest = max(revisions, key=lambda row: guidance[row['citation']]['notes_start'])
+            record = result.setdefault(key, _record(original_writes[key], guidance[latest['citation']]))
+            record['field_revisions'] = revisions
     return result
 
 
@@ -113,7 +125,7 @@ def question(goal, expected, stale, inventory):
             or inventory.keys() != _first_writes(goal['steps']).keys()):
         return None
     draft = stale[expected['filename'].casefold()]
-    return {'version': 1, 'requirement': expected, 'draft': draft,
+    return {'version': 2 if draft.get('field_revisions') else 1, 'requirement': expected, 'draft': draft,
             'suggested': artifact_names._suggest(draft['name'], inventory), 'notes_end': len(goal['notes'])}
 
 
@@ -123,50 +135,97 @@ def question_step(proof, scope):
             {'question': text, MARK: proof, 'goal_conditions_sha256': scope})
 
 
-def check_action(stale, inventory, action):
+def check_action(stale, inventory, action, steps):
     if not stale or action['tool'] not in ('write_artifact', 'deliver'):
         return
     stale_hashes = {row['sha256'] for row in stale.values()}
     if action['tool'] == 'write_artifact':
         name = action['args']['filename'].casefold()
-        blocked = name in stale or hashlib.sha256(action['args']['content'].encode('utf-8')).hexdigest() in stale_hashes
+        content = action['args']['content']
+        blocked = name in stale or hashlib.sha256(content.encode('utf-8')).hexdigest() in stale_hashes
+        candidates = [(name, content)]
     else:
-        blocked = any(name.casefold() in stale or inventory.get(name.casefold(), {}).get('sha256') in stale_hashes
-                      for name in action['args']['filenames'])
+        names = {name.casefold() for name in action['args']['filenames']}
+        blocked = any(name in stale or inventory.get(name, {}).get('sha256') in stale_hashes for name in names)
+        written = _first_writes(steps)
+        candidates = [(name, written[name]['action']['args']['content']) for name in names & written.keys()]
     if blocked:
         raise ValueError('此檔案內容在正式更正之前保存，請保留舊檔並用現行資料另存後交付。')
+    revisions = [row for file in stale.values() for row in file.get('field_revisions', ())]
+    if revisions and any(name.endswith('.csv') and goal_artifact_fields.has_wrong_current_value(content, revisions)
+                         for name, content in candidates):
+        raise ValueError('CSV 仍含未更新的已更正欄值，請依更正來源重新核對。')
+
+
+def delivery_check(goal, stale):
+    reviewed = [stale[key] for key in sorted(stale) if stale[key].get('field_revisions')]
+    return {'version': 1, 'notes_end': len(goal['notes']), 'superseded': reviewed} if reviewed else None
+
+
+def _inventory(db, gid):
+    return {name.casefold(): {'name': name, 'sha256': digest, 'content': content}
+            for name, digest, content in db.execute(
+                'SELECT name,sha256,content FROM autonomous_artifacts WHERE goal_id=?', (gid,))}
+
+
+def _verify_file(inventory, steps, source):
+    record = inventory.get(source['name'].casefold())
+    written = steps[source['write_step'] - 1]['action']['args']
+    if record != {'name': source['name'], 'sha256': source['sha256'], 'content': written['content']}:
+        raise ValueError('更正後的交付核對所引用的原檔與寫入紀錄不符。')
 
 
 def validate_saved(db, *, replies_present, guidance_present):
-    selected = 'SELECT DISTINCT goal_id FROM autonomous_steps WHERE observation_json LIKE ? OR action_json LIKE ?'
-    for (gid,) in db.execute(selected, (f'%"{MARK}"%', f'%"{MARK}"%')):
-        objective, notes = db.execute('SELECT objective,notes FROM autonomous_goals WHERE id=?', (gid,)).fetchone()
+    selected = ('SELECT DISTINCT goal_id FROM autonomous_steps WHERE observation_json LIKE ? '
+                'OR action_json LIKE ? OR observation_json LIKE ?')
+    for (gid,) in db.execute(selected, (f'%"{MARK}"%', f'%"{MARK}"%', f'%"{DELIVERY_MARK}"%')):
+        sid, objective, notes, raw = db.execute('SELECT session_id,objective,notes,sources_json '
+                                               'FROM autonomous_goals WHERE id=?', (gid,)).fetchone()
+        sources = json.loads(raw)
+        inventory = _inventory(db, gid)
         steps = [{'sequence': seq, 'action': json.loads(action), 'observation': json.loads(observation)}
                  for seq, action, observation in db.execute('SELECT sequence,action_json,observation_json '
                                                            'FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
         guidance = goal_guidance_sources.read(db, gid, notes, len(steps)) if guidance_present else []
         replies = goal_reply_sources.read(db, gid, notes, include_positions=True) if replies_present else []
-        goal = {'objective': objective, 'notes': notes, 'steps': steps,
+        documents = {row[0]: dict(zip(('id', 'name', 'sha256', 'content'), row)) for row in db.execute(
+            'SELECT id,name,sha256,content FROM documents WHERE session_id=?', (sid,))}
+        history = goal_sources.verify_history(steps, sources, documents) if goal_sources.has_supplement(steps) else {}
+        goal = {'objective': objective, 'notes': notes, 'steps': steps, 'sources': sources,
                 'guidance_sources': guidance, 'reply_sources': replies}
         for index, step in enumerate(steps):
-            proof = step['observation'].get(MARK)
-            if proof is None and MARK not in step['action']['args']:
+            is_question = MARK in step['observation'] or MARK in step['action']['args']
+            key = MARK if is_question else DELIVERY_MARK
+            if not is_question and key not in step['observation']:
                 continue
+            proof = step['observation'].get(key)
             end = proof.get('notes_end') if isinstance(proof, dict) else None
             if (type(end) is not int or not 0 <= end <= len(notes)
                     or not delivery_preference.enabled_before(db, gid, end)):
-                raise ValueError('改版檔名問題缺少有效來源。')
-            context = _context_at(goal, end, steps[:index])
-            checked = question(context, requirement(context), superseded(context), _first_writes(context['steps']))
+                raise ValueError('改版檔名問題或交付核對缺少有效來源。')
+            context = _context_at({**goal, 'sources': history.get(step['sequence'], sources)}, end, steps[:index])
+            stale = superseded(context, fields=not is_question or proof.get('version') == 2)
+            if not is_question:
+                checked_delivery = delivery_check(context, stale)
+                if step['action']['tool'] != 'deliver' or checked_delivery is None or checked_delivery != proof:
+                    raise ValueError('更正後的交付核對與保存來源不符。')
+                check_action(stale, inventory, step['action'], context['steps'])
+                for draft in checked_delivery['superseded']:
+                    _verify_file(inventory, steps, draft)
+                    goal_artifact_fields.verify_documents(draft['field_revisions'], documents)
+                delivered = step['observation'].get('artifacts', ())
+                names = [name.casefold() for name in step['action']['args']['filenames']]
+                if (names != [item['name'].casefold() for item in delivered]
+                        or any(inventory.get(item['name'].casefold(), {}).get('sha256') != item['sha256']
+                               for item in delivered)):
+                    raise ValueError('更正後的交付核對與交付檔案不符。')
+                continue
+            checked = question(context, requirement(context), stale, _first_writes(context['steps']))
             scope = step['observation'].get('goal_conditions_sha256', '')
             if (checked is None or checked != proof or not isinstance(scope, str) or not re.fullmatch('[0-9a-f]{64}', scope)
                     or (step['action'], step['observation']) != question_step(checked, scope)):
                 raise ValueError('改版檔名問題與原檔或更正來源不符。')
-            draft = checked['draft']
-            written = steps[draft['write_step'] - 1]['action']['args']
-            stored = db.execute('SELECT name,sha256,content FROM autonomous_artifacts WHERE goal_id=? AND file_key=?',
-                                (gid, draft['name'].casefold())).fetchone()
-            if stored is None or tuple(stored) != (draft['name'], draft['sha256'], written['content']):
-                raise ValueError('改版檔名問題引用的原檔與寫入紀錄不符。')
+            _verify_file(inventory, steps, checked['draft'])
+            goal_artifact_fields.verify_documents(checked['draft'].get('field_revisions', ()), documents)
             if reply := next((item for item in replies if item['ask_sequence'] == step['sequence']), None):
                 choose(steps[:index + 1], checked, reply['answer'])

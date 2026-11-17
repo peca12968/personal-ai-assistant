@@ -893,7 +893,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 check = None
                 plan_check = None
                 if action['tool'] in work_plan.DELIVERY_TOOLS:
-                    goal_artifact_revision.check_action(stale_artifacts, inventory, action)
+                    goal_artifact_revision.check_action(stale_artifacts, inventory, action, goal['steps'])
                     if required_filename:
                         artifact_names.check_action(required_filename, action, pending=pending_filename)
                     plan_check = work_plan.check_delivery(goal['work_plan'], conditions_hash, action, goal['steps'])
@@ -923,6 +923,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                                           expected_files=expected_files, previous_files=previous_files)
                     if recheck_comparison:
                         observation[goal_comparison_handoff.RECEIPT] = current
+                if action['tool'] == 'deliver' and (receipt := goal_artifact_revision.delivery_check(goal, stale_artifacts)):
+                    observation[goal_artifact_revision.DELIVERY_MARK] = receipt
                 if file_recovery:
                     observation['previous_file_recovery'] = {'before_tool': attempted['tool']}
                 elif recovery:
