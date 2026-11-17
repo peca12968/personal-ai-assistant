@@ -33,6 +33,7 @@ _NOT_VALUE = re.compile(
     r'^(?:收到|了解|沒問題|不清楚|不方便|稍後|我再|我先)|'
     r'^(?:有|無|沒有|未知|不明|不詳|好的|可以|是的|好|是|否|暫)$|[嗎呢吧]$')
 _PLACEHOLDERS = {'tbd', 'pending', 'unknown', 'none', 'null', 'na'}
+MAX_SCOPE_CHOICES = 6
 _ASSIGN = '確定寫|確認寫|確定為|確定是|已確認為|正式確認為|改為|改成|改用|定為|為|是|：|:'
 _CORRECTION = '正式改為|正式改成|正式改用|正式確認為|已正式確認為|正式定為'
 _ASSIGNMENT = re.compile(rf'(?P<label>「{_LABEL}」|{_LABEL}?)(?P<verb>{_CORRECTION}|{_ASSIGN})\s*(?P<value>.+)')
@@ -54,7 +55,7 @@ def requested_field(text):
     return next(iter(fields)) if len(fields) == 1 else None
 
 
-def _label(text):
+def label_key(text):
     return ' '.join(unicodedata.normalize('NFKC', text).casefold().split())
 
 
@@ -62,18 +63,48 @@ def _scope(label, field):
     if label == field:
         return ''
     if label.endswith(field):
-        return re.sub(r'(?:使用|所用)?的$', '', label[:-len(field)].rstrip()).rstrip()
+        prefix = label[:-len(field)].rstrip()
+        return _scope_prefix(prefix[:-1]) if prefix.endswith('的') else prefix
     return None
 
 
-def _ask_scope(question, field):
-    match = _ASK.fullmatch(question.strip())
-    if not match:
-        return None
-    label = _label((match['provide'] or match['ask']).strip('「」'))
-    if label == field or label.endswith('的' + field):
-        return _scope(label, field)
+def _ask_label(question):
+    if match := _ASK.fullmatch(question.strip()):
+        return (match['provide'] or match['ask']).strip('「」')
     return None
+
+
+def _scope_prefix(prefix):
+    return re.sub(r'(?:使用|所用)$', '', prefix.rstrip()).rstrip()
+
+
+def _ask_groups(questions, field):
+    groups = {}
+    for sequence, label in questions:
+        if label_key(label) == field:
+            groups.setdefault('', ('', []))[1].append(sequence)
+            continue
+        for end in re.finditer('的', label):
+            if label_key(label[end.end():]) == field:
+                scope = _scope_prefix(label[:end.start()])
+                if scope:
+                    groups.setdefault(label_key(scope), (scope, []))[1].append(sequence)
+                break
+    return groups
+
+
+def _binding(questions, requested, selected_scope):
+    field = label_key(requested)
+    groups = _ask_groups(questions, field)
+    if selected_scope is not None:
+        return field, groups, label_key(selected_scope)
+    prefix, delimiter, base = field.rpartition('的')
+    if delimiter and prefix and base and not any(groups):
+        qualified = _ask_groups(questions, base)
+        scope = _scope_prefix(prefix)
+        if scope in qualified and scope:
+            return base, qualified, scope
+    return field, groups, next(iter(groups)) if len(groups) == 1 else None
 
 
 def _literal(text):
@@ -85,13 +116,13 @@ def _literal(text):
     return None
 
 
-def _record_value(content, field, scope, prefixes, *, reply):
+def _record_value(content, field, scope, prefixes, *, reply, shared_field):
     """Return confirmed/pending when a record applies, or None for a disjoint record."""
     if _NONOPERATIVE.search(content.strip()):
         return None
     clauses = goal_guidance_sources.standalone_clauses(content)
     if len(clauses) != 1 or clauses[0][2]:
-        return ('unverified', None) if reply or field in _label(content) else None
+        return ('unverified', None) if reply or field in label_key(content) else None
     clause = clauses[0][1]
     formal = _FORMAL.match(clause)
     core = clause[formal.end():] if formal else clause
@@ -102,14 +133,15 @@ def _record_value(content, field, scope, prefixes, *, reply):
     match = _ASSIGNMENT.fullmatch(core)
     withdrawal = _RETRACT.fullmatch(core)
     if match or withdrawal:
-        label = _label((match or withdrawal)['label'].strip('「」'))
+        label = label_key((match or withdrawal)['label'].strip('「」'))
         for prefix in prefixes:
             if label.startswith(prefix) and (suffix := label[len(prefix):].lstrip()).startswith('的'):
                 label = suffix[1:].lstrip()
                 break
-        if _scope(label, field) not in ('', scope):
+        named_scope = _scope(label, field)
+        if named_scope not in ('', scope):
             return None if not reply else ('unverified', None)
-        if withdrawal:
+        if withdrawal or (shared_field and not reply and not named_scope):
             return 'unverified', None
         if reply or formal or match['verb'] in _CORRECTION.split('|'):
             value = _literal(match['value'])
@@ -121,41 +153,45 @@ def _record_value(content, field, scope, prefixes, *, reply):
             if (value := _literal(raw)) is not None:
                 return 'confirmed', value
         return 'unverified', None
-    if field in _label(clause):
+    if field in label_key(clause):
         return 'unverified', None
     return None
 
 
-def project(db, gid, objective, step_count, requested):
+def project(db, gid, objective, step_count, requested, *, selected_scope=None):
     """Project one literal and its source fingerprint, without replaying goal notes."""
     result = {'goal_id': gid, 'field': requested, 'status': 'unverified'}
-    field = _label(requested)
     notes, = db.execute('SELECT notes FROM autonomous_goals WHERE id=?', (gid,)).fetchone()
-    questions = {}
+    questions = []
     try:
         for seq, raw_action, raw_observation in db.execute('''
                 SELECT sequence,action_json,observation_json FROM autonomous_steps
                 WHERE goal_id=? AND json_extract(action_json,'$.tool')='ask' ORDER BY sequence''', (gid,)):
             question = goal_reply_sources._question(raw_action, raw_observation)
-            if (scope := _ask_scope(question, field)) is not None:
-                questions[seq] = scope
+            if label := _ask_label(question):
+                questions.append((seq, label))
         replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
         guidance = goal_guidance_sources.read(db, gid, notes, step_count)
     except ValueError:
         return result
-    scopes = set(questions.values())
-    if len(scopes) != 1:
+    field, groups, scope = _binding(questions, requested, selected_scope)
+    if scope not in groups:
+        if (selected_scope is None and 2 <= len(groups) <= MAX_SCOPE_CHOICES and all(groups)
+                and all(not _COMPOUND.search(name) for name, _ in groups.values())):
+            return {**result, 'status': 'needs_scope', 'scope_choices': [name for name, _ in groups.values()]}
         return result
-    scope = next(iter(scopes))
-    title = _label(objective.partition('\n')[0])
+    display, sequences = groups[scope]
+    if display and (selected_scope is not None or label_key(requested) != field):
+        result['scope'] = display
+    title = label_key(objective.partition('\n')[0])
     project, _, _ = title.partition('的')
     prefixes = [title]
     if project != title and re.search(r'[a-z][ -]?\d+(?![a-z0-9])', project):
         prefixes.append(project.strip())
-    records = [(row, row['answer'], True) for row in replies if row['ask_sequence'] in questions]
+    records = [(row, row['answer'], True) for row in replies if row['ask_sequence'] in sequences]
     records.extend((row, row['content'], False) for row in guidance)
     for row, content, reply in sorted(records, key=lambda item: item[0]['notes_start'], reverse=True):
-        if outcome := _record_value(content, field, scope, prefixes, reply=reply):
+        if outcome := _record_value(content, field, scope, prefixes, reply=reply, shared_field=len(groups) > 1):
             state, value = outcome
             if state == 'confirmed':
                 return {**result, 'status': state, 'value': value, 'citation': row['citation'],

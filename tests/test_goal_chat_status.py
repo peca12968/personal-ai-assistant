@@ -526,7 +526,7 @@ class GoalChatStatusTests(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_saved_field_reports_unverified_for_tentative_and_ambiguous_scope(self):
+    def test_saved_field_distinguishes_missing_value_from_ambiguous_scope(self):
         title = '砂梨器材點交'
         gid = a.create_goal(self.store, self.sid, title)
         a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='請提供晨班的交件櫃。')))
@@ -543,10 +543,69 @@ class GoalChatStatusTests(unittest.TestCase):
         self.assertEqual(goal_context(self.store, self.sid, query)['saved_field']['value'], '霜竹櫃')
 
         a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='請提供晚班的交件櫃。')))
-        self.assertEqual(goal_context(self.store, self.sid, query)['saved_field']['status'], 'unverified')
+        field = goal_context(self.store, self.sid, query)['saved_field']
+        self.assertEqual(field['status'], 'needs_scope')
+        self.assertEqual(field['scope_choices'], ['晨班', '晚班'])
+        self.assertNotIn('value', field)
         a.create_goal(self.store, self.sid, title)
         self.assertEqual(goal_context(self.store, self.sid, query)['reference']['status'], 'ambiguous')
         self.assertNotIn('saved_field', goal_context(self.store, self.sid, query))
+
+    def test_saved_field_scope_choice_uses_visible_prior_options_and_survives_restore(self):
+        title = '雲苔 C4 的場地移交'
+        gid = a.create_goal(self.store, self.sid, title)
+        for scope, value in (('東區', 'E-14'), ('西區', 'W-18')):
+            a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=f'請提供{scope}使用的接收代號。')))
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, f'{scope}的接收代號確定寫{value}。',
+                              expected_fingerprint=view['fingerprint'])
+        query = f'查詢「{title}」最後已確認的「接收代號」是什麼？'
+        qualified = query.replace('「接收代號」', '「西區的接收代號」')
+        field = goal_context(self.store, self.sid, qualified)['saved_field']
+        self.assertEqual((field['value'], field['scope'], field['citation']), ('W-18', '西區', '[補充#2]'))
+
+        choice = '西區那一個，請只回報代號。'
+        Assistant(self.store, ScriptedEngine('1. 「西區」\n請問要查哪個區域？')).ask(self.sid, query)
+        self.assertNotIn('saved_field', goal_context(self.store, self.sid, choice))
+        offered = Assistant(self.store, ScriptedEngine('1. 「西區」\n2. 「東區」\n請問要查哪個範圍？')).ask(self.sid, query)
+        snapshot = self.store.answer_context(offered['id'])
+        shown_field = snapshot['autonomous_goals']['saved_field']
+        self.assertEqual(shown_field['scope_choices'], ['東區', '西區'])
+        self.assertNotIn('value', shown_field)
+        for question in ('不要選西區。', '西區或東區。', '西區那個，只回報簽收人。', '3', '先只看這一則訊息。西區'):
+            self.assertNotIn('saved_field', goal_context(self.store, self.sid, question))
+        other = self.store.new_session()
+        self.assertNotIn('saved_field', goal_context(self.store, other, choice))
+        for pick in (choice, '１'):
+            field = goal_context(self.store, self.sid, pick)['saved_field']
+            self.assertEqual((field['value'], field['scope_selection']['answer_id']), ('W-18', offered['id']))
+
+        archive = create_backup(self.store.path)
+        target = self.root/'scope'
+        restore_backup(archive['path'], target)
+        restored = Store(target/'assistant.sqlite3')
+        app = Assistant(restored, ScriptedEngine('W-20'))
+        prepared = app.prepare_context(self.sid, choice)
+        for text in ('東區的接收代號正式改為 E-16。', '西區的接收代號正式改為 W-20。'):
+            current = goal_guidance.snapshot(restored, self.sid, gid)
+            goal_guidance.save(restored, self.sid, gid, text, expected_fingerprint=current['fingerprint'])
+        with self.assertRaisesRegex(ValueError, '保存來源已變更'):
+            answer_runs.begin(restored, self.sid, 'b' * 32, choice, prepared)
+        state = a.get_goal(restored, self.sid, gid)
+        answer = app.ask(self.sid, choice)
+        field = restored.answer_context(answer['id'])['autonomous_goals']['saved_field']
+        self.assertEqual((field['value'], field['scope'], field['citation']), ('W-20', '西區', '[更正#2]'))
+        self.assertEqual(a.get_goal(restored, self.sid, gid), state)
+        self.assertEqual(chat_goal_target(restored, self.sid, answer['id']), gid)
+        self.assertEqual(restored.answer_context(offered['id']), snapshot)
+        self.assertNotIn('saved_field', goal_context(restored, self.sid, choice))
+
+        current = goal_guidance.snapshot(restored, self.sid, gid)
+        goal_guidance.save(restored, self.sid, gid, '接收代號正式改為 ANY-1。', expected_fingerprint=current['fingerprint'])
+        field = goal_context(restored, self.sid, qualified)['saved_field']
+        self.assertEqual(field['status'], 'unverified')
+        self.assertNotIn('value', field)
+        self.assertEqual(restored.answer_context(answer['id'])['autonomous_goals']['saved_field']['value'], 'W-20')
 
     def test_saved_field_rechecks_its_source_before_recording_chat(self):
         title = '月台送件'

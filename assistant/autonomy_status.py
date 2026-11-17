@@ -45,6 +45,10 @@ _CHOICE_SUFFIX = re.compile(r'\s*(?:這|那)(?:一)?(?:件|個)(?:工作|目標)
 _CHOICE_SEPARATOR = re.compile(r'[，,。；;？！?!\r\n]')
 _CHOICE_ORDINAL = re.compile(r'第\s*([一二三123])\s*[件個項筆]')
 _CHOICE_NUMBER = re.compile(r'[1-3]')
+_SCOPE_ORDINAL = re.compile(r'第\s*([一二三四五六1-6])\s*[件個項筆]')
+_SCOPE_NUMBER = re.compile(r'[1-6]')
+_SCOPE_OUTPUT = re.compile(r'^(?:請\s*)?只\s*(?:回答|回覆|回報|告訴我)\s*([^。？！?!；;，,\r\n]{1,40})[。！？?!]?$')
+_VISIBLE_SCOPE = re.compile(r'^[ \t]*(?:([1-6])[.)、]|[-*])[ \t]+([^ \t\r\n][^\r\n]*?)[ \t]*$', re.M)
 _QUOTED_TITLE = re.compile(r'「([^「」\r\n]+)」|『([^『』\r\n]+)』|“([^“”\r\n]+)”')
 _NUMBERED_TITLE = re.compile(r'^\s*([1-3])[.)、]\s*「([^「」\r\n]+)」', re.M)
 _NOT_A_CHOICE = re.compile(r'^(?:我\s*)?(?:不是|不要|不選|別|先別|如果|假設|引用|原文|例如)')
@@ -157,15 +161,15 @@ def _named_ids(db, sid, name):
     return found
 
 
-def _choice_request(question):
+def _choice_request(question, *, field_scope=False):
     from .context import context_reset
     if len(question) > 500:
         return None
     clauses = _CHOICE_SEPARATOR.split(_request_body(question), maxsplit=1)
     head = clauses[0].strip()
     tail = clauses[1].strip() if len(clauses) == 2 else ''
-    if (not head or _NOT_A_CHOICE.match(head) or context_reset(question)
-            or (tail and not _STATUS_CUE.search(tail))):
+    valid_tail = _SCOPE_OUTPUT.fullmatch(tail) if field_scope else _STATUS_CUE.search(tail)
+    if (not head or _NOT_A_CHOICE.match(head) or context_reset(question) or (tail and not valid_tail)):
         return None
     lead = _CHOOSE.match(head)
     if lead:
@@ -176,10 +180,13 @@ def _choice_request(question):
     if (quote := _NAME_QUOTE.match(head)) and quote.end() == len(head):
         head = next(value for value in quote.groups() if value is not None)
     key = _key(head)
-    if _CHOICE_NUMBER.fullmatch(key):
+    number = _SCOPE_NUMBER if field_scope else _CHOICE_NUMBER
+    ordinal_pattern = _SCOPE_ORDINAL if field_scope else _CHOICE_ORDINAL
+    if number.fullmatch(key):
         return head, int(key), True
-    if ordinal := _CHOICE_ORDINAL.fullmatch(key):
-        return head, '一二三'.index(ordinal[1]) + 1 if ordinal[1] in '一二三' else int(ordinal[1]), True
+    if ordinal := ordinal_pattern.fullmatch(key):
+        digit = ordinal[1]
+        return head, int(digit) if digit.isascii() else '一二三四五六'.index(digit) + 1, True
     if not 2 <= len(head) <= 80 or re.search(r'[「」『』“”`、/：:\x00-\x1f\x7f]', head):
         return None
     return head, None, bool(lead or suffix)
@@ -292,6 +299,80 @@ def _choice_matches(db, sid, question, before, *, only_offered=False):
     return list(actual.values()), {'name': name, 'status': 'ambiguous' if actual else 'not_found', 'selection': proof}
 
 
+def _requested_saved_field(question, name):
+    if field := goal_chat_fields.requested_field(question):
+        return field
+    body = _request_body(question)
+    lookup = _LOOKUP.match(body)
+    if lookup:
+        body = body[lookup.end():]
+    direct = _field_reference(body, allow_quoted_lookup=lookup is not None)
+    return direct[1] if direct and direct[0] == name else None
+
+
+def _verified_work_reference(db, sid, row, reference, saved):
+    gid = saved.get('id')
+    if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
+        return False
+    current = db.execute('SELECT objective FROM autonomous_goals WHERE session_id=? AND id=?',
+                         (sid, gid)).fetchone()
+    if current is None or current['objective'][:400] != saved.get('objective'):
+        return False
+    if 'selection' in reference:
+        return _choice_matches(db, sid, row['request'], row['user_id']) == ([gid], reference)
+    name = _requested_name(row['request'])
+    return bool(name and name == reference.get('name')
+                and (_key(name) == gid or _label_rank(current['objective'], _key(name))))
+
+
+def _field_scope_choice(db, sid, question, before):
+    request = _choice_request(question, field_scope=True)
+    if not request or not (origin := _latest_completed_answer(db, sid, before)):
+        return None
+    row, context = origin
+    summary = context.get('autonomous_goals', {})
+    if not isinstance(summary, dict):
+        return None
+    reference = summary.get('reference')
+    goals = summary.get('goals')
+    field = summary.get('saved_field')
+    if (not isinstance(reference, dict) or reference.get('status') != 'matched'
+            or not isinstance(goals, list) or len(goals) != 1 or not isinstance(goals[0], dict)
+            or not isinstance(field, dict) or field.get('status') != 'needs_scope'
+            or field.get('goal_id') != goals[0].get('id')
+            or not isinstance(field.get('field'), str)
+            or _requested_saved_field(row['request'], reference.get('name')) != field['field']
+            or not _verified_work_reference(db, sid, row, reference, goals[0])):
+        return None
+    choices = field.get('scope_choices')
+    if (not isinstance(choices, list) or not 2 <= len(choices) <= goal_chat_fields.MAX_SCOPE_CHOICES
+            or any(not isinstance(choice, str) or not choice or len(choice) > 80 for choice in choices)):
+        return None
+    labels = {goal_chat_fields.label_key(choice): choice for choice in choices}
+    shown = [(number, goal_chat_fields.label_key(label.strip().removeprefix('「').removesuffix('」')))
+             for number, label in _VISIBLE_SCOPE.findall(row['content'])]
+    if len(labels) != len(choices) or len(shown) != len(labels) or {label for _, label in shown} != labels.keys():
+        return None
+    label, ordinal, _ = request
+    if ordinal:
+        numbers = [number for number, _ in shown]
+        if ordinal > len(shown) or numbers != [str(i) for i in range(1, len(shown) + 1)]:
+            return None
+        key = shown[ordinal - 1][1]
+    else:
+        key = goal_chat_fields.label_key(label)
+    if key not in labels:
+        return None
+    parts = _CHOICE_SEPARATOR.split(_request_body(question), maxsplit=1)
+    if len(parts) == 2 and (format_match := _SCOPE_OUTPUT.fullmatch(parts[1].strip())):
+        requested = goal_chat_fields.label_key(format_match[1].strip('「」'))
+        if (requested not in {'值', '欄值', '正式值', '確認值', '結果'}
+                and not goal_chat_fields.label_key(field['field']).endswith(requested)):
+            return None
+    return ([field['goal_id']], {'name': reference['name'], 'status': 'matched'}, field['field'],
+            {'answer_id': row['id'], 'label': label, 'scope': labels[key]})
+
+
 def _chat_goal_link(db, sid, answer_id):
     if type(answer_id) is not int or answer_id <= 0:
         return None
@@ -308,21 +389,12 @@ def _chat_goal_link(db, sid, answer_id):
         return None
     saved = goals[0]
     gid = saved.get('id')
-    if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
-        return None
-    current = db.execute('SELECT objective FROM autonomous_goals WHERE session_id=? AND id=?',
-                         (sid, gid)).fetchone()
-    if current is None or current['objective'][:400] != saved.get('objective'):
-        return None
-    if 'selection' in reference:
-        resolved = _choice_matches(db, sid, row['request'], row['user_id'])
-        if resolved is None or resolved != ([gid], reference):
+    field = summary.get('saved_field')
+    if isinstance(field, dict) and (selection := field.get('scope_selection')):
+        if _field_scope_choice(db, sid, row['request'], row['user_id']) != ([gid], reference, field.get('field'), selection):
             return None
-    else:
-        name = _requested_name(row['request'])
-        if (not name or name != reference.get('name')
-                or (_key(name) != gid and not _label_rank(current['objective'], _key(name)))):
-            return None
+    elif not _verified_work_reference(db, sid, row, reference, saved):
+        return None
     return {'goal_id': gid, 'user_message_id': row['user_id'], 'request': row['request'],
             'reply_basis': saved.get('reply_basis')}
 
@@ -395,8 +467,10 @@ def _goal_context(db, sid, question, before):
     name, natural = _status_request(question)
     matches = None
     reference = None
-    choice = _choice_matches(db, sid, question, before, only_offered=natural) if natural or not name else None
-    if choice:
+    scope_choice = _field_scope_choice(db, sid, question, before) if not name else None
+    if scope_choice:
+        matches, reference, _, _ = scope_choice
+    elif (natural or not name) and (choice := _choice_matches(db, sid, question, before, only_offered=natural)):
         matches, reference = choice
     elif name:
         found = _named_ids(db, sid, name)
@@ -451,16 +525,12 @@ def _goal_context(db, sid, question, before):
             goal = goals[0]
             if goal['recorded_question'] and (basis := _reply_basis(db, sid, goal['id'], sources)):
                 goal['reply_basis'] = basis
-            field = goal_chat_fields.requested_field(question)
-            if not field:
-                body = _request_body(question)
-                lookup = _LOOKUP.match(body)
-                if lookup:
-                    body = body[lookup.end():]
-                direct = _field_reference(body, allow_quoted_lookup=lookup is not None)
-                if direct and direct[0] == reference['name']:
-                    field = direct[1]
+            field = scope_choice[2] if scope_choice else _requested_saved_field(question, reference['name'])
             if field:
+                selection = scope_choice[3] if scope_choice else None
                 result['saved_field'] = goal_chat_fields.project(
-                    db, goal['id'], rows[0]['objective'], goal['step_count'], field)
+                    db, goal['id'], rows[0]['objective'], goal['step_count'], field,
+                    selected_scope=selection['scope'] if selection else None)
+                if selection:
+                    result['saved_field']['scope_selection'] = selection
     return result

@@ -145,9 +145,12 @@ def show_context(parent, store, message_id):
     if field := context.get('autonomous_goals', {}).get('saved_field'):
         if field['status'] == 'confirmed':
             saved_value_text = f'已保存的欄值　{field["value"]}\n保存來源　{field["citation"]}\n來源指紋　{field["sha256"]}'
+        elif field['status'] == 'needs_scope':
+            saved_value_text = '待選範圍\n' + '\n'.join(field['scope_choices'])
         else:
             saved_value_text = '這次查不到可核對的正式欄值。'
-        sections.append(('工作欄位', f'欄位　{field["field"]}\n工作編號　{field["goal_id"]}\n\n{saved_value_text}'))
+        scope = f'\n查詢範圍　{field["scope"]}' if field.get('scope') else ''
+        sections.append(('工作欄位', f'欄位　{field["field"]}\n工作編號　{field["goal_id"]}{scope}\n\n{saved_value_text}'))
     if local:
         sections = [('本機操作', '當時指令：\n' + context['current_request'] + '\n\n' +
                      json.dumps(context['memory_action'], ensure_ascii=False, indent=2))]
