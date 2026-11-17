@@ -12,16 +12,18 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 16
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SOURCE_VERSION)
+SOURCE_VERSION = 17
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, SOURCE_VERSION)
 DOCUMENT_GROUP_VERSION = 1
 EXPLICIT_ZERO_VERSION = 1
+SCOPED_FIELD_VERSION = 1
 REPORT_FIELDS = goal_reply_sources.REPORT_FIELDS
 
 _OPERAND_GUIDANCE = (
     '一般文件解題如需重算，可在 calculate_expression 的 expression 之外提供 operands，'
     '每個數字葉節點各一筆 {"path":"/values/0","citation":"[D1:L2]","quote":"箱數：12 箱","field":"箱數","unit":"箱"}。'
     'quote須為已讀原行或當前補充的逐字短句，path是數字樹的實際路徑。單位換算改用 conversion {"from":"kg","to":"g"}。'
+    '引用「品項」的「欄位」為數值或具名正式更正時，quote 保留完整品項與原句，field 填原欄名。'
     '直接沿用仍適用的已核對結果，在欄位旁留原始依據。')
 OPTIONAL_GUIDANCE = (
     _OPERAND_GUIDANCE +
@@ -34,6 +36,9 @@ GUIDANCE = (
     _OPERAND_GUIDANCE + '\n本目標已要求逐項核對。計算只能用 calculate_expression 的 operands；'
     '每筆須有完整欄位名 field、單位 unit 或 conversion，quote 使用明確確認該欄的完整原句（去掉句末標點）。'
     '未決、候選、被更正或撤回的數字不能代入。只算有證據的部分。'
+    '原行寫「設備」的「欄位」為數值，或使用者明確寫正式更正「設備」的「欄位」為數值時，'
+    'quote 須保留實際完整原句和適用設備，field 只填原欄名。'
+    '不同設備的同名欄位引用各自的原句，提案、假設與引述不可當成正式更正。'
     'calculation_source_adoptions 是從已保存的引用選擇核對到的欄位與來源。'
     '口語只給文件名時，先看它能否由原問題和已讀欄位唯一核對。'
     'needs_lookup 是已確定文件及欄位但尚缺查找，直接用 find_document_text 的該筆 args，'
@@ -85,6 +90,12 @@ _RECHECK_FIELDS = {'label', 'recheck_calculation', 'unit'}
 _UNCONFIRMED = re.compile(r'尚未|未確認|待確認|待查|未定|待定|候選|暫估|暫定|約莫|估計|預估|推測|可能|假如|假設|如果|是否|撤回|取消|不再採用|未採用|不採用|不作準|不算|歷史|舊版|前批|上一批|上次|原值|舊值|草案|引述|轉述|試算')
 _UNCERTAIN_PREFIX = re.compile(r'假如|假設|如果|若是|若採|若用|僅作示例|只是假設|引述|轉述')
 _REVISION = re.compile(r'改為|改成|更正為|改用|為準|撤回|取消|不再|不採|不算|待確認|未確認')
+_SCOPED_INACTIVE = re.compile(
+    r'引述|轉述|假設|假如|如果|僅供|示例|候選|可能|試算|暫估|暫定|未採用|倘若|要是|(?:^|\s)若'
+)
+_SCOPED_CHANGE = re.compile(
+    r'(?:為|[：:]|正式(?:改[為成]|更正為)|撤回|取消|目前待確認|待確認|不再採用|改[為成]|更正為)'
+)
 _UNSAFE_LABEL = re.compile(r'[\x00-\x1f\x7f\[\]<>#|＝=]')
 
 
@@ -116,6 +127,27 @@ def _later_change(text, field):
     return False
 
 
+def _scoped_later_change(text, field, subject, direct=None):
+    if not operand_evidence.SCOPED_FIELD.search(text):
+        return (_later_change(text, field) if direct is None
+                else any(_later_change(clause, field) for clause in direct))
+    for _, sentence, question in goal_guidance_sources.standalone_clauses(text):
+        if question:
+            continue
+        for _, clause, _ in _clauses(sentence):
+            if direct is not None and clause not in direct:
+                continue
+            match = operand_evidence.SCOPED_FIELD.search(clause)
+            if match is None:
+                if _later_change(clause, field):
+                    return True
+            elif (clause == sentence and not match.start() and not _SCOPED_INACTIVE.search(clause)
+                  and match['field'] == field and (subject is None or match['subject'] == subject)
+                  and _SCOPED_CHANGE.match(clause[match.end():].lstrip())):
+                return True
+    return False
+
+
 def _source_order(replies, guidance, sequence):
     return sorted([(r['notes_start'], r['citation'], r['answer']) for r in replies if r['ask_sequence'] < sequence]
                   + [(r['notes_start'], r['citation'], r['content']) for r in guidance if r['steps_seen'] < sequence])
@@ -132,7 +164,8 @@ def _complete_excerpts(steps, scope, recheck):
 
 class Sources:
     def __init__(self, objective, steps, scope, replies, guidance, recheck, documents, *,
-                 version=SOURCE_VERSION, document_counts=None, document_groups=True, explicit_zero=True):
+                 version=SOURCE_VERSION, document_counts=None, document_groups=True, explicit_zero=True,
+                 scoped_fields=True):
         sequence = len(steps) + 1
         self.steps = steps
         self.excerpts = _complete_excerpts(steps, scope, recheck)
@@ -144,6 +177,7 @@ class Sources:
         self.document_groups = document_groups and not self.strict
         self.zero_rules = operand_evidence.explicit_zero_rules(objective) if explicit_zero and not self.strict else None
         self.version = version if self.strict else 1
+        self.scoped_fields = self.version >= 17 if self.strict else scoped_fields
         self.line_pages = (goal_calculation_lookup.LinePages(steps, scope, self.documents)
                            if self.version >= 7 else None)
         if self.line_pages is not None:
@@ -217,30 +251,42 @@ class Sources:
                     current = (re.sub(rf'^{re.escape(group)}\s*[：:]\s*', '', clause) if group else clause)
                     if _later_change(current, row['field']) or zero['phrase'] in current and _REVISION.search(current):
                         raise ValueError('已有較新的使用者更正，請先核對明確缺項與目前規則。')
-        if not self.strict:
+        subject = row.get('field_scope', {}).get('name')
+        if not self.strict and subject is None:
             return
         unit_end = row.get('unit_end', row.get('conversion', {}).get('unit_end'))
+        clause = row['quote'].removesuffix('。') if subject else row['quote']
+        endings = {'', '。', '.'} if subject else {'', '」'}
         if (not row.get('field') or unit_end is None
-                or text[unit_end:row['quote_end']].strip() not in {'', '」'}
-                or not _valid_clause(text, row['quote_start'], row['quote'])):
+                or text[unit_end:row['quote_end']].strip() not in endings
+                or not _valid_clause(text, row['quote_start'], clause)):
             raise ValueError('運算元須使用完整且已確認的欄位原句與單位。候選或待查數值請保留待查。')
         # A later conflicting assignment in one source carries the same citation.
         remainder = text[row['quote_end']:]
-        if _later_change(remainder, row['field']):
+        if subject and not any(start == row['quote_start'] and quote == clause and not question
+                               for start, quote, question in goal_guidance_sources.standalone_clauses(text)):
+            raise ValueError('具名運算元須引用一個完整獨立的原句。')
+        changed = (_scoped_later_change(remainder, row['field'], subject) if self.scoped_fields
+                   else _later_change(remainder, row['field']))
+        if changed:
             raise ValueError('同一來源後段另有更正或待確認值，請先核對欄位。')
-        return self.confirm_fact(row['field'], row['citation'])
+        return self.confirm_fact(row['field'], row['citation'], subject=subject)
 
     def calculate(self, args, cancel=None):
         expression = {'expression': args['expression']}
-        validate(args, document_groups=self.document_groups, explicit_zero=self.zero_rules is not None)
+        validate(args, document_groups=self.document_groups, explicit_zero=self.zero_rules is not None,
+                 scoped_fields=self.scoped_fields)
         bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user,
-                                      ordinary=True, document_groups=self.document_groups, zero_rules=self.zero_rules)
+                                      ordinary=True, document_groups=self.document_groups, zero_rules=self.zero_rules,
+                                      scoped_fields=self.scoped_fields)
         applied = []
         for row in bound:
             if selection := self.confirm(row):
                 applied.append({'path': row['path'], **selection})
         proof = {'version': self.version, 'operands': bound,
                  'recheck_sha256': self.recheck['sha256'] if self.recheck else None}
+        if not self.strict and any('field_scope' in row for row in bound):
+            proof['scoped_field_version'] = SCOPED_FIELD_VERSION
         if any('document_group' in row for row in bound):
             proof['document_group_version'] = DOCUMENT_GROUP_VERSION
         if any('explicit_zero' in row for row in bound):
@@ -269,13 +315,16 @@ class Sources:
                 proof = observation.get(PROOF)
                 if not proof or observation.get('status') != 'expression_calculated':
                     raise ValueError('成果須引用已逐項核對來源的算式步驟。')
-                bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user, ordinary=True)
+                bound = operand_evidence.bind(args['operands'], args['expression'], self.excerpts, self.user,
+                                              ordinary=True, scoped_fields=self.scoped_fields)
                 if bound != proof['operands']:
                     raise ValueError('算式來源與目前可核對的證據不一致。')
                 sources = []
                 for item in bound:
                     selection = self.confirm(item)
                     entry = {'欄位': item['field'], '原文': item['quote'], '引用': item['citation']}
+                    if scope := item.get('field_scope'):
+                        entry['對象'] = scope['name']
                     if selection:
                         entry['採用依據'] = selection['user_citation']
                     sources.append(entry)
@@ -292,11 +341,26 @@ class Sources:
                 text, _ = self.literal(citation)
                 start = text.find(quote)
                 clause = quote.removesuffix('。') if self.version >= 3 else quote
+                scope = operand_evidence.SCOPED_FIELD.match(clause) if self.version >= 17 else None
+                if scope:
+                    suffix = clause[scope.end():].lstrip()
+                    valid_scope = (scope['field'] == label and bool(_SCOPED_CHANGE.match(suffix))
+                                   and (re.fullmatch(r'\[D\d+:L\d+\]', citation) or scope['correction']
+                                        or re.match(r'正式(?:改[為成]|更正為)', suffix)))
+                    valid_field = valid_scope and any(
+                        offset == start and original == clause and not question
+                        for offset, original, question in goal_guidance_sources.standalone_clauses(text))
+                else:
+                    valid_field = re.match(
+                        rf'(?:欄位「{re.escape(label)}」|{re.escape(label)})(?:[:：]|\s|確認為|已確認為|正式改為|為)', quote)
                 if (start < 0 or text.find(quote, start + 1) >= 0 or not _valid_clause(text, start, clause)
-                        or not re.match(rf'(?:欄位「{re.escape(label)}」|{re.escape(label)})(?:[:：]|\s|確認為|已確認為|正式改為|為)', quote)):
+                        or not valid_field):
                     raise ValueError('事實列須引用唯一完整且目前確認同一欄位的原句。')
-                selected = self.confirm_fact(label, citation)
+                subject = scope['subject'] if scope else None
+                selected = self.confirm_fact(label, citation, subject=subject)
                 entry = {'欄位': label, '原文': quote, '引用': citation}
+                if subject:
+                    entry['對象'] = subject
                 if selected:
                     entry['採用依據'] = selected['user_citation']
                 output.append(entry)
@@ -321,12 +385,18 @@ class Sources:
             raise ValueError('成果須引用已逐項核對來源的算式步驟。')
         return step['action']['args'], step['observation']
 
-    def confirm_fact(self, label, citation):
+    def confirm_fact(self, label, citation, *, subject=None):
         position = next((offset for offset, key, _ in self.order if key == citation), -1)
         if self.adoptions is None:
-            changed = any(offset > position and _later_change(body, label) for offset, _, body in self.order)
+            changed = any(offset > position and
+                          (_scoped_later_change(body, label, subject) if self.scoped_fields else _later_change(body, label))
+                          for offset, _, body in self.order)
         else:
-            latest = self.adoptions.effective(label, _later_change)
+            def note_change(note_citation, field, direct):
+                return _scoped_later_change(self.user[note_citation][0], field, subject, direct)
+
+            latest = self.adoptions.effective(
+                label, _later_change, note_change=note_change if self.version >= 17 else None)
             if not latest or latest[0] < position:
                 return None
             note_position, _, selection = latest
@@ -360,12 +430,13 @@ def _document_counts(scope, documents, saved):
     return saved
 
 
-def validate(args, *, document_groups=True, explicit_zero=True):
+def validate(args, *, document_groups=True, explicit_zero=True, scoped_fields=True):
     if not isinstance(args, dict) or args.keys() != {'expression', 'operands'}:
         raise ValueError('逐項核對的算式須提供 expression 及 operands。')
     expression_math.validate({'expression': args['expression']})
     operand_evidence.validate(args['operands'], args['expression'], None, ordinary=True,
-                              document_groups=document_groups, explicit_zero=explicit_zero)
+                              document_groups=document_groups, explicit_zero=explicit_zero,
+                              scoped_fields=scoped_fields)
 
 
 def _label(value, limit):
@@ -509,9 +580,12 @@ def validate_saved(db, *, replies_present, guidance_present, checked_rechecks, a
             document_groups = type(document_group_version) is int and document_group_version == DOCUMENT_GROUP_VERSION
             explicit_zero_version = receipt.get('explicit_zero_version')
             explicit_zero = type(explicit_zero_version) is int and explicit_zero_version == EXPLICIT_ZERO_VERSION
+            scope_version = receipt.get('scoped_field_version')
+            scoped_fields = type(scope_version) is int and scope_version == SCOPED_FIELD_VERSION
             context = Sources(objective, prior, history.get(step['sequence'], scope), replies, guidance,
                               recheck, docs.values(), version=version, document_counts=counts,
-                              document_groups=document_groups, explicit_zero=explicit_zero)
+                              document_groups=document_groups, explicit_zero=explicit_zero,
+                              scoped_fields=scoped_fields)
             if calculated:
                 expected = context.calculate(args)
                 if any(digest(seen.get(key)) != digest(value) for key, value in expected.items()):

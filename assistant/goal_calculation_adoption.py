@@ -211,12 +211,15 @@ class Review:
                     altered = True
             self.notes.append((position, citation, records, tuple(direct), None if altered else text))
 
-    def effective(self, field, direct_change):
+    def effective(self, field, direct_change, *, note_change=None):
         latest = None
         for position, citation, records, direct, original in self.notes:
             relevant = [row for row in records if _applies(row, field)]
-            changed = (direct_change(original, field) if original is not None
-                       else any(direct_change(clause, field) for clause in direct))
+            if note_change is not None:
+                changed = note_change(citation, field, direct if original is None else None)
+            else:
+                changed = (direct_change(original, field) if original is not None
+                           else any(direct_change(clause, field) for clause in direct))
             if changed or relevant:
                 latest = (position, citation, {'status': 'competing', 'candidates': relevant} if relevant and changed
                           else _combine(relevant) if relevant else None)

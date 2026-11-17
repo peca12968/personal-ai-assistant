@@ -14,6 +14,12 @@ _NUMERIC_CHARS = str.maketrans('０１２３４５６７８９．／－＋％，
 _NUMBER = r'(?<![\dA-Za-z_./+\-])(?<![0-9],)(?P<number>-?[0-9]+(?:\.[0-9]+|/[0-9]+)?)'
 _LITERAL = re.compile(_NUMBER + r'(?![\dA-Za-z_./+\-%])(?!,[0-9])')
 _FIELD = re.compile(r'欄位「(?P<name>[^「」\r\n\x00]{1,80})」[ \t]*(?:為|[:：])[ \t]*\Z')
+_SCOPED_NAME = r'[^「」『』“”\[\]：:；;、，,。！？?!\r\n\x00]{1,80}'
+SCOPED_FIELD = re.compile(
+    rf'(?P<correction>(?:請[ \t]*)?正式更正[ \t]*)?'
+    rf'「(?P<subject>{_SCOPED_NAME})」[ \t]*的[ \t]*(?:欄位[ \t]*)?'
+    rf'「(?P<field>{_SCOPED_NAME})」'
+)
 _REQUIRED_KEYS = {'path', 'citation', 'quote'}
 _OPTIONAL_KEYS = {'conversion', 'field'}
 _UNIT = re.compile(r'[A-Za-zµμ%°㐀-鿿][A-Za-zµμ%°㐀-鿿0-9^²³/·]{0,15}')
@@ -106,6 +112,18 @@ def _field_position(quote, number_start, field):
     raise ValueError('運算元欄位名須與該數字前明列的完整欄位名逐字相同。')
 
 
+def scoped_field_prefix(quote, number_start, field, *, document):
+    match = SCOPED_FIELD.match(quote)
+    if not match or match['field'] != field or match['subject'].strip() != match['subject']:
+        return None
+    end = quote[match.end():number_start].strip()
+    if match['correction'] and end == '為' or re.fullmatch(r'正式(?:改[為成]|更正為)', end):
+        return match
+    if document and not match['correction'] and end in {'為', '：', ':'}:
+        return match
+    return None
+
+
 def _operand_field(quote, token, field, *, ordinary, document_group):
     try:
         return field_position(quote, token.start('number'), field, ordinary=ordinary), None
@@ -165,7 +183,8 @@ def _absence_lexeme(row, value):
             'field_start': offset + lo, 'field_end': offset + hi}, group
 
 
-def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, document_groups=False, explicit_zero=False):
+def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, document_groups=False,
+             explicit_zero=False, scoped_fields=False):
     leaves = {path: value for path, value in _leaves(expression) if path not in omitted_paths}
     if not isinstance(rows, list) or len(rows) != len(leaves):
         raise ValueError('運算元證據須涵蓋算式中每個數字葉節點。')
@@ -196,7 +215,8 @@ def validate(rows, expression, ranges, *, omitted_paths=(), ordinary=False, docu
         if explicit_zero and _absence_lexeme(row, leaves[path]):
             continue
         token, _ = _numeric_match(quote, leaves[path], pattern, factor)
-        if 'field' in row:
+        if 'field' in row and not (scoped_fields and scoped_field_prefix(
+                quote, token.start('number'), row['field'], document=doc_line is not None)):
             _operand_field(quote, token, row['field'], ordinary=ordinary,
                            document_group=document_groups and doc_line is not None)
 
@@ -265,7 +285,8 @@ def displayed_choice_quantities(text):
     return values
 
 
-def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_groups=False, zero_rules=None):
+def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_groups=False,
+         zero_rules=None, scoped_fields=False):
     leaves = dict(_leaves(expression))
     bound = []
     for row in rows:
@@ -305,9 +326,18 @@ def bind(rows, expression, excerpts, user_sources, *, ordinary=False, document_g
         receipt = {**row, 'source_sha256': sha, 'quote_start': start, 'quote_end': start + len(quote),
                    'number_start': start + low, 'number_end': start + high, 'number': quote[low:high]}
         if 'field' in row:
-            (field_start, field_end), group = _operand_field(
-                quote, token, row['field'], ordinary=ordinary,
-                document_group=document_groups and _DOCUMENT.fullmatch(citation) is not None)
+            document = _DOCUMENT.fullmatch(citation) is not None
+            scope = (scoped_field_prefix(quote, token.start('number'), row['field'], document=document)
+                     if scoped_fields else None)
+            if scope:
+                field_start, field_end = scope.span('field')
+                subject_start, subject_end = scope.span('subject')
+                receipt['field_scope'] = {'name': scope['subject'], 'start': start + subject_start,
+                                          'end': start + subject_end}
+                group = None
+            else:
+                (field_start, field_end), group = _operand_field(
+                    quote, token, row['field'], ordinary=ordinary, document_group=document_groups and document)
             receipt.update(field_start=start + field_start, field_end=start + field_end)
             if group:
                 if text[:start].strip() or text[start + len(quote):].strip() not in {'', '。', '.'}:
