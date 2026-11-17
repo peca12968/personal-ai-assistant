@@ -84,7 +84,7 @@ def capture(db, sid):
 def validate(value, sid):
     fields = {'session_id','captured_at','messages','messages_limited','earlier_corrections','earlier_corrections_limited','brief'}
     if (not isinstance(value, dict) or not fields <= set(value)
-            or set(value) - fields - {'answer_feedback','opening_user_message','comparison_handoff'} or value['session_id'] != sid):
+            or set(value) - fields - {'answer_feedback','opening_user_message','comparison_handoff','comparison_reference'} or value['session_id'] != sid):
         raise ValueError('帶入對話的範圍或格式不符。')
     if not isinstance(value['captured_at'], str) or len(value['captured_at']) > 50:
         raise ValueError('帶入對話的時間格式不符。')
@@ -127,8 +127,7 @@ def validate(value, sid):
 def save(db, sid, gid, objective=''):
     from . import goal_comparison_handoff
     value = validate(capture(db, sid), sid)
-    if basis := goal_comparison_handoff.capture(db, sid, objective, value['messages']):
-        value[goal_comparison_handoff.BASIS] = basis
+    value.update(goal_comparison_handoff.capture(db, sid, objective, value['messages']))
     db.execute('INSERT INTO autonomous_conversations(goal_id,context_json,context_sha256) VALUES(?,?,?)',
                (gid, json.dumps(value, ensure_ascii=False), digest(value)))
 
@@ -142,11 +141,17 @@ def read(db, gid):
     if digest(value) != row[1]:
         raise ValueError('帶入對話的快照指紋不符。')
     from . import goal_comparison_handoff
+    basis = value.get(goal_comparison_handoff.BASIS)
+    if goal_comparison_handoff.REFERENCE in value:
+        goal_comparison_handoff.validate_reference(
+            db, row[2], row[3], value[goal_comparison_handoff.REFERENCE], value['messages'], basis)
     if goal_comparison_handoff.BASIS in value:
-        basis = value[goal_comparison_handoff.BASIS]
         goal_comparison_handoff.selected(db, row[2], row[3], basis)
-        if not any(item['message_id'] == basis['answer_id'] and item['role'] == 'assistant'
-                   and not item['content_truncated'] for item in value['messages']):
+        if basis.get('version') == 3:
+            if goal_comparison_handoff.REFERENCE not in value:
+                raise ValueError('指定的比較交接缺少原回答快照。')
+        elif not any(item['message_id'] == basis['answer_id'] and item['role'] == 'assistant'
+                     and not item['content_truncated'] for item in value['messages']):
             raise ValueError('比較交接的回答未包含於已選取的對話快照。')
     return value
 
@@ -171,4 +176,9 @@ def describe(value):
         lines += [answer_feedback.describe(value['answer_feedback'])]
     if basis := value.get('comparison_handoff'):
         lines += [f'比較來源 · 回答 #{basis["answer_id"]}。正式欄值依原工作核對。']
+    elif reference := value.get('comparison_reference'):
+        lines += [f'比較來源 · 回答 #{reference["answer_id"]}。']
+    if (reference := value.get('comparison_reference')) and not any(
+            item['message_id'] == reference['answer_id'] and not item['content_truncated'] for item in value['messages']):
+        lines += [reference['request'], reference['answer']]
     return '\n\n'.join(lines)

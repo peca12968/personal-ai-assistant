@@ -749,6 +749,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
+                ('\n' + goal_comparison_handoff.REFERENCE_GUIDANCE
+                 if goal_comparison_handoff.REFERENCE in (goal['conversation_context'] or {}) else '') +
                 ('\n' + goal_comparison_handoff.GUIDANCE if comparison else '') +
                 ('\n' + goal_comparison_resume.GUIDANCE if payload.get('comparison_resolved_questions') else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +

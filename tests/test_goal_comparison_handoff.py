@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assistant import artifacts, autonomy, goal_comparison_handoff, goal_guidance, goal_replies
+from assistant import artifacts, autonomy, goal_comparison_handoff, goal_conversation, goal_guidance, goal_replies
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant
 from assistant.store import Store
@@ -77,6 +77,85 @@ class ComparisonHandoffTests(unittest.TestCase):
         restored = Store(self.root / 'natural' / 'assistant.sqlite3')
         self.assertEqual(restored.answer_context(answer['id']), context)
         self.assertEqual(autonomy.get_goal(restored, self.sid, gid), snapshot)
+
+    def test_latest_visible_table_supersedes_earlier_work_evidence(self):
+        table = '| 方式 | 特點 |\n| --- | --- |\n| 紙本 | 免網路 |\n| 電子 | 可搜尋 |'
+        objective = '沿用本對話最後一張比較表，做一頁摘要。'
+        older = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        older_snapshot = autonomy.get_goal(self.store, self.sid, older)
+        for request in ('把比較問題改成更口語的示例。', '請比較兩種入場方式，但只示範原始格式。'):
+            answer = f'```markdown\n{table}\n```'
+            Assistant(self.store, ScriptedEngine(answer)).ask(self.sid, request)
+            held = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+            snapshot = autonomy.get_goal(self.store, self.sid, held)['conversation_context']
+            self.assertEqual(snapshot[goal_comparison_handoff.BASIS]['answer_id'], self.answer['id'])
+
+        request = '另一個主題，請比較紙本和電子入場表。'
+        newest = Assistant(self.store, ScriptedEngine(table)).ask(self.sid, request)
+        Assistant(self.store, ScriptedEngine('請帶筆記本。')).ask(self.sid, '請提醒我攜帶筆記本。')
+        gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        held = autonomy.get_goal(self.store, self.sid, gid)['conversation_context']
+        self.assertNotIn(goal_comparison_handoff.BASIS, held)
+        reference = held[goal_comparison_handoff.REFERENCE]
+        self.assertEqual((reference['answer_id'], reference['request'], reference['answer']),
+                         (newest['id'], request, table))
+
+        work_goal = autonomy.create_goal(self.store, self.sid, '沿用最近兩件工作的比較表，整理來源。', from_chat=True)
+        self.assertEqual(autonomy.get_goal(self.store, self.sid, work_goal)['conversation_context']
+                         [goal_comparison_handoff.BASIS]['answer_id'], self.answer['id'])
+        run = ScriptedEngine(action('finish', report='紙本免網路，電子可搜尋。'))
+        final = autonomy.run_goal(self.store, self.sid, gid, run)
+        payload = json.loads(run.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertNotIn('verified_work_fields', payload)
+        self.assertEqual(payload['conversation_context'][goal_comparison_handoff.REFERENCE], reference)
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'latest-table')
+        restored = Store(self.root / 'latest-table' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, gid), final)
+        self.assertEqual(autonomy.get_goal(restored, self.sid, older), older_snapshot)
+        with restored.connect() as db:
+            held[goal_comparison_handoff.REFERENCE]['answer'] = table.replace('可搜尋', '可收費')
+            db.execute('UPDATE autonomous_conversations SET context_json=?,context_sha256=? WHERE goal_id=?',
+                       (json.dumps(held, ensure_ascii=False), goal_conversation.digest(held), gid))
+        with self.assertRaisesRegex(ValueError, '比較回答快照'):
+            validate_database(restored.path)
+
+    def test_explicit_answer_number_binds_an_older_completed_comparison(self):
+        table = '| 工序 | 適用時間 |\n| --- | --- |\n| 預約分流 | 開館前 |\n| 現場領號 | 開館後 |'
+        question = '請比較預約分流和現場領號。'
+        ordinary = Assistant(self.store, ScriptedEngine(table)).ask(self.sid, question)
+        for _ in range(goal_conversation.MAX_MESSAGES):
+            self.store.add_message(self.sid, 'user', '補充的是一般行程。')
+
+        first = f'沿用回答 #{self.answer["id"]} 的比較表，整理保存欄位。'
+        old = autonomy.create_goal(self.store, self.sid, first, from_chat=True)
+        loaded = autonomy.get_goal(self.store, self.sid, old)['conversation_context']
+        self.assertNotIn(self.answer['id'], [row['message_id'] for row in loaded['messages']])
+        basis = loaded[goal_comparison_handoff.BASIS]
+        self.assertEqual((basis['answer_id'], basis['version']), (self.answer['id'], 3))
+        self.assertEqual(loaded[goal_comparison_handoff.REFERENCE]['answer_id'], self.answer['id'])
+
+        second = f'沿用回答 #{ordinary["id"]} 的比較表，整理排隊說明。'
+        new = autonomy.create_goal(self.store, self.sid, second, from_chat=True)
+        snapshot = autonomy.get_goal(self.store, self.sid, new)
+        context = snapshot['conversation_context']
+        self.assertNotIn(goal_comparison_handoff.BASIS, context)
+        self.assertEqual(context[goal_comparison_handoff.REFERENCE]['answer'], table)
+        before = autonomy.goals(self.store, self.sid)
+        foreign = self.store.new_session()
+        elsewhere = Assistant(self.store, ScriptedEngine(table)).ask(foreign, question)
+        for request in (first + second, second.replace(str(ordinary['id']), '999999'),
+                        second.replace(f'#{ordinary["id"]}', f'#{elsewhere["id"]}')):
+            with self.subTest(request=request), self.assertRaisesRegex(ValueError, '比較回答|指定的已完成回答'):
+                autonomy.create_goal(self.store, self.sid, request, from_chat=True)
+        self.assertEqual(autonomy.goals(self.store, self.sid), before)
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'pinned')
+        restored = Store(self.root / 'pinned' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, new), snapshot)
+        self.assertEqual(autonomy.get_goal(restored, self.sid, old)['conversation_context'], loaded)
 
     def test_comparison_checks_current_sources_and_historical_file_bytes(self):
         gid = autonomy.create_goal(self.store, self.sid, self.objective, from_chat=True, file_delivery=True)

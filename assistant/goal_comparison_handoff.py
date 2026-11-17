@@ -9,6 +9,12 @@ from .answer_runs import LeaseBusy, lease
 
 
 BASIS = 'comparison_handoff'
+REFERENCE = 'comparison_reference'
+REFERENCE_GUIDANCE = (
+    'comparison_reference 是本目標選定的比較原問與實際回答。以這一份比較為目標對象，'
+    '其他對話中的比較只供歷史回顧。有 verified_work_fields 時依原工作現行來源核對正式欄值。'
+    '一般比較的內容沿用使用者原問的資料及這次選定的回答，保留當時的假設或未確認條件。'
+)
 RECEIPT = 'comparison_source_check'
 GUIDANCE = (
     'verified_work_fields 是從這個目標明確帶入的同對話比較中定位原工作後重查的欄列。'
@@ -21,11 +27,14 @@ GUIDANCE = (
 )
 _RECENT = r'(?:剛才|剛剛|最後(?:一個|一次|一張)?|最近(?:一個|一次|一張)?|上一(?:個|次|張)|前一次)'
 _TABLE = r'(?:的)?(?:正式)?比較(?:結果|表)?'
-_INTENT = re.compile(
-    rf'^(?:請\s*)?(?:把|將|依據|依照|依|以|用|沿用|使用|採用|帶入)\s*'
-    rf'(?:(?:這|此|本|同一)(?:個)?對話(?:中|內|裡)?(?:的)?\s*)?{_RECENT}'
-    rf'(?:[兩二三四五六2-6]件工作(?:的)?)?{_TABLE}'
-    r'(?=$|[，,：:\s（(]|的|為準|作為|整理|帶入|交付|製作|產出|匯出)')
+_HANDOFF = (r'^(?:請\s*)?(?:把|將|依據|依照|依|以|用|沿用|使用|採用|帶入)\s*'
+            r'(?:(?:這|此|本|同一)(?:個)?對話(?:中|內|裡)?(?:的)?\s*)?')
+_END = r'(?=$|[，,：:\s（(]|的|為準|作為|整理|帶入|交付|製作|產出|匯出)'
+_INTENT = re.compile(rf'{_HANDOFF}{_RECENT}(?:(?P<works>[兩二三四五六2-6])件工作(?:的)?)?{_TABLE}{_END}')
+_PINNED = re.compile(rf'{_HANDOFF}回答\s*[#＃]\s*(?P<id>[1-9][0-9]{{0,18}})\s*的?{_TABLE}{_END}')
+_TOPIC_CHANGE = re.compile(r'^(?:另一個(?:主題|話題)|換(?:一下|個)?(?:主題|話題)|換題)[，,。：:]\s*')
+_TABLE_SEPARATOR = re.compile(r':?-{3,}:?')
+_FENCE = re.compile(r'^\s*(?:`{3,}|~{3,})')
 _NARROW = re.compile(r'(?:只|僅)(?:取|用|帶入|沿用|保留|採用)(?:第|這|那|有些|部分|其中|[一二三四五六兩]列)')
 _CANCEL = re.compile(r'^(?:請\s*)?(?:不要|不必|不用|取消|別|先別)\s*(?:沿用|採用|帶入|使用|核對)[^。]{0,80}比較')
 _TEMPLATE = re.compile(r'^(?:範例|示例|例如|格式|(?:問題|提問|問句)(?:請)?(?:用|寫成|格式))')
@@ -41,18 +50,68 @@ def _intent(objective):
     return any(_INTENT.match(clause) for clause in clauses) and not any(_CANCEL.match(clause) for clause in clauses)
 
 
-def _origin(db, sid, answer_id):
-    previous = autonomy_status._latest_completed_answer(db, sid, answer_id + 1)
-    if not previous or previous[0]['id'] != answer_id:
+def _pinned_answer(objective):
+    clauses = [clause for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective) if not inquiry]
+    if any(_CANCEL.match(clause) for clause in clauses):
         return None
-    row, context = previous
+    numbers = {int(match['id']) for clause in clauses if (match := _PINNED.match(clause))}
+    if len(numbers) > 1 or any(number >= 2**63 - 1 for number in numbers):
+        raise ValueError('請指定一個有效的比較回答編號。')
+    return next(iter(numbers), None)
+
+
+def _completed(db, sid, answer_id):
+    previous = autonomy_status._latest_completed_answer(db, sid, answer_id + 1)
+    return previous if previous and previous[0]['id'] == answer_id else None
+
+
+def _work_fields(db, sid, row, context):
     summary = context.get('autonomous_goals')
     fields = summary.get('saved_work_fields') if isinstance(summary, dict) else None
     if not isinstance(fields, list) or not all(isinstance(item, dict) for item in fields):
         return None
-    if not autonomy_status._comparison_origin(db, sid, row, summary, fields):
+    return fields if autonomy_status._comparison_origin(db, sid, row, summary, fields) else None
+
+
+def _origin(db, sid, answer_id):
+    if completed := _completed(db, sid, answer_id):
+        row, context = completed
+        if fields := _work_fields(db, sid, row, context):
+            return row, fields
+    return None
+
+
+def _comparison_request(text):
+    body = autonomy_status._request_body(_TOPIC_CHANGE.sub('', text.strip(), count=1))
+    return goal_chat_fields._COMPARE.match(body) and not goal_chat_fields._CANCEL_LOOKUP.search(body)
+
+
+def _visible_table(text):
+    contiguous = []
+    fenced = False
+    for line in [*text.splitlines(), '']:
+        line = line.strip()
+        if _FENCE.match(line):
+            fenced = not fenced
+        if not fenced and line.startswith('|') and line.endswith('|'):
+            contiguous.append([cell.strip() for cell in line[1:-1].split('|')])
+            continue
+        if len(contiguous) >= 4:
+            header, divider, *rows = contiguous
+            if (len(header) >= 2 and all(header) and len(divider) == len(header)
+                    and all(_TABLE_SEPARATOR.fullmatch(cell) for cell in divider)
+                    and all(len(row) == len(header) and row[0] and any(row[1:]) for row in rows)
+                    and len({goal_chat_fields.label_key(row[0]) for row in rows}) >= 2):
+                return True
+        contiguous.clear()
+    return False
+
+
+def _reference(row):
+    if max(len(row['request']), len(row['content'])) > goal_conversation.PER_MESSAGE:
         return None
-    return row, fields
+    return {'version': 1, 'answer_id': row['id'], 'user_id': row['user_id'],
+            'request': row['request'], 'answer': row['content']}
 
 
 def _indices(objective, fields, *, version):
@@ -81,30 +140,73 @@ def _indices(objective, fields, *, version):
     return chosen
 
 
+def _basis(row, fields, indices, version):
+    return {'version': version, 'answer_id': row['id'], 'indices': indices,
+            'sha256': goal_conversation.digest([row['request'], row['content'], fields])}
+
+
+def _capture_pinned(db, sid, objective, answer_id):
+    if not (completed := _completed(db, sid, answer_id)):
+        raise ValueError('在本對話找不到指定的已完成回答，請核對比較回答編號。')
+    row, context = completed
+    if not (reference := _reference(row)):
+        raise ValueError('指定比較超過可帶入的單則對話長度。')
+    if fields := _work_fields(db, sid, row, context):
+        if not (indices := _indices(objective, fields, version=3)):
+            raise ValueError('指定比較沒有完整對應本次要求的工作與欄位。')
+        return {REFERENCE: reference, BASIS: _basis(row, fields, indices, version=3)}
+    if _comparison_request(row['request']) and _visible_table(row['content']):
+        return {REFERENCE: reference}
+    raise ValueError('指定回答沒有可核對的比較表，請核對回答編號。')
+
+
 def capture(db, sid, objective, messages):
+    if answer_id := _pinned_answer(objective):
+        return _capture_pinned(db, sid, objective, answer_id)
     if not _intent(objective):
-        return None
+        return {}
+    work_comparison = any(match['works'] for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective)
+                          if not inquiry and (match := _INTENT.match(clause)))
     for item in reversed(messages):
-        if item['role'] != 'assistant' or item['content_truncated']:
+        if item['role'] != 'assistant' or not (completed := _completed(db, sid, item['message_id'])):
             continue
-        if not (comparison := _origin(db, sid, item['message_id'])):
-            continue
-        row, fields = comparison
-        if indices := _indices(objective, fields, version=2):
-            return {'version': 2, 'answer_id': row['id'], 'indices': indices,
-                    'sha256': goal_conversation.digest([row['request'], row['content'], fields])}
-        break
-    return None
+        row, context = completed
+        if fields := _work_fields(db, sid, row, context):
+            indices = _indices(objective, fields, version=2)
+            if indices and not item['content_truncated']:
+                return {BASIS: _basis(row, fields, indices, version=2)}
+            return {}
+        if not work_comparison and _comparison_request(row['request']) and _visible_table(row['content']):
+            reference = _reference(row)
+            return {REFERENCE: reference} if reference else {}
+    return {}
+
+
+def validate_reference(db, sid, objective, reference, messages, basis):
+    if (not isinstance(reference, dict) or reference.keys() != {'version', 'answer_id', 'user_id', 'request', 'answer'}
+            or type(reference['version']) is not int or reference['version'] != 1
+            or type(reference['answer_id']) is not int or not 1 <= reference['answer_id'] < 2**63 - 1
+            or type(reference['user_id']) is not int or not 1 <= reference['user_id'] < reference['answer_id']):
+        raise ValueError('比較回答快照格式不符。')
+    answer_id = reference['answer_id']
+    if pinned := _pinned_answer(objective):
+        matched = pinned == answer_id and _capture_pinned(db, sid, objective, pinned) == {
+            REFERENCE: reference, **({BASIS: basis} if basis is not None else {})
+        }
+    else:
+        matched = basis is None and capture(db, sid, objective, messages) == {REFERENCE: reference}
+    if not matched:
+        raise ValueError('比較回答快照與本次目標選定的來源不符。')
 
 
 def selected(db, sid, objective, basis):
     if (not isinstance(basis, dict) or set(basis) - {'version'} != {'answer_id', 'indices', 'sha256'}
-            or ('version' in basis and (type(basis['version']) is not int or basis['version'] != 2))
+            or ('version' in basis and (type(basis['version']) is not int or basis['version'] not in (2, 3)))
             or type(basis['answer_id']) is not int or not 1 <= basis['answer_id'] < 2**63 - 1
             or not isinstance(basis['indices'], list) or not 1 <= len(basis['indices']) <= 6
             or any(type(index) is not int or not 0 <= index < 6 for index in basis['indices'])
             or not isinstance(basis['sha256'], str) or not _HEX.fullmatch(basis['sha256'])
-            or not _intent(objective)):
+            or not (_pinned_answer(objective) == basis['answer_id'] if basis.get('version') == 3 else _intent(objective))):
         raise ValueError('比較交接的保存範圍不符。')
     original = _origin(db, sid, basis['answer_id'])
     if not original:

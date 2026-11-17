@@ -106,7 +106,7 @@ def show_context(parent, store, message_id):
             window.destroy()
             messagebox.showerror('本機轉錄紀錄無法核對',str(exc),parent=parent)
             return
-    window.title('本機文件計算紀錄' if document_math else '本機條件核對紀錄' if evidence else '本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else "本次參考資料 · 送出時快照")
+    window.title('本機文件計算紀錄' if document_math else '本機條件核對紀錄' if evidence else '本機逐字轉錄紀錄' if transcribed else '本機精確計算紀錄' if calculated else '本機記憶操作紀錄' if local else f"本次參考資料 · 回答 #{message_id}")
     window.geometry("820x640")
     window.minsize(600, 420)
     notice = ('這是本機操作完成時的紀錄，沒有呼叫模型。後續編輯不會改寫這份歷史紀錄。' if local or calculated or transcribed or evidence or document_math else
