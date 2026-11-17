@@ -5,7 +5,7 @@ import json
 import re
 
 from . import artifact_names, delivery_preference, goal_artifact_fields, goal_guidance_sources, goal_reply_sources
-from . import goal_sources, goal_stages
+from . import goal_artifact_totals, goal_sources, goal_stages
 
 
 MARK = 'artifact_revision_question'
@@ -14,6 +14,10 @@ GUIDANCE = (
     'superseded_artifacts 是使用者已正式更正後留下的舊檔。依現行更正更新受影響欄位，'
     '可沿用其他仍適用的來源及結果。把新版存為目前指定的檔名，再交付新版。'
     '舊檔保留供回顧，禁止再次交付或用另一個檔名交付相同舊內容。'
+    '若有 derived_revisions，依 input_revisions 的更正及原查讀核對該品項合計，保留其他品項。'
+    'derived_revisions 的舊值與新值以 value_unit 表示，檔案沿用使用者指定的單位；該列須引 required_corrections。'
+    '若沒有要求逐項核對算式，已定位來源的單列合計可直接用 calculate 的 product 重算。'
+    '不必為這筆乘法另送 operands。'
 )
 _CORRECTION = re.compile(r'^(?:請\s*)?正式(?:更正|撤回|改用|改為)\s*\S')
 _CURRENT_ONLY = re.compile(
@@ -95,7 +99,7 @@ def _record(step, source):
             'write_sha256': goal_stages.digest(step), 'citation': source['citation'], 'source_sha256': source['sha256']}
 
 
-def superseded(goal, *, fields=True):
+def superseded(goal, *, fields=True, derived=True):
     result = {}
     for note in goal.get('guidance_sources', ()):
         prior = goal['steps'][:note['steps_seen']]
@@ -117,6 +121,12 @@ def superseded(goal, *, fields=True):
             latest = max(revisions, key=lambda row: guidance[row['citation']]['notes_start'])
             record = result.setdefault(key, _record(original_writes[key], guidance[latest['citation']]))
             record['field_revisions'] = revisions
+        if derived:
+            for key, revisions in goal_artifact_totals.provenance(goal, original_writes).items():
+                latest = max((item for revision in revisions for item in revision['input_revisions']),
+                             key=lambda row: guidance[row['citation']]['notes_start'])
+                record = result.setdefault(key, _record(original_writes[key], guidance[latest['citation']]))
+                record['derived_revisions'] = revisions
     return result
 
 
@@ -125,7 +135,8 @@ def question(goal, expected, stale, inventory):
             or inventory.keys() != _first_writes(goal['steps']).keys()):
         return None
     draft = stale[expected['filename'].casefold()]
-    return {'version': 2 if draft.get('field_revisions') else 1, 'requirement': expected, 'draft': draft,
+    version = 3 if 'derived_revisions' in draft else 2 if 'field_revisions' in draft else 1
+    return {'version': version, 'requirement': expected, 'draft': draft,
             'suggested': artifact_names._suggest(draft['name'], inventory), 'notes_end': len(goal['notes'])}
 
 
@@ -151,15 +162,20 @@ def check_action(stale, inventory, action, steps):
         candidates = [(name, written[name]['action']['args']['content']) for name in names & written.keys()]
     if blocked:
         raise ValueError('此檔案內容在正式更正之前保存，請保留舊檔並用現行資料另存後交付。')
-    revisions = [row for file in stale.values() for row in file.get('field_revisions', ())]
+    revisions = [row for file in stale.values() for row in _revisions(file)]
     if revisions and any(name.endswith('.csv') and goal_artifact_fields.has_wrong_current_value(content, revisions)
                          for name, content in candidates):
         raise ValueError('CSV 仍含未更新的已更正欄值，請依更正來源重新核對。')
 
 
+def _revisions(file):
+    return [*file.get('field_revisions', ()), *file.get('derived_revisions', ())]
+
+
 def delivery_check(goal, stale):
-    reviewed = [stale[key] for key in sorted(stale) if stale[key].get('field_revisions')]
-    return {'version': 1, 'notes_end': len(goal['notes']), 'superseded': reviewed} if reviewed else None
+    reviewed = [stale[key] for key in sorted(stale) if _revisions(stale[key])]
+    version = 2 if any('derived_revisions' in row for row in reviewed) else 1
+    return {'version': version, 'notes_end': len(goal['notes']), 'superseded': reviewed} if reviewed else None
 
 
 def _inventory(db, gid):
@@ -204,7 +220,9 @@ def validate_saved(db, *, replies_present, guidance_present):
                     or not delivery_preference.enabled_before(db, gid, end)):
                 raise ValueError('改版檔名問題或交付核對缺少有效來源。')
             context = _context_at({**goal, 'sources': history.get(step['sequence'], sources)}, end, steps[:index])
-            stale = superseded(context, fields=not is_question or proof.get('version') == 2)
+            version = proof.get('version')
+            stale = superseded(context, fields=not is_question or version in (2, 3),
+                               derived=version == (3 if is_question else 2))
             if not is_question:
                 checked_delivery = delivery_check(context, stale)
                 if step['action']['tool'] != 'deliver' or checked_delivery is None or checked_delivery != proof:
@@ -212,7 +230,7 @@ def validate_saved(db, *, replies_present, guidance_present):
                 check_action(stale, inventory, step['action'], context['steps'])
                 for draft in checked_delivery['superseded']:
                     _verify_file(inventory, steps, draft)
-                    goal_artifact_fields.verify_documents(draft['field_revisions'], documents)
+                    goal_artifact_fields.verify_documents(_revisions(draft), documents)
                 delivered = step['observation'].get('artifacts', ())
                 names = [name.casefold() for name in step['action']['args']['filenames']]
                 if (names != [item['name'].casefold() for item in delivered]
@@ -226,6 +244,6 @@ def validate_saved(db, *, replies_present, guidance_present):
                     or (step['action'], step['observation']) != question_step(checked, scope)):
                 raise ValueError('改版檔名問題與原檔或更正來源不符。')
             _verify_file(inventory, steps, checked['draft'])
-            goal_artifact_fields.verify_documents(checked['draft'].get('field_revisions', ()), documents)
+            goal_artifact_fields.verify_documents(_revisions(checked['draft']), documents)
             if reply := next((item for item in replies if item['ask_sequence'] == step['sequence']), None):
                 choose(steps[:index + 1], checked, reply['answer'])

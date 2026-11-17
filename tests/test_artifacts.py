@@ -186,6 +186,90 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '更正後的交付核對'):
             validate_database(restored.path)
 
+    def test_weight_total_revision_replays_matching_product_and_keeps_equal_independent_total(self):
+        source = self.root / 'lights.txt'
+        source.write_text('裝車核定\n河岸燈架｜4 件｜每件 3 公斤\n丘上燈架｜4 件｜每件 3 公斤\n', encoding='utf-8')
+        doc = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '分別提供兩種燈架的合計重量 CSV。', file_delivery=True)
+        head = '設備,合計公斤,來源\n'
+        river = head + f'河岸燈架,12,[D{doc}:L2]\n'
+        hill = head + f'丘上燈架,12,[D{doc}:L3]\n'
+        formula = {'operation': 'sum', 'values': [{'operation': 'product', 'values': ['4', '3']}] * 2}
+        initial = a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=doc, start_line=2, end_line=3),
+            action('calculate_expression', expression=formula),
+            action('write_artifact', filename='river.csv', content=river),
+            action('write_artifact', filename='hill.csv', content=hill)), max_steps=4)
+
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '正式更正「河岸燈架」的「每件重量」為 4 公斤，件數不變。',
+                           expected_fingerprint=view['fingerprint'])
+        output = head + f'河岸燈架,16,[D{doc}:L2] [更正#1]\n'
+        replay = ScriptedEngine(action('deliver', filenames=['river.csv', 'hill.csv'], report='舊檔'),
+                                action('write_artifact', filename='river-new.csv', content=river.replace(',12,', ',12.0,')),
+                                action('write_artifact', filename='river-new.csv', content=output),
+                                action('deliver', filenames=['river-new.csv', 'hill.csv'], report='現行清單'))
+        result = a.run_goal(self.store, self.sid, gid, replay, max_steps=4)
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in result['steps'][-4:]],
+                         ['invalid', 'invalid', 'write_artifact', 'deliver'])
+        self.assertEqual(result['steps'][:4], initial['steps'])
+        receipt = result['steps'][-1]['observation'][goal_artifact_revision.DELIVERY_MARK]
+        self.assertEqual(receipt['version'], 2)
+        old, = receipt['superseded']
+        proof, = old['derived_revisions']
+        self.assertEqual(old['name'], 'river.csv')
+        self.assertEqual((proof['entity'], proof['previous_value'], proof['value'], proof['value_unit']),
+                         ('河岸燈架', '12000', '16000', '公克'))
+        self.assertEqual((proof['previous_sources'][0]['citation'], proof['calculation']['step']), (f'[D{doc}:L2]', 2))
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'derived')
+        restored = Store(self.root / 'derived' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), result)
+        f.rebuild(restored, self.sid, gid)
+        folder = f.directory(restored, gid)
+        for name, content in [('river.csv', river), ('river-new.csv', output), ('hill.csv', hill)]:
+            self.assertEqual((folder / name).read_bytes(), content.encode())
+        with restored.connect() as db:
+            observation = result['steps'][-1]['observation'].copy()
+            observation[goal_artifact_revision.DELIVERY_MARK]['superseded'][0]['derived_revisions'][0]['calculation']['path'] = '/values/1'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), gid, len(result['steps'])))
+        with self.assertRaisesRegex(ValueError, '更正後的交付核對'):
+            validate_database(restored.path)
+
+    def test_weight_total_requires_saved_product_and_tracks_an_equal_total_after_two_changes(self):
+        source = self.root / 'weights-total.txt'
+        source.write_text('備材\n南門掛架｜4 件｜每件 3 公斤\n', encoding='utf-8')
+        doc = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '整理南門掛架裝車重量。', file_delivery=True)
+        head = '品項,合計公斤,來源\n'
+        value = head + f'南門掛架,12,[D{doc}:L2]\n'
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=doc, start_line=2, end_line=2),
+            action('calculate', operation='sum', values=['5', '7']),
+            action('write_artifact', filename='unbound.csv', content=value),
+            action('calculate', operation='product', values=['4', '3']),
+            action('write_artifact', filename='computed.csv', content=value)), max_steps=5)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid,
+                           '正式更正「南門掛架」的「件數」為 8 件。正式更正「南門掛架」的「每件重量」為 1.5 公斤。',
+                           expected_fingerprint=view['fingerprint'])
+        revised = value.replace(f'[D{doc}:L2]', f'[D{doc}:L2] [更正#1]')
+        engine = ScriptedEngine(action('write_artifact', filename='old-source.csv', content=value.replace(',12,', ',12.00,')),
+                                action('write_artifact', filename='updated.csv', content=revised),
+                                action('deliver', filenames=['updated.csv'], report='引用更正後的合計'))
+        result = a.run_goal(self.store, self.sid, gid, engine, max_steps=3)
+        self.assertEqual(result['status'], 'report_ready')
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        old, = payload['superseded_artifacts']
+        self.assertEqual(old['name'], 'computed.csv')
+        proof, = old['derived_revisions']
+        self.assertEqual((proof['previous_value'], proof['value']), ('12000', '12000'))
+        self.assertEqual([row['field'] for row in proof['input_revisions']], ['件數', '每件重量'])
+        self.assertEqual(result['steps'][-3]['action']['tool'], 'invalid')
+        self.assertEqual(proof['required_corrections'], ['[更正#1]'])
+
     def test_csv_rejects_invalid_table_before_reserving_an_artifact(self):
         for body in ('A,A\n1,2\n', 'A, \n1,2\n', 'A,B\n1\n', 'A,B\n"x,2\n', 'A,B\n1,2,3\n'):
             with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'CSV'):

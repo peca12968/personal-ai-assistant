@@ -109,10 +109,10 @@ def _csv_cells(content, edits):
             columns = [index for index, (field, _) in enumerate(fields) if field == scope]
             if len(columns) == 1 and correction and sum(row[index].strip() == entity for index in ids) == 1:
                 index = columns[0]
-                yield key, headers[index], row, _value(row[index], scope[0], fields[index][1]), correction
+                yield key, headers[index], row, _value(row[index], scope[0], fields[index][1]), correction, row[index]
 
 
-def _document_proof(row, write_step, steps, sources, key, value):
+def _cited_lines(row, write_step, steps, sources):
     matches = {tuple(map(int, found.groups())) for cell in row for found in _CITATION.finditer(cell)}
     validated = {row['citation'] for row in write_step['observation'].get('citation_checks', ())
                  if row.get('range_valid') is True}
@@ -121,11 +121,13 @@ def _document_proof(row, write_step, steps, sources, key, value):
     if not wanted:
         return []
     _, found = source_decision.gather_lines(wanted, steps, sources)
-    applicable = []
-    for (doc, line), (step, digest, text) in found.items():
-        if (original := _source_value(text, *key)) is not None:
-            applicable.append((original, {'citation': f'[D{doc}:L{line}]', 'read_step': step,
-                                          'source_sha256': digest, 'line': text}))
+    return [{'citation': f'[D{doc}:L{line}]', 'read_step': step, 'source_sha256': digest, 'line': text}
+            for (doc, line), (step, digest, text) in found.items()]
+
+
+def _document_proof(row, write_step, steps, sources, key, value):
+    applicable = [(original, proof) for proof in _cited_lines(row, write_step, steps, sources)
+                  if (original := _source_value(proof['line'], *key)) is not None]
     if not applicable or len({original for original, _ in applicable}) != 1:
         return []
     return [proof for original, proof in applicable if original == value]
@@ -157,7 +159,7 @@ def provenance(goal, writes):
         if not current:
             continue
         prior = _latest(note for note in notes if note['steps_seen'] < sequence)
-        for scope, column, row, value, correction in _csv_cells(action['content'], current):
+        for scope, column, row, value, correction, _ in _csv_cells(action['content'], current):
             if value is None or str(value) == correction['value']:
                 continue
             proof = _document_proof(row, step, goal['steps'][:sequence - 1], goal['sources'], scope, value)
@@ -172,7 +174,8 @@ def provenance(goal, writes):
 def has_wrong_current_value(content, records):
     corrections = {(row['entity'], _field(row['field'])[0]): row for row in records}
     return any(str(value) != correction['value']
-               for _, _, _, value, correction in _csv_cells(content, corrections))
+               or any(not any(citation in cell for cell in row) for citation in correction.get('required_corrections', ()))
+               for _, _, row, value, correction, _ in _csv_cells(content, corrections))
 
 
 def verify_documents(revisions, documents):
