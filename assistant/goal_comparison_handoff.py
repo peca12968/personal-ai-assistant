@@ -28,6 +28,7 @@ _INTENT = re.compile(
     r'(?=$|[，,：:\s（(]|的|為準|作為|整理|帶入|交付|製作|產出|匯出)')
 _NARROW = re.compile(r'(?:只|僅)(?:取|用|帶入|沿用|保留|採用)(?:第|這|那|有些|部分|其中|[一二三四五六兩]列)')
 _CANCEL = re.compile(r'^(?:請\s*)?(?:不要|不必|不用|取消|別|先別)\s*(?:沿用|採用|帶入|使用|核對)[^。]{0,80}比較')
+_TEMPLATE = re.compile(r'^(?:範例|示例|例如|格式|(?:問題|提問|問句)(?:請)?(?:用|寫成|格式))')
 _SOURCE = re.compile(r'\[(補充|更正)#([1-9][0-9]?)\]')
 _HEX = re.compile(r'[0-9a-f]{64}')
 _GOAL_ID = re.compile(r'[0-9a-f]{32}')
@@ -54,9 +55,12 @@ def _origin(db, sid, answer_id):
     return row, fields
 
 
-def _indices(objective, fields):
+def _indices(objective, fields, *, version):
+    clauses = [objective] if version == 1 else [
+        clause for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective)
+        if not inquiry and not _TEMPLATE.match(clause)]
     wanted = [(match['work'][1:-1].strip(), match['field'][1:-1].strip())
-              for match in goal_chat_fields._WORK_PAIR.finditer(objective)]
+              for clause in clauses for match in goal_chat_fields._WORK_PAIR.finditer(clause)]
     if not wanted:
         return list(range(len(fields))) if not _NARROW.search(objective) else None
     chosen = []
@@ -86,15 +90,16 @@ def capture(db, sid, objective, messages):
         if not (comparison := _origin(db, sid, item['message_id'])):
             continue
         row, fields = comparison
-        if indices := _indices(objective, fields):
-            return {'answer_id': row['id'], 'indices': indices,
+        if indices := _indices(objective, fields, version=2):
+            return {'version': 2, 'answer_id': row['id'], 'indices': indices,
                     'sha256': goal_conversation.digest([row['request'], row['content'], fields])}
         break
     return None
 
 
 def selected(db, sid, objective, basis):
-    if (not isinstance(basis, dict) or basis.keys() != {'answer_id', 'indices', 'sha256'}
+    if (not isinstance(basis, dict) or set(basis) - {'version'} != {'answer_id', 'indices', 'sha256'}
+            or ('version' in basis and (type(basis['version']) is not int or basis['version'] != 2))
             or type(basis['answer_id']) is not int or not 1 <= basis['answer_id'] < 2**63 - 1
             or not isinstance(basis['indices'], list) or not 1 <= len(basis['indices']) <= 6
             or any(type(index) is not int or not 0 <= index < 6 for index in basis['indices'])
@@ -106,7 +111,7 @@ def selected(db, sid, objective, basis):
         raise ValueError('比較交接缺少本對話保存的原比較。')
     row, fields = original
     if (goal_conversation.digest([row['request'], row['content'], fields]) != basis['sha256']
-            or _indices(objective, fields) != basis['indices']):
+            or _indices(objective, fields, version=basis.get('version', 1)) != basis['indices']):
         raise ValueError('比較交接的原始欄位或保存指紋不符。')
     return [fields[index] for index in basis['indices']]
 

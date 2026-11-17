@@ -38,7 +38,7 @@ from .document_metadata import metadata as document_metadata
 from . import work_plan
 from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
-from . import goal_comparison_handoff, goal_conversation
+from . import goal_comparison_handoff, goal_comparison_resume, goal_conversation
 from . import goal_required_reads, goal_required_supplement
 from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -197,6 +197,13 @@ def get_goal(store, sid, gid, *, include_reply_positions=False, include_recheck_
         result['steps'] = [{'sequence': r['sequence'], 'action': json.loads(r['action_json']),
                             'observation': json.loads(r['observation_json'])}
                            for r in db.execute('SELECT * FROM autonomous_steps WHERE goal_id=? ORDER BY sequence', (gid,))]
+        basis = (result['conversation_context'] or {}).get(goal_comparison_handoff.BASIS)
+        if basis:
+            originals = goal_comparison_handoff.selected(db, sid, result['objective'], basis)
+            if waiting := goal_comparison_resume.waiting_target(result, originals):
+                result['comparison_waiting'] = waiting
+            if resumed := goal_comparison_resume.recorded(db, result, originals):
+                result['comparison_resolved_questions'] = resumed
         declared = source_decision.read_scope(db, gid, result['objective'])
         if declared:
             result['decision_rule_scope'] = {'ranges': declared, 'missing_ranges': source_decision.missing_ranges(
@@ -542,11 +549,13 @@ def run_goal(store, sid, gid, engine, *, max_steps=6, cancel=None, progress=None
 def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure_limit=None):
     # Caller holds the same goal lease for the entire operation.
     goal = get_goal(store, sid, gid)
-    if goal['status'] in ('report_ready', 'needs_input'):
+    waiting = goal['status'] == 'needs_input'
+    if goal['status'] == 'report_ready' or (waiting and not goal.get('comparison_waiting')):
         return goal, goal['status']
     documents = _goal_documents(store, sid, goal, include_content=True)
     if signature(documents) != goal['sources']:
-        update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
+        update(store, gid, 'needs_input' if waiting else 'paused', question=goal['question'] if waiting else '',
+               notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
         return get_goal(store, sid, gid), 'sources_changed'
     originals = None
     basis = (goal['conversation_context'] or {}).get(goal_comparison_handoff.BASIS)
@@ -554,6 +563,10 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
         with store.connect() as db:
             db.execute('BEGIN')
             originals = goal_comparison_handoff.selected(db, sid, goal['objective'], basis)
+    if waiting:
+        if not goal_comparison_resume.recheck(store, sid, gid, goal, originals, cancel):
+            return goal, 'needs_input'
+        goal = get_goal(store, sid, gid)
     profile = get_profile(store)
     update(store, gid, 'running')
     catalog = [{**source, 'line_count': len(document['content'].splitlines()), **document_metadata(document)}
@@ -626,6 +639,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                     db.execute('BEGIN')
                     comparison = goal_comparison_handoff.evidence(db, sid, originals)
                 payload['verified_work_fields'] = comparison['rows']
+                if resolved := goal.get('comparison_resolved_questions'):
+                    payload['comparison_resolved_questions'] = resolved
                 for step in payload['steps']:
                     step['observation'].pop(goal_comparison_handoff.RECEIPT, None)
             recheck_evidence = goal.get('recheck_evidence')
@@ -735,6 +750,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
                 ('\n' + goal_comparison_handoff.GUIDANCE if comparison else '') +
+                ('\n' + goal_comparison_resume.GUIDANCE if payload.get('comparison_resolved_questions') else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
                 ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +

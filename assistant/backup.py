@@ -43,6 +43,7 @@ TABLES = {
     'autonomous_quantity_scopes': {'goal_id', 'scope_json'},
     'autonomous_reply_sources': {'goal_id', 'ask_sequence', 'notes_start', 'answer'},
     'autonomous_guidance_sources': {'goal_id', 'number', 'notes_start', 'steps_seen', 'stamp', 'content'},
+    'autonomous_comparison_resumes': {'goal_id', 'ask_sequence', 'receipt_json', 'receipt_sha256'},
     'autonomous_question_withdrawals': {'goal_id', 'ask_sequence', 'guidance_number', 'question_sha256', 'guidance_sha256'},
     'autonomous_partial_rechecks': {'goal_id', 'ask_sequence', 'guidance_number', 'receipt_json', 'receipt_sha256'},
     'autonomous_handoffs': {'goal_id', 'parent_goal_id', 'context_json', 'created_at'},
@@ -95,6 +96,10 @@ def validate_database(path):
             raise ValueError('數量採用範圍資料表不完整。')
         if actual_tables & {'autonomous_handoffs', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources'} and 'autonomous_goals' not in actual_tables:
             raise ValueError('自主階段資料表不完整。')
+        comparison_resumes = ('autonomous_comparison_resumes' in actual_tables
+                              and db.execute('SELECT 1 FROM autonomous_comparison_resumes LIMIT 1').fetchone())
+        if comparison_resumes and not {'autonomous_steps', 'autonomous_conversations'} <= actual_tables:
+            raise ValueError('比較接續缺少原工作的資料表。')
         if actual_tables & {'autonomous_question_withdrawals', 'autonomous_partial_rechecks'} and 'autonomous_guidance_sources' not in actual_tables:
             raise ValueError('待答狀態的更正來源資料表不完整。')
         delivery_tables = {'autonomous_delivery', 'autonomous_artifacts'}
@@ -111,7 +116,7 @@ def validate_database(path):
             raise ValueError('記憶草稿資料表不完整。')
         if 'memory_replacements' in actual_tables and not memory_tables <= actual_tables:
             raise ValueError('記憶更新來源資料表不完整。')
-        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals', 'autonomous_partial_rechecks'} - delivery_tables - delivery_changes - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
+        if not set(TABLES) - draft_tables - memory_tables - {'answer_deliveries', 'learning_examples', 'chat_images', 'feedback_versions', 'memory_replacements', 'review_reminders', 'memory_aliases'} - {'task_runs', 'memory_sequence', 'local_memory_messages', 'answer_runs', 'autonomous_goals', 'autonomous_steps', 'autonomous_decision_scopes', 'autonomous_handoffs', 'companion_profile', 'goal_reviews', 'autonomous_conversations', 'autonomous_continuous_runs', 'autonomous_conversation_history', 'autonomous_reply_sources', 'autonomous_guidance_sources', 'autonomous_question_withdrawals', 'autonomous_partial_rechecks', 'autonomous_comparison_resumes'} - delivery_tables - delivery_changes - csv_tables - quantity_scope_tables <= actual_tables <= set(TABLES):
             raise ValueError('資料庫格式不相容，請使用建立備份時的相容版本。')
         for name, columns in TABLES.items():
             if name not in actual_tables:
@@ -155,6 +160,10 @@ def validate_database(path):
                     basis = value[goal_comparison_handoff.BASIS]
                     originals = goal_comparison_handoff.selected(db, sid, objective, basis)
                     goal_comparison_handoff.validate_steps(db, gid, sid, objective, originals)
+        if comparison_resumes:
+            from .goal_comparison_resume import validate_saved as validate_comparison_resumes
+            validate_comparison_resumes(db, replies_present='autonomous_reply_sources' in actual_tables,
+                                        withdrawals_present='autonomous_question_withdrawals' in actual_tables)
         if 'autonomous_conversation_history' in actual_tables:
             from .conversation_history import validate_saved
             validate_saved(db)

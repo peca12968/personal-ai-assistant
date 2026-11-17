@@ -58,7 +58,7 @@ def run_continuous(store, sid, gid, engine, *, max_steps=24, max_seconds=1800,
         goal = autonomy.get_goal(store, sid, gid)  # Validate session before mutation.
         # Only the acquired exclusive lease proves that the earlier local owner exited.
         recover_locked(store, gid, len(goal['steps']))
-        if goal['status'] in ('report_ready', 'needs_input'):
+        if goal['status'] == 'report_ready' or (goal['status'] == 'needs_input' and not goal.get('comparison_waiting')):
             return autonomy.get_goal(store, sid, gid)
         rid = uuid.uuid4().hex
         with store.connect() as db:

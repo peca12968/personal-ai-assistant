@@ -313,7 +313,10 @@ class AutonomousWindow:
             goal = autonomy.get_goal(self.store, self.sid, self.selected_id(), include_reply_positions=True)
         except ValueError:
             return
-        self.start.configure(state='disabled' if self.busy or goal['status'] in ('report_ready', 'needs_input') else 'normal')
+        comparison_waiting = goal.get('comparison_waiting')
+        unavailable = goal['status'] == 'report_ready' or (goal['status'] == 'needs_input' and not comparison_waiting)
+        self.start.configure(state='disabled' if self.busy or unavailable else 'normal',
+                             text='重查原工作並接續' if comparison_waiting else '開始／接續自主工作')
         self.continue_start.configure(state=self.start['state'])
         self.reply.configure(state='normal' if not self.busy and goal['status'] == 'needs_input' else 'disabled')
         if goal.get('can_recheck_partial'):
@@ -340,6 +343,9 @@ class AutonomousWindow:
         self.csv_results.configure(state='normal' if goal['csv_plans'] else 'disabled')
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
+        if checks := goal.get('comparison_resolved_questions'):
+            lines += [f"原工作已補足第 {item['ask_sequence']} 步的待答 · {item['work']} · {item['field']}"
+                      for item in checks]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result'],
                       '可按「補充／更正此目標」查看、指定或更正採用原行。' if conflict_report
