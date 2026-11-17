@@ -452,10 +452,26 @@ def goal_context(store, sid, question='', *, before=None):
         return _goal_context(db, sid, question, before)
 
 
+def _comparison_fields(db, sid, pairs):
+    fields = []
+    for name, field in pairs:
+        matches = _named_ids(db, sid, name)
+        if len(matches) != 1:
+            fields.append({'work': name, 'field': field, 'status': 'ambiguous_work' if matches else 'not_found'})
+            continue
+        gid, = matches
+        objective, step_count = db.execute('''SELECT g.objective,
+            (SELECT COUNT(*) FROM autonomous_steps s WHERE s.goal_id=g.id)
+            FROM autonomous_goals g WHERE g.session_id=? AND g.id=?''', (sid, gid)).fetchone()
+        fields.append({'work': name, **goal_chat_fields.project(db, gid, objective, step_count, field)})
+    return fields
+
+
 def verify_reference(db, sid, question, state, before):
     current = _goal_context(db, sid, question, before)
-    if 'saved_field' in state and current.get('saved_field') != state['saved_field']:
-        raise ValueError('工作欄位的保存來源已變更，請重新查詢。')
+    for key in ('saved_field', 'saved_work_fields'):
+        if key in state and current.get(key) != state[key]:
+            raise ValueError('工作欄位的保存來源已變更，請重新查詢。')
     if state.get('reference', {}).get('selection') and current != state:
         raise ValueError('候選工作或目前狀態已變更，請重新查詢後再選擇。')
 
@@ -464,6 +480,8 @@ def _goal_context(db, sid, question, before):
     # The engine also imports this module while autonomy is being initialized.
     from .autonomy import signature
     from .goal_review import next_action
+    if pairs := goal_chat_fields.requested_work_fields(_request_body(question)):
+        return {'goals': [], 'limited': False, 'saved_work_fields': _comparison_fields(db, sid, pairs)}
     name, natural = _status_request(question)
     matches = None
     reference = None

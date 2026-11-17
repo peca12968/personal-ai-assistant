@@ -607,6 +607,80 @@ class GoalChatStatusTests(unittest.TestCase):
         self.assertNotIn('value', field)
         self.assertEqual(restored.answer_context(answer['id'])['autonomous_goals']['saved_field']['value'], 'W-20')
 
+    def test_compare_saved_work_fields_preserves_independent_sources_and_unknown_rows(self):
+        first_title = '栗原 N4 的轉場驗收'
+        second_title = '白棠 A8 的配送退件'
+        first = a.create_goal(self.store, self.sid, first_title)
+        second = a.create_goal(self.store, self.sid, second_title)
+        decoy = a.create_goal(self.store, self.sid, second_title.replace('A8', 'A80'))
+        for goal, ask, reply in ((first, '請提供第一站所用的覆核人。', '第一站的覆核人確定為許楠。'),
+                                 (second, '請提供轉運箱代號。', None),
+                                 (decoy, '請提供轉運箱代號。', 'DECOY-27')):
+            a.run_goal(self.store, self.sid, goal, ScriptedEngine(action('ask', question=ask)))
+            if reply:
+                view = goal_replies.snapshot(self.store, self.sid, goal)
+                goal_replies.save(self.store, self.sid, goal, reply, expected_fingerprint=view['fingerprint'])
+        query = (f'請比較「{first_title}」的「第一站的覆核人」與「{second_title}」的「轉運箱代號」'
+                 '最後已確認的欄值。每件一行，找不到就填待確認。')
+        view = goal_guidance.snapshot(self.store, self.sid, second)
+        goal_guidance.save(self.store, self.sid, second, '提議：轉運箱代號改為 DRAFT-18。',
+                           expected_fingerprint=view['fingerprint'])
+
+        app = Assistant(self.store, ScriptedEngine('許楠\n待確認'))
+        prepared = app.prepare_context(self.sid, query)
+        partial = prepared['autonomous_goals']
+        self.assertEqual(partial['goals'], [])
+        self.assertEqual([(row['goal_id'], row['status']) for row in partial['saved_work_fields']],
+                         [(first, 'confirmed'), (second, 'unverified')])
+        self.assertEqual(partial['saved_work_fields'][0]['citation'], '[補充#1]')
+        self.assertNotIn('value', partial['saved_work_fields'][1])
+        self.assertNotIn('DRAFT-18', json.dumps(partial, ensure_ascii=False))
+        self.assertNotIn('DECOY-27', json.dumps(partial, ensure_ascii=False))
+        before = [a.get_goal(self.store, self.sid, goal) for goal in (first, second, decoy)]
+        answer = app.ask(self.sid, query)
+        self.assertIsNone(chat_goal_target(self.store, self.sid, answer['id']))
+        historic = self.store.answer_context(answer['id'])
+        self.assertEqual(historic['autonomous_goals'], partial)
+        self.assertEqual([a.get_goal(self.store, self.sid, goal) for goal in (first, second, decoy)], before)
+
+        view = goal_guidance.snapshot(self.store, self.sid, second)
+        goal_guidance.save(self.store, self.sid, second, '轉運箱代號正式改為 BOX-44。',
+                           expected_fingerprint=view['fingerprint'])
+        with self.assertRaisesRegex(ValueError, '保存來源已變更'):
+            answer_runs.begin(self.store, self.sid, 'b' * 32, query, prepared)
+        current = goal_context(self.store, self.sid, query)['saved_work_fields']
+        self.assertEqual([(row['value'], row['citation']) for row in current], [('許楠', '[補充#1]'), ('BOX-44', '[更正#2]')])
+        archive = create_backup(self.store.path)
+        restored_dir = self.root/'compare'
+        restore_backup(archive['path'], restored_dir)
+        restored = Store(restored_dir/'assistant.sqlite3')
+        self.assertEqual(goal_context(restored, self.sid, query)['saved_work_fields'], current)
+        self.assertEqual(restored.answer_context(answer['id']), historic)
+
+    def test_compare_saved_work_fields_keeps_requested_order_and_isolates_each_match(self):
+        known = a.create_goal(self.store, self.sid, '青嶼 M8 場地領件')
+        a.run_goal(self.store, self.sid, known, ScriptedEngine(action('ask', question='請提供確認代號。')))
+        reply = goal_replies.snapshot(self.store, self.sid, known)
+        goal_replies.save(self.store, self.sid, known, 'K-19', expected_fingerprint=reply['fingerprint'])
+        for _ in range(2):
+            a.create_goal(self.store, self.sid, '河紋晚場退件')
+        other_session = self.store.new_session()
+        a.create_goal(self.store, other_session, '雨泉外借交接')
+
+        request = ('對了，請並排核對以下三件工作的最後正式確認值。\n'
+                   '『雨泉外借交接』的『領用人』。\n'
+                   '「青嶼 M8 場地領件」的「確認代號」。\n'
+                   '「河紋晚場退件」的「退件處」。\n每件一行。')
+        comparison = goal_context(self.store, self.sid, request)['saved_work_fields']
+        self.assertEqual([row['status'] for row in comparison], ['not_found', 'confirmed', 'ambiguous_work'])
+        self.assertEqual(comparison[1]['value'], 'K-19')
+        self.assertNotIn('goal_id', comparison[0])
+        self.assertNotIn('goal_id', comparison[2])
+        for prompt in ('如果要' + request, '範例：' + request, request.replace('三件', '兩件'),
+                       request.replace('每件一行。', '每件一行。取消查詢。'),
+                       request.replace('「河紋晚場退件」的「退件處」。', '「河紋晚場退件」。')):
+            self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, prompt))
+
     def test_saved_field_rechecks_its_source_before_recording_chat(self):
         title = '月台送件'
         gid = a.create_goal(self.store, self.sid, title)

@@ -95,7 +95,7 @@ def begin(store, sid, run_id, question, context, retry=None, draft=None):
             from .image_inputs import check_references
             check_references(db, sid, context['image_inputs'], historical=retry is not None)
         goals = context.get('autonomous_goals', {})
-        if 'saved_field' in goals or goals.get('reference', {}).get('selection'):
+        if 'saved_field' in goals or 'saved_work_fields' in goals or goals.get('reference', {}).get('selection'):
             from .autonomy_status import verify_reference
             verify_reference(db, sid, question, goals, retry['user_message_id'] if retry else None)
         if retry:

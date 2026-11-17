@@ -44,6 +44,27 @@ class BriefWindow:
         self.notice.set("已儲存，下次提問時生效。請隨需求變更更新這些欄位。")
 
 
+def _work_field_text(field):
+    heading = [f'工作　{field["work"]}'] if 'work' in field else []
+    heading.append(f'欄位　{field["field"]}')
+    if 'goal_id' in field:
+        heading.append(f'工作編號　{field["goal_id"]}')
+    if 'scope' in field:
+        heading.append(f'查詢範圍　{field["scope"]}')
+    status = field['status']
+    if status == 'confirmed':
+        detail = f'已保存的欄值　{field["value"]}\n保存來源　{field["citation"]}\n來源指紋　{field["sha256"]}'
+    elif status == 'needs_scope':
+        detail = '待選範圍\n' + '\n'.join(field['scope_choices'])
+    elif status == 'ambiguous_work':
+        detail = '有多件工作符合名稱，請指定完整工作名稱或編號。'
+    elif status == 'not_found':
+        detail = '在此對話查不到指定的工作。'
+    else:
+        detail = '這次查不到可核對的正式欄值。'
+    return '\n'.join(heading) + '\n\n' + detail
+
+
 def show_context(parent, store, message_id):
     context = store.answer_context(message_id) if message_id else None
     if context is None:
@@ -142,15 +163,11 @@ def show_context(parent, store, message_id):
                      json.dumps({'answer_attempts': context.get('answer_attempts', []), 'retry_of': context.get('retry_of')}, ensure_ascii=False, indent=2)))
     sections.append(('工作結果', '以下是提問時已保存的工作狀態快照，並非聊天模型新執行的操作。\n\n' +
                      (json.dumps(context.get('task_runs'), ensure_ascii=False, indent=2) if context.get('task_runs') else '本次未提供工作紀錄。')))
-    if field := context.get('autonomous_goals', {}).get('saved_field'):
-        if field['status'] == 'confirmed':
-            saved_value_text = f'已保存的欄值　{field["value"]}\n保存來源　{field["citation"]}\n來源指紋　{field["sha256"]}'
-        elif field['status'] == 'needs_scope':
-            saved_value_text = '待選範圍\n' + '\n'.join(field['scope_choices'])
-        else:
-            saved_value_text = '這次查不到可核對的正式欄值。'
-        scope = f'\n查詢範圍　{field["scope"]}' if field.get('scope') else ''
-        sections.append(('工作欄位', f'欄位　{field["field"]}\n工作編號　{field["goal_id"]}{scope}\n\n{saved_value_text}'))
+    work = context.get('autonomous_goals', {})
+    if fields := work.get('saved_work_fields'):
+        sections.append(('工作欄位', '\n\n'.join(_work_field_text(field) for field in fields)))
+    elif field := work.get('saved_field'):
+        sections.append(('工作欄位', _work_field_text(field)))
     if local:
         sections = [('本機操作', '當時指令：\n' + context['current_request'] + '\n\n' +
                      json.dumps(context['memory_action'], ensure_ascii=False, indent=2))]

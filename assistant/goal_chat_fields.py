@@ -34,6 +34,22 @@ _NOT_VALUE = re.compile(
     r'^(?:有|無|沒有|未知|不明|不詳|好的|可以|是的|好|是|否|暫)$|[嗎呢吧]$')
 _PLACEHOLDERS = {'tbd', 'pending', 'unknown', 'none', 'null', 'na'}
 MAX_SCOPE_CHOICES = 6
+_MAX_WORK_FIELDS = 6
+_COMPARE = re.compile(r'^(?:(?:並排|同時|一起)\s*(?:核對|查回|查看|查詢)|比較|比對|對照)\s*')
+_SAVED_VALUES = (r'(?:最後(?:一次)?|上次|先前)?\s*(?:正式(?:確認|保存)|已(?:正式)?(?:確認|保存))的?'
+                 r'(?:欄值|確認值|值|欄位|資料)(?:是什麼|為何)?')
+_COMPARE_HEADER = re.compile(
+    rf'(?:(?:這|以下)?(?P<count>[兩二三四五六2-6])(?:件|項)(?:工作|任務)(?:各自)?的?\s*)?'
+    rf'{_SAVED_VALUES}[。\uFF1A:；;，,]?\s*')
+_COMPARE_SUFFIX = re.compile(rf'^{_SAVED_VALUES}[。？！?!；;，,]?\s*')
+_WORK_TITLE = r'(?:「[^「」『』“”"\x00-\x1f\x7f]{2,80}」|『[^「」『』“”"\x00-\x1f\x7f]{2,80}』|“[^「」『』“”"\x00-\x1f\x7f]{2,80}”)'
+_QUOTED_FIELD = rf'(?:「{_LABEL}」|『{_LABEL}』|“{_LABEL}”)'
+_WORK_PAIR = re.compile(rf'(?P<work>{_WORK_TITLE})\s*(?:的|[：:])\s*(?P<field>{_QUOTED_FIELD})')
+_PAIR_BETWEEN = re.compile(r'\s*(?:[、，,。；;]|以及|與|和|及)\s*|\s+')
+_PAIR_END = re.compile(r'^[。？！?!；;，,]?\s*')
+_FORMAT_TAIL = re.compile(r'^(?:(?:請\s*)?(?:各(?:件|列|自)?|每件|兩件|用|列|輸出|回報|只|缺|若|如果)|'
+                          r'格式|結果|資料不足|待確認|並列)')
+_CANCEL_LOOKUP = re.compile(r'(?:不要|不必|不用|先別|取消)(?:再)?(?:查詢|查回|比較|核對)')
 _ASSIGN = '確定寫|確認寫|確定為|確定是|已確認為|正式確認為|改為|改成|改用|定為|為|是|：|:'
 _CORRECTION = '正式改為|正式改成|正式改用|正式確認為|已正式確認為|正式定為'
 _ASSIGNMENT = re.compile(rf'(?P<label>「{_LABEL}」|{_LABEL}?)(?P<verb>{_CORRECTION}|{_ASSIGN})\s*(?P<value>.+)')
@@ -53,6 +69,43 @@ def requested_field(text):
             if not _COMPOUND.search(field):
                 fields.add(field)
     return next(iter(fields)) if len(fields) == 1 else None
+
+
+def requested_work_fields(text):
+    """Recognize a bounded comparison of explicitly paired work titles and fields."""
+    if len(text) > 2000 or not (request := _COMPARE.match(text)):
+        return ()
+    rest = text[request.end():]
+    header = _COMPARE_HEADER.match(rest)
+    if header:
+        rest = rest[header.end():]
+    items = []
+    position = 0
+    while pair := _WORK_PAIR.match(rest, position):
+        name, field = (value[1:-1].strip() for value in pair.groups())
+        if not 2 <= len(name) <= 80 or not 2 <= len(field) <= 80 or _COMPOUND.search(field):
+            return ()
+        items.append((name, field))
+        if len(items) > _MAX_WORK_FIELDS:
+            return ()
+        position = pair.end()
+        if not (separator := _PAIR_BETWEEN.match(rest, position)):
+            break
+        position = separator.end()
+    if len(items) < 2 or len({(label_key(name), label_key(field)) for name, field in items}) != len(items):
+        return ()
+    tail = rest[position:]
+    if not header:
+        if not (suffix := _COMPARE_SUFFIX.match(tail)):
+            return ()
+        tail = tail[suffix.end():]
+    elif count := header['count']:
+        if len(items) != (int(count) if count.isascii() else '二三四五六'.index(count.replace('兩', '二')) + 2):
+            return ()
+    tail = _PAIR_END.sub('', tail, count=1)
+    if tail and (not _FORMAT_TAIL.match(tail) or _WORK_PAIR.search(tail) or _CANCEL_LOOKUP.search(tail)):
+        return ()
+    return tuple(items)
 
 
 def label_key(text):
