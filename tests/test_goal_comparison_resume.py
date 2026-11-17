@@ -124,5 +124,106 @@ class ComparisonResumeTests(unittest.TestCase):
         self.assertEqual(finish['continuous_runs'][0]['end_step'] - finish['continuous_runs'][0]['start_step'], 1)
 
 
+    def compound_waiting(self):
+        title = '青梣 S4 的燈箱巡檢'
+        third = autonomy.create_goal(self.store, self.sid, title)
+        autonomy.run_goal(self.store, self.sid, third, ScriptedEngine(action('ask', question='復測地點是什麼？')))
+        query = (f'比較「{self.titles[0]}」的「取交櫃」、「{self.titles[1]}」的「北側使用的驗收人」'
+                 f'和「{title}」的「復測地點」最後已確認的欄值。每件一行，缺值填待確認。')
+        Assistant(self.store, ScriptedEngine('枇翠櫃。驗收人及復測地點待確認。')).ask(self.sid, query)
+        remaining = f'「{title}」的「復測地點」是哪裡？'
+        gid, waiting = self.waiting(self.request + '\n' + remaining, files=True)
+        return gid, waiting, third, remaining
+
+    def test_compound_wait_preserves_original_step_and_resumes_after_partial_backup(self):
+        gid, waiting, third, remaining = self.compound_waiting()
+        self.assertEqual(waiting['comparison_waiting'], {'ask_sequence': 1, 'rows': [1, 2]})
+        idle = ScriptedEngine()
+        self.assertEqual(autonomy.run_goal(self.store, self.sid, gid, idle), waiting)
+        self.assertFalse(idle.prompts)
+
+        self.save_reply(self.pending, '葉光')
+        partial = '取交櫃：枇翠櫃（補充 1）\n驗收人：葉光（補充 1）\n復測地點：待確認'
+        engine = ScriptedEngine(action('ask', question=remaining, partial_result=partial))
+        state = continuous.run_continuous(self.store, self.sid, gid, engine, max_steps=1, max_seconds=60)
+        self.assertEqual(state['status'], 'needs_input')
+        self.assertEqual(state['question'], remaining)
+        self.assertEqual(state['steps'][0], waiting['steps'][0])
+        self.assertEqual(state['steps'][1]['observation']['partial_result'], partial)
+        self.assertEqual(state['comparison_waiting'], {'ask_sequence': 2, 'row': 2})
+        self.assertNotIn('reply_sources', state)
+        self.assertNotIn('withdrawn_questions', state)
+        self.assertEqual(state['comparison_resolved_questions'], [
+            {'ask_sequence': 1, 'question': waiting['question'], 'work': self.titles[1],
+             'field': '北側使用的驗收人', 'scope': '北側'}])
+        prompt = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual([row.get('value') for row in prompt['verified_work_fields']], ['枇翠櫃', '葉光', None])
+        self.assertEqual(prompt['comparison_resolved_questions'], state['comparison_resolved_questions'])
+
+        restore_backup(create_backup(self.store.path)['path'], self.root / 'partial')
+        self.store = Store(self.root / 'partial' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(self.store, self.sid, gid), state)
+        self.save_reply(third, '銀竹室')
+        parents = [autonomy.get_goal(self.store, self.sid, work) for work in (self.source, self.pending, third)]
+        content = '枇翠櫃｜葉光｜銀竹室'
+        engine = ScriptedEngine(action('write_artifact', filename='complete.md', content=content),
+                                action('deliver', filenames=['complete.md'], report='已交付。'))
+        complete = autonomy.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(complete['status'], 'report_ready')
+        self.assertEqual(complete['steps'][:2], state['steps'])
+        self.assertEqual([(row['ask_sequence'], row['field']) for row in complete['comparison_resolved_questions']],
+                         [(1, '北側使用的驗收人'), (2, '復測地點')])
+        self.assertEqual([autonomy.get_goal(self.store, self.sid, work) for work in (self.source, self.pending, third)],
+                         parents)
+        file = artifacts.directory(self.store, gid) / 'complete.md'
+        restore_backup(create_backup(self.store.path)['path'], self.root / 'complete')
+        copy = Store(self.root / 'complete' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(copy, self.sid, gid), complete)
+        artifacts.rebuild(copy, self.sid, gid)
+        self.assertEqual((artifacts.directory(copy, gid) / 'complete.md').read_bytes(), file.read_bytes())
+
+    def test_compound_resume_records_every_confirmed_field_and_rejects_forged_subset(self):
+        gid, waiting, third, _ = self.compound_waiting()
+        self.save_reply(self.pending, '葉光')
+        self.save_reply(third, '銀竹室')
+        engine = ScriptedEngine(action('write_artifact', filename='all.md', content='枇翠櫃｜葉光｜銀竹室'),
+                                action('deliver', filenames=['all.md'], report='已交付。'))
+        state = autonomy.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(state['status'], 'report_ready')
+        self.assertEqual(state['steps'][0], waiting['steps'][0])
+        self.assertEqual([(row['ask_sequence'], row['field']) for row in state['comparison_resolved_questions']],
+                         [(1, '北側使用的驗收人'), (1, '復測地點')])
+        restore_backup(create_backup(self.store.path)['path'], self.root / 'all')
+        restored = Store(self.root / 'all' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(restored, self.sid, gid), state)
+        with restored.connect() as db:
+            raw, = db.execute('SELECT receipt_json FROM autonomous_comparison_resumes WHERE goal_id=?', (gid,)).fetchone()
+            receipt = json.loads(raw)
+            self.assertEqual(receipt['version'], 2)
+            self.assertEqual(receipt['rows'], [1, 2])
+            receipt['rows'] = [2]
+            db.execute('UPDATE autonomous_comparison_resumes SET receipt_json=?,receipt_sha256=? WHERE goal_id=?',
+                       (json.dumps(receipt, ensure_ascii=False), goal_conversation.digest(receipt), gid))
+        with self.assertRaisesRegex(ValueError, '保存來源'):
+            validate_database(restored.path)
+
+    def test_compound_wait_does_not_consume_unrelated_duplicate_or_wrong_scope_question(self):
+        _, _, third, remaining = self.compound_waiting()
+        bad = (
+            self.request + remaining + '還缺檔名嗎？',
+            self.request + remaining + remaining,
+            self.request + remaining.replace('復測地點', '北翼的復測地點'),
+        )
+        cases = [self.waiting(question) for question in bad]
+        self.save_reply(self.pending, '葉光')
+        self.save_reply(third, '銀竹室')
+        for other, waiting in cases:
+            with self.subTest(question=waiting['question']):
+                self.assertNotIn('comparison_waiting', waiting)
+                engine = ScriptedEngine()
+                self.assertEqual(autonomy.run_goal(self.store, self.sid, other, engine), waiting)
+                self.assertFalse(engine.prompts)
+
+
 if __name__ == '__main__':
     unittest.main()

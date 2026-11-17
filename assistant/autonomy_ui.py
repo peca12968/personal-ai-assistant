@@ -344,7 +344,7 @@ class AutonomousWindow:
         lines = ['目標：' + goal['objective'], '狀態：' + autonomy.LABELS.get(goal['status'], goal['status']),
                  goal['notice'], '參考來源：' + ', '.join(f"D{d['document_id']} {d['name']}" for d in goal['sources'])]
         if checks := goal.get('comparison_resolved_questions'):
-            lines += [f"原工作已補足第 {item['ask_sequence']} 步的待答 · {item['work']} · {item['field']}"
+            lines += [f"原工作曾核對第 {item['ask_sequence']} 步的待答欄位 · {item['work']} · {item['field']}"
                       for item in checks]
         if goal['result']:
             lines += ['成果（待你確認）：', goal['result'],
