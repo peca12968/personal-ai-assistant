@@ -250,12 +250,12 @@ def guidance_choice(steps, content, expected, *, delivery=None):
 def describe(goal):
     if not goal['file_delivery'] and 'delivery_mode_change' not in goal:
         return ''
-    name = requirement(goal)
+    name = goal.get('artifact_revision_filename') or requirement(goal)
     if name is None:
         return ''
     if not goal['file_delivery']:
         label = '恢復文件交付時的檔名'
-    elif (goal['steps'] and goal['status'] == 'needs_input' and goal['steps'][-1]['observation'].get(ASK_MARK)
+    elif (goal['steps'] and goal['status'] == 'needs_input' and any(key in goal['steps'][-1]['observation'] for key in (ASK_MARK, 'artifact_revision_question'))
           or awaiting_confirmation(goal['steps'], name)):
         label = '原指定檔名（等候新檔名）'
     else:

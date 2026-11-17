@@ -3,7 +3,7 @@ import re
 
 from .answer_runs import lease
 from .autonomy import MAX_STEPS, text
-from . import artifact_names, artifacts, decision_table, delivery_preference, goal_question_withdrawals, goal_reply_sources, work_plan, work_plan_scope
+from . import artifact_names, artifacts, decision_table, goal_artifact_revision, delivery_preference, goal_question_withdrawals, goal_reply_sources, work_plan, work_plan_scope
 from .goal_guidance import (_append_step, _condition_goal, _snapshot, _steps, append_answered_revision, append_followup_question,
                             append_waiting_field_version, append_waiting_recheck, apply_waiting_review, snapshot)
 
@@ -238,6 +238,14 @@ def save(store, sid, gid, answer, *, expected_fingerprint):
         if len(notes) > 12000:
             raise ValueError('補充內容已達上限，請建立下一階段目標。')
         goal_reply_sources.record(db, gid, goal['question'], answer, len(goal['notes']))
+        if steps and (proof := steps[-1]['observation'].get(goal_artifact_revision.MARK)):
+            if not current['sources_match'] or current['step_count'] + 2 > MAX_STEPS:
+                raise ValueError('來源已改變或剩餘步數不足，請帶入目前進度建立下一階段。')
+            reserved = {row['name'].casefold() for row in artifacts.inventory(db, gid)}
+            goal_artifact_revision.choose(steps, proof, answer, reserved=reserved)
+            db.execute("UPDATE autonomous_goals SET notes=?,question='',status='paused',notice='',"
+                       "updated_at=CURRENT_TIMESTAMP WHERE id=? AND session_id=?", (notes, gid, sid))
+            return _snapshot(db, sid, gid)
         if steps and steps[-1]['observation'].get(artifact_names.ASK_MARK):
             _save_filename_reply(db, current, steps, notes)
             return _snapshot(db, sid, gid)

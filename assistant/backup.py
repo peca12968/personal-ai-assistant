@@ -242,6 +242,8 @@ def validate_database(path):
             validate_reply_sources(db, table_present='autonomous_reply_sources' in actual_tables)
             from .goal_guidance_sources import validate_saved as validate_guidance_sources
             validate_guidance_sources(db, table_present=guidance_present)
+            from .goal_artifact_revision import validate_saved as validate_artifact_revisions
+            validate_artifact_revisions(db, replies_present=reply_sources_present, guidance_present=guidance_present)
             from .goal_required_supplement import validate_saved as validate_required_supplements
             validate_required_supplements(
                 db, replies_present=reply_sources_present, guidance_present=guidance_present,

@@ -22,7 +22,7 @@ from . import goal_question_withdrawals
 from . import goal_reply_sources
 from . import goal_sources
 from . import artifacts
-from . import artifact_names
+from . import artifact_names, goal_artifact_revision
 from . import delivery_preference
 from . import autonomy_csv
 from . import date_tools
@@ -218,6 +218,12 @@ def get_goal(store, sid, gid, *, include_reply_positions=False, include_recheck_
         guidance_sources = goal_guidance_sources.read(db, gid, result['notes'], len(result['steps']))
         if guidance_sources:
             result['guidance_sources'] = guidance_sources
+        if result['file_delivery'] and guidance_sources:
+            expected = goal_artifact_revision.requirement({**result, 'reply_sources': reply_sources})
+            if expected:
+                ordinary = artifact_names.requirement({**result, 'reply_sources': reply_sources})
+                if expected != ordinary:
+                    result['artifact_revision_filename'] = expected
         waiting_step = len(result['steps']) if result['status'] == 'needs_input' else None
         withdrawals = goal_question_withdrawals.read(db, gid, guidance_sources, reply_sources, waiting_step=waiting_step)
         if withdrawals:
@@ -601,14 +607,23 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                     previous_files = goal_stage_files.available(db, sid, gid, previous_names)
             file_reads = goal_stage_files.read_sources(goal['steps'], previous_names)
             file_catalog = goal_stage_files.catalog(previous_names, previous_files, file_reads)
-            required_filename = artifact_names.requirement(goal) if goal['file_delivery'] else None
+            required_filename = (goal.get('artifact_revision_filename') or artifact_names.requirement(goal)
+                                 if goal['file_delivery'] else None)
             pending_filename = artifact_names.awaiting_confirmation(goal['steps'], required_filename)
-            if not required_reads and (name_question := artifact_names.question(goal, conditions_hash, required_filename)):
-                if len(goal['steps']) + 4 > MAX_STEPS or len(goal['artifacts']) >= artifacts.MAX_FILES:
+            stale_artifacts = goal_artifact_revision.superseded(goal) if goal['file_delivery'] else {}
+            inventory = {row['name'].casefold(): row for row in goal['artifacts']}
+            name_question = revision_question = None
+            if not required_reads:
+                name_question = artifact_names.question(goal, conditions_hash, required_filename)
+                if not name_question and work_plan.latest(goal['steps']) is None:
+                    revision_question = goal_artifact_revision.question(goal, required_filename, stale_artifacts, inventory)
+            if name_question or revision_question:
+                if len(goal['steps']) + (4 if name_question else 3) > MAX_STEPS or len(goal['artifacts']) >= artifacts.MAX_FILES:
                     reason = 'goal_limit'
                     update(store, gid, 'paused', notice='定稿需要新檔名。請帶入目前進度建立下一階段，再交付文件。')
                     break
-                action, observation = artifact_names.question_step(name_question, conditions_hash)
+                action, observation = (artifact_names.question_step(name_question, conditions_hash) if name_question else
+                                       goal_artifact_revision.question_step(revision_question, conditions_hash))
                 question = observation['question']
                 sequence = len(goal['steps']) + 1
                 with store.connect() as db:
@@ -654,6 +669,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 payload['required_source_reads'] = required_reads
             if file_catalog:
                 payload['previous_stage_files'] = file_catalog
+            if stale_artifacts:
+                payload['superseded_artifacts'] = list(stale_artifacts.values())
             if pending_filename:
                 payload['artifact_filename_pending'] = required_filename
             elif required_filename:
@@ -760,6 +777,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +
                 ('\n' + artifact_names.PENDING_GUIDANCE if pending_filename else
                  '\n' + artifact_names.GUIDANCE if required_filename else '') +
+                ('\n' + goal_artifact_revision.GUIDANCE if stale_artifacts else '') +
                 ('\n' + document_ranges.LOOKUP_GUIDANCE if catalog else '') +
                 ('\n' + document_ranges.LOOKUP_EVIDENCE_GUIDANCE
                  if any(step['action']['tool'] == 'find_document_text' for step in payload['steps']) else '') +
@@ -875,6 +893,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 check = None
                 plan_check = None
                 if action['tool'] in work_plan.DELIVERY_TOOLS:
+                    goal_artifact_revision.check_action(stale_artifacts, inventory, action)
                     if required_filename:
                         artifact_names.check_action(required_filename, action, pending=pending_filename)
                     plan_check = work_plan.check_delivery(goal['work_plan'], conditions_hash, action, goal['steps'])

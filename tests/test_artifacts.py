@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant import artifacts as f, autonomy as a, goal_guidance, goal_replies, goal_review
+from assistant import artifacts as f, autonomy as a, goal_artifact_revision, goal_guidance, goal_replies, goal_review
 from assistant.answer_runs import LeaseBusy, lease
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.store import Store
@@ -66,6 +66,70 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(a.get_goal(restored, self.sid, gid), state)
         f.rebuild(restored, self.sid, gid)
         self.assertEqual((f.directory(restored, gid) / '明細.CSV').read_bytes(), actual)
+
+    def test_late_artifact_correction_asks_for_a_replacement_and_keeps_old_bytes(self):
+        gid = a.create_goal(self.store, self.sid, '請交付「配發.csv」。', file_delivery=True)
+        before = '欄位,份數\n藍班,7\n'
+        after = '欄位,份數\n藍班,9\n'
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('write_artifact', filename='配發.csv', content=before)), max_steps=1)
+        guidance = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '正式更正藍班份數為9。請保留已寫檔案，只交付符合更正的版本。',
+                           expected_fingerprint=guidance['fingerprint'])
+        engine = ScriptedEngine(action('deliver', report='已交付', filenames=['配發.csv']))
+        waiting = a.run_goal(self.store, self.sid, gid, engine, max_steps=1)
+        self.assertEqual(waiting['status'], 'needs_input')
+        self.assertEqual(engine.prompts, [])
+        self.assertIn('配發-final.csv', waiting['question'])
+        proof = waiting['steps'][-1]['observation'][goal_artifact_revision.MARK]
+        self.assertEqual((proof['draft']['citation'], proof['draft']['write_step']), ('[更正#1]', 1))
+
+        saved = create_backup(self.store.path)
+        restore_backup(saved['path'], self.root / 'late-csv')
+        copy = Store(self.root / 'late-csv' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(copy, self.sid, gid), waiting)
+        f.rebuild(copy, self.sid, gid)
+        reviewed = goal_replies.snapshot(copy, self.sid, gid)
+        for invalid in ('配發.csv', '新檔.txt', '大概可以。'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '定稿檔名'):
+                goal_replies.save(copy, self.sid, gid, invalid, expected_fingerprint=reviewed['fingerprint'])
+        goal_replies.save(copy, self.sid, gid, '可以，請用 配發-final.csv。',
+                          expected_fingerprint=reviewed['fingerprint'])
+        replay = ScriptedEngine(action('deliver', report='先交舊的', filenames=['配發.csv']),
+                                action('write_artifact', filename='配發-final.csv', content=before),
+                                action('write_artifact', filename='配發-final.csv', content=after),
+                                action('deliver', report='新版已交付', filenames=['配發-final.csv']))
+        finished = a.run_goal(copy, self.sid, gid, replay, max_steps=4)
+        self.assertEqual(finished['status'], 'report_ready')
+        self.assertEqual(finished['artifact_revision_filename']['filename'], '配發-final.csv')
+        self.assertEqual([step['action']['tool'] for step in finished['steps'][-4:]],
+                         ['invalid', 'invalid', 'write_artifact', 'deliver'])
+        self.assertEqual((f.directory(copy, gid) / '配發.csv').read_bytes(), before.encode())
+        self.assertEqual((f.directory(copy, gid) / '配發-final.csv').read_bytes(), after.encode())
+        validate_database(copy.path)
+
+        with copy.connect() as db:
+            changed = dict(waiting['steps'][-1]['observation'])
+            changed[goal_artifact_revision.MARK]['draft']['source_sha256'] = '0' * 64
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=2',
+                       (json.dumps(changed, ensure_ascii=False), gid))
+        with self.assertRaisesRegex(ValueError, '改版檔名問題'):
+            validate_database(copy.path)
+
+    def test_explicitly_superseded_file_does_not_block_another_current_file(self):
+        engine = ScriptedEngine(action('write_artifact', filename='draft.txt', content='早期結果'),
+                                action('write_artifact', filename='current.txt', content='獨立成果'))
+        a.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        source = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, '舊檔「draft.txt」不可交付。只能更新受影響的分項。',
+                           expected_fingerprint=source['fingerprint'])
+        engine = ScriptedEngine(action('deliver', report='含舊檔', filenames=['current.txt', 'draft.txt']),
+                                action('deliver', report='只交仍適用的成果', filenames=['current.txt']))
+        state = a.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertEqual(state['status'], 'report_ready')
+        self.assertEqual([step['action']['tool'] for step in state['steps'][-2:]], ['invalid', 'deliver'])
+        self.assertEqual([row['name'] for row in state['steps'][-1]['observation']['artifacts']], ['current.txt'])
+        self.assertEqual((f.directory(self.store, self.gid) / 'draft.txt').read_text(encoding='utf-8'), '早期結果')
 
     def test_csv_rejects_invalid_table_before_reserving_an_artifact(self):
         for body in ('A,A\n1,2\n', 'A, \n1,2\n', 'A,B\n1\n', 'A,B\n"x,2\n', 'A,B\n1,2,3\n'):
