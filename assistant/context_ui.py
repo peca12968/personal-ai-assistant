@@ -142,6 +142,12 @@ def show_context(parent, store, message_id):
                      json.dumps({'answer_attempts': context.get('answer_attempts', []), 'retry_of': context.get('retry_of')}, ensure_ascii=False, indent=2)))
     sections.append(('工作結果', '以下是提問時已保存的工作狀態快照，並非聊天模型新執行的操作。\n\n' +
                      (json.dumps(context.get('task_runs'), ensure_ascii=False, indent=2) if context.get('task_runs') else '本次未提供工作紀錄。')))
+    if field := context.get('autonomous_goals', {}).get('saved_field'):
+        if field['status'] == 'confirmed':
+            saved_value_text = f'已保存的欄值　{field["value"]}\n保存來源　{field["citation"]}\n來源指紋　{field["sha256"]}'
+        else:
+            saved_value_text = '這次查不到可核對的正式欄值。'
+        sections.append(('工作欄位', f'欄位　{field["field"]}\n工作編號　{field["goal_id"]}\n\n{saved_value_text}'))
     if local:
         sections = [('本機操作', '當時指令：\n' + context['current_request'] + '\n\n' +
                      json.dumps(context['memory_action'], ensure_ascii=False, indent=2))]

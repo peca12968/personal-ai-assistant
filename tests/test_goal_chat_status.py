@@ -459,5 +459,118 @@ class GoalChatStatusTests(unittest.TestCase):
         self.assertEqual(reference['selection']['goal_id'], gids[1])
 
 
+    def test_saved_field_reads_latest_scoped_source_without_replaying_notes(self):
+        title = '榛庭 W3 的投影點交'
+        gid = a.create_goal(self.store, self.sid, title)
+        decoy = a.create_goal(self.store, self.sid, title.replace('W3', 'W30'))
+        ask = '請提供東廳使用的校驗碼。'
+        for target, value in ((gid, 'SUN-14'), (decoy, 'MOON-89')):
+            a.run_goal(self.store, self.sid, target, ScriptedEngine(action('ask', question=ask)))
+            reply = goal_replies.snapshot(self.store, self.sid, target)
+            goal_replies.save(self.store, self.sid, target, value, expected_fingerprint=reply['fingerprint'])
+        query = f'查詢「{title}」最後已確認的校驗碼是什麼？'
+        app = Assistant(self.store, ScriptedEngine('SUN-14'))
+        answer = app.ask(self.sid, query)
+        saved = self.store.answer_context(answer['id'])
+        original = saved['autonomous_goals']['saved_field']
+        self.assertEqual((original['goal_id'], original['value'], original['citation']),
+                         (gid, 'SUN-14', '[補充#1]'))
+        self.assertEqual(chat_goal_target(self.store, self.sid, answer['id']), gid)
+
+        for text in ('正式更正：榛庭 W3 的東廳校驗碼改為 SKY-21。',
+                     '如果東廳校驗碼改為 RAIN-77，這只是提議。',
+                     '正式更正：榛庭 W30 的東廳校驗碼改為 CLOUD-23。',
+                     '西廳的校驗碼正式改為 WIND-13。',
+                     '原文：「東廳的校驗碼正式改為 SNOW-88。」'):
+            view = goal_guidance.snapshot(self.store, self.sid, gid)
+            goal_guidance.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+
+        self.store.add_message(self.sid, 'user', '先記一份草稿：校驗碼 STAR-10。')
+        before = a.get_goal(self.store, self.sid, gid)
+        query = f'{title}那件，進度如何？這一則先談草稿 STAR-20，請只回報最後正式保存的「校驗碼」。'
+        context = goal_context(self.store, self.sid, query)
+        field = context['saved_field']
+        self.assertEqual((field['status'], field['value'], field['citation']), ('confirmed', 'SKY-21', '[更正#1]'))
+        self.assertNotEqual(field['sha256'], original['sha256'])
+        projection = json.dumps(context, ensure_ascii=False)
+        for private in ('MOON-89', 'SUN-14', 'RAIN-77', 'CLOUD-23', 'WIND-13', 'SNOW-88', 'STAR-20'):
+            self.assertNotIn(private, projection)
+        self.assertEqual(a.get_goal(self.store, self.sid, gid), before)
+        self.assertNotIn('saved_field', goal_context(self.store, self.sid, f'{title}那件，進度如何？'))
+        self.assertEqual(self.store.answer_context(answer['id']), saved)
+
+        backup = create_backup(self.store.path)
+        restored = self.root/'verified'
+        restore_backup(backup['path'], restored)
+        restored_store = Store(restored/'assistant.sqlite3')
+        self.assertEqual(goal_context(restored_store, self.sid, query), context)
+        self.assertEqual(restored_store.answer_context(answer['id']), saved)
+
+        import tkinter as tk
+        from tkinter import ttk
+        from assistant.context_ui import show_context
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            show_context(root, restored_store, answer['id'])
+            window = next(child for child in root.winfo_children() if isinstance(child, tk.Toplevel))
+            window.withdraw()
+            notebook = next(child for child in window.winfo_children() if isinstance(child, ttk.Notebook))
+            tab = next(tab for tab in notebook.tabs() if notebook.tab(tab, 'text') == '工作欄位')
+            text = next(child for child in notebook.nametowidget(tab).winfo_children() if isinstance(child, tk.Text))
+            shown = text.get('1.0', 'end-1c')
+            self.assertIn('SUN-14', shown)
+            self.assertIn('[補充#1]', shown)
+            self.assertIn(original['sha256'], shown)
+            self.assertNotIn('SKY-21', shown)
+        finally:
+            root.destroy()
+
+    def test_saved_field_reports_unverified_for_tentative_and_ambiguous_scope(self):
+        title = '砂梨器材點交'
+        gid = a.create_goal(self.store, self.sid, title)
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='請提供晨班的交件櫃。')))
+        query = f'{title}那件，請只回報上次已確認的交件櫃。'
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '如果晨班的交件櫃改用松色櫃，這只是提議。',
+                           expected_fingerprint=view['fingerprint'])
+        result = goal_context(self.store, self.sid, query)
+        self.assertEqual(result['reference']['status'], 'matched')
+        self.assertEqual(result['saved_field'], {'goal_id': gid, 'field': '交件櫃', 'status': 'unverified'})
+        self.assertNotIn('松色櫃', json.dumps(result, ensure_ascii=False))
+        view = goal_replies.snapshot(self.store, self.sid, gid)
+        goal_replies.save(self.store, self.sid, gid, '確定是「霜竹櫃」。', expected_fingerprint=view['fingerprint'])
+        self.assertEqual(goal_context(self.store, self.sid, query)['saved_field']['value'], '霜竹櫃')
+
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='請提供晚班的交件櫃。')))
+        self.assertEqual(goal_context(self.store, self.sid, query)['saved_field']['status'], 'unverified')
+        a.create_goal(self.store, self.sid, title)
+        self.assertEqual(goal_context(self.store, self.sid, query)['reference']['status'], 'ambiguous')
+        self.assertNotIn('saved_field', goal_context(self.store, self.sid, query))
+
+    def test_saved_field_rechecks_its_source_before_recording_chat(self):
+        title = '月台送件'
+        gid = a.create_goal(self.store, self.sid, title)
+        a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question='封存人是誰？')))
+        query = f'{title}那件，進度如何？上次已確認的封存人是誰？'
+        guide = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '封存人正式確認為周寧。', expected_fingerprint=guide['fingerprint'])
+        app = Assistant(self.store, ScriptedEngine('周寧'))
+        prepared = app.prepare_context(self.sid, query)
+        self.assertEqual(prepared['autonomous_goals']['saved_field']['value'], '周寧')
+        guide = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '撤回「封存人」的正式確認。',
+                           expected_fingerprint=guide['fingerprint'])
+        self.assertEqual(goal_context(self.store, self.sid, query)['saved_field']['status'], 'unverified')
+        count = len(self.store.messages(self.sid))
+        with self.assertRaisesRegex(ValueError, '保存來源已變更'):
+            answer_runs.begin(self.store, self.sid, 'a' * 32, query, prepared)
+        self.assertEqual(len(self.store.messages(self.sid)), count)
+        for text, expected in (('封存人正式確認為林真。', '林真'), ('封存人尚未確認。', None)):
+            guide = goal_guidance.snapshot(self.store, self.sid, gid)
+            goal_guidance.save(self.store, self.sid, gid, text, expected_fingerprint=guide['fingerprint'])
+            self.assertEqual(goal_context(self.store, self.sid, query)['saved_field'].get('value'), expected)
+
+
 if __name__ == '__main__':
     unittest.main()

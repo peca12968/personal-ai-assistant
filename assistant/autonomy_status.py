@@ -2,7 +2,7 @@
 import json
 import re
 import unicodedata
-from . import delivery_preference, goal_sources
+from . import delivery_preference, goal_chat_fields, goal_sources
 
 
 _POLITE = r'(?:(?:請問|請幫我|幫我|麻煩幫我|我想|請)\s*)?'
@@ -31,6 +31,9 @@ _NATURAL_CUE = (
 )
 _REFERENT = re.compile(rf'^\s*{_WORK_REFERENCE}{_NATURAL_CUE}')
 _NATURAL_REFERENCE = re.compile(rf'^(?P<name>[^。；;，,？！?!：:「」『』“”`\r\n]{{2,80}}?)\s*{_WORK_REFERENCE}{_NATURAL_CUE}')
+_FIELD_NAME_REFERENCE = re.compile(
+    rf'^(?P<name>[^。；;，,？！?!：:「」『』“”\x60\r\n]{{2,80}}?)\s*{_WORK_REFERENCE}'
+    r'[ \t，,：:]+(?P<tail>.+)$', re.S)
 _NOT_A_REFERENCE = re.compile(r'^(?:我\s*)?(?:如果|若|假設|只要|引用|原文|例如|範例|不是|不要|不必|別|先別|暫不|選)')
 _WORK_VERB = re.compile(r'^(?:請先|請)?\s*(?:整理|準備|完成|處理|核對|製作|追蹤|建立)\s*')
 _GOAL_ID = re.compile(r'[a-f0-9]{32}')
@@ -70,6 +73,27 @@ def _natural_name(body):
     return None
 
 
+def _field_reference(body, allow_quoted_lookup=False):
+    if quote := _NAME_QUOTE.match(body):
+        name = next(value for value in quote.groups() if value is not None)
+        tail = body[quote.end():].lstrip()
+        referent = re.match(_WORK_REFERENCE, tail)
+        if not (referent or allow_quoted_lookup):
+            return None
+        if referent:
+            tail = tail[referent.end():]
+        tail = tail.lstrip(' \t，,：:')
+    elif match := _FIELD_NAME_REFERENCE.match(body):
+        name, tail = match['name'], match['tail']
+    else:
+        return None
+    name = name.strip()
+    if (not 2 <= len(name) <= 80 or _NOT_A_REFERENCE.match(body)
+            or re.search(r'[\x00-\x1f\x7f、]|[ \t](?:或|與|和|以及)[ \t]', name)):
+        return None
+    return (name, field) if (field := goal_chat_fields.requested_field(tail)) else None
+
+
 def _status_request(question):
     body = _request_body(question)
     lookup = _LOOKUP.match(body)
@@ -77,6 +101,8 @@ def _status_request(question):
         body = body[lookup.end():]
     if name := _natural_name(body):
         return name, lookup is None
+    if field_reference := _field_reference(body, allow_quoted_lookup=lookup is not None):
+        return field_reference[0], False
     if quote := _NAME_QUOTE.match(body):
         name = next(value for value in quote.groups() if value is not None)
         tail = body[quote.end():].lstrip(' \t：:，,。；;\n')
@@ -354,9 +380,11 @@ def goal_context(store, sid, question='', *, before=None):
         return _goal_context(db, sid, question, before)
 
 
-def verify_choice(db, sid, question, context, before):
-    state = context.get('autonomous_goals', {})
-    if state.get('reference', {}).get('selection') and _goal_context(db, sid, question, before) != state:
+def verify_reference(db, sid, question, state, before):
+    current = _goal_context(db, sid, question, before)
+    if 'saved_field' in state and current.get('saved_field') != state['saved_field']:
+        raise ValueError('工作欄位的保存來源已變更，請重新查詢。')
+    if state.get('reference', {}).get('selection') and current != state:
         raise ValueError('候選工作或目前狀態已變更，請重新查詢後再選擇。')
 
 
@@ -402,11 +430,11 @@ def _goal_context(db, sid, question, before):
         action, explanation = next_action(row['status'], sources_match, row['step_count'])
         # A saved question is model output, not proof it remains unanswered.
         # Explicit replies clear it; newer guidance/current chat may already answer it.
-        question = row['question'] if row['status'] == 'needs_input' else ''
+        recorded_question = row['question'] if row['status'] == 'needs_input' else ''
         goals.append({'id': row['id'], 'objective': row['objective'][:400],
                       'objective_truncated': len(row['objective']) > 400,
                       'recorded_status': row['status'], 'step_count': row['step_count'],
-                      'recorded_question': question[:800], 'question_truncated': len(question) > 800,
+                      'recorded_question': recorded_question[:800], 'question_truncated': len(recorded_question) > 800,
                       'user_notes_present': bool(row['user_notes_present']),
                       'sources_match': sources_match, 'next_action': action,
                       'next_action_explanation': explanation,
@@ -419,7 +447,20 @@ def _goal_context(db, sid, question, before):
     result = {'goals': goals, 'limited': len(rows) > 3}
     if reference:
         result['reference'] = reference
-        if reference['status'] == 'matched' and goals[0]['recorded_question']:
-            if basis := _reply_basis(db, sid, goals[0]['id'], sources):
-                goals[0]['reply_basis'] = basis
+        if reference['status'] == 'matched':
+            goal = goals[0]
+            if goal['recorded_question'] and (basis := _reply_basis(db, sid, goal['id'], sources)):
+                goal['reply_basis'] = basis
+            field = goal_chat_fields.requested_field(question)
+            if not field:
+                body = _request_body(question)
+                lookup = _LOOKUP.match(body)
+                if lookup:
+                    body = body[lookup.end():]
+                direct = _field_reference(body, allow_quoted_lookup=lookup is not None)
+                if direct and direct[0] == reference['name']:
+                    field = direct[1]
+            if field:
+                result['saved_field'] = goal_chat_fields.project(
+                    db, goal['id'], rows[0]['objective'], goal['step_count'], field)
     return result
