@@ -84,7 +84,9 @@ def capture(db, sid):
 def validate(value, sid):
     fields = {'session_id','captured_at','messages','messages_limited','earlier_corrections','earlier_corrections_limited','brief'}
     if (not isinstance(value, dict) or not fields <= set(value)
-            or set(value) - fields - {'answer_feedback','opening_user_message','comparison_handoff','comparison_reference'} or value['session_id'] != sid):
+            or set(value) - fields - {'answer_feedback', 'opening_user_message', 'comparison_handoff',
+                                      'comparison_reference', 'comparison_current_fields'}
+            or value['session_id'] != sid):
         raise ValueError('帶入對話的範圍或格式不符。')
     if not isinstance(value['captured_at'], str) or len(value['captured_at']) > 50:
         raise ValueError('帶入對話的時間格式不符。')
@@ -130,9 +132,13 @@ def _comparison_messages(value):
 
 
 def save(db, sid, gid, objective=''):
-    from . import goal_comparison_handoff
+    from . import goal_comparison_current, goal_comparison_handoff
     value = validate(capture(db, sid), sid)
-    value.update(goal_comparison_handoff.capture(db, sid, objective, _comparison_messages(value)))
+    messages = _comparison_messages(value)
+    if (current := goal_comparison_current.capture(db, sid, objective, messages)) is not None:
+        value[goal_comparison_current.KEY] = current
+    else:
+        value.update(goal_comparison_handoff.capture(db, sid, objective, messages))
     db.execute('INSERT INTO autonomous_conversations(goal_id,context_json,context_sha256) VALUES(?,?,?)',
                (gid, json.dumps(value, ensure_ascii=False), digest(value)))
 
@@ -145,7 +151,12 @@ def read(db, gid):
     value = validate(strict_json(row[0]), row[2])
     if digest(value) != row[1]:
         raise ValueError('帶入對話的快照指紋不符。')
-    from . import goal_comparison_handoff
+    from . import goal_comparison_current, goal_comparison_handoff
+    if goal_comparison_current.KEY in value:
+        if goal_comparison_handoff.REFERENCE in value or goal_comparison_handoff.BASIS in value:
+            raise ValueError('比較現行欄值與其他比較快照不能同時保存。')
+        goal_comparison_current.validate(db, row[2], row[3], _comparison_messages(value),
+                                         value[goal_comparison_current.KEY])
     basis = value.get(goal_comparison_handoff.BASIS)
     if goal_comparison_handoff.REFERENCE in value:
         goal_comparison_handoff.validate_reference(
@@ -179,6 +190,9 @@ def describe(value):
                       row['content'] + ('\n[…此訊息已省略…]' if row['content_truncated'] else '')]
     if value.get('answer_feedback', {}).get('items'):
         lines += [answer_feedback.describe(value['answer_feedback'])]
+    if 'comparison_current_fields' in value:
+        from . import goal_comparison_current
+        lines += [goal_comparison_current.describe(value[goal_comparison_current.KEY])]
     if basis := value.get('comparison_handoff'):
         lines += [f'比較來源 · 回答 #{basis["answer_id"]}。正式欄值依原工作核對。']
     elif reference := value.get('comparison_reference'):

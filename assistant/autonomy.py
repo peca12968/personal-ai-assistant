@@ -38,7 +38,7 @@ from .document_metadata import metadata as document_metadata
 from . import work_plan
 from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
-from . import goal_comparison_handoff, goal_comparison_resume, goal_conversation
+from . import goal_comparison_current, goal_comparison_handoff, goal_comparison_resume, goal_conversation
 from . import goal_required_reads, goal_required_supplement
 from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -749,6 +749,8 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
+                ('\n' + goal_comparison_current.GUIDANCE
+                 if goal_comparison_current.KEY in (goal['conversation_context'] or {}) else '') +
                 ('\n' + goal_comparison_handoff.REFERENCE_GUIDANCE
                  if goal_comparison_handoff.REFERENCE in (goal['conversation_context'] or {}) else '') +
                 ('\n' + goal_comparison_handoff.GUIDANCE if comparison else '') +

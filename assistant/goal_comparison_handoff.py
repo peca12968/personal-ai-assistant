@@ -155,21 +155,25 @@ def _scope_label(label):
     return rf'(?:{literal}|「{literal}」|『{literal}』|“{literal}”)'
 
 
+def _withdrawal_pattern(name, dimension):
+    field = rf'{_scope_label(name)}\s*的?{_PREVIOUS}\s*{_scope_label(dimension)}'
+    return re.compile(rf'^(?:(?:請|我|現在|我現在)\s*)?(?:{_WITHDRAW}\s*{field}|{field}\s*已?{_WITHDRAW})'
+                      r'(?:的(?:正式)?確認)?(?=$|,)')
+
+
 def _withdrawals(messages, names, dimensions):
     newest = {}
-    if not names or not dimensions:
+    patterns = {(name, dimension): _withdrawal_pattern(name, dimension)
+                for name in names for dimension in dimensions}
+    if not patterns:
         return newest
     for item in messages:
         if item['role'] != 'user' or item['content_truncated']:
             continue
         for clause in _authority_clauses(item['content']):
-            for name in names:
-                subject = _scope_label(name)
-                for dimension in dimensions:
-                    field = rf'{subject}\s*的?{_PREVIOUS}\s*{_scope_label(dimension)}'
-                    if re.match(rf'^(?:(?:請|我|現在|我現在)\s*)?(?:{_WITHDRAW}\s*{field}|{field}\s*已?{_WITHDRAW})'
-                                r'(?:的(?:正式)?確認)?(?=$|,)', clause):
-                        newest[name, dimension] = item['message_id']
+            for scope, pattern in patterns.items():
+                if pattern.match(clause):
+                    newest[scope] = item['message_id']
     return newest
 
 

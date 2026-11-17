@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant import artifacts, autonomy, goal_comparison_handoff, goal_conversation, goal_guidance, goal_replies
+from assistant import artifacts, autonomy, goal_comparison_current, goal_comparison_handoff, goal_conversation, goal_guidance, goal_replies
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import Assistant
 from assistant.store import Store
@@ -351,8 +351,10 @@ class ComparisonHandoffTests(unittest.TestCase):
         history = autonomy.create_goal(self.store, self.sid, historical, from_chat=True)
         saved_history = autonomy.get_goal(self.store, self.sid, history)
         self.assertEqual(saved_history['conversation_context'][goal_comparison_handoff.REFERENCE]['answer'], complete)
-        with self.assertRaisesRegex(ValueError, '已撤回'):
-            autonomy.create_goal(self.store, self.sid, historical + '交付現行的位置。', from_chat=True)
+        current_pin = autonomy.create_goal(self.store, self.sid, historical + '交付現行的位置。', from_chat=True)
+        current_pin_state = autonomy.get_goal(self.store, self.sid, current_pin)
+        self.assertEqual(current_pin_state['conversation_context'][goal_comparison_current.KEY]['rows'][0]['status'],
+                         'withdrawn')
 
         wrong = complete.replace('星枇格', '雲棗架')
         reconfirm = '重新正式確認「隔音板」的「存放位置」為楊木櫃。'
@@ -375,7 +377,8 @@ class ComparisonHandoffTests(unittest.TestCase):
         saved = create_backup(self.store.path)
         restore_backup(saved['path'], self.root / 'authority')
         copy = Store(self.root / 'authority' / 'assistant.sqlite3')
-        for goal, state in ((legacy, before), (gid, waiting), (chosen, chosen_state), (history, saved_history)):
+        for goal, state in ((legacy, before), (gid, waiting), (chosen, chosen_state), (history, saved_history),
+                            (current_pin, current_pin_state)):
             self.assertEqual(autonomy.get_goal(copy, self.sid, goal), state)
 
     def test_current_comparison_skips_proposal_without_blocking_other_scopes(self):
@@ -398,6 +401,68 @@ class ComparisonHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '尚未採用'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{proposal["id"]} 的比較表。'
                                  '只整理「隔音板」和「固定簾」的存放位置。交付現行的位置。', from_chat=True)
+
+    def test_current_pin_uses_older_scoped_decisions_and_freezes_them(self):
+        compare = '請比較「行動舞台」和「折疊幕架」的裝卸時間。'
+        table = '| 方案 | 裝卸時間 |\n| --- | --- |\n| 行動舞台 | 14:10 |\n| 折疊幕架 | 13:20 |'
+        original = Assistant(self.store, ScriptedEngine(table)).ask(self.sid, compare)
+        historical = f'沿用回答 #{original["id"]} 的比較表。只整理「行動舞台」和「折疊幕架」的裝卸時間。'
+        objective = historical + '交付現行結果，缺的只問缺項。'
+        correction = '正式更正裝卸時間的舊比較。折疊幕架原本的13:20取消，正式改成13:45。'
+        correction_id = self.store.add_message(self.sid, 'user', correction)
+        withdrawal = '行動舞台的裝卸時間已正式撤回。'
+        withdrawal_id = self.store.add_message(self.sid, 'user', withdrawal)
+        self.store.add_message(self.sid, 'user', '如果車輛到了，正式確認行動舞台的裝卸時間為15:10。')
+        self.store.add_message(self.sid, 'user', '正式確認行動舞台的裝卸時間為15:10（如果貨梯可用）。')
+        self.store.add_message(self.sid, 'user', '「正式確認行動舞台的裝卸時間為15:10」。')
+        self.store.add_message(self.sid, 'user', '這只是提案。正式確認行動舞台的裝卸時間為15:10。')
+        self.store.add_message(self.sid, 'user', '正式撤回折疊幕架乙的裝卸時間。')
+        self.store.add_message(self.sid, 'user', '正式更正裝卸時間的舊比較。正式更正預約時間的舊比較。'
+                                                '折疊幕架原本的13:45取消，正式改成18:00。')
+        different_session = self.store.new_session()
+        self.store.add_message(different_session, 'user', '正式確認行動舞台的裝卸時間為17:30。')
+        for _ in range(goal_conversation.MAX_MESSAGES + 2):
+            self.store.add_message(self.sid, 'user', '一般行程提醒，月底複核。')
+
+        with patch('assistant.goal_comparison_current.capture', return_value=None):
+            legacy = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        legacy_state = autonomy.get_goal(self.store, self.sid, legacy)
+        self.assertEqual(legacy_state['conversation_context'][goal_comparison_handoff.REFERENCE]['version'], 5)
+
+        gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        engine = ScriptedEngine(action('ask', question='行動舞台的裝卸時間是哪時？', partial_result='折疊幕架 13:45'))
+        waiting = autonomy.run_goal(self.store, self.sid, gid, engine, max_steps=1)
+        context = waiting['conversation_context']
+        checked = context[goal_comparison_current.KEY]
+        self.assertNotIn(goal_comparison_handoff.REFERENCE, context)
+        self.assertNotIn(withdrawal_id, [row['message_id'] for row in context['messages']])
+        self.assertEqual([(row['status'], row['value'], row['source']['message_id']) for row in checked['rows']],
+                         [('withdrawn', None, withdrawal_id), ('confirmed', '13:45', correction_id)])
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(payload['conversation_context'][goal_comparison_current.KEY], checked)
+
+        confirmation_id = self.store.add_message(self.sid, 'user', '重新正式確認「行動舞台」的裝卸時間為16:45。')
+        fresh = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        fresh_state = autonomy.get_goal(self.store, self.sid, fresh)
+        updated = fresh_state['conversation_context'][goal_comparison_current.KEY]['rows'][0]
+        self.assertEqual((updated['status'], updated['value'], updated['source']['message_id']),
+                         ('confirmed', '16:45', confirmation_id))
+        history = autonomy.create_goal(self.store, self.sid, historical + '回顧當時的原始比較。', from_chat=True)
+        historical_state = autonomy.get_goal(self.store, self.sid, history)
+        self.assertEqual(historical_state['conversation_context'][goal_comparison_handoff.REFERENCE]['answer'], table)
+        self.assertNotIn(goal_comparison_current.KEY, historical_state['conversation_context'])
+
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'current-pin')
+        copy = Store(self.root / 'current-pin' / 'assistant.sqlite3')
+        for goal, state in ((gid, waiting), (fresh, fresh_state), (history, historical_state), (legacy, legacy_state)):
+            self.assertEqual(autonomy.get_goal(copy, self.sid, goal), state)
+        with copy.connect() as db:
+            checked['rows'][0]['source']['quote'] = '正式撤回另一個工作。'
+            db.execute('UPDATE autonomous_conversations SET context_json=?,context_sha256=? WHERE goal_id=?',
+                       (json.dumps(context, ensure_ascii=False), goal_conversation.digest(context), gid))
+        with self.assertRaisesRegex(ValueError, '比較現行欄值快照'):
+            validate_database(copy.path)
 
     def test_named_work_dimension_filters_live_fields_before_delivery(self):
         works = ('西側櫃台清點', '東側櫃台清點')
