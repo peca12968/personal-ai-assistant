@@ -147,9 +147,14 @@ def validate_database(path):
             from .memory_drafts import validate_saved
             validate_saved(db)
         if 'autonomous_conversations' in actual_tables:
-            from .goal_conversation import read
-            for (gid,) in db.execute('SELECT goal_id FROM autonomous_conversations'):
-                read(db, gid)
+            from . import goal_comparison_handoff, goal_conversation
+            for gid, sid, objective in db.execute('''SELECT g.id,g.session_id,g.objective
+                    FROM autonomous_goals g JOIN autonomous_conversations c ON c.goal_id=g.id'''):
+                value = goal_conversation.read(db, gid)
+                if goal_comparison_handoff.BASIS in value:
+                    basis = value[goal_comparison_handoff.BASIS]
+                    originals = goal_comparison_handoff.selected(db, sid, objective, basis)
+                    goal_comparison_handoff.validate_steps(db, gid, sid, objective, originals)
         if 'autonomous_conversation_history' in actual_tables:
             from .conversation_history import validate_saved
             validate_saved(db)

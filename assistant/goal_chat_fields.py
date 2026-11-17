@@ -211,20 +211,27 @@ def _record_value(content, field, scope, prefixes, *, reply, shared_field):
     return None
 
 
-def project(db, gid, objective, step_count, requested, *, selected_scope=None):
+def project(db, gid, objective, step_count, requested, *, selected_scope=None, through=None):
     """Project one literal and its source fingerprint, without replaying goal notes."""
     result = {'goal_id': gid, 'field': requested, 'status': 'unverified'}
     notes, = db.execute('SELECT notes FROM autonomous_goals WHERE id=?', (gid,)).fetchone()
+    last_step, note_length = through if through is not None else (step_count, len(notes))
     questions = []
     try:
         for seq, raw_action, raw_observation in db.execute('''
                 SELECT sequence,action_json,observation_json FROM autonomous_steps
-                WHERE goal_id=? AND json_extract(action_json,'$.tool')='ask' ORDER BY sequence''', (gid,)):
+                WHERE goal_id=? AND sequence<=? AND json_extract(action_json,'$.tool')='ask'
+                ORDER BY sequence''', (gid, last_step)):
             question = goal_reply_sources._question(raw_action, raw_observation)
             if label := _ask_label(question):
                 questions.append((seq, label))
         replies = goal_reply_sources.read(db, gid, notes, include_positions=True)
         guidance = goal_guidance_sources.read(db, gid, notes, step_count)
+        if through is not None:
+            replies = [row for row in replies if row['notes_start'] +
+                       len(goal_reply_sources.note(row['question'], row['answer'])) <= note_length]
+            guidance = [row for row in guidance if row['steps_seen'] <= last_step and row['notes_start'] +
+                        len(goal_guidance_sources.note(row['content'], row['steps_seen'], row['recorded_at'])) <= note_length]
     except ValueError:
         return result
     field, groups, scope = _binding(questions, requested, selected_scope)
@@ -241,8 +248,9 @@ def project(db, gid, objective, step_count, requested, *, selected_scope=None):
     prefixes = [title]
     if project != title and re.search(r'[a-z][ -]?\d+(?![a-z0-9])', project):
         prefixes.append(project.strip())
-    records = [(row, row['answer'], True) for row in replies if row['ask_sequence'] in sequences]
-    records.extend((row, row['content'], False) for row in guidance)
+    records = [(row, row['answer'], True) for row in replies if row['ask_sequence'] in sequences
+               and row['notes_start'] < note_length]
+    records.extend((row, row['content'], False) for row in guidance if row['notes_start'] < note_length)
     for row, content, reply in sorted(records, key=lambda item: item[0]['notes_start'], reverse=True):
         if outcome := _record_value(content, field, scope, prefixes, reply=reply, shared_field=len(groups) > 1):
             state, value = outcome

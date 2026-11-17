@@ -38,7 +38,7 @@ from .document_metadata import metadata as document_metadata
 from . import work_plan
 from . import work_plan_scope
 from .memory_aliases import GUIDANCE as MEMORY_ALIAS_GUIDANCE
-from . import goal_conversation
+from . import goal_comparison_handoff, goal_conversation
 from . import goal_required_reads, goal_required_supplement
 from . import conversation_history
 from .companion_profile import GUIDANCE as COMPANION_GUIDANCE, get_profile
@@ -155,7 +155,7 @@ def create_goal(store, sid, objective, *, parent_id=None, file_delivery=False, c
             if csv_document_id is not None:
                 autonomy_csv.configure(db, sid, gid, csv_document_id)
             if from_chat:
-                goal_conversation.save(db, sid, gid)
+                goal_conversation.save(db, sid, gid, objective)
             if history_search:
                 conversation_history.save(db, sid, gid)
             if previous is not None:
@@ -548,6 +548,12 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
     if signature(documents) != goal['sources']:
         update(store, gid, 'paused', notice='參考文件已改變，請以目前文件另建目標，避免混用版本。')
         return get_goal(store, sid, gid), 'sources_changed'
+    originals = None
+    basis = (goal['conversation_context'] or {}).get(goal_comparison_handoff.BASIS)
+    if basis:
+        with store.connect() as db:
+            db.execute('BEGIN')
+            originals = goal_comparison_handoff.selected(db, sid, goal['objective'], basis)
     profile = get_profile(store)
     update(store, gid, 'running')
     catalog = [{**source, 'line_count': len(document['content'].splitlines()), **document_metadata(document)}
@@ -614,6 +620,14 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                        'conversation_context': goal['conversation_context'],
                        'conversation_history': goal['conversation_history'],
                        'steps_remaining_this_run': max_steps - _, 'max_total_steps': MAX_STEPS}
+            comparison = None
+            if originals:
+                with store.connect() as db:
+                    db.execute('BEGIN')
+                    comparison = goal_comparison_handoff.evidence(db, sid, originals)
+                payload['verified_work_fields'] = comparison['rows']
+                for step in payload['steps']:
+                    step['observation'].pop(goal_comparison_handoff.RECEIPT, None)
             recheck_evidence = goal.get('recheck_evidence')
             if recheck_evidence:
                 payload['pending_recheck_evidence'] = {
@@ -720,6 +734,7 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                 ('\n' + source_decision.SCOPE_GUIDANCE if rule_scope else '') +
                 ('\n' + quantity_evidence.SCOPE_GUIDANCE if quantity_scope else '') +
                 ('\n' + goal_conversation.GUIDANCE if goal['conversation_context'] else '') +
+                ('\n' + goal_comparison_handoff.GUIDANCE if comparison else '') +
                 ('\n' + conversation_history.GUIDANCE if goal['conversation_history'] is not None else '') +
                 ('\n' + autonomy_csv.GUIDANCE if goal['csv_source'] else '') +
                 ('\n' + delivery_preference.GUIDANCE if delivery_change else '') +
@@ -847,12 +862,28 @@ def _run_locked(store, sid, gid, engine, *, max_steps, cancel, progress, failure
                         check = source_decision.checked_step(goal['steps'], declared, conditions_hash)
                         if check is None:
                             raise ValueError('交付前請按目前條件核對全部宣告的原文規則區段。')
-                observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
-                                      reply_sources=reply_sources, guidance_sources=guidance_sources,
-                                      declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
-                                      document_version_reply=document_version_reply, document_version_rules=document_version_rules,
-                                      recheck_evidence=recheck_evidence, calculation_sources=calc_sources,
-                                      expected_files=expected_files, previous_files=previous_files)
+                recheck_comparison = comparison is not None and action['tool'] in work_plan.DELIVERY_TOOLS
+                with goal_comparison_handoff.locked(store, originals) if recheck_comparison else nullcontext():
+                    if recheck_comparison:
+                        with store.connect() as db:
+                            db.execute('BEGIN')
+                            current = goal_comparison_handoff.evidence(db, sid, originals)
+                        if current['rows'] != comparison['rows']:
+                            raise ValueError('原工作比較來源剛變更，未交付。請依下次已核對欄列繼續。')
+                        comparison_files = goal_comparison_handoff.check_action(
+                            goal['objective'], action, current, goal['steps'])
+                        if comparison_files is not None:
+                            if expected_files is not None and expected_files != comparison_files:
+                                raise ValueError('比較來源與驗證文件內容不一致。')
+                            expected_files = comparison_files
+                    observation = execute(store, documents, action, goal['steps'], gid=gid, sid=sid, cancel=cancel,
+                                          reply_sources=reply_sources, guidance_sources=guidance_sources,
+                                          declared_rule_ranges=declared, pending_document_rule=pending_document_rule,
+                                          document_version_reply=document_version_reply, document_version_rules=document_version_rules,
+                                          recheck_evidence=recheck_evidence, calculation_sources=calc_sources,
+                                          expected_files=expected_files, previous_files=previous_files)
+                    if recheck_comparison:
+                        observation[goal_comparison_handoff.RECEIPT] = current
                 if file_recovery:
                     observation['previous_file_recovery'] = {'before_tool': attempted['tool']}
                 elif recovery:

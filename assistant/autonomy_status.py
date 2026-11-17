@@ -1,6 +1,7 @@
 """Bounded historical status for chat, without replaying tool data or old sources."""
 import json
 import re
+import sqlite3
 import unicodedata
 from . import delivery_preference, goal_chat_fields, goal_sources
 
@@ -203,7 +204,9 @@ def _choice_request(question, *, field_scope=False):
 
 def _latest_completed_answer(db, sid, before=None):
     from .local_answer_receipts import load_context, MAX_JSON_BYTES, MAX_TEXT_BYTES
-    rows = db.execute('''WITH tail AS (
+    cursor = db.cursor()
+    cursor.row_factory = sqlite3.Row
+    rows = cursor.execute('''WITH tail AS (
         SELECT id,role,content FROM messages WHERE session_id=? AND (? IS NULL OR id<?)
         ORDER BY id DESC LIMIT 1)
         SELECT tail.id,tail.content,u.id AS user_id,u.content AS request,c.payload FROM tail
