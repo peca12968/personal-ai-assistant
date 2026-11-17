@@ -423,9 +423,13 @@ class Assistant:
             selection = previous.get('autonomous_goals', {}).get('reference', {}).get('selection')
             if selection and selection != context.get('autonomous_goals', {}).get('reference', {}).get('selection'):
                 raise ValueError('重試所需的候選工作已變更，請重新查詢。')
-            scope_selection = previous.get('autonomous_goals', {}).get('saved_field', {}).get('scope_selection')
-            if scope_selection and scope_selection != context.get('autonomous_goals', {}).get('saved_field', {}).get('scope_selection'):
+            previous_work = previous.get('autonomous_goals', {})
+            current_work = context.get('autonomous_goals', {})
+            scope_selection = previous_work.get('saved_field', {}).get('scope_selection')
+            if scope_selection and scope_selection != current_work.get('saved_field', {}).get('scope_selection'):
                 raise ValueError('重試所需的欄位範圍已變更，請重新查詢。')
+            if previous_work.get('comparison_selection') and previous_work['comparison_selection'] != current_work.get('comparison_selection'):
+                raise ValueError('重試所需的比較範圍已變更，請重新查詢。')
             context['retry_of'] = {'run_id': retry['id'], 'previous_status': retry['status'], 'uses_current_references': True}
         run_id = uuid.uuid4().hex
         with answer_runs.lease(self.store, run_id):

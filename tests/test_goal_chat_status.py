@@ -681,6 +681,103 @@ class GoalChatStatusTests(unittest.TestCase):
                        request.replace('「河紋晚場退件」的「退件處」。', '「河紋晚場退件」。')):
             self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, prompt))
 
+    def test_comparison_scope_choice_keeps_pinned_rows_and_checks_visible_proof(self):
+        first_title = '溪映 K8 的夜間放映'
+        second_title = '鳴泉 R6 的貨架交班'
+        first = a.create_goal(self.store, self.sid, first_title)
+        second = a.create_goal(self.store, self.sid, second_title)
+        for gid, ask, reply in ((first, '請提供簽收人。', '簽收人確定為高竹。'),
+                                (second, '請提供甲棟使用的巡查櫃。', '甲棟的巡查櫃確定為檀柏櫃。'),
+                                (second, '請提供乙棟使用的巡查櫃。', '乙棟的巡查櫃確定為松石櫃。')):
+            a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=ask)))
+            view = goal_replies.snapshot(self.store, self.sid, gid)
+            goal_replies.save(self.store, self.sid, gid, reply, expected_fingerprint=view['fingerprint'])
+        query = (f'比較「{first_title}」的「簽收人」和「{second_title}」的「巡查櫃」最後已確認的欄值。'
+                 '每件一行，不確定範圍就問。')
+        choose = '乙棟。保留剛才兩列格式，補上貨架交班這列，只回報兩列。'
+        question = f'「{second_title}」的「巡查櫃」要查哪一棟？'
+        stub = f'- {first_title}｜簽收人｜高竹\n- {second_title}｜巡查櫃｜待確認\n\n'
+        Assistant(self.store, ScriptedEngine(stub + '1. 「乙棟」\n\n' + question)).ask(self.sid, query)
+        self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, choose))
+        prior = Assistant(self.store, ScriptedEngine(stub + '1. 「乙棟」\n2. 「甲棟」\n\n' + question)).ask(self.sid, query)
+        old_context = self.store.answer_context(prior['id'])
+        old_first = old_context['autonomous_goals']['saved_work_fields'][0]
+        for wrong in ('丙棟', '不要選乙棟', '乙棟。補上簽收人這列。', '乙棟。請執行工作。', '３'):
+            self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, wrong))
+        other_session = self.store.new_session()
+        self.assertNotIn('saved_work_fields', goal_context(self.store, other_session, choose))
+        checkpoints = create_backup(self.store.path)
+        restore_backup(checkpoints['path'], self.root/'table')
+        restored = Store(self.root/'table'/'assistant.sqlite3')
+        selection = goal_context(restored, self.sid, '１')['comparison_selection']
+        self.assertEqual((selection['answer_id'], selection['row'], selection['scope']),
+                         (prior['id'], 2, '乙棟'))
+
+        app = Assistant(restored, ScriptedEngine('高竹\n沅竹櫃'))
+        prepared = app.prepare_context(self.sid, choose)
+        a.create_goal(restored, self.sid, second_title)
+        view = goal_guidance.snapshot(restored, self.sid, second)
+        goal_guidance.save(restored, self.sid, second, '乙棟的巡查櫃正式改為沅竹櫃。',
+                           expected_fingerprint=view['fingerprint'])
+        with self.assertRaisesRegex(ValueError, '保存來源已變更'):
+            answer_runs.begin(restored, self.sid, 'c' * 32, choose, prepared)
+
+        result = goal_context(restored, self.sid, choose)
+        self.assertEqual(result['saved_work_fields'][0], old_first)
+        self.assertEqual([(row['goal_id'], row['value']) for row in result['saved_work_fields']],
+                         [(first, '高竹'), (second, '沅竹櫃')])
+        view = goal_guidance.snapshot(restored, self.sid, first)
+        goal_guidance.save(restored, self.sid, first, '簽收人正式改為許崎。', expected_fingerprint=view['fingerprint'])
+        state = [a.get_goal(restored, self.sid, goal) for goal in (first, second)]
+        answer = app.ask(self.sid, choose)
+        updated = restored.answer_context(answer['id'])['autonomous_goals']
+        self.assertEqual(updated['saved_work_fields'][0]['status'], 'unverified')
+        self.assertTrue(updated['saved_work_fields'][0]['changed_since_comparison'])
+        self.assertNotIn('value', updated['saved_work_fields'][0])
+        self.assertEqual(updated['saved_work_fields'][1]['value'], '沅竹櫃')
+        self.assertIsNone(chat_goal_target(restored, self.sid, answer['id']))
+        self.assertEqual(restored.answer_context(prior['id']), old_context)
+        self.assertEqual([a.get_goal(restored, self.sid, goal) for goal in (first, second)], state)
+        self.assertNotIn('saved_work_fields', goal_context(restored, self.sid, choose))
+
+    def test_comparison_scope_choice_reuses_original_pairs_for_the_next_row(self):
+        titles = ('素雀 H4 的卡片覆核', '良杉 P1 的路線換班', '良杉 P2 的器材點收')
+        gids = [a.create_goal(self.store, self.sid, title) for title in titles]
+        for index, gid in enumerate(gids):
+            if index == 0:
+                observations = [('請提供記錄人。', '記錄人確定為宋秋。')]
+            else:
+                observations = [(f'請提供{scope}的封條號。', f'{scope}的封條號確定為{value}{index}。')
+                                for scope, value in (('早班', 'AM-'), ('午班', 'PM-'))]
+            for question, text in observations:
+                a.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=question)))
+                view = goal_replies.snapshot(self.store, self.sid, gid)
+                goal_replies.save(self.store, self.sid, gid, text, expected_fingerprint=view['fingerprint'])
+        query = (f'比較三件工作的最後正式確認值。「{titles[0]}」的「記錄人」。'
+                 f'「{titles[1]}」的「封條號」。「{titles[2]}」的「封條號」。每件一行。')
+        options = '1. 「早班」\n2. 「午班」\n\n'
+        Assistant(self.store, ScriptedEngine(options + '封條號要查哪一班？')).ask(self.sid, query)
+        self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, '早班。'))
+        first = Assistant(self.store, ScriptedEngine(options + f'「{titles[1]}」的封條號要查哪一班？')).ask(self.sid, query)
+        mid = Assistant(self.store, ScriptedEngine(options + f'「{titles[2]}」的封條號要查哪一班？')).ask(
+            self.sid, '早班。保留剛才三列格式，補上路線換班這列。')
+        prior_summary = self.store.answer_context(mid['id'])['autonomous_goals']
+        self.assertEqual(prior_summary['comparison_selection']['answer_id'], first['id'])
+        self.assertEqual(prior_summary['comparison_selection']['row'], 2)
+        self.assertEqual([item['status'] for item in prior_summary['saved_work_fields']],
+                         ['confirmed', 'confirmed', 'needs_scope'])
+
+        checkpoint = create_backup(self.store.path)
+        restore_backup(checkpoint['path'], self.root/'chain')
+        restored = Store(self.root/'chain'/'assistant.sqlite3')
+        final = goal_context(restored, self.sid, '２，只回報三列。')
+        self.assertEqual(final['comparison_selection']['answer_id'], mid['id'])
+        self.assertEqual(final['comparison_selection']['row'], 3)
+        self.assertEqual(final['comparison_selection']['origin_user_id'],
+                         prior_summary['comparison_selection']['origin_user_id'])
+        self.assertEqual(final['saved_work_fields'][:2], prior_summary['saved_work_fields'][:2])
+        self.assertEqual([item['value'] for item in final['saved_work_fields']], ['宋秋', 'AM-1', 'PM-2'])
+
     def test_saved_field_rechecks_its_source_before_recording_chat(self):
         title = '月台送件'
         gid = a.create_goal(self.store, self.sid, title)

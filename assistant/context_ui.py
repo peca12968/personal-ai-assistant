@@ -60,6 +60,8 @@ def _work_field_text(field):
         detail = '有多件工作符合名稱，請指定完整工作名稱或編號。'
     elif status == 'not_found':
         detail = '在此對話查不到指定的工作。'
+    elif field.get('changed_since_comparison'):
+        detail = '自上次比較後，這列的依據已變更，待重新查詢。'
     else:
         detail = '這次查不到可核對的正式欄值。'
     return '\n'.join(heading) + '\n\n' + detail

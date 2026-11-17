@@ -49,6 +49,15 @@ _SCOPE_ORDINAL = re.compile(r'第\s*([一二三四五六1-6])\s*[件個項筆]')
 _SCOPE_NUMBER = re.compile(r'[1-6]')
 _SCOPE_OUTPUT = re.compile(r'^(?:請\s*)?只\s*(?:回答|回覆|回報|告訴我)\s*([^。？！?!；;，,\r\n]{1,40})[。！？?!]?$')
 _VISIBLE_SCOPE = re.compile(r'^[ \t]*(?:([1-6])[.)、]|[-*])[ \t]+([^ \t\r\n][^\r\n]*?)[ \t]*$', re.M)
+_COMPARISON_ROW_COUNT = r'(?:[兩二三四五六2-6])?(?:列|行)'
+_COMPARISON_FORMAT = re.compile(
+    rf'(?:請\s*)?(?:(?:保留|沿用|維持|照)(?:剛才|剛剛|原本|上次|先前)?的?'
+    rf'(?:{_COMPARISON_ROW_COUNT})?(?:格式|比較表|表格|其他列|其餘列)'
+    rf'|只(?:回報|回覆|列出|回答)(?:這{_COMPARISON_ROW_COUNT}|{_COMPARISON_ROW_COUNT}|整張比較表|這一列)'
+    r'|(?:已確認的)?(?:其他|其餘)(?:已確認的)?(?:的|列|欄值)?照舊)')
+_COMPARISON_FILL = re.compile(r'(?:請\s*)?(?:只)?(?:補上|補齊|更新)(?P<target>[^。？！?!；;，,\r\n]{0,80}?)(?:這|該|那)?(?:一)?列')
+_COMPARISON_GENERIC_ROW = {'', '待確認', '未確認', '先前待確認', '原本待確認', '比較表的待確認'}
+_SCOPE_QUESTION = re.compile(r'哪[^。？！?!\r\n]{0,20}[？?]$')
 _QUOTED_TITLE = re.compile(r'「([^「」\r\n]+)」|『([^『』\r\n]+)』|“([^“”\r\n]+)”')
 _NUMBERED_TITLE = re.compile(r'^\s*([1-3])[.)、]\s*「([^「」\r\n]+)」', re.M)
 _NOT_A_CHOICE = re.compile(r'^(?:我\s*)?(?:不是|不要|不選|別|先別|如果|假設|引用|原文|例如)')
@@ -344,13 +353,26 @@ def _field_scope_choice(db, sid, question, before):
             or _requested_saved_field(row['request'], reference.get('name')) != field['field']
             or not _verified_work_reference(db, sid, row, reference, goals[0])):
         return None
+    selection = _visible_scope_selection(row['id'], row['content'], field, request)
+    if not selection:
+        return None
+    parts = _CHOICE_SEPARATOR.split(_request_body(question), maxsplit=1)
+    if len(parts) == 2 and (format_match := _SCOPE_OUTPUT.fullmatch(parts[1].strip())):
+        requested = goal_chat_fields.label_key(format_match[1].strip('「」'))
+        if (requested not in {'值', '欄值', '正式值', '確認值', '結果'}
+                and not goal_chat_fields.label_key(field['field']).endswith(requested)):
+            return None
+    return [field['goal_id']], {'name': reference['name'], 'status': 'matched'}, field['field'], selection
+
+
+def _visible_scope_selection(answer_id, answer, field, request):
     choices = field.get('scope_choices')
     if (not isinstance(choices, list) or not 2 <= len(choices) <= goal_chat_fields.MAX_SCOPE_CHOICES
             or any(not isinstance(choice, str) or not choice or len(choice) > 80 for choice in choices)):
         return None
     labels = {goal_chat_fields.label_key(choice): choice for choice in choices}
     shown = [(number, goal_chat_fields.label_key(label.strip().removeprefix('「').removesuffix('」')))
-             for number, label in _VISIBLE_SCOPE.findall(row['content'])]
+             for number, label in _VISIBLE_SCOPE.findall(answer)]
     if len(labels) != len(choices) or len(shown) != len(labels) or {label for _, label in shown} != labels.keys():
         return None
     label, ordinal, _ = request
@@ -363,14 +385,7 @@ def _field_scope_choice(db, sid, question, before):
         key = goal_chat_fields.label_key(label)
     if key not in labels:
         return None
-    parts = _CHOICE_SEPARATOR.split(_request_body(question), maxsplit=1)
-    if len(parts) == 2 and (format_match := _SCOPE_OUTPUT.fullmatch(parts[1].strip())):
-        requested = goal_chat_fields.label_key(format_match[1].strip('「」'))
-        if (requested not in {'值', '欄值', '正式值', '確認值', '結果'}
-                and not goal_chat_fields.label_key(field['field']).endswith(requested)):
-            return None
-    return ([field['goal_id']], {'name': reference['name'], 'status': 'matched'}, field['field'],
-            {'answer_id': row['id'], 'label': label, 'scope': labels[key]})
+    return {'answer_id': answer_id, 'label': label, 'scope': labels[key]}
 
 
 def _chat_goal_link(db, sid, answer_id):
@@ -452,6 +467,18 @@ def goal_context(store, sid, question='', *, before=None):
         return _goal_context(db, sid, question, before)
 
 
+def _comparison_field(db, sid, name, field, gid, *, selected_scope=None):
+    if not isinstance(gid, str) or not _GOAL_ID.fullmatch(gid):
+        return None
+    row = db.execute('''SELECT g.objective,
+        (SELECT COUNT(*) FROM autonomous_steps s WHERE s.goal_id=g.id) AS step_count
+        FROM autonomous_goals g WHERE g.session_id=? AND g.id=?''', (sid, gid)).fetchone()
+    if row is None or (_key(name) != gid and not _label_rank(row['objective'], _key(name))):
+        return None
+    return {'work': name, **goal_chat_fields.project(
+        db, gid, row['objective'], row['step_count'], field, selected_scope=selected_scope)}
+
+
 def _comparison_fields(db, sid, pairs):
     fields = []
     for name, field in pairs:
@@ -459,17 +486,122 @@ def _comparison_fields(db, sid, pairs):
         if len(matches) != 1:
             fields.append({'work': name, 'field': field, 'status': 'ambiguous_work' if matches else 'not_found'})
             continue
-        gid, = matches
-        objective, step_count = db.execute('''SELECT g.objective,
-            (SELECT COUNT(*) FROM autonomous_steps s WHERE s.goal_id=g.id)
-            FROM autonomous_goals g WHERE g.session_id=? AND g.id=?''', (sid, gid)).fetchone()
-        fields.append({'work': name, **goal_chat_fields.project(db, gid, objective, step_count, field)})
+        fields.append(_comparison_field(db, sid, name, field, matches[0]))
     return fields
+
+
+def _comparison_choice_request(question):
+    from .context import context_reset
+    if len(question) > 500 or context_reset(question):
+        return None
+    text = _request_body(question)
+    head, *tail = _CHOICE_SEPARATOR.split(text, maxsplit=1)
+    if not (selection := _choice_request(head.strip(), field_scope=True)):
+        return None
+    targets = []
+    for clause in _CHOICE_SEPARATOR.split(tail[0] if tail else ''):
+        clause = clause.strip()
+        if not clause or _COMPARISON_FORMAT.fullmatch(clause):
+            continue
+        if not (fill := _COMPARISON_FILL.fullmatch(clause)):
+            return None
+        target = goal_chat_fields.label_key(fill['target'].strip('「」'))
+        target = target.removesuffix('的')
+        if target not in _COMPARISON_GENERIC_ROW:
+            targets.append(target)
+    return selection, targets
+
+
+def _comparison_origin(db, sid, row, summary, fields):
+    selection = summary.get('comparison_selection')
+    if isinstance(selection, dict):
+        original_id = selection.get('origin_user_id')
+        if type(original_id) is not int:
+            return None
+        original = db.execute('''SELECT id,content FROM messages
+            WHERE session_id=? AND id=? AND id<? AND role='user' ''',
+            (sid, original_id, row['user_id'])).fetchone()
+        if original is None:
+            return None
+        uid, request = original
+    else:
+        uid, request = row['user_id'], row['request']
+    pairs = goal_chat_fields.requested_work_fields(_request_body(request))
+    if not pairs or list(pairs) != [(item.get('work'), item.get('field')) for item in fields]:
+        return None
+    return uid
+
+
+def _comparison_choice_target(answer, fields, targets):
+    lines = answer.strip().splitlines()
+    if not lines or not _SCOPE_QUESTION.search(lines[-1].strip()):
+        return None
+    question = goal_chat_fields.label_key(lines.pop())
+    while lines and not lines[-1].strip():
+        lines.pop()
+    start = len(lines)
+    while start and _VISIBLE_SCOPE.fullmatch(lines[start - 1]):
+        start -= 1
+    if start == len(lines):
+        return None
+    options = '\n'.join(lines[start:])
+    candidates = [index for index, item in enumerate(fields)
+                  if item.get('status') == 'needs_scope'
+                  and goal_chat_fields.label_key(item['work']) in question
+                  and goal_chat_fields.label_key(item['field']) in question]
+    if len(candidates) != 1:
+        return None
+    selected, = candidates
+    for target in targets:
+        if len(target) < 2:
+            return None
+        matching = [index for index, item in enumerate(fields)
+                    if target in goal_chat_fields.label_key(item['work'])
+                    or target == goal_chat_fields.label_key(item['field'])]
+        if matching != [selected]:
+            return None
+    return selected, options
+
+
+def _comparison_scope_choice(db, sid, question, before):
+    request = _comparison_choice_request(question)
+    if not request or not (previous := _latest_completed_answer(db, sid, before)):
+        return None
+    row, context = previous
+    summary = context.get('autonomous_goals')
+    fields = summary.get('saved_work_fields') if isinstance(summary, dict) else None
+    if (not isinstance(fields, list) or not all(isinstance(item, dict) for item in fields)
+            or not (origin := _comparison_origin(db, sid, row, summary, fields))):
+        return None
+    choice, targets = request
+    if not (matched := _comparison_choice_target(row['content'], fields, targets)):
+        return None
+    selected, options = matched
+    item = fields[selected]
+    selection = _visible_scope_selection(row['id'], options, item, choice)
+    if not selection or not (chosen := _comparison_field(
+            db, sid, item['work'], item['field'], item.get('goal_id'), selected_scope=selection['scope'])):
+        return None
+    chosen['scope_selection'] = selection
+    result = list(fields)
+    result[selected] = chosen
+    for index, old in enumerate(fields):
+        if index == selected or 'goal_id' not in old:
+            continue
+        previous_scope = old.get('scope_selection')
+        scope = previous_scope.get('scope') if isinstance(previous_scope, dict) else None
+        current = _comparison_field(db, sid, old['work'], old['field'], old['goal_id'],
+                                    selected_scope=scope if isinstance(scope, str) else None)
+        if current != {key: value for key, value in old.items() if key != 'scope_selection'}:
+            result[index] = {'work': old['work'], 'field': old['field'], 'goal_id': old['goal_id'],
+                             'status': 'unverified', 'changed_since_comparison': True}
+    return {'goals': [], 'limited': False, 'saved_work_fields': result,
+            'comparison_selection': {**selection, 'row': selected + 1, 'origin_user_id': origin}}
 
 
 def verify_reference(db, sid, question, state, before):
     current = _goal_context(db, sid, question, before)
-    for key in ('saved_field', 'saved_work_fields'):
+    for key in ('saved_field', 'saved_work_fields', 'comparison_selection'):
         if key in state and current.get(key) != state[key]:
             raise ValueError('工作欄位的保存來源已變更，請重新查詢。')
     if state.get('reference', {}).get('selection') and current != state:
@@ -483,6 +615,8 @@ def _goal_context(db, sid, question, before):
     if pairs := goal_chat_fields.requested_work_fields(_request_body(question)):
         return {'goals': [], 'limited': False, 'saved_work_fields': _comparison_fields(db, sid, pairs)}
     name, natural = _status_request(question)
+    if not name and (comparison := _comparison_scope_choice(db, sid, question, before)):
+        return comparison
     matches = None
     reference = None
     scope_choice = _field_scope_choice(db, sid, question, before) if not name else None
