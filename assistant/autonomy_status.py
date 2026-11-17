@@ -6,6 +6,7 @@ from . import delivery_preference, goal_sources
 
 
 _POLITE = r'(?:(?:請問|請幫我|幫我|麻煩幫我|我想|請)\s*)?'
+_RETURN_OPENING = re.compile(r'^(?:對了|話說回來|說回來|順便問一下)[，,：:]\s*')
 _LOOKUP = re.compile(
     r'^(?:先\s*)?(?:回到|回去接續|找回|繼續|接續|查一下|查看|查詢|查查)\s*'
     r'(?:(?:先前|之前|上次)\s*)?(?:(?:自主目標|目標)\s*[:：]?\s*)?')
@@ -19,39 +20,82 @@ _STATUS_CUE = re.compile(
     r'|(?:進度|狀態)(?:如何|是什麼|[？?]|$)')
 _STATUS_START = re.compile(r'^(?:這|那|的|目前|現在|等|還|仍|接下來|後續|下一步|進度|狀態)')
 _TOPIC = re.compile(r'^(?:的)?(?:(?:這|那)(?:個|段))?話題')
+_WORK_REFERENCE = r'(?:這|那)(?:一)?(?:件|個|項)(?:自主目標|目標|工作|任務)?'
+_NATURAL_CUE = (
+    r'[ \t，,：:]*(?:請問\s*)?(?:(?:目前|現在|接下來|後續|下一步)\s*)?'
+    r'(?:(?:還|仍)?(?:在等(?:待)?|等(?:著|待)?|需要|要|該|得)?(?:我)?'
+    r'(?:回答|回覆|補(?:充)?|確認|提供|填寫|填|缺)(?:什麼|哪)'
+    r'|(?:還|仍)?(?:卡在|做到|停在|進行到|等)哪'
+    r'|(?:進度|狀態)(?:如何|是什麼|怎麼樣|[？?]|$)'
+    r'|(?:還有什麼待補|還有哪個欄位待補|(?:已經|已)?完成了嗎))'
+)
+_REFERENT = re.compile(rf'^\s*{_WORK_REFERENCE}{_NATURAL_CUE}')
+_NATURAL_REFERENCE = re.compile(rf'^(?P<name>[^。；;，,？！?!：:「」『』“”`\r\n]{{2,80}}?)\s*{_WORK_REFERENCE}{_NATURAL_CUE}')
+_NOT_A_REFERENCE = re.compile(r'^(?:我\s*)?(?:如果|若|假設|只要|引用|原文|例如|範例|不是|不要|不必|別|先別|暫不|選)')
 _WORK_VERB = re.compile(r'^(?:請先|請)?\s*(?:整理|準備|完成|處理|核對|製作|追蹤|建立)\s*')
 _GOAL_ID = re.compile(r'[a-f0-9]{32}')
+_PROJECT_CODE = re.compile(r'(?<![a-z0-9])[a-z]{1,8}[- ]?[0-9]{1,12}(?![a-z0-9])')
 _CODE_SPACING = re.compile(r'(?<=[\u3400-\u9fff]) (?=[a-z0-9])|(?<=[a-z0-9]) (?=[\u3400-\u9fff])')
 _LABEL_BOUNDARY = ' ：:。；;，,。—–（(的'
 _CHOOSE = re.compile(r'^(?:我指的是|我選的是|我選|就選|那就|選擇|選|就)\s*')
 _CHOICE_SUFFIX = re.compile(r'\s*(?:這|那)(?:一)?(?:件|個)(?:工作|目標)?$')
 _CHOICE_SEPARATOR = re.compile(r'[，,。；;？！?!\r\n]')
 _CHOICE_ORDINAL = re.compile(r'第\s*([一二三123])\s*[件個項筆]')
+_CHOICE_NUMBER = re.compile(r'[1-3]')
 _QUOTED_TITLE = re.compile(r'「([^「」\r\n]+)」|『([^『』\r\n]+)』|“([^“”\r\n]+)”')
 _NUMBERED_TITLE = re.compile(r'^\s*([1-3])[.)、]\s*「([^「」\r\n]+)」', re.M)
 _NOT_A_CHOICE = re.compile(r'^(?:我\s*)?(?:不是|不要|不選|別|先別|如果|假設|引用|原文|例如)')
 
 
-def _requested_name(question):
-    body = re.sub('^' + _POLITE, '', question.strip(), count=1)
+def _request_body(question):
+    return re.sub('^' + _POLITE, '', _RETURN_OPENING.sub('', question.strip(), count=1), count=1)
+
+
+def _natural_name(body):
+    if _NOT_A_REFERENCE.match(body):
+        return None
+    if quote := _NAME_QUOTE.match(body):
+        name = next(value for value in quote.groups() if value is not None)
+        if not _REFERENT.match(body[quote.end():]):
+            return None
+    elif match := _NATURAL_REFERENCE.match(body):
+        name = match['name']
+        if re.search(r'\s(?:或|與|和|以及)\s|、', name):
+            return None
+    else:
+        return None
+    name = name.strip()
+    if 2 <= len(name) <= 80 and not re.search(r'[\x00-\x1f\x7f]', name):
+        return name
+    return None
+
+
+def _status_request(question):
+    body = _request_body(question)
     lookup = _LOOKUP.match(body)
     if lookup:
         body = body[lookup.end():]
+    if name := _natural_name(body):
+        return name, lookup is None
     if quote := _NAME_QUOTE.match(body):
         name = next(value for value in quote.groups() if value is not None)
         tail = body[quote.end():].lstrip(' \t：:，,。；;\n')
         if _TOPIC.match(tail) or (not lookup and not _STATUS_START.match(tail)):
-            return None
+            return None, False
     elif lookup and (end := _NAME_END.search(body)):
         name, tail = body[:end.start()], body[end.start():]
     else:
-        return None
+        return None, False
     name = name.strip()
     if (2 <= len(name) <= 80 and not re.search(r'[\x00-\x1f\x7f「」『』“”]', name)
             and not re.match(r'^\s*(?:[、]|或|和|與|以及)', tail)
             and _STATUS_CUE.search(tail)):
-        return name
-    return None
+        return name, False
+    return None, False
+
+
+def _requested_name(question):
+    return _status_request(question)[0]
 
 
 def _key(value):
@@ -91,8 +135,8 @@ def _choice_request(question):
     from .context import context_reset
     if len(question) > 500:
         return None
-    clauses = _CHOICE_SEPARATOR.split(question.strip(), maxsplit=1)
-    head = re.sub('^' + _POLITE, '', clauses[0].strip(), count=1)
+    clauses = _CHOICE_SEPARATOR.split(_request_body(question), maxsplit=1)
+    head = clauses[0].strip()
     tail = clauses[1].strip() if len(clauses) == 2 else ''
     if (not head or _NOT_A_CHOICE.match(head) or context_reset(question)
             or (tail and not _STATUS_CUE.search(tail))):
@@ -105,7 +149,10 @@ def _choice_request(question):
         head = head[:suffix.start()].strip()
     if (quote := _NAME_QUOTE.match(head)) and quote.end() == len(head):
         head = next(value for value in quote.groups() if value is not None)
-    if ordinal := _CHOICE_ORDINAL.fullmatch(_key(head)):
+    key = _key(head)
+    if _CHOICE_NUMBER.fullmatch(key):
+        return head, int(key), True
+    if ordinal := _CHOICE_ORDINAL.fullmatch(key):
         return head, '一二三'.index(ordinal[1]) + 1 if ordinal[1] in '一二三' else int(ordinal[1]), True
     if not 2 <= len(head) <= 80 or re.search(r'[「」『』“”`、/：:\x00-\x1f\x7f]', head):
         return None
@@ -182,7 +229,7 @@ def _short_name(title, name):
     return title
 
 
-def _choice_matches(db, sid, question, before):
+def _choice_matches(db, sid, question, before, *, only_offered=False):
     selection = _choice_request(question)
     if not selection or not (origin := _choice_origin(db, sid, before)):
         return None
@@ -200,7 +247,7 @@ def _choice_matches(db, sid, question, before):
     else:
         key = _key(label)
         matches = [title for title in offered if key in (title, _short_name(title, name))]
-    if not explicit and not matches:
+    if not matches and (only_offered or not explicit):
         return None
     # Resolve from the prior list, then verify the selected ID and heading in
     # the current session. Newly created goals cannot replace a prior option.
@@ -317,14 +364,18 @@ def _goal_context(db, sid, question, before):
     # The engine also imports this module while autonomy is being initialized.
     from .autonomy import signature
     from .goal_review import next_action
-    name = _requested_name(question)
+    name, natural = _status_request(question)
     matches = None
     reference = None
-    if name:
-        matches = _named_ids(db, sid, name)
-        reference = {'name': name, 'status': {0: 'not_found', 1: 'matched'}.get(len(matches), 'ambiguous')}
-    elif choice := _choice_matches(db, sid, question, before):
+    choice = _choice_matches(db, sid, question, before, only_offered=natural) if natural or not name else None
+    if choice:
         matches, reference = choice
+    elif name:
+        found = _named_ids(db, sid, name)
+        key = _key(name)
+        if found or not natural or _GOAL_ID.fullmatch(key) or _PROJECT_CODE.search(key):
+            matches = found
+            reference = {'name': name, 'status': {0: 'not_found', 1: 'matched'}.get(len(matches), 'ambiguous')}
     if matches == []:
         return {'goals': [], 'limited': False, 'reference': reference}
     # Keep this projection independent of cross-session reviews and full reports.

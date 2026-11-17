@@ -202,6 +202,94 @@ class GoalChatStatusTests(unittest.TestCase):
         isolated = Assistant(self.store, None).prepare_context(self.sid, '只根據這則訊息作答。' + query)
         self.assertNotIn('autonomous_goals', isolated)
 
+    def test_colloquial_chat_returns_to_the_older_named_goal(self):
+        title = '晴溪 R7 的週三交接'
+        target = a.create_goal(self.store,self.sid,title)
+        needed = '請提供週三晚班使用的吊牌字樣。'
+        a.run_goal(self.store,self.sid,target,ScriptedEngine(action('ask',question=needed)),max_steps=1)
+        for other in ('晴溪 R7 的週四交接','備品櫃調查','晴溪 R70 的週三交接'):
+            a.create_goal(self.store,self.sid,other)
+        self.store.add_message(self.sid,'user','換個話題，談晴天和跑步。')
+        self.store.add_message(self.sid,'assistant','可以聊跑步。')
+        self.assertNotIn(target,[row['id'] for row in goal_context(self.store,self.sid)['goals']])
+        query = f'對了，{title}那件，現在還需要我回覆哪個欄位？請照原待答問題回答。'
+        recorded = a.get_goal(self.store,self.sid,target)
+        answer = Assistant(self.store,ScriptedEngine(needed)).ask(self.sid,query)
+        saved = self.store.answer_context(answer['id'])
+        snapshot = saved['autonomous_goals']
+        self.assertEqual(snapshot['reference'],{'name':title,'status':'matched'})
+        self.assertEqual([row['recorded_question'] for row in snapshot['goals']],[needed])
+        self.assertEqual(chat_goal_target(self.store,self.sid,answer['id']),target)
+        self.assertEqual(a.get_goal(self.store,self.sid,target),recorded)
+
+        copy = self.root/'natural-status-copy'
+        archive = create_backup(self.store.path,self.root/'natural-status.paibackup')
+        restore_backup(archive['path'],copy)
+        restored = Store(copy/'assistant.sqlite3')
+        view = goal_replies.snapshot(restored,self.sid,target)
+        goal_replies.save(restored,self.sid,target,'週三晚班吊牌寫紫苑。',
+                          expected_fingerprint=view['fingerprint'])
+        live = goal_context(restored,self.sid,query)
+        self.assertEqual(live['goals'][0]['next_action'],'resume')
+        self.assertEqual(live['goals'][0]['recorded_question'],'')
+        self.assertEqual(restored.answer_context(answer['id']),saved)
+
+    def test_natural_ambiguity_and_visible_choice_precede_other_title_matches(self):
+        prefix = '晴溪 R7'
+        titles = (prefix+' 的週三交接',prefix+' 的週四交接')
+        jobs = [a.create_goal(self.store,self.sid,title) for title in titles]
+        for gid in jobs:
+            a.run_goal(self.store,self.sid,gid,ScriptedEngine(action('ask',question='本件的專屬未答欄位？')),max_steps=1)
+        decoy = a.create_goal(self.store,self.sid,'週四交接')
+        query = f'{prefix}那件工作，現在還需要我回覆哪個欄位？'
+        listed = f'你指哪一件？\n1. 「{titles[1]}」\n2. 「{titles[0]}」'
+        anchor = Assistant(self.store,ScriptedEngine(listed)).ask(self.sid,query)
+        context = self.store.answer_context(anchor['id'])['autonomous_goals']
+        self.assertEqual(context['reference'],{'name':prefix,'status':'ambiguous'})
+        self.assertEqual({row['id'] for row in context['goals']},set(jobs))
+        self.assertTrue(all(not row['recorded_question'] for row in context['goals']))
+        choice = goal_context(self.store,self.sid,'對了，週四交接那件，現在還缺什麼？')
+        self.assertEqual(choice['reference']['selection'],
+                         {'answer_id':anchor['id'],'label':'週四交接','goal_id':jobs[1]})
+        self.assertNotEqual(choice['goals'][0]['id'],decoy)
+        for reply in ('1','１'):
+            numbered = goal_context(self.store,self.sid,reply)
+            self.assertEqual(numbered['reference']['selection']['answer_id'],anchor['id'])
+            self.assertEqual(numbered['reference']['selection']['goal_id'],jobs[1])
+        number = goal_context(self.store,self.sid,'3')
+        self.assertEqual(number['reference']['status'],'ambiguous')
+        self.assertNotIn('goal_id',number['reference']['selection'])
+        # A new independent, fully named request still resolves its own title.
+        second = a.create_goal(self.store,self.sid,'碧澤 M3 交接')
+        explicit = goal_context(self.store,self.sid,'碧澤 M3 交接這件，目前進度如何？')
+        self.assertEqual([row['id'] for row in explicit['goals']],[second])
+        self.store.add_message(self.sid,'user','換個話題。')
+        self.assertNotIn('reference',goal_context(self.store,self.sid,'1'))
+
+    def test_natural_named_status_respects_exact_codes_and_leaves_plain_topics_alone(self):
+        local = a.create_goal(self.store,self.sid,'晴溪 R70 的週三交接')
+        other = self.store.new_session()
+        a.create_goal(self.store,other,'晴溪 R71 的週三交接')
+        no_match = goal_context(self.store,self.sid,'對了，晴溪 Ｒ７１ 的週三交接那件，現在還在等我回覆哪個欄位？')
+        self.assertEqual(no_match,{'goals':[],'limited':False,
+                                   'reference':{'name':'晴溪 Ｒ７１ 的週三交接','status':'not_found'}})
+        for ordinary in (
+            '回到剛才跑步那個話題，用一句話說明怎麼熱身。',
+            '如果是晴溪 R70 的週三交接那件，現在還缺哪項資料？',
+            '不要查晴溪 R70 的週三交接那件，現在還缺哪項資料？',
+            '例如「晴溪 R70 的週三交接那件，現在還缺哪項資料？」',
+            '晴溪 R70 的週三交接那件，現在請幫我完成。',
+            '晴溪 R70 或 晴溪 R71 那件，現在還缺哪項資料？',
+        ):
+            with self.subTest(ordinary=ordinary):
+                default = goal_context(self.store,self.sid,ordinary)
+                self.assertNotIn('reference',default)
+                self.assertEqual(default['goals'][0]['id'],local)
+        mechanical = '清點這個工具流程'
+        local_other = a.create_goal(self.store,self.sid,mechanical)
+        exact = goal_context(self.store,self.sid,mechanical+'那件，現在卡在哪裡？')
+        self.assertEqual(exact['goals'][0]['id'],local_other)
+
     def test_fixed_controlled_fixtures_and_chat_projection(self):
         cases = json.loads(SUITE.read_text(encoding='utf-8'))
         self.assertEqual(len(cases), 5)
