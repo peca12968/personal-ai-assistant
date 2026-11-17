@@ -11,11 +11,11 @@ _OPTION = rf'(?:{_QUOTED_OPTION}|{_BARE})'
 _JOIN = r'\s*(?:以及|和|與|跟|及|、)\s*'
 _PAIR = re.compile(
     rf'(?P<left>{_OPTION}){_JOIN}(?P<right>{_OPTION})'
-    r'(?:(?:各自|分別)?的?(?:差異|優缺點|利弊|取捨|用途|適用情況|適用條件))?'
+    r'(?:(?:各自|分別)?的?(?P<dimension>差異|優缺點|利弊|取捨|用途|適用情況|適用條件))?'
 )
 _QUOTED_PAIR = re.compile(
     rf'(?P<left>{_QUOTED_OPTION}){_JOIN}(?P<right>{_QUOTED_OPTION})'
-    r'(?:\s*(?:的|在)[^「」『』“”\r\n]{1,48})?'
+    r'(?:\s*(?:的|在)(?P<dimension>[^「」『』“”\r\n]{1,48}))?'
 )
 _QUOTES = {'「': '」', '『': '』', '“': '”'}
 _FENCE = re.compile(r'^([~\x60])\1{2,}')
@@ -32,12 +32,24 @@ _MISSING_EVIDENCE = re.compile(
 _GENERIC = {'甲方', '乙方', '兩者', '兩案', '兩個選項', '兩種方案', '不同方式', '不同方案'}
 
 
-def quoted_pair_names(subject):
+_GENERAL_DIMENSIONS = {'', '差異', '差別', '比較', '比較表', '比較結果', '結果', '內容', '資料', '優缺點', '利弊', '取捨'}
+_DIMENSION_END = re.compile(r'(?:方面|上)(?:的(?:差異|差別|比較|表現))?$|的(?:差異|差別|比較|表現)$')
+
+
+def dimension_key(text):
+    label = goal_chat_fields.label_key(text.strip(' *`「」『』“”'))
+    label = _DIMENSION_END.sub('', label).strip()
+    return '' if label in _GENERAL_DIMENSIONS else label
+
+
+def quoted_pair_scope(subject):
     match = _QUOTED_PAIR.fullmatch(subject)
     if not match:
-        return set()
+        return set(), ''
     names = _labels(match['left']) | _labels(match['right'])
-    return names if len(names) == 2 else set()
+    if len(names) != 2:
+        return set(), ''
+    return names, dimension_key(match['dimension'] or '')
 
 
 def _labels(text):
@@ -77,7 +89,7 @@ def _direct_relation(text, options):
     return False
 
 
-def matches(subjects, answer, *, required_names=()):
+def matches(subjects, answer, *, required_names=(), required_dimensions=()):
     # The direct request must name two options. A mention alone does not
     # establish that the visible reply actually compared either option.
     request = goal_guidance_sources.standalone_clauses(subjects, comma_before=_ANY_CLAUSE)
@@ -89,6 +101,9 @@ def matches(subjects, answer, *, required_names=()):
     choices = pair['left'], pair['right']
     declared = {goal_chat_fields.label_key(name.strip().strip('「」『』“”')) for name in choices}
     if required_names and declared != required_names:
+        return False
+    dimension = dimension_key(pair['dimension'] or '')
+    if required_dimensions and required_dimensions != {dimension}:
         return False
     options = tuple(_labels(name) for name in choices)
     if not all(options) or options[0] & options[1]:

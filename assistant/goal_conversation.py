@@ -147,7 +147,7 @@ def read(db, gid):
             db, row[2], row[3], value[goal_comparison_handoff.REFERENCE], value['messages'], basis)
     if goal_comparison_handoff.BASIS in value:
         goal_comparison_handoff.selected(db, row[2], row[3], basis)
-        if basis.get('version') == 3:
+        if basis.get('version') in (3, 4):
             if goal_comparison_handoff.REFERENCE not in value:
                 raise ValueError('指定的比較交接缺少原回答快照。')
         elif not any(item['message_id'] == basis['answer_id'] and item['role'] == 'assistant'

@@ -193,7 +193,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 self.assertNotIn(goal_comparison_handoff.BASIS, context)
                 ref = context[goal_comparison_handoff.REFERENCE]
                 self.assertEqual(ref, {'answer_id': chosen['id'], 'user_id': chosen['user_message_id'],
-                                       'request': original, 'answer': chosen['content'], 'version': 3})
+                                       'request': original, 'answer': chosen['content'], 'version': 4})
                 captured.append((gid, state))
         with self.assertRaisesRegex(ValueError, '比較形式'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{later["id"]} 的比較表。', from_chat=True)
@@ -215,12 +215,12 @@ class ComparisonHandoffTests(unittest.TestCase):
             self.assertEqual(autonomy.get_goal(restored, self.sid, gid), state)
 
     def test_named_options_scope_keeps_only_matching_comparisons(self):
-        older_table = '| 特點 | 導視牌 | 地板貼 |\n| --- | --- | --- |\n| 適用 | 樓梯口 | 走道 |\n| 來源 | 會議 | 實測 |'
+        older_table = '| 特點 | 導視牌 | 地板貼 |\n| --- | --- | --- |\n| 適用位置 | 樓梯口 | 走道 |\n| 來源 | 會議 | 實測 |'
         old = Assistant(self.store, ScriptedEngine(older_table)).ask(self.sid, '比較導視牌和地板貼。')
         newer_table = '| 方式 | 適用 |\n| --- | --- |\n| 導視牌 | 門口 |\n| 桌面卡 | 櫃台 |'
         Assistant(self.store, ScriptedEngine(newer_table)).ask(self.sid, '比較導視牌和桌面卡。')
         prose = '掛繩標籤適用於入口。腕帶標記適用於報到桌。'
-        recent = Assistant(self.store, ScriptedEngine(prose)).ask(self.sid, '請比較掛繩標籤與腕帶標記。')
+        recent = Assistant(self.store, ScriptedEngine(prose)).ask(self.sid, '請比較掛繩標籤與腕帶標記的適用情況。')
         question = '請比較「臨時紙條」和「櫃台標記」。'
         Assistant(self.store, ScriptedEngine('這兩項資料還缺。可提供兩種方式的適用情況嗎？')).ask(self.sid, question)
         prefix = '沿用本對話最後一次比較結果'
@@ -258,7 +258,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 else:
                     ref = context[goal_comparison_handoff.REFERENCE]
                     self.assertEqual((ref['answer_id'], ref['version'], ref['answer']),
-                                     (chosen['id'], 3, chosen['content']))
+                                     (chosen['id'], 4, chosen['content']))
                 captured.append((gid, snapshot))
         with self.assertRaisesRegex(ValueError, '選項名稱'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{recent["id"]} 的比較結果' + old_options,
@@ -279,6 +279,73 @@ class ComparisonHandoffTests(unittest.TestCase):
         self.assertEqual(autonomy.get_goal(copy, self.sid, old_goal), old_snapshot)
         for gid, snapshot in captured:
             self.assertEqual(autonomy.get_goal(copy, self.sid, gid), snapshot)
+
+    def test_named_dimension_keeps_the_matching_cells_and_legacy_recency(self):
+        request = '請比較「導視牌」和「地板貼」的放置位置。'
+        headers = '| 欄目 | 導視牌 | 地板貼 |\n| --- | --- | --- |'
+        earlier = Assistant(self.store, ScriptedEngine(headers + '\n| 放置位置 | 樓梯口 | 走道 |\n| 適用 | 晚班 | 全日 |')).ask(self.sid, request)
+        incomplete = headers + '\n| 放置位置 | 櫃台 | **待確認** [補充#1] |\n| 適用 | 全日 | 全日 |'
+        Assistant(self.store, ScriptedEngine(incomplete)).ask(self.sid, request)
+        recent = Assistant(self.store, ScriptedEngine('導視牌比地板貼省 7 分鐘。')).ask(
+            self.sid, '比較「導視牌」與「地板貼」的布置時間。')
+        lead = '沿用最後一次比較結果，只整理「導視牌」與「地板貼」'
+        position = lead + '在放置位置上的差異。'
+        capture = goal_comparison_handoff.capture
+        with patch('assistant.goal_comparison_handoff.capture',
+                   side_effect=lambda *args: capture(*args, reference_version=3)):
+            legacy = autonomy.create_goal(self.store, self.sid, position, from_chat=True)
+        legacy_state = autonomy.get_goal(self.store, self.sid, legacy)
+        ref = legacy_state['conversation_context'][goal_comparison_handoff.REFERENCE]
+        self.assertEqual((ref['answer_id'], ref['version']), (recent['id'], 3))
+
+        tracked = [(legacy, legacy_state)]
+        for objective, expected in ((position, earlier), (lead + '的布置時間。', recent),
+                                    (lead + '。', recent), (lead + '的維護成本。', None)):
+            with self.subTest(objective=objective):
+                gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+                state = autonomy.get_goal(self.store, self.sid, gid)
+                ref = state['conversation_context'].get(goal_comparison_handoff.REFERENCE)
+                if expected:
+                    self.assertEqual((ref['answer_id'], ref['version']), (expected['id'], 4))
+                else:
+                    self.assertIsNone(ref)
+                tracked.append((gid, state))
+        with self.assertRaisesRegex(ValueError, '比較形式'):
+            autonomy.create_goal(self.store, self.sid, f'沿用回答 #{recent["id"]} 的比較結果，'
+                                 '只整理「導視牌」與「地板貼」的放置位置。', from_chat=True)
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'dimensions')
+        copy = Store(self.root / 'dimensions' / 'assistant.sqlite3')
+        for gid, state in tracked:
+            self.assertEqual(autonomy.get_goal(copy, self.sid, gid), state)
+
+    def test_named_work_dimension_filters_live_fields_before_delivery(self):
+        works = ('西側櫃台清點', '東側櫃台清點')
+        parents = [(work, autonomy.create_goal(self.store, self.sid, work)) for work in works]
+        for _, gid in parents:
+            for label, value in (('班別', '午後班'), ('備品櫃', '桃磚櫃')):
+                autonomy.run_goal(self.store, self.sid, gid, ScriptedEngine(action('ask', question=f'請提供{label}。')))
+                view = goal_replies.snapshot(self.store, self.sid, gid)
+                goal_replies.save(self.store, self.sid, gid, value, expected_fingerprint=view['fingerprint'])
+        parts = '、'.join(f'「{work}」的「{field}」' for work in works for field in ('班別', '備品櫃'))
+        reply = Assistant(self.store, ScriptedEngine('四項工作欄位已查到。')).ask(
+            self.sid, f'比較{parts}最後已確認的欄值。每件一行。')
+        objective = f'沿用最後一次比較結果，只整理「{works[0]}」與「{works[1]}」的備品櫃。'
+        gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        source = autonomy.get_goal(self.store, self.sid, gid)['conversation_context']
+        self.assertEqual(source[goal_comparison_handoff.BASIS]['version'], 4)
+        self.assertEqual(source[goal_comparison_handoff.BASIS]['indices'], [1, 3])
+        self.assertEqual(source[goal_comparison_handoff.REFERENCE]['answer_id'], reply['id'])
+        engine = ScriptedEngine(action('finish', report='兩件的備品櫃都是桃磚櫃。'))
+        final = autonomy.run_goal(self.store, self.sid, gid, engine, max_steps=1)
+        model_data = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual([(row['work'], row['field'], row['value']) for row in model_data['verified_work_fields']],
+                         [(work, '備品櫃', '桃磚櫃') for work in works])
+        saved = create_backup(self.store.path)
+        restore_backup(saved['path'], self.root / 'dimensions-work')
+        copy = Store(self.root / 'dimensions-work' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(copy, self.sid, gid), final)
 
     def test_comparison_checks_current_sources_and_historical_file_bytes(self):
         gid = autonomy.create_goal(self.store, self.sid, self.objective, from_chat=True, file_delivery=True)

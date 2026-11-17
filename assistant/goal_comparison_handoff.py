@@ -113,16 +113,21 @@ def _visible_tables(text):
         contiguous.clear()
 
 
-def _named_options(objective, pattern):
-    names = set()
+def _named_scope(objective, pattern, reference_version):
+    names, dimensions = set(), set()
+    if reference_version < 3:
+        return names, dimensions
     for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective, comma_before=_SPLIT_AT_COMMA):
         if inquiry:
             continue
         if reference := pattern.match(clause):
             clause = clause[reference.end():].lstrip(' ：:\t')
         if focus := _NAMED_FOCUS.match(clause):
-            names.update(goal_comparison_prose.quoted_pair_names(clause[focus.end():]))
-    return names
+            selected, dimension = goal_comparison_prose.quoted_pair_scope(clause[focus.end():])
+            names.update(selected)
+            if reference_version >= 4 and dimension:
+                dimensions.add(dimension)
+    return names, dimensions
 
 
 def _refers_to_table(objective, pattern):
@@ -130,19 +135,45 @@ def _refers_to_table(objective, pattern):
                if not inquiry and (match := pattern.match(clause)))
 
 
-def _ordinary_comparison(row, *, allow_prose, names):
+def _ordinary_comparison(row, *, allow_prose, names, dimensions):
     subjects = _comparison_subjects(row['request'])
     if subjects is None:
         return False
-    for header, rows in _visible_tables(row['content']):
-        if (not names or names <= _table_names(header[1:])
-                or names <= _table_names(row[0] for row in rows)):
-            return True
-    return allow_prose and goal_comparison_prose.matches(subjects, row['content'], required_names=names)
+    if any(_table_covers(header, rows, names, dimensions) for header, rows in _visible_tables(row['content'])):
+        return True
+    return allow_prose and goal_comparison_prose.matches(
+        subjects, row['content'], required_names=names, required_dimensions=dimensions)
 
 
-def _table_names(cells):
-    return {goal_chat_fields.label_key(cell.strip('*`「」『』“”')) for cell in cells}
+def _table_name(cell):
+    return goal_chat_fields.label_key(cell.strip('*`「」『』“”'))
+
+
+def _table_covers(header, rows, names, dimensions):
+    if not dimensions:
+        return (not names or names <= {_table_name(cell) for cell in header[1:]}
+                or names <= {_table_name(row[0]) for row in rows})
+    if _covers_cells(header, rows, names, dimensions):
+        return True
+    heading, *data = zip(header, *rows)
+    return _covers_cells(heading, data, names, dimensions)
+
+
+_UNFILLED = re.compile(r'^(?:待(?:確認|補充|核對|提供)|未(?:確認|公開|提供|知)|尚未(?:確認|核對|提供|公布)|'
+                       r'不明|不詳|尚缺|缺(?:少)?資料|資料不足|n/?a|[-—–]+)(?:$|[\s*《》」』\x60（(，。\[])')
+
+
+def _covers_cells(header, rows, names, dimensions):
+    columns = [goal_comparison_prose.dimension_key(cell) for cell in header[1:]]
+    if any(columns.count(dimension) != 1 for dimension in dimensions):
+        return False
+    indexes = [columns.index(dimension) + 1 for dimension in dimensions]
+    keys = [_table_name(row[0]) for row in rows]
+    if any(keys.count(name) != 1 for name in names):
+        return False
+    values = (rows[keys.index(name)][index] for name in names for index in indexes)
+    values = (_table_name(value) for value in values)
+    return all(value and not _UNFILLED.match(value) for value in values)
 
 
 def _reference(row, version):
@@ -187,25 +218,41 @@ def _selected_works(fields, indices):
     return {goal_chat_fields.label_key(fields[index]['work']) for index in indices}
 
 
+def _scoped_indices(objective, fields, names, dimensions):
+    indices = _indices(objective, fields, version=2)
+    if not indices:
+        return None
+    if not dimensions:
+        return indices if not names or _selected_works(fields, indices) == names else None
+    selected = [index for index in indices
+                if goal_chat_fields.label_key(fields[index]['work']) in names
+                and goal_comparison_prose.dimension_key(fields[index]['field']) in dimensions]
+    qualifiers = [(goal_chat_fields.label_key(fields[index]['work']),
+                   goal_comparison_prose.dimension_key(fields[index]['field'])) for index in selected]
+    requested = {(name, dimension) for name in names for dimension in dimensions}
+    return selected if len(qualifiers) == len(requested) and set(qualifiers) == requested else None
+
+
 def _capture_pinned(db, sid, objective, answer_id, reference_version):
     if not (completed := _completed(db, sid, answer_id)):
         raise ValueError('在本對話找不到指定的已完成回答，請核對比較回答編號。')
     row, context = completed
     if not (reference := _reference(row, reference_version)):
         raise ValueError('指定比較超過可帶入的單則對話長度。')
-    names = _named_options(objective, _PINNED) if reference_version >= 3 else set()
+    names, dimensions = _named_scope(objective, _PINNED, reference_version)
     if fields := _work_fields(db, sid, row, context):
-        indices = _indices(objective, fields, version=3)
-        if not indices or (names and _selected_works(fields, indices) != names):
+        indices = _scoped_indices(objective, fields, names, dimensions)
+        if not indices:
             raise ValueError('指定比較沒有完整對應本次要求的工作與欄位。')
-        return {REFERENCE: reference, BASIS: _basis(row, fields, indices, version=3)}
+        return {REFERENCE: reference, BASIS: _basis(row, fields, indices, version=4 if dimensions else 3)}
     table_only = _refers_to_table(objective, _PINNED)
-    if _ordinary_comparison(row, allow_prose=reference_version >= 2 and not table_only, names=names):
+    if _ordinary_comparison(row, allow_prose=reference_version >= 2 and not table_only,
+                            names=names, dimensions=dimensions):
         return {REFERENCE: reference}
-    raise ValueError('指定回答沒有可核對的比較內容，請核對回答編號、比較形式及選項名稱。')
+    raise ValueError('指定回答沒有可核對的比較內容，請核對回答編號、比較形式及選項名稱與項目。')
 
 
-def capture(db, sid, objective, messages, *, reference_version=3):
+def capture(db, sid, objective, messages, *, reference_version=4):
     if answer_id := _pinned_answer(objective):
         return _capture_pinned(db, sid, objective, answer_id, reference_version)
     if not _intent(objective):
@@ -213,24 +260,25 @@ def capture(db, sid, objective, messages, *, reference_version=3):
     work_comparison = any(match['works'] for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective)
                           if not inquiry and (match := _INTENT.match(clause)))
     allow_prose = reference_version >= 2 and not _refers_to_table(objective, _INTENT)
-    names = _named_options(objective, _INTENT) if reference_version >= 3 else set()
+    names, dimensions = _named_scope(objective, _INTENT, reference_version)
     for item in reversed(messages):
         if item['role'] != 'assistant' or not (completed := _completed(db, sid, item['message_id'])):
             continue
         row, context = completed
         if fields := _work_fields(db, sid, row, context):
-            indices = _indices(objective, fields, version=2)
-            if names and (not indices or _selected_works(fields, indices) != names):
+            indices = _scoped_indices(objective, fields, names, dimensions)
+            if names and not indices:
                 continue
             if not indices or item['content_truncated']:
                 return {}
-            checked = {BASIS: _basis(row, fields, indices, version=2)}
+            checked = {BASIS: _basis(row, fields, indices, version=4 if dimensions else 2)}
             if names:
                 if not (reference := _reference(row, reference_version)):
                     return {}
                 checked[REFERENCE] = reference
             return checked
-        if not work_comparison and _ordinary_comparison(row, allow_prose=allow_prose, names=names):
+        if not work_comparison and _ordinary_comparison(row, allow_prose=allow_prose,
+                                                        names=names, dimensions=dimensions):
             reference = _reference(row, reference_version)
             return {REFERENCE: reference} if reference else {}
     return {}
@@ -238,7 +286,7 @@ def capture(db, sid, objective, messages, *, reference_version=3):
 
 def validate_reference(db, sid, objective, reference, messages, basis):
     if (not isinstance(reference, dict) or reference.keys() != {'version', 'answer_id', 'user_id', 'request', 'answer'}
-            or type(reference['version']) is not int or reference['version'] not in (1, 2, 3)
+            or type(reference['version']) is not int or reference['version'] not in (1, 2, 3, 4)
             or type(reference['answer_id']) is not int or not 1 <= reference['answer_id'] < 2**63 - 1
             or type(reference['user_id']) is not int or not 1 <= reference['user_id'] < reference['answer_id']):
         raise ValueError('比較回答快照格式不符。')
@@ -259,19 +307,27 @@ def validate_reference(db, sid, objective, reference, messages, basis):
 
 def selected(db, sid, objective, basis):
     if (not isinstance(basis, dict) or set(basis) - {'version'} != {'answer_id', 'indices', 'sha256'}
-            or ('version' in basis and (type(basis['version']) is not int or basis['version'] not in (2, 3)))
+            or ('version' in basis and (type(basis['version']) is not int or basis['version'] not in (2, 3, 4)))
             or type(basis['answer_id']) is not int or not 1 <= basis['answer_id'] < 2**63 - 1
             or not isinstance(basis['indices'], list) or not 1 <= len(basis['indices']) <= 6
             or any(type(index) is not int or not 0 <= index < 6 for index in basis['indices'])
-            or not isinstance(basis['sha256'], str) or not _HEX.fullmatch(basis['sha256'])
-            or not (_pinned_answer(objective) == basis['answer_id'] if basis.get('version') == 3 else _intent(objective))):
+            or not isinstance(basis['sha256'], str) or not _HEX.fullmatch(basis['sha256'])):
+        raise ValueError('比較交接的保存範圍不符。')
+    version = basis.get('version', 1)
+    pinned = _pinned_answer(objective) if version in (3, 4) else None
+    if (pinned != basis['answer_id'] if pinned is not None else version == 3 or not _intent(objective)):
         raise ValueError('比較交接的保存範圍不符。')
     original = _origin(db, sid, basis['answer_id'])
     if not original:
         raise ValueError('比較交接缺少本對話保存的原比較。')
     row, fields = original
+    if version == 4:
+        names, dimensions = _named_scope(objective, _PINNED if pinned else _INTENT, 4)
+        indices = _scoped_indices(objective, fields, names, dimensions) if dimensions else None
+    else:
+        indices = _indices(objective, fields, version=version)
     if (goal_conversation.digest([row['request'], row['content'], fields]) != basis['sha256']
-            or _indices(objective, fields, version=basis.get('version', 1)) != basis['indices']):
+            or indices != basis['indices']):
         raise ValueError('比較交接的原始欄位或保存指紋不符。')
     return [fields[index] for index in basis['indices']]
 
