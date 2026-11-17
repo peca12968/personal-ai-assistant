@@ -57,6 +57,27 @@ class ComparisonHandoffTests(unittest.TestCase):
         self.assertEqual([row['goal_id'] for row in payload['verified_work_fields']], [self.parents[1]])
         self.assertNotIn('B-22', json.dumps(payload['verified_work_fields'], ensure_ascii=False))
 
+    def test_comparison_with_uncounted_list_binds_latest_answer_on_restore(self):
+        pairs = '\n'.join(f'「{work}」的「{field}」' for work, field in zip(self.names, self.fields))
+        question = f'請對照下列任務各自最後一次已正式保存的欄值：\n{pairs}\n每件一行。'
+        answer = Assistant(self.store, ScriptedEngine('B-22\n榆光台')).ask(self.sid, question)
+        context = self.store.answer_context(answer['id'])
+        self.assertEqual(context['current_request'], question)
+        rows = context['autonomous_goals']['saved_work_fields']
+        self.assertEqual([row['goal_id'] for row in rows], self.parents)
+        self.assertEqual([row['value'] for row in rows], ['B-22', '榆光台'])
+
+        gid = autonomy.create_goal(self.store, self.sid, self.objective, from_chat=True, file_delivery=True)
+        snapshot = autonomy.get_goal(self.store, self.sid, gid)
+        basis = snapshot['conversation_context'][goal_comparison_handoff.BASIS]
+        self.assertEqual(basis['answer_id'], answer['id'])
+        self.assertEqual(basis['indices'], [0, 1])
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'natural')
+        restored = Store(self.root / 'natural' / 'assistant.sqlite3')
+        self.assertEqual(restored.answer_context(answer['id']), context)
+        self.assertEqual(autonomy.get_goal(restored, self.sid, gid), snapshot)
+
     def test_comparison_checks_current_sources_and_historical_file_bytes(self):
         gid = autonomy.create_goal(self.store, self.sid, self.objective, from_chat=True, file_delivery=True)
         original_answer = self.store.answer_context(self.answer['id'])

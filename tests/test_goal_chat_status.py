@@ -672,14 +672,22 @@ class GoalChatStatusTests(unittest.TestCase):
                    '「青嶼 M8 場地領件」的「確認代號」。\n'
                    '「河紋晚場退件」的「退件處」。\n每件一行。')
         comparison = goal_context(self.store, self.sid, request)['saved_work_fields']
+        for intro in ('下列工作', '以下工作', '下列三件工作'):
+            with self.subTest(intro=intro):
+                variant = request.replace('以下三件工作', intro)
+                self.assertEqual(goal_context(self.store, self.sid, variant)['saved_work_fields'], comparison)
         self.assertEqual([row['status'] for row in comparison], ['not_found', 'confirmed', 'ambiguous_work'])
         self.assertEqual(comparison[1]['value'], 'K-19')
         self.assertNotIn('goal_id', comparison[0])
         self.assertNotIn('goal_id', comparison[2])
-        for prompt in ('如果要' + request, '範例：' + request, request.replace('三件', '兩件'),
-                       request.replace('每件一行。', '每件一行。取消查詢。'),
-                       request.replace('「河紋晚場退件」的「退件處」。', '「河紋晚場退件」。')):
-            self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, prompt))
+        uncounted = request.replace('以下三件工作', '下列工作')
+        for prompt in ('如果要' + request, '範例：' + uncounted, request.replace('三件', '兩件'),
+                       request.replace('以下三件', '下列四件'),
+                       uncounted.replace('每件一行。', '每件一行。取消查詢。'),
+                       uncounted.replace('「河紋晚場退件」的「退件處」。', '「河紋晚場退件」。'),
+                       uncounted.replace('「河紋晚場退件」的「退件處」。', '「青嶼 M8 場地領件」的「確認代號」。')):
+            with self.subTest(prompt=prompt):
+                self.assertNotIn('saved_work_fields', goal_context(self.store, self.sid, prompt))
 
     def test_comparison_scope_choice_keeps_pinned_rows_and_checks_visible_proof(self):
         first_title = '溪映 K8 的夜間放映'
