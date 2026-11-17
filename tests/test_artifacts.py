@@ -45,10 +45,39 @@ class ArtifactTests(unittest.TestCase):
         self.assertNotIn('成果.md', json.dumps(summary, ensure_ascii=False))
         self.assertNotIn(str(self.store.path), json.dumps(summary))
 
+    def test_csv_goal_delivers_and_rebuilds_the_exact_table_bytes(self):
+        gid = a.create_goal(self.store, self.sid, '請交付「明細.CSV」。', file_delivery=True)
+        body = '\ufeff名稱,數量,備註\r\n"晚場,東門",-3,"引號""保留""\r\n下一行"\r\n早場,0,\r\n'
+        engine = ScriptedEngine(action('write_artifact', filename='明細.CSV', content=body),
+                                action('deliver', report='明細已交付。', filenames=['明細.CSV']))
+        state = a.run_goal(self.store, self.sid, gid, engine)
+        self.assertEqual(state['status'], 'report_ready')
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual(payload['artifact_filename_requirement']['filename'], '明細.CSV')
+        receipt = state['steps'][-1]['observation']['artifacts'][0]
+        actual = (f.directory(self.store, gid) / '明細.CSV').read_bytes()
+        self.assertEqual(actual, body.encode('utf-8'))
+        self.assertEqual(receipt['sha256'], hashlib.sha256(actual).hexdigest())
+        self.assertEqual(receipt['size_bytes'], len(actual))
+
+        backup = create_backup(self.store.path)
+        restore_backup(backup['path'], self.root / 'csv-restore')
+        restored = Store(self.root / 'csv-restore' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(restored, self.sid, gid), state)
+        f.rebuild(restored, self.sid, gid)
+        self.assertEqual((f.directory(restored, gid) / '明細.CSV').read_bytes(), actual)
+
+    def test_csv_rejects_invalid_table_before_reserving_an_artifact(self):
+        for body in ('A,A\n1,2\n', 'A, \n1,2\n', 'A,B\n1\n', 'A,B\n"x,2\n', 'A,B\n1,2,3\n'):
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'CSV'):
+                f.write(self.store, self.gid, 'bad.csv', body)
+        self.assertEqual(a.get_goal(self.store, self.sid, self.gid)['artifacts'], [])
+        self.assertFalse((self.store.path.parent / 'autonomy-artifacts').exists())
+
     def test_screen_goal_cannot_write_or_inherit_file_scope(self):
         screen = a.create_goal(self.store, self.sid, '一般目標')
         result = a.run_goal(self.store, self.sid, screen, ScriptedEngine(
-            action('write_artifact', filename='no.txt', content='不應寫出'), action('finish', report='文字成果')))
+            action('write_artifact', filename='no.csv', content='名稱,數量\n早場,1\n'), action('finish', report='文字成果')))
         self.assertEqual(result['steps'][0]['action']['tool'], 'invalid')
         self.assertEqual(result['artifacts'], [])
         a.run_goal(self.store, self.sid, self.gid, ScriptedEngine(

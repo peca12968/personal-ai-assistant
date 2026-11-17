@@ -92,7 +92,7 @@ round_number: {"value":"2.345","places":2,"mode":"half_even"}，依明列規則�
 month_schedule: {"date":"2027-01-31","offsets":[1,2,3],"day_policy":"clamp"}，依同一原始日期核對完整月份清單與星期；見後附說明。
 ask: {"question":"需要使用者補充的具體資訊"}，保存問題並暫停。使用者要先看可完成部分時，可加 "partial_result" 字串（最多4000字），只把要補的問題放在question。先完成已能核對的分析，再用partial_result交付暫定文字，標出未確認處。問題本身若附引用，也只用本目標已讀原行或已保存的回覆；若要指出缺漏行號，用「D3 第4行缺漏」描述。這不是定稿、文件交付或使用者驗收。使用者允許以待確認標記直接完成時，依要求交付，不必詢問。
 finish: {"report":"以繁體中文寫可用成果，區分證據、推論與限制"}。
-write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json，每份最多12000字、每目標4份；JSON需合法且無重複欄位。先讀來源、計算，再寫檔，文件中的引用也要有效。
+write_artifact: {"filename":"report.md","content":"完整文件內容"}，只在file_delivery=true可用。限.md/.txt/.json/.csv，每份最多12000字、每目標4份；JSON需合法且無重複欄位。CSV用逗號、非空且不重複的標頭與固定欄數。CSV是檔案交付格式，可依本目標已核對的資料建立。先讀來源、計算，再寫檔，文件中的引用也要有效。
 deliver: {"report":"簡短交付說明","filenames":["report.md"]}，核對並交付1到4份已保存文件。file_delivery=true時必須用deliver，不能只用finish貼出內容當作已交付文件；其他目標只能用finish。
 artifacts只是已保存檔案的歷史紀錄，不保證檔案現在未被改動；deliver會重新核對。未被列入deliver的文件仍是草稿，不能冒稱都已交付。不能聲稱上傳或將本機路徑冒充下載網址。
 difference與quotient恰好兩個數；sum與product一至50個數。數字字串例如-2、0.125、-1/7；不接受空白、科學記號、算式、正號或負分母。整數／有限小數合計最多2000位數字（含前導零），分數分子／分母各最多2000位；每次按輸入順序運算後約分的中間結果亦受分子／分母各2000位上限限制，超限整次失敗。

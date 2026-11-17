@@ -15,6 +15,7 @@ from pathlib import Path
 from . import delivery_preference
 from .acceptance import strict_json
 from .answer_runs import lease
+from .tasks import parse_csv
 
 MAX_FILES = 4
 MAX_CHARS = 12000
@@ -28,8 +29,8 @@ def filename(value):
         raise ValueError('檔名的Unicode形式不一致，請使用一般文字檔名。')
     if re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])', value.split('.')[0].upper()):
         raise ValueError('不能使用系統保留檔名。')
-    if Path(value).suffix.lower() not in {'.md', '.txt', '.json'}:
-        raise ValueError('目前只支援Markdown、TXT與JSON文件。')
+    if Path(value).suffix.lower() not in {'.md', '.txt', '.json', '.csv'}:
+        raise ValueError('目前支援 Markdown、TXT、JSON 與 CSV 文件。')
     return value
 
 
@@ -37,8 +38,11 @@ def payload(name, content):
     filename(name)
     if not isinstance(content, str) or not content.strip() or len(content) > MAX_CHARS or '\x00' in content:
         raise ValueError('文件內容需為1–12000字，且不含空字元。')
-    if Path(name).suffix.lower() == '.json':
+    extension = Path(name).suffix.lower()
+    if extension == '.json':
         strict_json(content)
+    elif extension == '.csv':
+        parse_csv(content.removeprefix('\ufeff'))
     try:
         return content.encode('utf-8')
     except UnicodeError:

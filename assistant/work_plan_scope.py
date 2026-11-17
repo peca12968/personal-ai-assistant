@@ -101,7 +101,7 @@ _PENDING_COMMA = re.compile(rf'(?!\s*{_DECLINE})(?:{_REVISION_COMMA.pattern})')
 _FILENAME_REPLY_COMMA = re.compile(rf'{_PENDING_COMMA.pattern}|\s*「[^」\r\n]{{2,31}}」\s*{_REVISION_VERB}')
 _FIELD_DELAY = r'(?:(?:晚點|稍後|之後)(?:再)?(?:決定|選擇|確認)|先不(?:決定|選擇|確認)|還沒決定)'
 _FILENAME_FIRST_COMMA = re.compile(rf'{_FILENAME_REPLY_COMMA.pattern}|\s*「[^」\r\n]+」\s*{_FIELD_DELAY}'
-                                   r'|\s*「[^」\r\n]+\.(?i:md|txt|json)」\s*(?=[。，,；;！？!?\r\n]|$)')
+                                   r'|\s*「[^」\r\n]+\.(?i:md|txt|json|csv)」\s*(?=[。，,；;！？!?\r\n]|$)')
 _FILENAME_DEFERRAL = re.compile(r'(?:定稿)?檔名(?:(?:還沒|還未|尚未)(?:想好|決定|確認)|'
                                 r'(?:稍後|之後|晚點)(?:再)?(?:決定|確認)|先不(?:決定|確認)|待定)'
                                 r'|先不(?:決定|確認)(?:定稿)?檔名')

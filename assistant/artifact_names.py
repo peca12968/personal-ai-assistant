@@ -14,7 +14,7 @@ _FOLLOWUP_NAME = re.compile(rf'{_CONDITIONAL}(?:定稿)?檔名\s*(?:請用|用|�
 _REPLACEMENT_NAME = re.compile(rf'(?:定稿|成果|交付)?檔名\s*(?:改為|改成|改用|更正為|更正成)\s*{_NAME}')
 _GUIDANCE_PREFIX = re.compile(r'(?:(?:若|如果)(?:目前)?(?:需要|要求)?(?:交檔|出檔|交付文件)[，,]?\s*)?'
                               r'(?:最後\s*)?(?:(?:定稿|成果|交付)?檔名\s*(?:改為|改成|改用|更正為|更正成|為|是|叫|請用|用|：|:)'
-                              r'|定稿(?:請)?(?:使用|用)|請\s*(?:交付|交|另存為)\s*[^。]*\.(?:md|txt|json)\b)', re.I)
+                              r'|定稿(?:請)?(?:使用|用)|請\s*(?:交付|交|另存為)\s*[^。]*\.(?:md|txt|json|csv)\b)', re.I)
 _GUIDANCE_COMMA = re.compile(r'\s*')
 _ANSWER = re.compile(rf'(?:(?:定稿)?(?:請)?(?:改用|使用|用|選擇|選)(?:\s+|(?=[`「])))?{_NAME}')
 _TRAILING = re.compile(r'\s*(?:不要|不用|不必)(?:在|附|把|加|另)')

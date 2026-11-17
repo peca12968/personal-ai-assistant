@@ -64,7 +64,7 @@ class AutonomousWindow:
         self.history_option.pack(anchor='w', padx=12, pady=6)
         self.layout.wrapped_label(body, text='選用：固定保存最近最多1000則、每則前2000字、總100萬字；排除本機記憶命令。模型只收到查找命中的片段，不是整份歷史。超出範圍會標示，後續新訊息不自動加入。', padding=12).pack(fill='x')
         self.file_delivery = tk.BooleanVar(value=False)
-        self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機Markdown／TXT／JSON，不覆寫既有內容）', variable=self.file_delivery)
+        self.file_option = ttk.Checkbutton(body, text='新目標需要交付文件（本機 Markdown／TXT／JSON／CSV）', variable=self.file_delivery)
         self.file_option.pack(anchor='w', padx=12, pady=6)
         self.layout.wrapped_label(body, text='新目標的CSV分析來源（選取後，開始時可自行規劃並執行篩選、分組、加總與平均；使用已匯入副本）：', padding=12).pack(fill='x')
         self.csv_input = ttk.Combobox(body, state='readonly')
