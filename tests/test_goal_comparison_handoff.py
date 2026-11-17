@@ -193,7 +193,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 self.assertNotIn(goal_comparison_handoff.BASIS, context)
                 ref = context[goal_comparison_handoff.REFERENCE]
                 self.assertEqual(ref, {'answer_id': chosen['id'], 'user_id': chosen['user_message_id'],
-                                       'request': original, 'answer': chosen['content'], 'version': 2})
+                                       'request': original, 'answer': chosen['content'], 'version': 3})
                 captured.append((gid, state))
         with self.assertRaisesRegex(ValueError, '比較形式'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{later["id"]} 的比較表。', from_chat=True)
@@ -213,6 +213,72 @@ class ComparisonHandoffTests(unittest.TestCase):
         self.assertEqual(autonomy.get_goal(restored, self.sid, old), old_state)
         for gid, state in captured:
             self.assertEqual(autonomy.get_goal(restored, self.sid, gid), state)
+
+    def test_named_options_scope_keeps_only_matching_comparisons(self):
+        older_table = '| 特點 | 導視牌 | 地板貼 |\n| --- | --- | --- |\n| 適用 | 樓梯口 | 走道 |\n| 來源 | 會議 | 實測 |'
+        old = Assistant(self.store, ScriptedEngine(older_table)).ask(self.sid, '比較導視牌和地板貼。')
+        newer_table = '| 方式 | 適用 |\n| --- | --- |\n| 導視牌 | 門口 |\n| 桌面卡 | 櫃台 |'
+        Assistant(self.store, ScriptedEngine(newer_table)).ask(self.sid, '比較導視牌和桌面卡。')
+        prose = '掛繩標籤適用於入口。腕帶標記適用於報到桌。'
+        recent = Assistant(self.store, ScriptedEngine(prose)).ask(self.sid, '請比較掛繩標籤與腕帶標記。')
+        question = '請比較「臨時紙條」和「櫃台標記」。'
+        Assistant(self.store, ScriptedEngine('這兩項資料還缺。可提供兩種方式的適用情況嗎？')).ask(self.sid, question)
+        prefix = '沿用本對話最後一次比較結果'
+        old_options = '，只整理「導視牌」與「地板貼」的適用位置。'
+        recent_options = '。整理「腕帶標記」及「掛繩標籤」的適用情況。'
+
+        capture = goal_comparison_handoff.capture
+        with patch('assistant.goal_comparison_handoff.capture',
+                   side_effect=lambda *args: capture(*args, reference_version=2)):
+            old_goal = autonomy.create_goal(self.store, self.sid, prefix + old_options, from_chat=True)
+        old_snapshot = autonomy.get_goal(self.store, self.sid, old_goal)
+        previous = old_snapshot['conversation_context'][goal_comparison_handoff.REFERENCE]
+        self.assertEqual((previous['answer_id'], previous['version']), (recent['id'], 2))
+
+        expected = (
+            (prefix + old_options, old),
+            (prefix + recent_options, recent),
+            ('沿用最後一張比較表：只整理「導視牌」與「地板貼」。', old),
+            (prefix + '。範例「只整理『臨時紙條』和『櫃台標記』」。', recent),
+            (f'沿用回答 #{old["id"]} 的比較結果' + old_options, old),
+            (prefix + '，只整理「臨時紙條」與「櫃台標記」的適用情況。', None),
+            (prefix + '，只整理「導視牌」和「腕帶標記」的適用位置。', None),
+            (prefix + '，只整理「導視」和「地板貼」的適用位置。', None),
+        )
+        captured = []
+        for objective, chosen in expected:
+            with self.subTest(objective=objective):
+                gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+                snapshot = autonomy.get_goal(self.store, self.sid, gid)
+                context = snapshot['conversation_context']
+                self.assertNotIn(goal_comparison_handoff.BASIS, context)
+                if chosen is None:
+                    self.assertNotIn(goal_comparison_handoff.REFERENCE, context)
+                    self.assertIn(question, [item['content'] for item in context['messages']])
+                else:
+                    ref = context[goal_comparison_handoff.REFERENCE]
+                    self.assertEqual((ref['answer_id'], ref['version'], ref['answer']),
+                                     (chosen['id'], 3, chosen['content']))
+                captured.append((gid, snapshot))
+        with self.assertRaisesRegex(ValueError, '選項名稱'):
+            autonomy.create_goal(self.store, self.sid, f'沿用回答 #{recent["id"]} 的比較結果' + old_options,
+                                 from_chat=True)
+
+        first_work, second_work = self.names
+        work_goal = autonomy.create_goal(
+            self.store, self.sid, prefix + f'，只整理「{first_work}」和「{second_work}」。', from_chat=True)
+        work_state = autonomy.get_goal(self.store, self.sid, work_goal)
+        info = work_state['conversation_context']
+        self.assertEqual(info[goal_comparison_handoff.BASIS]['indices'], [0, 1])
+        self.assertEqual(info[goal_comparison_handoff.REFERENCE]['answer_id'], self.answer['id'])
+        captured.append((work_goal, work_state))
+
+        archive = create_backup(self.store.path)
+        restore_backup(archive['path'], self.root / 'named-scope')
+        copy = Store(self.root / 'named-scope' / 'assistant.sqlite3')
+        self.assertEqual(autonomy.get_goal(copy, self.sid, old_goal), old_snapshot)
+        for gid, snapshot in captured:
+            self.assertEqual(autonomy.get_goal(copy, self.sid, gid), snapshot)
 
     def test_comparison_checks_current_sources_and_historical_file_bytes(self):
         gid = autonomy.create_goal(self.store, self.sid, self.objective, from_chat=True, file_delivery=True)

@@ -13,9 +13,9 @@ _PAIR = re.compile(
     rf'(?P<left>{_OPTION}){_JOIN}(?P<right>{_OPTION})'
     r'(?:(?:各自|分別)?的?(?:差異|優缺點|利弊|取捨|用途|適用情況|適用條件))?'
 )
-_QUOTED_DIMENSION_PAIR = re.compile(
+_QUOTED_PAIR = re.compile(
     rf'(?P<left>{_QUOTED_OPTION}){_JOIN}(?P<right>{_QUOTED_OPTION})'
-    r'\s*(?:的|在)[^「」『』“”\r\n]{1,48}'
+    r'(?:\s*(?:的|在)[^「」『』“”\r\n]{1,48})?'
 )
 _QUOTES = {'「': '」', '『': '』', '“': '”'}
 _FENCE = re.compile(r'^([~\x60])\1{2,}')
@@ -30,6 +30,14 @@ _MISSING_EVIDENCE = re.compile(
     r'|(?:資料|資訊|條件)(?:不足|缺漏|未提供|尚未提供)|(?:仍|尚|還)(?:待|須)確認'
 )
 _GENERIC = {'甲方', '乙方', '兩者', '兩案', '兩個選項', '兩種方案', '不同方式', '不同方案'}
+
+
+def quoted_pair_names(subject):
+    match = _QUOTED_PAIR.fullmatch(subject)
+    if not match:
+        return set()
+    names = _labels(match['left']) | _labels(match['right'])
+    return names if len(names) == 2 else set()
 
 
 def _labels(text):
@@ -69,16 +77,20 @@ def _direct_relation(text, options):
     return False
 
 
-def matches(subjects, answer):
+def matches(subjects, answer, *, required_names=()):
     # The direct request must name two options. A mention alone does not
     # establish that the visible reply actually compared either option.
     request = goal_guidance_sources.standalone_clauses(subjects, comma_before=_ANY_CLAUSE)
     if not request:
         return False
     subject = request[0][1]
-    if not (pair := _QUOTED_DIMENSION_PAIR.fullmatch(subject) or _PAIR.fullmatch(subject)):
+    if not (pair := _QUOTED_PAIR.fullmatch(subject) or _PAIR.fullmatch(subject)):
         return False
-    options = (_labels(pair['left']), _labels(pair['right']))
+    choices = pair['left'], pair['right']
+    declared = {goal_chat_fields.label_key(name.strip().strip('「」『』“”')) for name in choices}
+    if required_names and declared != required_names:
+        return False
+    options = tuple(_labels(name) for name in choices)
     if not all(options) or options[0] & options[1]:
         return False
     prose = '\n'.join(_visible_lines(answer))
