@@ -124,10 +124,15 @@ def validate(value, sid):
     return value
 
 
+def _comparison_messages(value):
+    opening = value.get('opening_user_message')
+    return ([opening] if opening else []) + value['earlier_corrections'] + value['messages']
+
+
 def save(db, sid, gid, objective=''):
     from . import goal_comparison_handoff
     value = validate(capture(db, sid), sid)
-    value.update(goal_comparison_handoff.capture(db, sid, objective, value['messages']))
+    value.update(goal_comparison_handoff.capture(db, sid, objective, _comparison_messages(value)))
     db.execute('INSERT INTO autonomous_conversations(goal_id,context_json,context_sha256) VALUES(?,?,?)',
                (gid, json.dumps(value, ensure_ascii=False), digest(value)))
 
@@ -144,7 +149,7 @@ def read(db, gid):
     basis = value.get(goal_comparison_handoff.BASIS)
     if goal_comparison_handoff.REFERENCE in value:
         goal_comparison_handoff.validate_reference(
-            db, row[2], row[3], value[goal_comparison_handoff.REFERENCE], value['messages'], basis)
+            db, row[2], row[3], value[goal_comparison_handoff.REFERENCE], _comparison_messages(value), basis)
     if goal_comparison_handoff.BASIS in value:
         goal_comparison_handoff.selected(db, row[2], row[3], basis)
         if basis.get('version') in (3, 4):

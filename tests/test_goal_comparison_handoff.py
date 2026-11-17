@@ -193,7 +193,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 self.assertNotIn(goal_comparison_handoff.BASIS, context)
                 ref = context[goal_comparison_handoff.REFERENCE]
                 self.assertEqual(ref, {'answer_id': chosen['id'], 'user_id': chosen['user_message_id'],
-                                       'request': original, 'answer': chosen['content'], 'version': 4})
+                                       'request': original, 'answer': chosen['content'], 'version': 5})
                 captured.append((gid, state))
         with self.assertRaisesRegex(ValueError, '比較形式'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{later["id"]} 的比較表。', from_chat=True)
@@ -258,7 +258,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 else:
                     ref = context[goal_comparison_handoff.REFERENCE]
                     self.assertEqual((ref['answer_id'], ref['version'], ref['answer']),
-                                     (chosen['id'], 4, chosen['content']))
+                                     (chosen['id'], 5, chosen['content']))
                 captured.append((gid, snapshot))
         with self.assertRaisesRegex(ValueError, '選項名稱'):
             autonomy.create_goal(self.store, self.sid, f'沿用回答 #{recent["id"]} 的比較結果' + old_options,
@@ -306,7 +306,7 @@ class ComparisonHandoffTests(unittest.TestCase):
                 state = autonomy.get_goal(self.store, self.sid, gid)
                 ref = state['conversation_context'].get(goal_comparison_handoff.REFERENCE)
                 if expected:
-                    self.assertEqual((ref['answer_id'], ref['version']), (expected['id'], 4))
+                    self.assertEqual((ref['answer_id'], ref['version']), (expected['id'], 5))
                 else:
                     self.assertIsNone(ref)
                 tracked.append((gid, state))
@@ -319,6 +319,85 @@ class ComparisonHandoffTests(unittest.TestCase):
         copy = Store(self.root / 'dimensions' / 'assistant.sqlite3')
         for gid, state in tracked:
             self.assertEqual(autonomy.get_goal(copy, self.sid, gid), state)
+
+    def test_formal_withdrawal_blocks_old_and_unconfirmed_repeated_values(self):
+        compare = '請比較「隔音板」和「固定簾」的存放位置。'
+        objective = '沿用本對話最後一次比較結果，只整理「隔音板」和「固定簾」的存放位置。'
+        title = '| 方案 | 存放位置 |\n| --- | --- |\n'
+        complete = title + '| 隔音板 | 星枇格 |\n| 固定簾 | 天晴架 |'
+        old = Assistant(self.store, ScriptedEngine(complete)).ask(
+            self.sid, compare + '隔音板放星枇格，固定簾放天晴架。')
+        partial = complete.replace('星枇格', '待確認')
+        latest = Assistant(self.store, ScriptedEngine(partial)).ask(
+            self.sid, compare + '正式撤回隔音板先前保存的存放位置，過去的位置不可再用。固定簾仍放天晴架。')
+        capture = goal_comparison_handoff.capture
+        with patch('assistant.goal_comparison_handoff.capture',
+                   side_effect=lambda *args: capture(*args, reference_version=4)):
+            legacy = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        before = autonomy.get_goal(self.store, self.sid, legacy)
+        ref = before['conversation_context'][goal_comparison_handoff.REFERENCE]
+        self.assertEqual((ref['answer_id'], ref['version']), (old['id'], 4))
+
+        gid = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        engine = ScriptedEngine(action('ask', question='隔音板的新存放位置是哪裡？', partial_result=partial))
+        waiting = autonomy.run_goal(self.store, self.sid, gid, engine, max_steps=1)
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        context = payload['conversation_context']
+        self.assertNotIn(goal_comparison_handoff.REFERENCE, context)
+        self.assertNotIn('verified_work_fields', payload)
+        self.assertIn((latest['id'], partial), [(item['message_id'], item['content']) for item in context['messages']])
+
+        historical = f'沿用回答 #{old["id"]} 的比較表，只整理「隔音板」和「固定簾」的存放位置。'
+        history = autonomy.create_goal(self.store, self.sid, historical, from_chat=True)
+        saved_history = autonomy.get_goal(self.store, self.sid, history)
+        self.assertEqual(saved_history['conversation_context'][goal_comparison_handoff.REFERENCE]['answer'], complete)
+        with self.assertRaisesRegex(ValueError, '已撤回'):
+            autonomy.create_goal(self.store, self.sid, historical + '交付現行的位置。', from_chat=True)
+
+        wrong = complete.replace('星枇格', '雲棗架')
+        reconfirm = '重新正式確認「隔音板」的「存放位置」為楊木櫃。'
+        for answer, request in ((complete, compare), (wrong, compare + reconfirm)):
+            Assistant(self.store, ScriptedEngine(answer)).ask(self.sid, request)
+            picked = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+            self.assertNotIn(goal_comparison_handoff.REFERENCE,
+                             autonomy.get_goal(self.store, self.sid, picked)['conversation_context'])
+        current = complete.replace('星枇格', '楊木櫃')
+        correct = Assistant(self.store, ScriptedEngine(current)).ask(self.sid, compare + reconfirm)
+        chosen = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        chosen_state = autonomy.get_goal(self.store, self.sid, chosen)
+        self.assertEqual(chosen_state['conversation_context'][goal_comparison_handoff.REFERENCE]['answer_id'],
+                         correct['id'])
+        self.store.add_message(self.sid, 'user', '隔音板的存放位置已正式撤回。')
+        later = autonomy.create_goal(self.store, self.sid, objective, from_chat=True)
+        self.assertNotIn(goal_comparison_handoff.REFERENCE,
+                         autonomy.get_goal(self.store, self.sid, later)['conversation_context'])
+
+        saved = create_backup(self.store.path)
+        restore_backup(saved['path'], self.root / 'authority')
+        copy = Store(self.root / 'authority' / 'assistant.sqlite3')
+        for goal, state in ((legacy, before), (gid, waiting), (chosen, chosen_state), (history, saved_history)):
+            self.assertEqual(autonomy.get_goal(copy, self.sid, goal), state)
+
+    def test_current_comparison_skips_proposal_without_blocking_other_scopes(self):
+        compare = '請比較「隔音板」和「固定簾」的存放位置。'
+        head = '| 方案 | 存放位置 |\n| --- | --- |\n'
+        base = head + '| 隔音板 | 星枇格 |\n| 固定簾 | 天晴架 |'
+        approved = Assistant(self.store, ScriptedEngine(base)).ask(self.sid, compare)
+        proposed = head + '| 隔音板 | 提議：秋堇袋 |\n| 固定簾 | 提議：琉槐台 |'
+        proposal = Assistant(self.store, ScriptedEngine(proposed)).ask(
+            self.sid, compare + '這只是提案，尚未正式採用。')
+        for control in ('正式撤回隔音板的布置時間。', '正式撤回隔音板甲的存放位置。',
+                        '請讀例句「正式撤回隔音板的存放位置」。',
+                        '如果改成夏季，正式撤回隔音板的存放位置。'):
+            self.store.add_message(self.sid, 'user', control)
+        objective = '沿用本對話最後一次比較結果，只整理「隔音板」和「固定簾」的存放位置。'
+        for extra, expected in (('交付現行已正式確認的結果。', approved), ('交付原比較的提案。', proposal)):
+            gid = autonomy.create_goal(self.store, self.sid, objective + extra, from_chat=True)
+            self.assertEqual(autonomy.get_goal(self.store, self.sid, gid)['conversation_context']
+                             [goal_comparison_handoff.REFERENCE]['answer_id'], expected['id'])
+        with self.assertRaisesRegex(ValueError, '尚未採用'):
+            autonomy.create_goal(self.store, self.sid, f'沿用回答 #{proposal["id"]} 的比較表。'
+                                 '只整理「隔音板」和「固定簾」的存放位置。交付現行的位置。', from_chat=True)
 
     def test_named_work_dimension_filters_live_fields_before_delivery(self):
         works = ('西側櫃台清點', '東側櫃台清點')

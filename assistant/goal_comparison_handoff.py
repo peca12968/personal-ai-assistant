@@ -13,7 +13,8 @@ REFERENCE = 'comparison_reference'
 REFERENCE_GUIDANCE = (
     'comparison_reference 是本目標選定的比較原問與實際回答。以這一份比較為目標對象，'
     '同對話的其他比較只供回顧。有 verified_work_fields 時依原工作現行來源核對正式欄值。'
-    '一般比較依使用者原問及選定的文字或表格，保留當時的假設及未確認條件。'
+    '一般比較保留原問的假設及未確認條件。整理現況時以對話內較晚的明確更正或撤回核對所需欄位。'
+    '若明確要求查看歷史，標明當時版本及狀態。'
 )
 RECEIPT = 'comparison_source_check'
 GUIDANCE = (
@@ -47,6 +48,15 @@ _HEX = re.compile(r'[0-9a-f]{64}')
 _GOAL_ID = re.compile(r'[0-9a-f]{32}')
 _JSON_KEYS = ('工作', '欄位', '範圍', '確認值', '來源種類', '來源編號')
 _REQUIRED_OUTPUT = {'finish', 'write_artifact', 'deliver'}
+
+_CURRENT = re.compile(r'^(?:請\s*)?(?:交付|整理|比較|對照|列出|保留|提供|使用|採用|輸出|以|只(?:交付|整理|使用|採用))\s*'
+                      r'(?:現行|當前|目前|最新(?:的)?正式|已正式確認|正式確認)')
+_TENTATIVE = re.compile(r'^(?:這(?:次|個)?(?:比較)?|本次(?:比較)?|以上|以下)(?:只是|僅是|僅為|只供|僅供)'
+                        r'(?:未採用的)?(?:提案|草案|假設)(?:$|[，,])')
+_WITHDRAW = r'(?:正式)?撤回'
+_PREVIOUS = r'(?:(?:先前|之前|原先|原本)(?:保存|確認|採用)?的?)?'
+_CONFIRM = r'(?:重新|現已|現在)?(?:正式確認|已確認)'
+_HISTORY = re.compile(r'^(?:請\s*)?(?:回顧|查閱|重現|照錄|重列)\s*(?:原本|當時|歷史|原始)')
 
 
 def _intent(objective):
@@ -135,11 +145,77 @@ def _refers_to_table(objective, pattern):
                if not inquiry and (match := pattern.match(clause)))
 
 
+def _authority_clauses(text):
+    return [goal_chat_fields.label_key(clause) for _, clause, inquiry
+            in goal_guidance_sources.standalone_clauses(text) if not inquiry]
+
+
+def _scope_label(label):
+    literal = re.escape(label)
+    return rf'(?:{literal}|「{literal}」|『{literal}』|“{literal}”)'
+
+
+def _withdrawals(messages, names, dimensions):
+    newest = {}
+    if not names or not dimensions:
+        return newest
+    for item in messages:
+        if item['role'] != 'user' or item['content_truncated']:
+            continue
+        for clause in _authority_clauses(item['content']):
+            for name in names:
+                subject = _scope_label(name)
+                for dimension in dimensions:
+                    field = rf'{subject}\s*的?{_PREVIOUS}\s*{_scope_label(dimension)}'
+                    if re.match(rf'^(?:(?:請|我|現在|我現在)\s*)?(?:{_WITHDRAW}\s*{field}|{field}\s*已?{_WITHDRAW})'
+                                r'(?:的(?:正式)?確認)?(?=$|,)', clause):
+                        newest[name, dimension] = item['message_id']
+    return newest
+
+
+def _confirmations(clauses, withdrawals):
+    confirmed = {}
+    for name, dimension in withdrawals:
+        scoped = rf'{_scope_label(name)}\s*的\s*{_scope_label(dimension)}'
+        pattern = re.compile(rf'^(?:{_CONFIRM}\s*{scoped}\s*(?:為|是|:)|{scoped}\s*{_CONFIRM}\s*(?:為|是|:))'
+                             r'\s*(?P<value>[^,]+)$')
+        values = {_table_name(match['value']) for clause in clauses if (match := pattern.fullmatch(clause))}
+        if len(values) == 1:
+            confirmed[name, dimension] = values.pop()
+    return confirmed
+
+
+def _reconfirmed_table(row, clauses, withdrawals, names, dimensions):
+    if row['user_id'] <= max(withdrawals.values()):
+        return False
+    confirmed = _confirmations(clauses, withdrawals)
+    if confirmed.keys() != withdrawals.keys():
+        return False
+    matching = [
+        all(_comparison_cells(labels, cells, {name}, {dimension}) == [value]
+            for (name, dimension), value in confirmed.items())
+        for labels, cells in _table_orientations(row['content'])
+        if _covers_cells(labels, cells, names, dimensions)
+    ]
+    return bool(matching) and all(matching)
+
+
+def _superseded_source(row, withdrawals, *, current, names, dimensions):
+    if not current and not withdrawals:
+        return ''
+    clauses = _authority_clauses(row['request'])
+    if current and any(_TENTATIVE.match(clause) for clause in clauses):
+        return '指定比較是尚未採用的提案，請選擇已確認的資料。'
+    if withdrawals and not _reconfirmed_table(row, clauses, withdrawals, names, dimensions):
+        return '比較包含已撤回的欄位，請使用重新確認的資料。'
+    return ''
+
+
 def _ordinary_comparison(row, *, allow_prose, names, dimensions):
     subjects = _comparison_subjects(row['request'])
     if subjects is None:
         return False
-    if any(_table_covers(header, rows, names, dimensions) for header, rows in _visible_tables(row['content'])):
+    if any(_table_covers(header, rows, names, dimensions) for header, rows in _table_orientations(row['content'])):
         return True
     return allow_prose and goal_comparison_prose.matches(
         subjects, row['content'], required_names=names, required_dimensions=dimensions)
@@ -149,31 +225,37 @@ def _table_name(cell):
     return goal_chat_fields.label_key(cell.strip('*`「」『』“”'))
 
 
+def _table_orientations(text):
+    for header, rows in _visible_tables(text):
+        yield header, rows
+        heading, *data = zip(header, *rows)
+        yield heading, data
+
+
 def _table_covers(header, rows, names, dimensions):
     if not dimensions:
-        return (not names or names <= {_table_name(cell) for cell in header[1:]}
-                or names <= {_table_name(row[0]) for row in rows})
-    if _covers_cells(header, rows, names, dimensions):
-        return True
-    heading, *data = zip(header, *rows)
-    return _covers_cells(heading, data, names, dimensions)
+        return not names or names <= {_table_name(row[0]) for row in rows}
+    return _covers_cells(header, rows, names, dimensions)
 
 
 _UNFILLED = re.compile(r'^(?:待(?:確認|補充|核對|提供)|未(?:確認|公開|提供|知)|尚未(?:確認|核對|提供|公布)|'
                        r'不明|不詳|尚缺|缺(?:少)?資料|資料不足|n/?a|[-—–]+)(?:$|[\s*《》」』\x60（(，。\[])')
 
 
-def _covers_cells(header, rows, names, dimensions):
+def _comparison_cells(header, rows, names, dimensions):
     columns = [goal_comparison_prose.dimension_key(cell) for cell in header[1:]]
     if any(columns.count(dimension) != 1 for dimension in dimensions):
-        return False
+        return []
     indexes = [columns.index(dimension) + 1 for dimension in dimensions]
     keys = [_table_name(row[0]) for row in rows]
     if any(keys.count(name) != 1 for name in names):
-        return False
-    values = (rows[keys.index(name)][index] for name in names for index in indexes)
-    values = (_table_name(value) for value in values)
-    return all(value and not _UNFILLED.match(value) for value in values)
+        return []
+    return [_table_name(rows[keys.index(name)][index]) for name in names for index in indexes]
+
+
+def _covers_cells(header, rows, names, dimensions):
+    values = _comparison_cells(header, rows, names, dimensions)
+    return bool(values) and all(value and not _UNFILLED.match(value) for value in values)
 
 
 def _reference(row, version):
@@ -233,7 +315,7 @@ def _scoped_indices(objective, fields, names, dimensions):
     return selected if len(qualifiers) == len(requested) and set(qualifiers) == requested else None
 
 
-def _capture_pinned(db, sid, objective, answer_id, reference_version):
+def _capture_pinned(db, sid, objective, answer_id, reference_version, messages):
     if not (completed := _completed(db, sid, answer_id)):
         raise ValueError('在本對話找不到指定的已完成回答，請核對比較回答編號。')
     row, context = completed
@@ -248,19 +330,30 @@ def _capture_pinned(db, sid, objective, answer_id, reference_version):
     table_only = _refers_to_table(objective, _PINNED)
     if _ordinary_comparison(row, allow_prose=reference_version >= 2 and not table_only,
                             names=names, dimensions=dimensions):
+        if reference_version >= 5 and any(_CURRENT.match(clause) for clause in _authority_clauses(objective)):
+            if reason := _superseded_source(row, _withdrawals(messages, names, dimensions), current=True,
+                                            names=names, dimensions=dimensions):
+                raise ValueError(reason)
         return {REFERENCE: reference}
     raise ValueError('指定回答沒有可核對的比較內容，請核對回答編號、比較形式及選項名稱與項目。')
 
 
-def capture(db, sid, objective, messages, *, reference_version=4):
+def capture(db, sid, objective, messages, *, reference_version=5):
     if answer_id := _pinned_answer(objective):
-        return _capture_pinned(db, sid, objective, answer_id, reference_version)
+        return _capture_pinned(db, sid, objective, answer_id, reference_version, messages)
     if not _intent(objective):
         return {}
     work_comparison = any(match['works'] for _, clause, inquiry in goal_guidance_sources.standalone_clauses(objective)
                           if not inquiry and (match := _INTENT.match(clause)))
     allow_prose = reference_version >= 2 and not _refers_to_table(objective, _INTENT)
     names, dimensions = _named_scope(objective, _INTENT, reference_version)
+    current = False
+    withdrawals = {}
+    if reference_version >= 5:
+        clauses = _authority_clauses(objective)
+        current = any(_CURRENT.match(clause) for clause in clauses)
+        if current or not any(_HISTORY.match(clause) for clause in clauses):
+            withdrawals = _withdrawals(messages, names, dimensions)
     for item in reversed(messages):
         if item['role'] != 'assistant' or not (completed := _completed(db, sid, item['message_id'])):
             continue
@@ -279,6 +372,8 @@ def capture(db, sid, objective, messages, *, reference_version=4):
             return checked
         if not work_comparison and _ordinary_comparison(row, allow_prose=allow_prose,
                                                         names=names, dimensions=dimensions):
+            if _superseded_source(row, withdrawals, current=current, names=names, dimensions=dimensions):
+                continue
             reference = _reference(row, reference_version)
             return {REFERENCE: reference} if reference else {}
     return {}
@@ -286,14 +381,14 @@ def capture(db, sid, objective, messages, *, reference_version=4):
 
 def validate_reference(db, sid, objective, reference, messages, basis):
     if (not isinstance(reference, dict) or reference.keys() != {'version', 'answer_id', 'user_id', 'request', 'answer'}
-            or type(reference['version']) is not int or reference['version'] not in (1, 2, 3, 4)
+            or type(reference['version']) is not int or reference['version'] not in (1, 2, 3, 4, 5)
             or type(reference['answer_id']) is not int or not 1 <= reference['answer_id'] < 2**63 - 1
             or type(reference['user_id']) is not int or not 1 <= reference['user_id'] < reference['answer_id']):
         raise ValueError('比較回答快照格式不符。')
     answer_id = reference['answer_id']
     version = reference['version']
     if pinned := _pinned_answer(objective):
-        matched = pinned == answer_id and _capture_pinned(db, sid, objective, pinned, version) == {
+        matched = pinned == answer_id and _capture_pinned(db, sid, objective, pinned, version, messages) == {
             REFERENCE: reference, **({BASIS: basis} if basis is not None else {})
         }
     else:
