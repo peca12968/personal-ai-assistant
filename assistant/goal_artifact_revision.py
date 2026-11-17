@@ -5,7 +5,7 @@ import json
 import re
 
 from . import artifact_names, delivery_preference, goal_artifact_fields, goal_guidance_sources, goal_reply_sources
-from . import goal_artifact_totals, goal_sources, goal_stages
+from . import goal_artifact_totals, goal_artifact_weight_groups, goal_sources, goal_stages
 
 
 MARK = 'artifact_revision_question'
@@ -18,6 +18,9 @@ GUIDANCE = (
     'derived_revisions 的舊值與新值以 value_unit 表示，檔案沿用使用者指定的單位；該列須引 required_corrections。'
     '若沒有要求逐項核對算式，已定位來源的單列合計可直接用 calculate 的 product 重算。'
     '不必為這筆乘法另送 operands。'
+    'aggregate_revisions 的 members 是合計的全部已核對品項。沿用未修改的小計，只重算改動品項及其加總。'
+    '可用 calculate_expression 在 sum 中結合仍可用的小計和更正後的 product。'
+    '修正版延續同一列名稱、全部 member_citations 和所需更正引用。'
 )
 _CORRECTION = re.compile(r'^(?:請\s*)?正式(?:更正|撤回|改用|改為)\s*\S')
 _CURRENT_ONLY = re.compile(
@@ -99,7 +102,7 @@ def _record(step, source):
             'write_sha256': goal_stages.digest(step), 'citation': source['citation'], 'source_sha256': source['sha256']}
 
 
-def superseded(goal, *, fields=True, derived=True):
+def superseded(goal, *, fields=True, derived=True, aggregated=True):
     result = {}
     for note in goal.get('guidance_sources', ()):
         prior = goal['steps'][:note['steps_seen']]
@@ -127,6 +130,18 @@ def superseded(goal, *, fields=True, derived=True):
                              key=lambda row: guidance[row['citation']]['notes_start'])
                 record = result.setdefault(key, _record(original_writes[key], guidance[latest['citation']]))
                 record['derived_revisions'] = revisions
+        if aggregated:
+            for key, revisions in goal_artifact_weight_groups.provenance(goal, original_writes).items():
+                latest = max((item for revision in revisions for item in revision['input_revisions']),
+                             key=lambda row: guidance[row['citation']]['notes_start'])
+                record = result.setdefault(key, _record(original_writes[key], guidance[latest['citation']]))
+                record['aggregate_revisions'] = revisions
+                groups = {(row['entity'], row['csv_column']) for row in revisions}
+                if 'derived_revisions' in record:
+                    record['derived_revisions'] = [row for row in record['derived_revisions']
+                                                   if (row['entity'], row['csv_column']) not in groups]
+                    if not record['derived_revisions']:
+                        del record['derived_revisions']
     return result
 
 
@@ -135,7 +150,8 @@ def question(goal, expected, stale, inventory):
             or inventory.keys() != _first_writes(goal['steps']).keys()):
         return None
     draft = stale[expected['filename'].casefold()]
-    version = 3 if 'derived_revisions' in draft else 2 if 'field_revisions' in draft else 1
+    version = (4 if 'aggregate_revisions' in draft else 3 if 'derived_revisions' in draft else
+               2 if 'field_revisions' in draft else 1)
     return {'version': version, 'requirement': expected, 'draft': draft,
             'suggested': artifact_names._suggest(draft['name'], inventory), 'notes_end': len(goal['notes'])}
 
@@ -162,19 +178,24 @@ def check_action(stale, inventory, action, steps):
         candidates = [(name, written[name]['action']['args']['content']) for name in names & written.keys()]
     if blocked:
         raise ValueError('此檔案內容在正式更正之前保存，請保留舊檔並用現行資料另存後交付。')
-    revisions = [row for file in stale.values() for row in _revisions(file)]
-    if revisions and any(name.endswith('.csv') and goal_artifact_fields.has_wrong_current_value(content, revisions)
-                         for name, content in candidates):
+    revisions = [row for file in stale.values() for row in _revisions(file) if 'aggregation' not in row]
+    groups = [row for file in stale.values() for row in file.get('aggregate_revisions', ())]
+    csv_contents = [content for name, content in candidates if name.endswith('.csv')]
+    if revisions and any(goal_artifact_fields.has_wrong_current_value(content, revisions)
+                         for content in csv_contents):
         raise ValueError('CSV 仍含未更新的已更正欄值，請依更正來源重新核對。')
+    if groups and any(goal_artifact_weight_groups.has_wrong_current_value(content, groups) for content in csv_contents):
+        raise ValueError('CSV 的多品項合計或其來源與已核對的現行資料不符。')
 
 
 def _revisions(file):
-    return [*file.get('field_revisions', ()), *file.get('derived_revisions', ())]
+    return [*file.get('field_revisions', ()), *file.get('derived_revisions', ()), *file.get('aggregate_revisions', ())]
 
 
 def delivery_check(goal, stale):
     reviewed = [stale[key] for key in sorted(stale) if _revisions(stale[key])]
-    version = 2 if any('derived_revisions' in row for row in reviewed) else 1
+    version = (3 if any('aggregate_revisions' in row for row in reviewed) else
+               2 if any('derived_revisions' in row for row in reviewed) else 1)
     return {'version': version, 'notes_end': len(goal['notes']), 'superseded': reviewed} if reviewed else None
 
 
@@ -221,8 +242,12 @@ def validate_saved(db, *, replies_present, guidance_present):
                 raise ValueError('改版檔名問題或交付核對缺少有效來源。')
             context = _context_at({**goal, 'sources': history.get(step['sequence'], sources)}, end, steps[:index])
             version = proof.get('version')
-            stale = superseded(context, fields=not is_question or version in (2, 3),
-                               derived=version == (3 if is_question else 2))
+            allowed = (1, 2, 3, 4) if is_question else (1, 2, 3)
+            if type(version) is not int or version not in allowed:
+                raise ValueError('更正後的交付核對版本不符。')
+            stale = superseded(context, fields=not is_question or version >= 2,
+                               derived=version >= (3 if is_question else 2),
+                               aggregated=version == (4 if is_question else 3))
             if not is_question:
                 checked_delivery = delivery_check(context, stale)
                 if step['action']['tool'] != 'deliver' or checked_delivery is None or checked_delivery != proof:

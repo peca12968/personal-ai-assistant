@@ -270,6 +270,98 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(result['steps'][-3]['action']['tool'], 'invalid')
         self.assertEqual(proof['required_corrections'], ['[更正#1]'])
 
+    def test_weight_group_matches_a_sum_subtree_and_preserves_independent_equal_total(self):
+        source = self.root / 'loads.txt'
+        source.write_text('載重\n白棚架｜4 件｜每件 3 公斤\n藍棚架｜4 件｜每件 3 公斤\n護欄｜6 件｜每件 4 公斤\n',
+                          encoding='utf-8')
+        doc = self.store.attach_document(self.sid, source)
+        gid = a.create_goal(self.store, self.sid, '提供棚架合載及護欄獨立總重。', file_delivery=True)
+        head = '項目,合計公斤,來源\n'
+        old = head + f'棚架合載,24,[D{doc}:L2] [D{doc}:L3]\n'
+        independent = head + f'護欄,24,[D{doc}:L4]\n'
+        member = {'operation': 'product', 'values': ['4', '3']}
+        group = {'operation': 'sum', 'values': [member, member]}
+        tree = {'operation': 'sum', 'values': [group, {'operation': 'product', 'values': ['6', '4']}]}
+        before = a.run_goal(self.store, self.sid, gid, ScriptedEngine(
+            action('read', document_id=doc, start_line=2, end_line=4),
+            action('calculate_expression', expression=tree),
+            action('write_artifact', filename='stage.csv', content=old),
+            action('write_artifact', filename='barrier.csv', content=independent)), max_steps=4)
+        view = goal_guidance.snapshot(self.store, self.sid, gid)
+        goal_guidance.save(self.store, self.sid, gid, '正式更正「藍棚架」的「每件重量」為 5 公斤，件數不變。',
+                           expected_fingerprint=view['fingerprint'])
+        updated = head + f'棚架合載,32,[D{doc}:L2] [D{doc}:L3] [更正#1]\n'
+        engine = ScriptedEngine(
+            action('deliver', filenames=['stage.csv', 'barrier.csv'], report='舊合計'),
+            action('write_artifact', filename='stage-new.csv', content=updated.replace(f' [D{doc}:L3]', '')),
+            action('write_artifact', filename='stage-new.csv', content=updated),
+            action('deliver', filenames=['stage-new.csv', 'barrier.csv'], report='有效的合載和護欄'))
+        result = a.run_goal(self.store, self.sid, gid, engine, max_steps=4)
+        self.assertEqual(result['status'], 'report_ready')
+        self.assertEqual(result['steps'][:4], before['steps'])
+        self.assertEqual([step['action']['tool'] for step in result['steps'][4:]],
+                         ['invalid', 'invalid', 'write_artifact', 'deliver'])
+        receipt = result['steps'][-1]['observation'][goal_artifact_revision.DELIVERY_MARK]
+        self.assertEqual(receipt['version'], 3)
+        draft, = receipt['superseded']
+        proof, = draft['aggregate_revisions']
+        self.assertEqual((draft['name'], proof['entity'], proof['previous_value'], proof['value']),
+                         ('stage.csv', '棚架合載', '24000', '32000'))
+        self.assertEqual(proof['aggregation']['sum']['path'], '/values/0')
+        self.assertEqual({row['path'] for row in proof['aggregation']['products']},
+                         {'/values/0/values/0', '/values/0/values/1'})
+        saved = create_backup(self.store.path)
+        restore_backup(saved['path'], self.root / 'aggregate')
+        copy = Store(self.root / 'aggregate' / 'assistant.sqlite3')
+        self.assertEqual(a.get_goal(copy, self.sid, gid), result)
+        paths = f.rebuild(copy, self.sid, gid)
+        folder = Path(paths['directory'])
+        self.assertEqual((folder / 'stage.csv').read_bytes(), old.encode())
+        self.assertEqual((folder / 'stage-new.csv').read_bytes(), updated.encode())
+        self.assertEqual((folder / 'barrier.csv').read_bytes(), independent.encode())
+        with copy.connect() as db:
+            observation = result['steps'][-1]['observation'].copy()
+            observation[goal_artifact_revision.DELIVERY_MARK]['superseded'][0]['aggregate_revisions'][0][
+                'aggregation']['products'][0]['path'] = '/values/1'
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=?',
+                       (json.dumps(observation, ensure_ascii=False), gid, len(result['steps'])))
+        with self.assertRaisesRegex(ValueError, '更正後的交付核對'):
+            validate_database(copy.path)
+
+    def test_weight_group_requires_each_saved_product_when_combining_prior_and_inline_results(self):
+        source = self.root / 'paired-weights.txt'
+        source.write_text('組合\n前架｜2 件｜每件 6 公斤\n後架｜4 件｜每件 3 公斤\n', encoding='utf-8')
+        doc = self.store.attach_document(self.sid, source)
+        for mode in ('mixed', 'separate', 'missing_product'):
+            with self.subTest(mode=mode):
+                gid = a.create_goal(self.store, self.sid, mode, file_delivery=True)
+                recorded = [action('read', document_id=doc, start_line=2, end_line=3)]
+                if mode != 'missing_product':
+                    recorded.append(action('calculate', operation='product', values=['2', '6']))
+                if mode == 'separate':
+                    recorded.append(action('calculate', operation='product', values=['4', '3']))
+                    recorded.append(action('calculate', operation='sum', values=['12', '12']))
+                else:
+                    recorded.append(action('calculate_expression', expression={
+                        'operation': 'sum', 'values': ['12', {'operation': 'product', 'values': ['4', '3']}] }))
+                recorded.append(action('write_artifact', filename='group.csv', content=
+                                       f'項目,合計公斤,來源\n組合,24,[D{doc}:L2] [D{doc}:L3]\n'))
+                a.run_goal(self.store, self.sid, gid, ScriptedEngine(*recorded), max_steps=len(recorded))
+                view = goal_guidance.snapshot(self.store, self.sid, gid)
+                goal_guidance.save(self.store, self.sid, gid, '正式更正「前架」的「每件重量」為 8 公斤。',
+                                   expected_fingerprint=view['fingerprint'])
+                engine = ScriptedEngine(action('deliver', filenames=['group.csv'], report='交付既有合計'))
+                result = a.run_goal(self.store, self.sid, gid, engine, max_steps=1)
+                payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+                if mode == 'missing_product':
+                    self.assertNotIn('superseded_artifacts', payload)
+                else:
+                    self.assertEqual(result['steps'][-1]['action']['tool'], 'invalid')
+                    draft, = payload['superseded_artifacts']
+                    proof, = draft['aggregate_revisions']
+                    self.assertEqual(proof['value'], '28000')
+                    self.assertEqual([row['step'] for row in proof['aggregation']['products']], [2, 3])
+
     def test_csv_rejects_invalid_table_before_reserving_an_artifact(self):
         for body in ('A,A\n1,2\n', 'A, \n1,2\n', 'A,B\n1\n', 'A,B\n"x,2\n', 'A,B\n1,2,3\n'):
             with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'CSV'):
