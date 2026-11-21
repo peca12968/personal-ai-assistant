@@ -9,6 +9,22 @@ from scripts import publish
 
 
 class PublishEncodingTests(unittest.TestCase):
+    def test_public_visibility_requires_explicit_current_base(self):
+        publish.check_destination("PRIVATE", None, None)
+        for visibility, approval, base in [
+                ("PUBLIC", None, "abc"), ("PUBLIC", "abc", None),
+                ("PUBLIC", "abc", "def"), ("INTERNAL", "abc", "abc")]:
+            with self.subTest(visibility=visibility, approval=approval, base=base), self.assertRaises(RuntimeError):
+                publish.check_destination(visibility, approval, base)
+        for branch, remote in [("main", "abc"), ("main", "def"), ("topic", "abc")]:
+            with self.subTest(branch=branch, remote=remote), patch.object(
+                    publish, "run", side_effect=[branch, remote + "\trefs/heads/main"]):
+                if branch == "main" and remote == "abc":
+                    publish.check_destination("PUBLIC", "abc", "abc")
+                else:
+                    with self.assertRaises(RuntimeError):
+                        publish.check_destination("PUBLIC", "abc", "abc")
+
     def test_nested_cli_chinese_diagnostics_decode_without_shell_environment_setup(self):
         text = '已確認不成立。'
         code = (

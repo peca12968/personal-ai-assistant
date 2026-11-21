@@ -1,6 +1,7 @@
 """Resolve explicit single-line document selections in checked ordinary goals."""
 import re
 
+from . import operand_evidence
 from .goal_guidance_sources import standalone_clauses
 
 
@@ -58,8 +59,12 @@ def reply_assignments(text, choice_offset, choice_field, valid_clause):
     return result if complete else []
 
 
-def _selection(clause):
+def _selection(clause, *, scoped_fields=False):
     source = re.sub(rf'^{_SCOPE}(?=\s*(?:以|{_USE}|{_KEEP}))\s*', '', clause)
+    subject = None
+    if scoped_fields and (scope := operand_evidence.SCOPED_FIELD.match(source)):
+        subject = scope['subject']
+        source = '「' + scope['field'] + '」' + source[scope.end():]
     match = _VIA.fullmatch(source) or _CHOICE.fullmatch(source)
     if not match:
         return None
@@ -74,10 +79,11 @@ def _selection(clause):
     refs = tuple(dict.fromkeys(re.findall(_LINE, match['refs'])))
     return {'field': field, 'quoted': match['quoted'] is not None, 'refs': refs,
             'description': match['description'], 'retain': verb in _RETENTION,
-            'undecided': any(word in verb for word in _UNKNOWN_WORDS)}
+            'undecided': any(word in verb for word in _UNKNOWN_WORDS),
+            **({'subject': subject} if subject else {})}
 
 
-def literal_fields(text, valid_clause):
+def literal_fields(text, valid_clause, *, scoped_fields=False):
     found = []
     for start, clause, question in clauses(text):
         if question:
@@ -86,14 +92,20 @@ def literal_fields(text, valid_clause):
             field = (match['quoted'] or match['bare']).strip()
         elif match := _RATE.match(clause):
             field = match['label']
+        elif (scoped_fields and (match := operand_evidence.SCOPED_FIELD.match(clause))
+              and re.match(r'\s*(?:為|[：:])\s*\S', clause[match.end():])):
+            field = match['field']
         else:
             continue
         found.append((field, clause, start, valid_clause(text, start, clause)))
     return found
 
 
-def _literal_field(text, valid_clause, requested=None):
-    found = literal_fields(text, valid_clause)
+def _literal_field(text, valid_clause, requested=None, *, scoped_fields=False, subject=None):
+    found = literal_fields(text, valid_clause, scoped_fields=scoped_fields)
+    if subject is not None:
+        found = [record for record in found
+                 if (scope := operand_evidence.SCOPED_FIELD.match(record[1])) is None or scope['subject'] == subject]
     if requested:
         targeted = [record for record in found if record[0] == requested]
         if targeted:
@@ -118,7 +130,7 @@ def _description_conflicts(description, filename):
     return name not in _SOURCE_WORDS and name not in {filename, filename.rsplit('.', 1)[0]}
 
 
-def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
+def _resolve(selection, versions, literal, valid_clause, *, multi_fields, scoped_fields=False):
     candidates, unknown = [], False
     for reference in selection['refs']:
         document = int(re.fullmatch(_CITATION, reference)['document'])
@@ -135,7 +147,8 @@ def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
             info['status'] = 'unread'
             unknown = True
             continue
-        found = _literal_field(text, valid_clause, selection['field'] if multi_fields else None)
+        found = _literal_field(text, valid_clause, selection['field'] if multi_fields else None,
+                               scoped_fields=scoped_fields, subject=selection.get('subject'))
         if not found:
             info['status'] = 'field_unconfirmed'
             unknown = True
@@ -144,6 +157,9 @@ def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
         info.update(field=field, quote=quote, quote_start=start, source_sha256=sha,
                     status='available' if confirmed else 'field_unconfirmed')
         unknown |= not confirmed
+        if scoped_fields and (scope := operand_evidence.SCOPED_FIELD.match(quote)):
+            lo, hi = scope.span('subject')
+            info['field_scope'] = {'name': scope['subject'], 'start': start + lo, 'end': start + hi}
 
     field = selection['field']
     read_fields = {row['field'] for row in candidates if 'field' in row}
@@ -159,17 +175,26 @@ def _resolve(selection, versions, literal, valid_clause, *, multi_fields):
         status = 'field_mismatch'
     elif selection['undecided'] or len(candidates) != 1:
         status = 'competing'
-    return {'field': field, 'status': status, 'candidates': candidates}
+    subject = selection.get('subject')
+    if scoped_fields and subject is None and candidates:
+        scopes = {row.get('field_scope', {}).get('name') for row in candidates}
+        if len(scopes) == 1:
+            subject = next(iter(scopes))
+    return {'field': field, 'status': status, 'candidates': candidates,
+            **({'subject': subject} if subject else {})}
 
 
-def _adopt_named(entry, versions, literal, valid_clause, multi_fields):
+def _adopt_named(entry, versions, literal, valid_clause, multi_fields, scoped_fields=False):
     if entry is not None and (refs := entry.pop('references', None)):
         selection = {'refs': refs, 'field': entry['field'], 'description': None, 'retain': False, 'undecided': False}
-        entry.update(_resolve(selection, versions, literal, valid_clause, multi_fields=multi_fields))
+        entry.update(_resolve(selection, versions, literal, valid_clause, multi_fields=multi_fields,
+                              scoped_fields=scoped_fields))
 
 
 class Review:
-    def __init__(self, order, user, scope, literal, valid_clause, *, names=None, multi_fields=False):
+    def __init__(self, order, user, scope, literal, valid_clause, *, names=None, multi_fields=False,
+                 scoped_fields=False):
+        self.scoped_fields = scoped_fields
         versions = {row['document_id']: row for row in scope}
         self.notes = []
         for position, citation, text in order:
@@ -185,12 +210,13 @@ class Review:
                 if inert:
                     altered = True
                     continue
-                selected = _selection(clause) if not question else None
+                selected = _selection(clause, scoped_fields=scoped_fields) if not question else None
                 if selected is not None:
-                    entry = _resolve(selected, versions, literal, valid_clause, multi_fields=multi_fields)
+                    entry = _resolve(selected, versions, literal, valid_clause, multi_fields=multi_fields,
+                                     scoped_fields=scoped_fields)
                 elif names is not None and not question and not re.search(_LINE, clause):
                     entry = names.resolve(citation, clause, offset, inert=bool(_NONOPERATIVE.search(prefix)))
-                    _adopt_named(entry, versions, literal, valid_clause, multi_fields)
+                    _adopt_named(entry, versions, literal, valid_clause, multi_fields, scoped_fields)
                 else:
                     entry = None
                 if selected is not None or entry is not None:
@@ -205,16 +231,16 @@ class Review:
                 field = entry['field']
                 if not (any(_applies(row, field) for row in records)
                         or any(names.direct_change(item, field) for item in direct)):
-                    _adopt_named(entry, versions, literal, valid_clause, multi_fields)
+                    _adopt_named(entry, versions, literal, valid_clause, multi_fields, scoped_fields)
                     records.append({**entry, 'user_citation': citation, 'user_sha256': user[citation][1],
                                     'user_quote': clause, 'user_quote_start': offset})
                     altered = True
             self.notes.append((position, citation, records, tuple(direct), None if altered else text))
 
-    def effective(self, field, direct_change, *, note_change=None):
+    def effective(self, field, direct_change, *, note_change=None, subject=None):
         latest = None
         for position, citation, records, direct, original in self.notes:
-            relevant = [row for row in records if _applies(row, field)]
+            relevant = [row for row in records if _applies(row, field, subject)]
             if note_change is not None:
                 changed = note_change(citation, field, direct if original is None else None)
             else:
@@ -225,15 +251,23 @@ class Review:
                           else _combine(relevant) if relevant else None)
         return latest
 
-    def preview(self, direct_change):
+    def preview(self, direct_change, *, note_change=None):
         fields = {row['field'] for _, _, records, _, _ in self.notes for row in records}
         fields.update(field for _, _, records, _, _ in self.notes for row in records
                       for field in row.get('field_candidates', ()))
         fields.update(item['field'] for _, _, records, _, _ in self.notes
                       for row in records if row['field'] is None for item in row['candidates'] if 'field' in item)
+        identities = {(field, None) for field in fields}
+        if self.scoped_fields:
+            identities = {(field, row.get('subject')) for field in fields
+                          for _, _, records, _, _ in self.notes for row in records if _applies(row, field)}
         result = []
-        for field in sorted(fields, key=lambda key: (key is None, key or '')):
-            active = (self.effective(field, direct_change) if field else next(
+        for field, subject in sorted(identities, key=lambda pair: (pair[0] is None, pair[0] or '', pair[1] or '')):
+            def scoped_change(citation, label, direct):
+                return note_change(citation, label, direct, subject)
+
+            active = (self.effective(field, direct_change, subject=subject,
+                                     note_change=scoped_change if note_change else None) if field else next(
                 ((pos, citation, _combine([row for row in records if row['field'] is None]))
                  for pos, citation, records, _, _ in reversed(self.notes)
                  if any(row['field'] is None for row in records)), None))
@@ -242,11 +276,16 @@ class Review:
                 if (row.get('field') is None and field is not None and row['status'] == 'pending'
                         and not _applies(row, field)):
                     continue
-                result.append({**row, 'field': field, 'user_citation': citation})
+                entry = {**row, 'field': field, 'user_citation': citation,
+                         **({'subject': subject} if subject else {})}
+                if entry not in result:
+                    result.append(entry)
         return result
 
 
-def _applies(row, field):
+def _applies(row, field, subject=None):
+    if subject is not None and row.get('subject') not in (None, subject):
+        return False
     if row['field'] is not None:
         return row['field'] == field
     if 'field_candidates' in row:
@@ -258,7 +297,7 @@ def _applies(row, field):
 def _combine(records):
     if len(records) == 1:
         return records[0]
-    key = lambda row: (row['status'], tuple(item['citation'] for item in row['candidates']))
+    key = lambda row: (row['status'], row.get('subject'), tuple(item['citation'] for item in row['candidates']))
     if all(key(row) == key(records[0]) for row in records):
         return records[-1]
     return {'status': 'competing', 'candidates': records}

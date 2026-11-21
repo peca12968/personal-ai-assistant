@@ -1,4 +1,4 @@
-"""Test, inspect, commit and push only project source to the private origin."""
+"""Test, inspect, commit and push approved project source to the configured origin."""
 import argparse
 import hashlib
 import os
@@ -30,6 +30,19 @@ def validate_path(name):
     ) and path.suffix.lower() not in {".db", ".sqlite3", ".paibackup", ".ics", ".log", ".pem", ".key", ".pyc"}
 
 
+def check_destination(visibility, public_base, expected_head):
+    if public_base is None:
+        if visibility != "PRIVATE":
+            raise RuntimeError("Upload stopped: destination must be PRIVATE.")
+        return
+    if visibility != "PUBLIC" or not expected_head or public_base != expected_head:
+        raise RuntimeError("Upload stopped: public release requires the approved base and file manifest.")
+    if (run("git", "branch", "--show-current", capture=True) != "main"
+            or run("git", "ls-remote", "--heads", "origin", "refs/heads/main", capture=True)
+            != f"{public_base}\trefs/heads/main"):
+        raise RuntimeError("Upload stopped: approved base must be the current remote main.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--message", default="Update personal assistant with verified changes")
@@ -37,6 +50,7 @@ def main():
     parser.add_argument('--expected-head', help='Self-improvement base commit; reject concurrent revisions')
     parser.add_argument('--expected-file', action='append', help='Exact allowed changed file for a self-improvement release')
     parser.add_argument('--expected-sha256', action='append', help='path=sha256 of each tested self-improvement file')
+    parser.add_argument('--approved-public-base', help='Explicit one-release public approval for this base and exact file manifest')
     args = parser.parse_args()
     run(sys.executable, "scripts/check_workflow.py")
     run(sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v")
@@ -258,15 +272,24 @@ def main():
             hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != sha for name, sha in expected.items()
         ):
             raise RuntimeError('Upload stopped: source content differs from the tested self-improvement.')
-    if run("gh", "repo", "view", REPO, "--json", "visibility", "--jq", ".visibility", capture=True) != "PRIVATE":
-        raise RuntimeError("Upload stopped: destination must be PRIVATE.")
-    remote = run("git", "remote", "get-url", "--push", "origin", capture=True)
+    remote = run("git", "remote", "get-url", "--push", "--all", "origin", capture=True)
     if remote not in {f"https://github.com/{REPO}.git", f"https://github.com/{REPO}", f"git@github.com:{REPO}.git"}:
-        raise RuntimeError("Upload stopped: origin is not the configured private repository.")
+        raise RuntimeError("Upload stopped: origin is not the configured repository.")
+    visibility = run("gh", "repo", "view", REPO, "--json", "visibility", "--jq", ".visibility", capture=True)
+    check_destination(visibility, args.approved_public_base, args.expected_head)
     tracked = run("git", "ls-files", "-z", capture=True).split("\0")
     if any(name and not validate_path(name) for name in tracked):
         raise RuntimeError("Upload stopped: tracked files outside approved source directories.")
     run("git", "add", "--", *sorted(ALLOWED_ROOT), *sorted(ALLOWED_DIRS))
+    if args.approved_public_base:
+        staged_files = set(run("git", "diff", "--cached", "--name-only", "-z", capture=True).split("\0"))
+        if staged_files - {""} != set(expected):
+            raise RuntimeError("Upload stopped: staged public release differs from the approved manifest.")
+        for name, sha in expected.items():
+            if (hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != sha
+                    or run("git", "hash-object", "--path", name, "--", name, capture=True)
+                    != run("git", "rev-parse", ":" + name, capture=True)):
+                raise RuntimeError("Upload stopped: staged content differs from the approved file.")
     staged = run("git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", capture=True).split("\0")
     for name in filter(None, staged):
         if not validate_path(name):
@@ -282,8 +305,8 @@ def main():
     branch = run("git", "branch", "--show-current", capture=True)
     if not branch:
         raise RuntimeError("Detached HEAD: select a branch before publishing.")
-    run("git", "push", "-u", "origin", branch)
-    print("Verified update uploaded to private GitHub repository.")
+    run("git", "-c", "push.followTags=false", "push", "-u", "origin", branch)
+    print(f"Verified update uploaded to {visibility.lower()} GitHub repository.")
 
 
 if __name__ == "__main__":

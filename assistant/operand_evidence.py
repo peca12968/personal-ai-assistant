@@ -256,7 +256,7 @@ def field_position(quote, number_start, field, *, ordinary):
     return _field_position(quote, number_start, field)
 
 
-def choice_quantity(text, *, field=None, displayed=False):
+def choice_quantity(text, *, field=None, displayed=False, scoped_fields=False):
     normalized = text.translate(_NUMERIC_CHARS)
     if field is not None or displayed:
         token = _CHOICE_QUANTITY.search(normalized)
@@ -266,7 +266,8 @@ def choice_quantity(text, *, field=None, displayed=False):
         return None
     try:
         exact = str(exact_math.parse(token['number']))
-        if field is not None:
+        if field is not None and not (scoped_fields and scoped_field_prefix(
+                text, token.start('number'), field, document=True)):
             field_position(text, token.start('number'), field, ordinary=True)
     except ValueError:
         return None

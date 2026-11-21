@@ -12,8 +12,8 @@ from .goal_stages import digest
 DIRECTIVE = '算式須逐項核對來源。'
 RECEIPT = 'checked_calculation_report'
 PROOF = 'calculation_evidence'
-SOURCE_VERSION = 17
-SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, SOURCE_VERSION)
+SOURCE_VERSION = 18
+SOURCE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SOURCE_VERSION)
 DOCUMENT_GROUP_VERSION = 1
 EXPLICIT_ZERO_VERSION = 1
 SCOPED_FIELD_VERSION = 1
@@ -47,6 +47,8 @@ GUIDANCE = (
     '等同版本整行字元無缺口才把它當完整原行；只看到首段或最後一段時仍可能有正式欄位。'
     '命中字面可以只是附註，要等工具辨認同欄原文後才採用。'
     '採用的單行須直接引用該行，工具會附補答或更正。缺行先查讀，只有真正未決才問。'
+    '原行帶品項名稱時，採用資料的 subject 與 candidates.field_scope 保留該品項，'
+    '選定後只更新同一品項與欄位，仍有效的其他品項繼續使用各自的來源。'
     'calculation_source_adoptions 的 field 是該次選擇的完整適用範圍。'
     '選定新文件名只更換該欄，原文件已讀且仍屬本批的規則、數字及事實繼續使用，'
     '即使新文件沒有重複列出也直接完成計算及交付。'
@@ -196,21 +198,23 @@ class Sources:
             corrected_approval_questions=self.version >= 16)
             if self.version >= 3 and self.order else None)
         self.adoptions = (goal_calculation_adoption.Review(self.order, self.user, scope, self.literal, _valid_clause,
-                                                         names=names, multi_fields=self.version >= 7)
+                                                         names=names, multi_fields=self.version >= 7,
+                                                         scoped_fields=self.version >= 18)
                           if self.version >= 2 else None)
 
     def _field_labels(self, text):
-        fields = goal_calculation_adoption.literal_fields(text, _valid_clause)
+        fields = goal_calculation_adoption.literal_fields(text, _valid_clause, scoped_fields=self.version >= 18)
         if self.version < 7 and len(fields) != 1:
             return ()
         return tuple(dict.fromkeys(record[0] for record in fields))
 
     def _field_quantity(self, citation, field):
         text, sha = self.literal(citation)
-        record = goal_calculation_adoption._literal_field(text, _valid_clause, field)
+        record = goal_calculation_adoption._literal_field(text, _valid_clause, field,
+                                                         scoped_fields=self.version >= 18)
         if record and record[0] == field and record[3]:
             _, quote, offset, _ = record
-            if quantity := operand_evidence.choice_quantity(quote, field=field):
+            if quantity := operand_evidence.choice_quantity(quote, field=field, scoped_fields=self.version >= 18):
                 return {**quantity, 'quote': quote, 'quote_start': offset, 'source_sha256': sha}
         return None
 
@@ -223,7 +227,13 @@ class Sources:
         return {**value, 'source_sha256': sha} if value else None
 
     def source_adoptions(self):
-        return self.adoptions.preview(_later_change) if self.adoptions else []
+        if self.adoptions is None:
+            return []
+
+        def note_change(citation, field, direct, subject):
+            return _scoped_later_change(self.user[citation][0], field, subject, direct)
+
+        return self.adoptions.preview(_later_change, note_change=note_change if self.version >= 18 else None)
 
     def literal(self, citation):
         text, sha = operand_evidence.source_text(citation, self.excerpts, self.user)
@@ -396,7 +406,8 @@ class Sources:
                 return _scoped_later_change(self.user[note_citation][0], field, subject, direct)
 
             latest = self.adoptions.effective(
-                label, _later_change, note_change=note_change if self.version >= 17 else None)
+                label, _later_change, note_change=note_change if self.version >= 17 else None,
+                subject=subject if self.version >= 18 else None)
             if not latest or latest[0] < position:
                 return None
             note_position, _, selection = latest

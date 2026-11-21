@@ -2115,3 +2115,146 @@ class GoalCalculationTests(unittest.TestCase):
                        (json.dumps(result['steps'][2]['observation'], ensure_ascii=False), self.gid))
         with self.assertRaises(ValueError):
             validate_database(restored.path)
+
+
+    def test_scoped_document_selection_preserves_independent_subject_and_replays_adoption(self):
+        count = '「北側吊架」的「件數」為 4 件'
+        old = '「北側吊架」的「每件重量」為 3 公斤'
+        other = old.replace('北側', '南側')
+        new = old.replace('3 公斤', '5 公斤')
+        did = self.attach('。\n'.join([count, old, other]) + '。', '原核定.txt')
+        revised = self.attach(new + '。', '複核.txt')
+        self.create(files=True)
+        self.run_actions(action('read_ranges', ranges=[
+            {'document_id': did, 'start_line': 1, 'end_line': 3},
+            {'document_id': revised, 'start_line': 1, 'end_line': 1}]))
+        note = f'「每件重量」採用 [D{revised}:L1]。'
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid, note, expected_fingerprint=snapshot['fingerprint'])
+
+        def product(quote, citation, value):
+            return action('calculate_expression', expression={'operation': 'product', 'values': ['4', value]},
+                          operands=[
+                              {'path': '/values/0', 'citation': f'[D{did}:L1]', 'quote': count,
+                               'field': '件數', 'unit': '件'},
+                              {'path': '/values/1', 'citation': citation, 'quote': quote,
+                               'field': '每件重量', 'unit': '公斤'}])
+
+        rows = [{'label': '北側合計', 'calculation_step': 3, 'unit': '公斤'},
+                {'label': '南側每件', 'calculation_step': 4, 'unit': '公斤'}]
+        engine = ScriptedEngine(
+            product(old, f'[D{did}:L2]', '3'), product(new, f'[D{revised}:L1]', '5'),
+            action('calculate_expression', expression='3', operands=[
+                {'path': '', 'citation': f'[D{did}:L3]', 'quote': other,
+                 'field': '每件重量', 'unit': '公斤'}]),
+            action('write_artifact', filename='採用.json', calculation_report=rows),
+            action('deliver', filenames=['採用.json'], calculation_report=rows))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=5)
+        self.assertEqual([step['action']['tool'] for step in result['steps'][1:]],
+                         ['invalid', 'calculate_expression', 'calculate_expression', 'write_artifact', 'deliver'])
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        selected = payload['calculation_source_adoptions'][0]
+        self.assertEqual((selected['field'], selected['subject'], selected['status']),
+                         ('每件重量', '北側吊架', 'adopted'))
+        candidate = selected['candidates'][0]
+        scope = candidate['field_scope']
+        self.assertEqual(new[scope['start']:scope['end']], '北側吊架')
+        proof = result['steps'][2]['observation'][goal_calculation.PROOF]
+        self.assertEqual(proof['version'], 18)
+        self.assertEqual(proof['source_adoptions'][0]['subject'], '北側吊架')
+        data = artifacts.directory(self.store, self.gid).joinpath('採用.json').read_bytes()
+        self.assertEqual([row['精確結果'] for row in json.loads(data)], ['20', '3'])
+        restored = self.restore()
+        artifacts.rebuild(restored, self.sid, self.gid)
+        self.assertEqual(artifacts.directory(restored, self.gid).joinpath('採用.json').read_bytes(), data)
+        proof['source_adoptions'][0]['candidates'][0]['field_scope']['end'] -= 1
+        with restored.connect() as db:
+            db.execute('UPDATE autonomous_steps SET observation_json=? WHERE goal_id=? AND sequence=3',
+                       (json.dumps(result['steps'][2]['observation'], ensure_ascii=False), self.gid))
+        with self.assertRaisesRegex(ValueError, '保存算式'):
+            validate_database(restored.path)
+
+    def test_two_named_subjects_select_same_field_independently_and_keep_later_correction_scoped(self):
+        north = '「北側吊架」的「每件重量」為 5 公斤'
+        south = '「南側吊架」的「每件重量」為 7 公斤'
+        did = self.attach(north + '。' + south + '。', '雙品項複核.txt')
+        self.create()
+        self.run_actions(action('read', document_id=did, start_line=1, end_line=1))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid,
+                           f'「北側吊架」的「每件重量」採用 [D{did}:L1]。'
+                           f'「南側吊架」的「每件重量」採用 [D{did}:L1]。',
+                           expected_fingerprint=snapshot['fingerprint'])
+
+        def formula(quote, value, citation=None):
+            return action('calculate_expression', expression=value, operands=[
+                {'path': '', 'citation': citation or f'[D{did}:L1]', 'quote': quote,
+                 'field': '每件重量', 'unit': '公斤'}])
+
+        engine = ScriptedEngine(formula(north, '5'), formula(south, '7'))
+        initial = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertEqual([step['action']['tool'] for step in initial['steps'][1:]],
+                         ['calculate_expression'] * 2)
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual({(row['subject'], row['status']) for row in payload['calculation_source_adoptions']},
+                         {('北側吊架', 'adopted'), ('南側吊架', 'adopted')})
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        correction = '正式更正「北側吊架」的「每件重量」為 6 公斤'
+        goal_guidance.save(self.store, self.sid, self.gid, correction + '。',
+                           expected_fingerprint=snapshot['fingerprint'])
+        engine = ScriptedEngine(formula(correction, '6', '[更正#2]'), formula(south, '7'))
+        result = autonomy.run_goal(self.store, self.sid, self.gid, engine, max_steps=2)
+        self.assertEqual([row['observation'].get('exact') for row in result['steps'][-2:]], ['6', '7'])
+        payload = json.loads(engine.prompts[0].rsplit('\n目標與已觀察資料：\n', 1)[1])
+        self.assertEqual([(row['subject'], row['status']) for row in payload['calculation_source_adoptions']],
+                         [('南側吊架', 'adopted')])
+        self.restore()
+
+    def test_named_source_choice_rejects_wrong_subject_and_ignores_quoted_or_conditional_selection(self):
+        north = '「北側吊架」的「每件重量」為 3 公斤'
+        south = '「南側吊架」的「每件重量」為 5 公斤'
+        did = self.attach(north + '。', '北側.txt')
+        revised = self.attach(south + '。', '南側.txt')
+        choice = f'「北側吊架」的「每件重量」採用 [D{revised}:L1]'
+        for note, expected in [(choice + '。', 'invalid'),
+                               ('如果要試算，' + choice + '。', 'calculate_expression'),
+                               ('引述「' + choice + '」。', 'calculate_expression')]:
+            with self.subTest(note=note):
+                self.create()
+                self.run_actions(action('read_ranges', ranges=[
+                    {'document_id': did, 'start_line': 1, 'end_line': 1},
+                    {'document_id': revised, 'start_line': 1, 'end_line': 1}]))
+                snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+                goal_guidance.save(self.store, self.sid, self.gid, note,
+                                   expected_fingerprint=snapshot['fingerprint'])
+                result = self.run_actions(action('calculate_expression', expression='3', operands=[
+                    {'path': '', 'citation': f'[D{did}:L1]', 'quote': north,
+                     'field': '每件重量', 'unit': '公斤'}]))
+                self.assertEqual(result['steps'][-1]['action']['tool'], expected)
+                validate_database(self.store.path)
+
+
+    def test_explicit_subject_selection_can_bind_an_unscoped_field_without_changing_other_subject(self):
+        south = '「南側吊架」的「每件重量」為 3 公斤'
+        did = self.attach(south + '。', '獨立品項.txt')
+        revised = self.attach('欄位「每件重量」為 5 公斤。', '複核單價.txt')
+        self.create()
+        self.run_actions(action('read_ranges', ranges=[
+            {'document_id': did, 'start_line': 1, 'end_line': 1},
+            {'document_id': revised, 'start_line': 1, 'end_line': 1}]))
+        snapshot = goal_guidance.snapshot(self.store, self.sid, self.gid)
+        goal_guidance.save(self.store, self.sid, self.gid,
+                           f'「北側吊架」的「每件重量」採用 [D{revised}:L1]。',
+                           expected_fingerprint=snapshot['fingerprint'])
+        result = self.run_actions(
+            action('calculate_expression', expression='5', operands=[
+                {'path': '', 'citation': f'[D{revised}:L1]', 'quote': '欄位「每件重量」為 5 公斤',
+                 'field': '每件重量', 'unit': '公斤'}]),
+            action('calculate_expression', expression='3', operands=[
+                {'path': '', 'citation': f'[D{did}:L1]', 'quote': south,
+                 'field': '每件重量', 'unit': '公斤'}]))
+        self.assertEqual([row['observation'].get('exact') for row in result['steps'][-2:]], ['5', '3'])
+        proof = result['steps'][1]['observation'][goal_calculation.PROOF]
+        self.assertEqual(proof['source_adoptions'][0]['subject'], '北側吊架')
+        self.assertNotIn('field_scope', proof['operands'][0])
+        self.restore()
