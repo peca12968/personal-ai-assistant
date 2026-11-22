@@ -105,6 +105,119 @@ class LocalChatBudgetTests(unittest.TestCase):
             with self.subTest(context=context):
                 self.assertIsNone(local_chat_budget.recovery_prompt(render_prompt(context)))
 
+    def test_direct_fact_questions_preserve_data_and_use_the_ordinary_guide_only_for_chat(self):
+        for question in ('日食是怎麼形成的？', '查詢甲站：登記的配給水果應填哪個英文單字？只答該英文單字。',
+                         '請問這張卡片的底色是哪一種？只答顏色。', '水蒸氣冷卻後會變成什麼？'):
+            with self.subTest(question=question):
+                request = self.request(question)
+                tokenizer = FramingTokenizer(local_models.MAX_INPUT_TOKENS + 1, 50)
+                encode_request(tokenizer, request, request_messages(request))
+                before, after = [messages[1]['content'] for messages in tokenizer.messages]
+                boundary = local_chat_budget.DATA_BOUNDARY
+                self.assertEqual(after, local_chat_budget.GUIDANCE + boundary + before.rpartition(boundary)[2])
+                raw = {**request, 'schema': 'local_inference_request_v1'}
+                with self.assertRaises(Failure):
+                    encode_request(FramingTokenizer(local_models.MAX_INPUT_TOKENS + 1), raw, request_messages(raw))
+
+    def test_factual_wording_does_not_enable_actions_product_help_or_mixed_requests(self):
+        for question in ('日食是怎麼形成的？另外請寄信。', '上網查詢這張票現在是多少錢？',
+                         '這個助理的備份在哪裡？', '上傳到哪個資料夾？', '哪種格式？只答名稱，再聯絡窗口。'):
+            with self.subTest(question=question):
+                self.assertIsNone(local_chat_budget.recovery_prompt(self.request(question)['prompt']))
+
+    def test_revision_then_question_preserves_exact_payload_and_raw_model_limit(self):
+        boundary = local_chat_budget.DATA_BOUNDARY
+        for question in ('更正一下：松林展區的印記改成月亮。它的票色是什麼？只答顏色。',
+                         '我更正：Ｂ區的晚班代號已改為 Ｒ-２。東區的代號是哪一個？只答代號。',
+                         '正式定案：北側倉的門牌改用九號。北側倉的門牌是哪一個？只答門牌。'):
+            with self.subTest(question=question):
+                req = self.request(question)
+                original = req['prompt'].partition(boundary)[2]
+                self.assertEqual(local_chat_budget.recovery_prompt(req['prompt']),
+                                 local_chat_budget.GUIDANCE + boundary + original)
+                self.assertEqual(json.loads(original)['current_request'], question)
+                raw = {**req, 'schema': 'local_inference_request_v1'}
+                with self.assertRaises(Failure) as failure:
+                    encode_request(FramingTokenizer(local_models.MAX_INPUT_TOKENS + 1), raw, request_messages(raw))
+                self.assertEqual(failure.exception.code, 'input_too_large')
+
+    def test_closed_proposal_status_keeps_the_original_input_for_a_fact_question(self):
+        boundary = local_chat_budget.DATA_BOUNDARY
+        for question in ('有人提議將東庭的票色改為綠色，這個提案沒有核定。東庭的票色是什麼？只答顏色。',
+                         '有人建議把Ａ區的通行代號改成Ｒ-２，該方案已否決。Ｂ區的代號是哪一個？'):
+            with self.subTest(question=question):
+                prompt = self.request(question)['prompt']
+                packed = local_chat_budget.recovery_prompt(prompt)
+                self.assertIsNotNone(packed)
+                original = prompt.rpartition(boundary)[2]
+                self.assertEqual(packed.rpartition(boundary)[2], original)
+                self.assertEqual(json.loads(original)['current_request'], question)
+        for question in ('有人提議將東庭的票色改為綠色。東庭的票色是什麼？',
+                         '有人提議將東庭的票色改為綠色，這個提案可能未核定。東庭的票色是什麼？',
+                         '有人提議將東庭的票色改為綠色，這個提案沒有核定。請登入查東庭票色是什麼？'):
+            with self.subTest(question=question):
+                self.assertIsNone(local_chat_budget.recovery_prompt(self.request(question)['prompt']))
+
+    def test_source_hint_requires_latest_named_user_decision_and_current_field(self):
+        decision = {'id': 41, 'role': 'user', 'content': '正式定案：東庭的門票圖案改用桔葉。'}
+        stale = {'id': 42, 'role': 'assistant', 'content': '東庭繼續用石榴。'}
+        question = '東庭的門票圖案是哪一種？只答圖案。'
+
+        def packed(text, history):
+            prompt = render_prompt(make_context(text, history, []))
+            guide, boundary, payload = local_chat_budget.recovery_prompt(prompt).rpartition(local_chat_budget.DATA_BOUNDARY)
+            self.assertEqual(boundary + payload, prompt[prompt.rindex(boundary):])
+            return guide
+
+        guide = packed(question, [decision, stale])
+        self.assertIn('#41', guide)
+        self.assertNotIn('桔葉', guide)
+        for text, history in [
+            ('西庭的門票圖案是哪一種？只答圖案。', [decision, stale]),
+            ('東庭的門票原來是什麼圖案？', [decision, stale]),
+            (question, [decision, {'id': 44, 'role': 'user', 'content': '這個定案已撤回。'}, stale]),
+            (question, [{**decision, 'role': 'assistant'}, stale]),
+        ]:
+            with self.subTest(question=text):
+                self.assertEqual(packed(text, history), local_chat_budget.GUIDANCE)
+
+    def test_archived_decision_hint_yields_to_later_user_evidence(self):
+        question = '沙洲廳的紋樣是哪一種？只答圖案。'
+        source = {'message_id': 7, 'role': 'user', 'content': '正式定案：沙洲廳的紋樣改用菱角。', 'truncated': False}
+        newer = {'id': 20, 'role': 'user', 'content': '小冊已封存。'}
+        last = {'id': 21, 'role': 'assistant', 'content': '沙洲廳仍用紅梅。'}
+        context = make_context(question, [newer, last], [])
+        context['earlier_user_corrections'] = {'excerpts': [source], 'selection_limited': False}
+
+        def guide():
+            original = render_prompt(context)
+            result, boundary, data = local_chat_budget.recovery_prompt(original).rpartition(local_chat_budget.DATA_BOUNDARY)
+            self.assertEqual(boundary + data, original[original.rindex(boundary):])
+            return result
+
+        self.assertIn('#7', guide())
+        self.assertNotIn('菱角', guide())
+        for key, value in [('content', '沙洲廳的紋樣已另有安排。'),
+                           ('content', '剛才的定案已撤回。'), ('truncated', True), ('message_id', None)]:
+            with self.subTest(key=key, value=value), patch.dict(context['recent_conversation'][0], {key: value}):
+                self.assertEqual(guide(), local_chat_budget.GUIDANCE)
+        context['earlier_user_corrections']['selection_limited'] = True
+        self.assertEqual(guide(), local_chat_budget.GUIDANCE)
+
+    def test_revision_question_limits_apply_to_both_clauses(self):
+        for question in ('更正：如果松林的印記改成月亮。它的印記是什麼？',
+                         '更正：東區的備份按鈕改為藍色。按鈕是什麼顏色？',
+                         '更正：東區的入場方式改為登入。票色是什麼？',
+                         '更正：松林的顏色改為\n綠色。票色是什麼？',
+                         '更正：松林的顏色改為綠色並把西庭的顏色改成藍色。票色是什麼？',
+                         '更正：松林的顏色改為綠色。票色是什麼？請寄信給窗口。',
+                         '更正：松林的顏色改為綠色。還有另一件事。票色是什麼？',
+                         '正式定案：松林的顏色可能改為綠色。它的顏色是什麼？',
+                         '最終確認：東庭的票色並未改用綠色。票色是什麼？',
+                         '他說「更正：松林的顏色改為綠色」。票色是什麼？'):
+            with self.subTest(question=question):
+                self.assertIsNone(local_chat_budget.recovery_prompt(self.request(question)['prompt']))
+
     def test_matching_records_do_not_enable_status_questions_or_stale_retries(self):
         failed = {'id': 'a' * 32, 'status': 'cancelled', 'user_message_id': 3, 'answer_message_id': None}
         tail = {'message_id': 3, 'role': 'user', 'local_memory': 0}

@@ -1,0 +1,117 @@
+[
+  {
+    "id": "changed_early",
+    "category": "formal_field_decision",
+    "history": [
+      {
+        "role": "user",
+        "content": "合成值班表：杉灣隊的集合時間是 17:00，茅岬隊的集合時間是 16:20。"
+      },
+      {
+        "role": "user",
+        "content": "最終定案：杉灣隊的集合時間改為 18:40。"
+      },
+      {
+        "role": "assistant",
+        "content": "杉灣隊仍是 17:00。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "杉灣隊的集合時間是什麼？只答 HH:MM。",
+    "criteria": [
+      "完整答案為 18:40，保留半形冒號及兩位數時、分。"
+    ]
+  },
+  {
+    "id": "changed_late",
+    "category": "formal_field_decision",
+    "history": [
+      {
+        "role": "user",
+        "content": "合成值班表：杉灣隊的集合時間是 17:00，茅岬隊的集合時間是 16:20。"
+      },
+      {
+        "role": "user",
+        "content": "最終定案：杉灣隊的集合時間改為 19:15。"
+      },
+      {
+        "role": "assistant",
+        "content": "杉灣隊仍是 17:00。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "杉灣隊的集合時間是什麼？只答 HH:MM。",
+    "criteria": [
+      "完整答案為 19:15，保留半形冒號及兩位數時、分。"
+    ]
+  },
+  {
+    "id": "other_team",
+    "category": "formal_field_decision",
+    "history": [
+      {
+        "role": "user",
+        "content": "合成值班表：杉灣隊的集合時間是 17:00，茅岬隊的集合時間是 16:20。"
+      },
+      {
+        "role": "user",
+        "content": "最終定案：杉灣隊的集合時間改為 18:40。"
+      },
+      {
+        "role": "assistant",
+        "content": "杉灣隊仍是 17:00。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "茅岬隊的集合時間是什麼？只答 HH:MM。",
+    "criteria": [
+      "完整答案為 16:20，保留半形冒號及兩位數時、分。"
+    ]
+  },
+  {
+    "id": "proposal",
+    "category": "formal_field_decision",
+    "history": [
+      {
+        "role": "user",
+        "content": "合成值班表：杉灣隊的集合時間是 17:00，茅岬隊的集合時間是 16:20。"
+      },
+      {
+        "role": "user",
+        "content": "有人建議：杉灣隊的集合時間改為 18:40。這個提案未核定。"
+      },
+      {
+        "role": "assistant",
+        "content": "杉灣隊仍是 17:00。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "杉灣隊的集合時間是什麼？只答 HH:MM。",
+    "criteria": [
+      "完整答案為 17:00，保留半形冒號及兩位數時、分。"
+    ]
+  },
+  {
+    "id": "original",
+    "category": "formal_field_decision",
+    "history": [
+      {
+        "role": "user",
+        "content": "合成值班表：杉灣隊的集合時間是 17:00，茅岬隊的集合時間是 16:20。"
+      },
+      {
+        "role": "user",
+        "content": "最終定案：杉灣隊的集合時間改為 18:40。"
+      },
+      {
+        "role": "assistant",
+        "content": "杉灣隊仍是 17:00。"
+      }
+    ],
+    "filler_pairs": 230,
+    "prompt": "最初那張合成值班表上，杉灣隊的集合時間是什麼？只答 HH:MM。",
+    "criteria": [
+      "完整答案為 17:00，保留半形冒號及兩位數時、分。"
+    ]
+  }
+]

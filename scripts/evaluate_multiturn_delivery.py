@@ -14,6 +14,7 @@ from assistant.acceptance import strict_json
 from assistant.backup import create_backup, restore_backup, validate_database
 from assistant.engine import CodexEngine, EngineError
 from assistant.store import Store
+from assistant.tasks import parse_csv
 from scripts import multiturn_partial_fields, multiturn_read_coverage
 from scripts.evaluate_cross_task_boundaries import prepare
 from scripts.evaluate_understanding import RUNNER_PATH as REPORT_WRITER_PATH, fingerprint, save_report
@@ -100,6 +101,36 @@ def _validate_claim_sources(case, claims, reply_count):
                 raise ValueError('主張支持內容不在指定合成來源中。')
 
 
+def _validate_csv(case):
+    table = case['expected_csv']
+    if (not case.get('final_file_delivery', case['file_delivery']) or not case.get('artifact', '').endswith('.csv')
+            or 'expected_json' in case or 'expected_question' in case
+            or not isinstance(table, dict) or set(table) != {'header', 'records'}):
+        raise ValueError('CSV 驗收須指定交付的 CSV 檔案、標頭及資料列。')
+    header, records = table['header'], table['records']
+    if (not isinstance(header, list) or len(header) < 2 or any(not isinstance(c, str) or not c.strip() for c in header)
+            or len(set(header)) != len(header) or not isinstance(records, dict) or not records):
+        raise ValueError('CSV 驗收的標頭或資料列無效。')
+    for key, cells in records.items():
+        if (not isinstance(key, str) or not key or not isinstance(cells, list) or len(cells) != len(header) - 1
+                or any(not isinstance(pattern, str) for pattern in cells)):
+            raise ValueError('CSV 驗收每列須用第一欄辨識，並逐欄提供比對規則。')
+        for pattern in cells:
+            re.compile(pattern)
+
+
+def _csv_matches(text, table):
+    try:
+        header, rows = parse_csv(text.removeprefix('\ufeff'))
+    except ValueError:
+        return False
+    expected = table['records']
+    actual = {row[0]: row[1:] for row in rows}
+    return (header == table['header'] and len(rows) == len(actual) and actual.keys() == expected.keys()
+            and all(re.fullmatch(pattern, cell) is not None for key in expected
+                    for pattern, cell in zip(expected[key], actual[key], strict=True)))
+
+
 def validate_cases(cases):
     if not isinstance(cases, list) or not cases:
         raise ValueError('多輪任務題庫不能為空。')
@@ -134,7 +165,9 @@ def validate_cases(cases):
             if 'partial_omits' in question and not _checks_partial(question):
                 raise ValueError('等待補充案例須明列暫表的必要內容。')
             _validate_partial(question, final_question=True)
-        if not (case.get('must_match') or 'expected_json' in case):
+        if 'expected_csv' in case:
+            _validate_csv(case)
+        if not (case.get('must_match') or 'expected_json' in case or 'expected_csv' in case):
             raise ValueError('每案須有可核對的交付條件。')
         if 'required_read_ranges' in case:
             multiturn_read_coverage.validate(case, case['required_read_ranges'])
@@ -271,6 +304,23 @@ def score(case, final, files, turns, calls):
         supported = claim_support(case, final, claim_report, turns)
         checks['claim_sources'] = all(supported)
     reply_events = [turn for turn in turns if turn['kind'] == 'reply' and turn.get('saved')]
+    saved_asks = {step.get('sequence'): step for step in final['steps'] if step['action']['tool'] == 'ask'}
+    unneeded_parts = 0
+    focused_questions = []
+    for index, rule in enumerate(case.get('replies', ())):
+        excluded = rule.get('question_excludes')
+        if not excluded:
+            continue
+        steps = reply_events[index]['before'].get('steps', []) if index < len(reply_events) else []
+        ask = steps[-1] if steps and steps[-1]['action']['tool'] == 'ask' else {}
+        saved_ask = saved_asks.get(ask.get('sequence'), {})
+        question_text = saved_ask.get('observation', {}).get('question', '')
+        matches = sum(bool(re.search(pattern, question_text)) for pattern in excluded)
+        unneeded_parts += matches
+        focused_questions.append(bool(question_text) and ask.get('observation', {}).get('question') == question_text
+                                 and question_matches(question_text, rule) and not matches)
+    if focused_questions:
+        checks['focused_reply_questions'] = all(focused_questions)
     read_coverage = multiturn_read_coverage.measure(
         case, final, case['required_read_ranges'], artifact=case['artifact'] if file_delivery else None
     ) if case.get('required_read_ranges') else []
@@ -330,11 +380,13 @@ def score(case, final, files, turns, calls):
             checks['content'] = actual == expected and all(type(actual[key]) is type(value) for key, value in expected.items())
         except (TypeError, ValueError):
             checks['content'] = False
+    if 'expected_csv' in case:
+        checks['content'] = checks['content'] and _csv_matches(report, case['expected_csv'])
     asks = [step['observation']['question'] for step in final['steps'] if step['action']['tool'] == 'ask']
     allowed_asks = len(case.get('replies', ())) + bool(question) + bool(case.get('waiting_guidance', {}).get('withdraw'))
     metrics = {'question_count': len(asks), 'extra_questions': max(0, len(asks) - allowed_asks),
                'repeated_questions': len(asks) - len(set(asks)), 'sources_retained': sum(coverage), 'sources_required': len(coverage),
-               'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
+               'unneeded_question_parts': unneeded_parts, 'model_calls': len(calls), 'engine_errors': sum(call['status'] == 'error' for call in calls)}
     if case.get('claim_sources'):
         metrics.update(claim_sources_supported=sum(supported), claim_sources_required=len(supported))
     if interim_supported:
@@ -447,7 +499,6 @@ def collect(path, case, suite, frozen, *, engine_factory=CodexEngine):
                 raise ValueError('已交付檔案與保存指紋不一致。')
             files.append({**receipt, 'content': content.decode('utf-8')})
     row['checks'], row['metrics'] = score(case, state, files, row['turns'], row['calls'])
-    row['metrics']['unneeded_question_parts'] = sum(len(turn.get('extra_parts', ())) for turn in row['turns'])
     validate_database(store.path)
     save_report(trace, row)
     return row

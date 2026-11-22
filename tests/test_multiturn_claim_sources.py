@@ -6,6 +6,57 @@ from scripts.evaluation_reports import strict_json
 
 
 class MultiturnClaimSourcesTests(unittest.TestCase):
+    def test_excluded_followup_question_is_scored_from_the_saved_ask(self):
+        rule = {'question_has': ['貨車'], 'question_excludes': ['縮短作業'], 'answer': '貨車可延後。'}
+        case = {'file_delivery': False, 'replies': [rule], 'must_match': ['完成']}
+
+        def grade(question, reported_extras, checkpoint_question=None):
+            ask = {'sequence': 1, 'action': {'tool': 'ask'}, 'observation': {'question': question}}
+            finish = {'action': {'tool': 'finish'}}
+            final = {'status': 'report_ready', 'result': '完成', 'sources': [], 'steps': [ask, finish]}
+            checkpoint = {**ask, 'observation': {'question': checkpoint_question or question}}
+            turn = {'kind': 'reply', 'saved': True, 'before': {'steps': [checkpoint]}, 'extra_parts': reported_extras}
+            return score(case, final, [], [turn], [])
+
+        checks, metrics = grade('貨車可延後，或者可以縮短作業嗎？', [])
+        self.assertTrue(checks['content'])
+        self.assertFalse(checks['focused_reply_questions'])
+        self.assertEqual(metrics['unneeded_question_parts'], 1)
+        checks, metrics = grade('貨車可延後嗎？', ['縮短作業'])
+        self.assertTrue(checks['focused_reply_questions'])
+        self.assertEqual(metrics['unneeded_question_parts'], 0)
+        checks, _ = grade('貨車可延後嗎？', [], '是否能縮短作業？')
+        self.assertFalse(checks['focused_reply_questions'])
+
+    def test_csv_delivery_grades_named_records_and_complete_cell_values(self):
+        case = {'id':'price_tags', 'file_delivery':True, 'artifact':'prices.csv', 'prompt':'交付價牌。',
+                'expected_csv':{'header':['品名','金額','價牌'],
+                                'records':{'甲,盒':['76','76 元/盒'], '乙':['49','49 元/盒']}}}
+        validate_cases([case])
+        state = {'status':'report_ready', 'sources':[], 'steps':[{'action':{'tool':'deliver'}}]}
+        header = '品名,金額,價牌\r\n'
+        body = '乙,49,49 元/盒\r\n"甲,盒",76,76 元/盒\r\n'
+
+        def graded(text):
+            files = [{'name':'prices.csv','content':text}]
+            return score(case, state, files, [], [])[0]['content']
+
+        self.assertTrue(graded('\ufeff' + header + body))
+        for text in (header + body.replace(',76,', ',76元,'), header + body.replace('49 元/盒', '49'),
+                     header + body + '乙,49,49 元/盒', header + body.splitlines()[0],
+                     '品名,價牌,金額\n' + body, header + body.replace('"甲,盒"', '甲,盒')):
+            with self.subTest(text=text):
+                self.assertFalse(graded(text))
+
+    def test_csv_rubric_must_match_its_delivery_and_column_count(self):
+        case = {'id':'price', 'file_delivery':True, 'artifact':'prices.csv', 'prompt':'交付價格。',
+                'expected_csv':{'header':['品名','金額'], 'records':{'盒':['76']}}}
+        for changes in ({'artifact':'prices.json'}, {'final_file_delivery':False}, {'expected_json':{}},
+                        {'expected_csv':{'header':['金額','金額'], 'records':{'盒':['76']}}},
+                        {'expected_csv':{'header':['品名','金額'], 'records':{'盒':[]}}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_cases([{**case, **changes}])
+
     def setUp(self):
         self.old_answer = '先確認 4 箱。'
         self.answer = '箱數更正為 8 箱。'

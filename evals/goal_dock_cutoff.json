@@ -1,0 +1,534 @@
+[
+  {
+    "id": "dock_cutoff_extend",
+    "prompt": "請依三份資料安排市集攤架交接，找最早可連續完成的時段並算出費用。資料不齊時只問缺項，暫表保留目前時段與已知金額。若更正後排不進去，暫表請寫明可用區間、可用分鐘、所需分鐘與已核定總額，並只問唯一可協調的條件。若調度明確不能調整，交付時段填「不可排定」。交付 dock.csv，欄名為項目、結果、依據，只列交接時段、護墊費、通行費、總額各一筆。可行時段填起訖時間，每筆金額只填整數，每列引用決定結果的原文或補答。",
+    "documents": [
+      {
+        "name": "handover-rules.txt",
+        "content": "2026-12-08 市集攤架交接須在卸貨台連續作業 40 分鐘，不可拆段或縮短。\n倉管當日可作業 09:00–11:20。貨車原核定最晚 10:35 離場；可在離場當刻完成。\n唯一可協調的是貨車離場時間，須取得調度明確核定才能延後。\n"
+      },
+      {
+        "name": "dock-board.txt",
+        "content": "卸貨台當日 09:00–11:00 開放；前車原核定 09:20 騰空，自騰空當刻起可用。\n"
+      },
+      {
+        "name": "supply-order.txt",
+        "content": "護墊 3 組，每組 58 元。\n另計一次通行費，等待現場報價。\n"
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "通行費"
+        ],
+        "partial_has": [
+          "09:20",
+          "10:00",
+          "174"
+        ],
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 1
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 2
+          }
+        ],
+        "restore_before": true,
+        "answer": "通行費報價 26 元。前車正式更正為 09:56 騰空，取代原先 09:20。"
+      },
+      {
+        "question_has": [
+          "貨車|調度|離場",
+          "延|調整|放寬|最晚|改"
+        ],
+        "question_excludes": [
+          "或(?:者)?(?:能否|是否|改為|縮短|拆段|調整倉管)"
+        ],
+        "partial_has": [
+          "09:56",
+          "10:35",
+          "39\\s*分",
+          "40\\s*分",
+          "200"
+        ],
+        "restore_before": true,
+        "answer": "調度正式核定，貨車最晚離場延到 10:40，其餘條件照舊。"
+      }
+    ],
+    "file_delivery": true,
+    "artifact": "dock.csv",
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 1
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 2
+      }
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "交接時段": [
+          "(?:2026-12-08[ T])?09:56\\s*(?:–|—|-|~|～|至|到)\\s*10:36",
+          "[\\s\\S]+"
+        ],
+        "護墊費": [
+          "174",
+          "[\\s\\S]+"
+        ],
+        "通行費": [
+          "26",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "200",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?交接時段\"?,",
+        "claim": "^\"?交接時段\"?,\"?(?:2026-12-08[ T])?09:56\\s*(?:–|—|-|~|～|至|到)\\s*10:36\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 1,
+            "text": "40 分鐘"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "倉管"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "09:56"
+          },
+          {
+            "kind": "reply",
+            "index": 1,
+            "text": "調度"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?護墊費\"?,",
+        "claim": "^\"?護墊費\"?,\"?174\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?通行費\"?,",
+        "claim": "^\"?通行費\"?,\"?26\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?200\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dock_cutoff_denied",
+    "prompt": "請依三份資料安排市集攤架交接，找最早可連續完成的時段並算出費用。資料不齊時只問缺項，暫表保留目前時段與已知金額。若更正後排不進去，暫表請寫明可用區間、可用分鐘、所需分鐘與已核定總額，並只問唯一可協調的條件。若調度明確不能調整，交付時段填「不可排定」。交付 dock.csv，欄名為項目、結果、依據，只列交接時段、護墊費、通行費、總額各一筆。可行時段填起訖時間，每筆金額只填整數，每列引用決定結果的原文或補答。",
+    "documents": [
+      {
+        "name": "handover-rules.txt",
+        "content": "2026-12-08 市集攤架交接須在卸貨台連續作業 40 分鐘，不可拆段或縮短。\n倉管當日可作業 09:00–11:20。貨車原核定最晚 10:35 離場；可在離場當刻完成。\n唯一可協調的是貨車離場時間，須取得調度明確核定才能延後。\n"
+      },
+      {
+        "name": "dock-board.txt",
+        "content": "卸貨台當日 09:00–11:00 開放；前車原核定 09:20 騰空，自騰空當刻起可用。\n"
+      },
+      {
+        "name": "supply-order.txt",
+        "content": "護墊 3 組，每組 58 元。\n另計一次通行費，等待現場報價。\n"
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "通行費"
+        ],
+        "partial_has": [
+          "09:20",
+          "10:00",
+          "174"
+        ],
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 1
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 2
+          }
+        ],
+        "restore_before": true,
+        "answer": "通行費報價 26 元。前車正式更正為 09:56 騰空，取代原先 09:20。"
+      },
+      {
+        "question_has": [
+          "貨車|調度|離場",
+          "延|調整|放寬|最晚|改"
+        ],
+        "question_excludes": [
+          "或(?:者)?(?:能否|是否|改為|縮短|拆段|調整倉管)"
+        ],
+        "partial_has": [
+          "09:56",
+          "10:35",
+          "39\\s*分",
+          "40\\s*分",
+          "200"
+        ],
+        "restore_before": true,
+        "answer": "調度正式確認貨車不能延後離場，維持 10:35。"
+      }
+    ],
+    "file_delivery": true,
+    "artifact": "dock.csv",
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 1
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 2
+      }
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "交接時段": [
+          "不可排定",
+          "[\\s\\S]+"
+        ],
+        "護墊費": [
+          "174",
+          "[\\s\\S]+"
+        ],
+        "通行費": [
+          "26",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "200",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?交接時段\"?,",
+        "claim": "^\"?交接時段\"?,\"?不可排定\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 1,
+            "text": "40 分鐘"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "倉管"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "09:56"
+          },
+          {
+            "kind": "reply",
+            "index": 1,
+            "text": "調度"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?護墊費\"?,",
+        "claim": "^\"?護墊費\"?,\"?174\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?通行費\"?,",
+        "claim": "^\"?通行費\"?,\"?26\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?200\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dock_cutoff_exact",
+    "prompt": "請依三份資料安排市集攤架交接，找最早可連續完成的時段並算出費用。資料不齊時只問缺項，暫表保留目前時段與已知金額。若更正後排不進去，暫表請寫明可用區間、可用分鐘、所需分鐘與已核定總額，並只問唯一可協調的條件。若調度明確不能調整，交付時段填「不可排定」。交付 dock.csv，欄名為項目、結果、依據，只列交接時段、護墊費、通行費、總額各一筆。可行時段填起訖時間，每筆金額只填整數，每列引用決定結果的原文或補答。",
+    "documents": [
+      {
+        "name": "handover-rules.txt",
+        "content": "2026-12-08 市集攤架交接須在卸貨台連續作業 40 分鐘，不可拆段或縮短。\n倉管當日可作業 09:00–11:20。貨車原核定最晚 10:35 離場；可在離場當刻完成。\n唯一可協調的是貨車離場時間，須取得調度明確核定才能延後。\n"
+      },
+      {
+        "name": "dock-board.txt",
+        "content": "卸貨台當日 09:00–11:00 開放；前車原核定 09:20 騰空，自騰空當刻起可用。\n"
+      },
+      {
+        "name": "supply-order.txt",
+        "content": "護墊 3 組，每組 58 元。\n另計一次通行費，等待現場報價。\n"
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "通行費"
+        ],
+        "partial_has": [
+          "09:20",
+          "10:00",
+          "174"
+        ],
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 1
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 2
+          }
+        ],
+        "restore_before": true,
+        "answer": "通行費報價 26 元。前車正式更正為 09:55 騰空，取代原先 09:20。"
+      }
+    ],
+    "file_delivery": true,
+    "artifact": "dock.csv",
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 1
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 2
+      }
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "交接時段": [
+          "(?:2026-12-08[ T])?09:55\\s*(?:–|—|-|~|～|至|到)\\s*10:35",
+          "[\\s\\S]+"
+        ],
+        "護墊費": [
+          "174",
+          "[\\s\\S]+"
+        ],
+        "通行費": [
+          "26",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "200",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?交接時段\"?,",
+        "claim": "^\"?交接時段\"?,\"?(?:2026-12-08[ T])?09:55\\s*(?:–|—|-|~|～|至|到)\\s*10:35\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 1,
+            "text": "40 分鐘"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "倉管"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "09:55"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?護墊費\"?,",
+        "claim": "^\"?護墊費\"?,\"?174\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?通行費\"?,",
+        "claim": "^\"?通行費\"?,\"?26\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?200\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "58 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "26 元"
+          }
+        ]
+      }
+    ]
+  }
+]

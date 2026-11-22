@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .retrieval import rank_memories, terms
-from .context import MAX_EARLIER_CORRECTIONS, is_explicit_correction
+from .context import MAX_EARLIER_CORRECTIONS, is_explicit_correction, is_formal_field_decision
 from .documents import MAX_DOCUMENTS, MAX_SESSION_BYTES, read_document
 
 
@@ -351,22 +352,30 @@ class Store:
                 rows.insert(0, dict(first))
             return rows
 
-    def earlier_correction_messages(self, sid, before_id, exclude_message_id=None):
+    def earlier_correction_messages(self, sid, before_id, exclude_message_id=None, *, provided=()):
         """Read the newest explicit user corrections beyond the recent window.
 
         Evaluate only bounded prefixes in SQLite; return at most seven original
         rows (six excerpts plus one overflow signal), without loading all history.
         This selection neither edits memory nor asserts the correction is true.
         """
+        # When a formal decision is already available verbatim in a ranked
+        # excerpt, avoid presenting a second copy as separate evidence. Exclude
+        # it before LIMIT so it cannot displace another older correction.
+        taken = [row['message_id'] for row in provided if not row['truncated']
+                 and len(row['content']) < 160
+                 and is_formal_field_decision(unicodedata.normalize('NFKC', row['content']).lstrip())]
+        skip = ' AND id NOT IN (' + ','.join('?' for _ in taken) + ')' if taken else ''
         with self.connect() as db:
             from .sqlite_text import register_correction
             register_correction(db, is_explicit_correction)
             return [dict(row) for row in db.execute("""SELECT * FROM messages
                 WHERE session_id=? AND role='user' AND id<? AND id<>?
                 AND id NOT IN (SELECT message_id FROM local_memory_messages)
+                """ + skip + """
                 AND explicit_correction_bytes(substr(CAST(content AS BLOB),1,644),length(CAST(content AS BLOB)))
                 ORDER BY id DESC LIMIT ?""",
-                (sid, before_id, exclude_message_id or -1, MAX_EARLIER_CORRECTIONS + 1))]
+                (sid, before_id, exclude_message_id or -1, *taken, MAX_EARLIER_CORRECTIONS + 1))]
 
     def session_brief(self, sid):
         with self.connect() as db:

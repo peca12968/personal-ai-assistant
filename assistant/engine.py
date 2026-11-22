@@ -314,7 +314,8 @@ class Assistant:
         older = self.store.earlier_user_messages(sid, history[0]["id"], exclude_local=True, exclude_message_id=exclude_message_id) if history else []
         excerpts = select_excerpts(question, older, followup=followup)
         context = make_context(question, history, memories, self.store.session_brief(sid), excerpts)
-        corrections = self.store.earlier_correction_messages(sid, history[0]['id'], exclude_message_id) if history else []
+        corrections = (self.store.earlier_correction_messages(sid, history[0]['id'], exclude_message_id,
+                                                            provided=excerpts) if history else [])
         context['answer_feedback'] = answer_feedback.for_chat(self.store, sid, question)
         context['earlier_user_corrections'] = correction_context(question, corrections)
         documents = self.store.documents(sid, include_content=True)

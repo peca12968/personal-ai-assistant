@@ -165,7 +165,6 @@ def collect_arm(path, arm, case, suite, frozen, protocol):
     if arm == 'direct' and case['file_delivery']:
         row['checks']['output_content'] = row['checks'].pop('delivered')
     row['checks'].pop('required_tools')
-    row['metrics']['unneeded_question_parts'] = sum(len(turn.get('extra_parts', ())) for turn in row['turns'])
     row['checks']['clarification'] = not any(row['metrics'][name] for name in
                                            ('extra_questions', 'repeated_questions', 'unneeded_question_parts'))
     row['valid_model_calls'] = bool(calls) and all(call['status'] == 'returned' for call in calls)

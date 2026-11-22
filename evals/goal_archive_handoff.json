@@ -1,0 +1,256 @@
+[
+  {
+    "id": "archive_handoff_with_calibration",
+    "file_delivery": true,
+    "artifact": "archive-handoff.csv",
+    "prompt": "替我完成 2026-12-02 的紙本館藏交接。依三份文件找三方連續 55 分鐘最早可用的作業時段；核定占用要避開，撤回的草案不算。先核算保護套費與周轉箱費。缺資料就只問缺的金額，暫表列出可確定的作業時段及兩筆小計。補答後沿用已確定的時段和未受更正影響的小計，只重算受影響的小計與總額，交付 archive-handoff.csv。欄名為項目、結果、來源。必須有且只有作業時段、保護套費、周轉箱費、運費、總額五筆。時段用起訖時間，金額用元的整數。每筆來源欄放足以支持該結果的文件行或正式補答引用；總額列出各項成本依據。",
+    "documents": [
+      {
+        "name": "archive-availability.txt",
+        "content": "2026-12-02 紙本館藏交接，須由庫管、掃描員及移動台三方同時連續作業。\n庫管核定可用時間 09:00–12:00。\n掃描員核定可用時間 09:10–11:45。\n移動台核定可用時間 09:20–11:50。\n"
+      },
+      {
+        "name": "equipment-reservations.txt",
+        "content": "同日移動台已核定校驗，占用 09:55–10:25；校驗結束時可立即交接。\n另一項 10:40–11:05 的佔用僅是送審草案，已正式撤回。\n"
+      },
+      {
+        "name": "archive-supplies.txt",
+        "content": "保護套：18 個，每個 12 元。\n周轉箱：4 個，每個 45 元。\n運費：尚待窗口正式確認。\n"
+      }
+    ],
+    "required_tools": [
+      "read_ranges",
+      "calculate_expression",
+      "write_artifact",
+      "deliver"
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 4
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 2
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "運費"
+        ],
+        "question_excludes": [
+          "保護套.*多少",
+          "周轉箱.*多少",
+          "時段.*(?:確認嗎|是否正確)"
+        ],
+        "partial_has": [
+          "10:25",
+          "11:20",
+          "(?<![0-9])216(?![0-9])",
+          "(?<![0-9])180(?![0-9])"
+        ],
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 4
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 2
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ],
+        "restore_before": true,
+        "answer": "運費確認 65 元。另外正式更正，周轉箱實際是 6 個，每個仍為 45 元。保護套降價的建議沒有採用，照原單。"
+      }
+    ],
+    "must_match": [
+      "10:25",
+      "11:20",
+      "216",
+      "270",
+      "65",
+      "551"
+    ],
+    "claim_sources": [
+      {
+        "row_selector": "^\"?作業時段\"?[,]",
+        "claim": "^\"?作業時段\"?,\"?10:25\\s*(?:–|-|～|~|至|到)\\s*11:20\"?[,]",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "庫管"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "掃描員"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 4,
+            "text": "移動台"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 1,
+            "text": "校驗"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "撤回"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?保護套費\"?[,]",
+        "claim": "^\"?保護套費\"?,\"?216\"?[,]",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "18 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?周轉箱費\"?[,]",
+        "claim": "^\"?周轉箱費\"?,\"?270\"?[,]",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "6 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?運費\"?[,]",
+        "claim": "^\"?運費\"?,\"?65\"?[,]",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "65 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?[,]",
+        "claim": "^\"?總額\"?,\"?551\"?[,]",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "18 個"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "65 元"
+          }
+        ]
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "來源"
+      ],
+      "records": {
+        "作業時段": [
+          "10:25\\s*(?:–|-|～|~|至|到)\\s*11:20",
+          "[\\s\\S]+"
+        ],
+        "保護套費": [
+          "216",
+          "[\\s\\S]+"
+        ],
+        "周轉箱費": [
+          "270",
+          "[\\s\\S]+"
+        ],
+        "運費": [
+          "65",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "551",
+          "[\\s\\S]+"
+        ]
+      }
+    }
+  },
+  {
+    "id": "shop_price_tag_literal_units",
+    "file_delivery": true,
+    "artifact": "shop-prices.csv",
+    "prompt": "請從核定價目表交付 shop-prices.csv，欄名依序為品名、金額、價牌、來源，每項商品一筆。品名逐字保留，金額欄只填整數，價牌欄則要保留單位，格式為「數字 元/盒」（中間一格空白）。來源欄附對應商品的文件行號。",
+    "documents": [
+      {
+        "name": "shop-approved.txt",
+        "content": "核定價目表，兩種商品均以一盒計價。\n品名「圓角,夾」，核定每盒 76 元。\n品名「折頁扣」，核定每盒 49 元。\n"
+      }
+    ],
+    "required_tools": [
+      "write_artifact",
+      "deliver"
+    ],
+    "source_lines": [
+      {
+        "doc": 0,
+        "line": 2,
+        "text": "圓角,夾"
+      },
+      {
+        "doc": 0,
+        "line": 3,
+        "text": "折頁扣"
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "品名",
+        "金額",
+        "價牌",
+        "來源"
+      ],
+      "records": {
+        "圓角,夾": [
+          "76",
+          "76 元/盒",
+          "[\\s\\S]*\\[D1:L(?:1-L?2|2(?:-L?[23])?|1-L?3)\\][\\s\\S]*"
+        ],
+        "折頁扣": [
+          "49",
+          "49 元/盒",
+          "[\\s\\S]*\\[D1:L(?:[12]-L?3|3(?:-L?3)?)\\][\\s\\S]*"
+        ]
+      }
+    }
+  }
+]

@@ -19,6 +19,33 @@ CORRECTION_PREFIX = re.compile(
     r"不是(?:這個|那個|這樣)\s*[,。]\s*(?:我是指|我要的是)|"
     r"我(?:剛才|剛剛|先前)說錯了\s*[,。:])", re.I)
 
+# A final decision can revise a named field without using a correction label.
+# Select its original user row as evidence; the subject and value stay verbatim.
+FINAL_DECISION_PREFIX = re.compile(r"^(?:正式定案|最終(?:確認|定案)) *: *")
+_FIELD_CHANGE = r'(?P<field>[\w -]{1,64}的[\w -]{1,48}?)改[為成用] *'
+FIELD_REVISION = re.compile(_FIELD_CHANGE + r'[\w-][\w -]{0,47}')
+_FINAL_REVISION = re.compile(_FIELD_CHANGE + r'[\w-](?:[\w -]|(?<=\d)[:./](?=\d)){0,47}%?')
+REVISION_QUALIFIER = re.compile(r'如果|假設|若|可能|也許|或許|建議|暫定|尚未|沒有|不要|是否|據說|聽說')
+FINAL_DECISION_WITHDRAWN = re.compile(
+    r'^(?:剛才|先前|上次)的(?:定案|更正)(?:已經|已)撤回(?:[。.]?$|[,。] *[^?\r\n]+[。.]?$)')
+
+
+def final_revision_field(text):
+    """Return the named field of a complete, normalized, explicit final revision."""
+    header = FINAL_DECISION_PREFIX.match(text)
+    if not header or len(text) >= 160:
+        return None
+    change = text[header.end():].rstrip()
+    if change.endswith(('。', '.')):
+        change = change[:-1].rstrip()
+    updated = _FINAL_REVISION.fullmatch(change)
+    if (updated and len(re.findall(r'改[為成用]', change)) == 1
+            and not REVISION_QUALIFIER.search(change)
+            and not re.search(r'引述|提議|提案|尚待|未定|並未|並非|範例|例句|(?:不再?|未|無須)改[為成用]|[嗎呢]$', change)):
+        return updated['field'].strip()
+    return None
+
+
 # Explicit direction changes often lack a formal "correction:" label. Retain
 # their raw wording, including qualifiers, without deciding which work is
 # cancelled, accepted or authorized. Only short leading imperative frames
@@ -50,10 +77,22 @@ def is_direction_change(prefix):
     return bool(match.group('complete') or prefix[match.end():].strip(' ,;:。.!'))
 
 
+def is_formal_field_decision(prefix):
+    """Classify a normalized, complete short user statement, including a withdrawal."""
+    if len(prefix) >= 160:
+        return False
+    return final_revision_field(prefix) is not None or bool(
+        FINAL_DECISION_WITHDRAWN.fullmatch(prefix.strip()) and not DIRECTION_MENTION.search(prefix)
+        and not re.search(r'[嗎呢][。.]?$', prefix.strip()))
+
+
 def is_explicit_correction(text):
     """A bounded prefix hint for retaining raw user text, not a semantic verdict."""
     prefix = unicodedata.normalize('NFKC', text[:160]).lstrip()
-    return bool(CORRECTION_PREFIX.search(prefix)) or is_direction_change(prefix)
+    if CORRECTION_PREFIX.search(prefix) or is_direction_change(prefix):
+        return True
+    return len(text) < 160 and is_formal_field_decision(prefix)
+
 
 
 def correction_context(question, rows):

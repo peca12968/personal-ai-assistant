@@ -1,4 +1,6 @@
 import copy
+from contextlib import nullcontext
+import io
 import json
 import sqlite3
 import subprocess
@@ -6,11 +8,12 @@ import sys
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from assistant import parameter_acceptance as checks, learned_models as models, learning_queue as queue
 from assistant.local_engine import LocalEngine
 from assistant.store import Store
+from scripts.learning import acceptance as cli, run_daily_comparison as daily
 import test_learned_models as model_fixtures
 
 CASES={'schema':'full_assistant_cases_v1','cases':[
@@ -37,6 +40,164 @@ class ParameterAcceptanceTests(unittest.TestCase):
     def prepared(self,cases=None):
         uid=checks.prepare(self.root,self.bid,CASES if cases is None else cases)
         return uid,checks.folder(self.root,uid)
+
+    def test_daily_comparison_keeps_timeouts_separate_and_attempts_each_turn_once(self):
+        uid, path = self.prepared()
+        receipt = (path / 'receipt.json').read_bytes()
+        failure = daily.EngineError('fixture timeout', 'timeout')
+        with patch.object(daily.IdleWindow, 'is_set', return_value=False), patch.object(
+                LocalEngine, '_answer', side_effect=failure) as answer:
+            result = daily.run(self.root, uid, timeout=300)
+        self.assertEqual(result['timeout_seconds'], 300)
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertEqual(answer.call_count, 6)
+        self.assertEqual(len({(r['phase'], r['id']) for r in result['rows']}), 6)
+        self.assertTrue(all(r['error_code'] == 'timeout' and 'exact' not in r for r in result['rows']))
+        self.assertEqual(receipt, (path / 'receipt.json').read_bytes())
+
+    def test_daily_comparison_retains_worker_result_from_string_temp_path(self):
+        engine = object.__new__(daily.DailyEngine)
+        engine.location = self.root / 'observation'
+        engine.location.mkdir()
+        with patch.object(LocalEngine, 'response_directory', return_value=nullcontext(str(self.root))):
+            with engine.response_directory() as folder:
+                (Path(folder) / 'result.json').write_text('{"status":"succeeded"}', encoding='utf8')
+        self.assertEqual(json.loads((engine.location / 'worker-result.json').read_text('utf8')), {'status':'succeeded'})
+
+    def test_daily_comparison_uses_isolated_stores_and_rejects_unrelated_worker_answers(self):
+        uid, path = self.prepared()
+        manifest = checks.read_manifest(path)
+        receipt = (path / 'receipt.json').read_bytes()
+
+        def answer(engine, payload, texts, cancel):
+            self.assertEqual(payload['schema'], 'local_chat_budget_request_v1')
+            question = json.loads(payload['prompt'].rsplit('以下 JSON 是使用者資料與當前問題：\n', 1)[1])['current_request']
+            value = next(case['answer'] for case in CASES['cases'] if case['question'] == question)
+            checks.batches.save(engine.location / 'worker-result.json', {
+                'schema': 'local_inference_result_v1', 'status': 'succeeded', 'answer': value,
+                'selection_fingerprint': engine.selection['fingerprint'], 'input_tokens': 10})
+            return value, None
+
+        with patch.object(daily.IdleWindow, 'is_set', return_value=False), patch.object(LocalEngine, '_answer', answer):
+            report = daily.run(self.root, uid)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(len(report['rows']), 6)
+        self.assertTrue(all(row['exact'] and row['raw_exact'] for row in report['rows']))
+        self.assertEqual((path / 'receipt.json').read_bytes(), receipt)
+        for phase in checks.PHASES:
+            self.assertEqual(checks.models.file_hash(path / (phase + '.sqlite3')), manifest['database_files'][phase])
+        out, = (path.parents[1] / '_daily-comparisons').iterdir()
+        row = report['rows'][0]
+        case = CASES['cases'][0]
+        location = out / row['phase'] / case['id']
+        result = location / 'worker-result.json'
+        info = json.loads(result.read_text(encoding='utf8'))
+        checks.batches.save(result, {**info, 'answer': 'different'})
+        context = json.loads((location / 'request.json').read_text(encoding='utf8'))['prompt']
+        context = json.loads(context.rsplit('以下 JSON 是使用者資料與當前問題：\n', 1)[1])
+        answer_row = {'id': row['message_id'], 'run_id': row['run_id'], 'content': row['answer']}
+        with self.assertRaisesRegex(ValueError, '原答'):
+            daily.verify_turn(location, out / (row['phase'] + '.sqlite3'), manifest, row['phase'],
+                              manifest['suite']['cases'][0], answer_row, context)
+
+    def test_preflight_counts_both_selections_in_worker_order_including_at_the_limit(self):
+        _, path = self.prepared()
+        manifest = checks.read_manifest(path)
+        limit = cli.local_models.MAX_INPUT_TOKENS
+        for exceeds in (False, True):
+            lengths = [limit, limit + int(exceeds), 1, 2, 3, 4]
+            with self.subTest(exceeds=exceeds), patch.object(
+                    cli.local_worker, 'request_messages', wraps=cli.local_worker.request_messages) as framing:
+                tokenizer = Mock()
+                tokenizer.apply_chat_template.side_effect = [range(n) for n in lengths]
+                result = cli.count_inputs(manifest, tokenizer)
+                self.assertEqual(result['all_inputs_fit'], not exceeds)
+                self.assertEqual([r['input_tokens'] for r in result['cases']], lengths)
+                self.assertEqual([r['over_by'] for r in result['cases']], [0, int(exceeds), 0, 0, 0, 0])
+                for row, call, template in zip(result['cases'], framing.call_args_list,
+                                               tokenizer.apply_chat_template.call_args_list, strict=True):
+                    phase, cid = row['phase'], row['case_id']
+                    self.assertEqual(call.args[0], {'schema': 'local_inference_request_v1',
+                        'prompt': manifest['prompts'][phase][cid], 'selection': manifest['selections'][phase]})
+                    self.assertEqual(template.kwargs, {'tokenize': True, 'add_generation_prompt': True,
+                                                       'enable_thinking': False})
+
+    def test_run_cli_stops_at_oversized_input_without_consuming_the_prepared_check(self):
+        uid, path = self.prepared()
+        receipt = (path / 'receipt.json').read_bytes()
+        failure = subprocess.CompletedProcess([], 1, '{"all_inputs_fit":false}')
+        with patch.object(sys, 'argv', ['acceptance.py','run','--data-dir',str(self.root),'--id',uid]), \
+                patch.object(sys, 'prefix', str(self.root)), patch.object(cli.subprocess, 'run', return_value=failure), \
+                patch.object(checks, 'run') as run, \
+                patch.object(sys, 'stdout', new_callable=io.StringIO):
+            self.assertEqual(cli.main(), 1)
+            run.assert_not_called()
+        self.assertEqual((path / 'receipt.json').read_bytes(), receipt)
+
+    def test_run_cli_continues_to_model_assessment_when_inputs_fit(self):
+        uid, _ = self.prepared()
+        fits = subprocess.CompletedProcess([], 0, '{"all_inputs_fit":true}')
+        with patch.object(sys, 'argv', ['acceptance.py','run','--data-dir',str(self.root),'--id',uid]), \
+                patch.object(sys, 'prefix', str(self.root)), patch.object(cli.subprocess, 'run', return_value=fits), \
+                patch.object(checks, 'run', return_value={'assessment':{'passed':False}}) as run, \
+                patch.object(sys, 'stdout', new_callable=io.StringIO):
+            self.assertEqual(cli.main(), 1)
+            run.assert_called_once_with(self.root, uid)
+
+    def test_preflight_skips_only_weight_contents_on_a_rejected_input(self):
+        import hashlib
+
+        revision = 'b' * 40
+        base = self.root / 'data/learning/models/Qwen3-4B' / revision
+        base.mkdir(parents=True)
+        assets = {'tokenizer.json': b'abc', 'model.safetensors': b'xyz'}
+        for name, content in assets.items():
+            (base / name).write_bytes(content)
+        spec = {'model_id': 'Qwen/Qwen3-4B', 'revision': revision,
+                'files': [{'name': name, 'bytes': len(value), 'sha256': hashlib.sha256(value).hexdigest()}
+                          for name, value in assets.items()]}
+        pinned = self.root / 'scripts/learning/model.json'
+        pinned.parent.mkdir(parents=True)
+        pinned.write_text(json.dumps(spec), encoding='utf8')
+        check_id = 'a' * 32
+        out = checks.folder(self.root, check_id)
+        out.mkdir(parents=True)
+        with patch.object(cli.local_models, 'ROOT', self.root):
+            selected = cli.local_models.select()
+            manifest = {'selections': dict.fromkeys(checks.PHASES, selected)}
+            checks.batches.save(out / 'receipt.json', {'schema': 'full_assistant_receipt_v1',
+                                                       'manifest_sha256': checks.queue.digest(manifest)})
+            module = Mock()
+            with patch.object(checks, 'read_manifest', return_value=manifest), patch.object(
+                    cli.importlib.metadata, 'version', return_value=cli.EXPECTED_VERSIONS['transformers']), patch.dict(
+                    sys.modules, {'transformers': module}), patch.dict(cli.os.environ), patch.object(
+                    cli, 'count_inputs') as count:
+                count.side_effect = lambda *args: {'all_inputs_fit': False}
+                (base / 'model.safetensors').write_bytes(b'bad')
+                rejected = cli.preflight(self.root, check_id)
+                self.assertEqual(rejected['asset_check'], 'configuration_hashes_and_weight_sizes')
+                module.AutoTokenizer.from_pretrained.assert_called_once_with(
+                    base, local_files_only=True, trust_remote_code=False)
+                count.side_effect = lambda *args: {'all_inputs_fit': True}
+                with self.assertRaisesRegex(ValueError, 'asset'):
+                    cli.preflight(self.root, check_id)
+                (base / 'model.safetensors').write_bytes(assets['model.safetensors'])
+                self.assertEqual(cli.preflight(self.root, check_id)['asset_check'], 'full_base_assets')
+                count.side_effect = lambda *args: {'all_inputs_fit': False}
+                (base / 'model.safetensors').write_bytes(b'x')
+                with self.assertRaisesRegex(ValueError, '大小'):
+                    cli.preflight(self.root, check_id)
+                (base / 'model.safetensors').write_bytes(assets['model.safetensors'])
+                (base / 'tokenizer.json').write_bytes(b'bad')
+                with self.assertRaisesRegex(ValueError, '設定檔'):
+                    cli.preflight(self.root, check_id)
+
+    def test_preflight_rejects_a_malformed_receipt_before_loading_the_tokenizer(self):
+        uid, path = self.prepared()
+        checks.batches.save(path / 'receipt.json', ['invalid receipt'])
+        with self.assertRaisesRegex(ValueError, '收據'), patch.object(cli.importlib.metadata, 'version') as version:
+            cli.preflight(self.root, uid)
+        version.assert_not_called()
 
     def test_suite_bounds_exact_answers_roles_and_unique_identifiers(self):
         normalized=checks.suite(CASES)
@@ -95,6 +256,77 @@ class ParameterAcceptanceTests(unittest.TestCase):
         self.assertEqual(receipt['status'],'complete'); self.assertFalse(receipt['assessment']['passed'])
         self.assertFalse(receipt['assessment']['checks']['all_candidate_cases_passed'])
         self.assertEqual(checks.report(self.root,uid)['receipt']['assessment'],receipt['assessment'])
+
+    def test_report_distinguishes_matching_answers_without_relaxing_exact_scores(self):
+        cases = checks.suite(models.local_models.read_json(checks.ROOT/'evals/local_field_revision_acceptance.json'))
+        expected = {case['id']: case['answer'] for case in cases['cases']}
+        uid, _ = self.prepared(cases)
+        self.assertIsNone(checks.report(self.root, uid)['verified_mismatches'])
+
+        def answer(engine, prompt, cancel=None):
+            cid = engine.destination.name
+            value = expected[cid]
+            if engine.selection['schema'] == models.SCHEMA:
+                if cid == 'current_north_revision':
+                    value = expected['original_north_flag']
+                elif cid == 'unchanged_south_flag':
+                    value += '。'
+            elif cid == 'recall_after_incorrect_reply':
+                value = '待查'
+            worker = engine.destination/'worker'
+            worker.mkdir()
+            checks.batches.save(worker/'result.json', {'schema':'local_inference_result_v1', 'status':'succeeded',
+                                'selection_fingerprint':engine.selection['fingerprint'], 'answer':value})
+            return value
+
+        with patch.object(LocalEngine, 'answer', answer):
+            receipt = checks.run(self.root, uid)
+        report = checks.report(self.root, uid)
+        self.assertEqual(receipt['status'], 'complete')
+        self.assertTrue(receipt['assessment']['checks']['at_least_one_target_improved'])
+        self.assertFalse(receipt['assessment']['checks']['baseline_correct_cases_retained'])
+        self.assertFalse(report['receipt']['assessment']['passed'])
+        self.assertEqual(report['verified_mismatches'], [
+            {'phase':'baseline', 'case_id':'recall_after_incorrect_reply', 'matches_expected_with_added_period':False,
+             'matches_other_case_ids':[]},
+            {'phase':'candidate', 'case_id':'current_north_revision', 'matches_expected_with_added_period':False,
+             'matches_other_case_ids':['original_north_flag', 'unadopted_suggestion']},
+            {'phase':'candidate', 'case_id':'unchanged_south_flag', 'matches_expected_with_added_period':True,
+             'matches_other_case_ids':[]},
+        ])
+
+    def test_evidence_binds_the_original_turn_even_when_prior_messages_have_identical_text(self):
+        cases = copy.deepcopy(CASES)
+        cases['cases'][0]['history'] = [{'role':'user','content':'目標測試'},
+                                        {'role':'assistant','content':'fixture_learned_value'}]
+        uid, path = self.prepared(cases)
+        with patch.object(LocalEngine, 'answer', fake_answer):
+            self.assertEqual(checks.run(self.root, uid)['status'], 'complete')
+        cases_manifest = checks.read_manifest(path)
+        store = Store(path/'candidate.sqlite3')
+        sid = cases_manifest['sessions']['target']
+        with store.connect() as db:
+            old_q, old_a, _, new_a = [r[0] for r in db.execute(
+                'SELECT id FROM messages WHERE session_id=? ORDER BY id', (sid,))]
+        alterations = [
+            ('UPDATE answer_runs SET user_message_id=? WHERE session_id=?', (old_q,sid)),
+            ('UPDATE answer_runs SET answer_message_id=? WHERE session_id=?', (old_a,sid)),
+            ("UPDATE messages SET content='other question' WHERE id=?", (old_q,)),
+            ("UPDATE answer_contexts SET payload='{}' WHERE message_id=?", (new_a,)),
+        ]
+        for sql, params in alterations:
+            with self.subTest(sql=sql), store.connect() as db:
+                # Make the changed copy visible to the independent, read-only report.
+                with sqlite3.connect(':memory:') as original:
+                    db.backup(original)
+                    db.execute(sql, params)
+                    db.commit()
+                    try:
+                        with self.assertRaises(ValueError):
+                            checks.report(self.root, uid)
+                    finally:
+                        original.backup(db)
+        self.assertTrue(checks.report(self.root, uid)['receipt']['assessment']['passed'])
 
     def test_calculator_shaped_case_still_requires_actual_model_evidence(self):
         cases=copy.deepcopy(CASES); cases['cases'][0].update(question='計算23×4−17，只輸出整數答案。',answer='75')

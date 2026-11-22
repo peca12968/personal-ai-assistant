@@ -4,6 +4,7 @@ import unicodedata
 
 from .acceptance import strict_json
 from . import document_partial, named_topics
+from .context import CORRECTION_PREFIX, FIELD_REVISION, REVISION_QUALIFIER, final_revision_field, is_explicit_correction
 from .document_ranges import MAX_RANGES, STATUS_TEXT, range_status_text
 
 
@@ -57,6 +58,11 @@ _WORK = re.compile(
     r'|^(?:please\s+)?(?:analy[sz]e|compare|summari[sz]e|translate|explain|plan|rewrite|fix)\b', re.I)
 _DOCUMENT_REQUEST = re.compile(r'^文件問答[ \t]*:')
 _DOCUMENT_ACTION = re.compile(r'上傳|寄信|發送|刪除|改寫原檔|修改(?:這份|原)檔|執行(?:程式|命令)|聯絡')
+_FACT_WORDING = re.compile(r'什麼|如何|怎麼|為何|哪(?:一?[個種項位]|裡)')
+_UNAPPROVED_PROPOSAL = re.compile(
+    r'有人(?:提議|建議)(?:將|把)([^,。\r\n]{1,180}), *(?:這(?:個|項)|該)(?:提案|方案)(?:沒有核定|未核定|已否決|未採用|已撤回)'
+)
+_LIVE_LOOKUP = re.compile(r'上網|網路搜尋|連上|打開|登入|即時|最新|現在的|目前的|查(?:網站|網頁)')
 _PRODUCT = re.compile(
     r'(?:本|這個|這套|這位|我的?|你的?)(?:個人)?(?:AI|人工智慧)?(?:助理|助手)'
     r'|個人\s*AI|Codex|GitHub|引擎|模型|權重|參數|佇列|記憶|備份|資料庫|按鈕|視窗|介面'
@@ -143,6 +149,73 @@ def _document_guide(documents):
     return guide
 
 
+def _fact_question(text):
+    question, mark, format_request = text.partition('?')
+    statement, separator, followup = question.partition('。')
+    if separator and not re.search(r'[\r\n]', question):
+        change = ''
+        prefix = CORRECTION_PREFIX.match(statement[:160])
+        if prefix and prefix.group().endswith(':') and not REVISION_QUALIFIER.search(statement):
+            change = statement[prefix.end():]
+        elif proposal := _UNAPPROVED_PROPOSAL.fullmatch(statement):
+            change = proposal.group(1)
+        # This recognizes the question shape only. The model receives both
+        # clauses verbatim, including the decision about the proposed change.
+        if final_revision_field(statement) or (FIELD_REVISION.fullmatch(change.strip(' ')) and len(re.findall(r'改[為成用]', change)) == 1
+                and not REVISION_QUALIFIER.search(change)):
+            question = followup.strip()
+    if not mark or not _FACT_WORDING.search(question) or re.search(r'[。!,;\n\r]', question):
+        return False
+    if _DOCUMENT_ACTION.search(text) or _LIVE_LOOKUP.search(text):
+        return False
+    return not format_request or bool(re.fullmatch(
+        r'(?:請)?(?:只答|只回答|僅回答|只寫)\s*[\w ]{1,32}[。.]?', format_request.strip()))
+
+
+def _asked_decision_field(asked, row):
+    if (not row or row.get('role') != 'user' or row.get('truncated') is not False
+            or len(row['content']) >= 160 or type(row.get('message_id')) is not int or row['message_id'] <= 0):
+        return None
+    field = final_revision_field(unicodedata.normalize('NFKC', row['content']).strip())
+    if field and asked.startswith(field) and asked[len(field):].strip() in (
+            '是什麼', '是哪種', '是哪一種', '是哪個', '是哪一個', '是哪項', '是哪一項'):
+        return field
+    return None
+
+
+def _decision_guide(question, context):
+    history = context.get('recent_conversation', [])
+    if not history or history[-1].get('role') != 'assistant' or not _fact_question(question):
+        return GUIDANCE
+    asked = question.partition('?')[0].strip()
+    user = next((row for row in reversed(history) if row.get('role') == 'user'), None)
+    if _asked_decision_field(asked, user):
+        return (GUIDANCE + f"\n本輪詢問的對象與欄位出現在 recent_conversation 的使用者訊息 "
+                f"#{user['message_id']}。先讀該則正式定案的原文取得欄值，再依本輪格式回答。"
+                "後來助理自己的轉述不能替使用者變更這項定案。")
+
+    earlier = context.get('earlier_user_corrections', {})
+    decisions = earlier.get('excerpts', [])
+    if earlier.get('selection_limited') or not decisions:
+        return GUIDANCE
+    source = decisions[-1]
+    field = _asked_decision_field(asked, source)
+    if not field:
+        return GUIDANCE
+    for row in [*context.get('earlier_user_excerpts', []), *history]:
+        if row.get('role') != 'user':
+            continue
+        if type(row.get('message_id')) is not int:
+            return GUIDANCE
+        if row['message_id'] > source['message_id'] and (
+                row.get('truncated') is not False or field in unicodedata.normalize('NFKC', row['content'])
+                or is_explicit_correction(row['content'])):
+            return GUIDANCE
+    return (GUIDANCE + f"\n核對 earlier_user_corrections 中使用者訊息 #{source['message_id']} 的正式定案。"
+            "先對準本輪所問的具名欄位，讀該使用者原文中的變更值，再檢查後續使用者有無撤回。"
+            "最後一則助理對舊值的說法不能代替使用者定案。請依本輪要求輸出答案。")
+
+
 def _text_guide(context):
     question = context.get('current_request')
     if not isinstance(question, str) or not 1 <= len(question) <= 16000:
@@ -157,7 +230,7 @@ def _text_guide(context):
     elif topic is not None:
         if not named_topics.valid_reference(question, topic) or _DOCUMENT_ACTION.search(normalized):
             return None
-    elif not _WORK.match(normalized):
+    elif not (_WORK.match(normalized) or _fact_question(normalized)):
         return None
     if any(context.get(key) for key in _SPECIALIZED_CONTEXT):
         return None
@@ -181,7 +254,7 @@ def _text_guide(context):
         return None
     if topic is not None and not document_work:
         return GUIDANCE + named_topics.GUIDANCE
-    return _document_guide(documents) if document_work else GUIDANCE
+    return _document_guide(documents) if document_work else _decision_guide(normalized, context)
 
 
 def recovery_plan(prompt):

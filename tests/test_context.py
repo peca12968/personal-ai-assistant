@@ -208,6 +208,55 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(all(r['truncated'] and len(r['content']) <= 1000 and '尾端限制' in r['content']
                             for r in corrections['excerpts']))
 
+    def test_final_field_decision_is_preserved_after_leaving_relevance_window(self):
+        self.store.add_message(self.sid, 'user', '收件簿的標籤底色是灰色。')
+        original = '  最終確認：收件簿的標籤底色改用青綠色。'
+        source = self.store.add_message(self.sid, 'user', original)
+        seed_history(self.store, self.sid, [('user', '其他記錄已歸檔。')] * 230)
+        self.store.add_message(self.sid, 'assistant', '正式定案：收件簿的標籤底色改為黑色。')
+        question = '收件簿的標籤底色是什麼？只答顏色。'
+        answer = self.app.ask(self.sid, question)
+        context = self.store.answer_context(answer['id'])
+        self.assertEqual(context['earlier_user_corrections']['excerpts'],
+                         [{'message_id': source, 'role': 'user', 'content': original, 'truncated': False}])
+        self.assertEqual(context['current_request'], question)
+        self.assertEqual(context['recent_conversation'][-1]['role'], 'assistant')
+        for text in ('正式定案：甲組的名稱改為白石。', '最終定案：甲組的名稱改成白石。',
+                     '正式定案：北區的開門時間改為 09:30。', '最終確認：甲組的折扣改為12.5%。'):
+            self.assertTrue(is_explicit_correction(text))
+        for text in ('有人說正式定案：甲組的名稱改為白石。', '「正式定案：甲組的名稱改為白石。」',
+                     '正式定案：甲組的名稱可能改為白石。', '最終確認：甲組的名稱改為白石嗎？',
+                     '正式定案：甲組的名稱改為白石，這句只是範例。', '最終確認：甲組的名稱沒有改為白石。',
+                     '正式定案：甲組的名稱改為白石。這只是範例。', '正式定案：甲組的名稱不再改用白石。'):
+            with self.subTest(text=text):
+                self.assertFalse(is_explicit_correction(text))
+
+    def test_aged_decision_and_subsequent_withdrawal_retain_their_order(self):
+        first = '正式定案：桔園站的報到時間改為 08:40。'
+        second = '剛才的定案已撤回，桔園站的報到時間恢復為 07:50。'
+        history = [('user', '桔園站的報到時間原為 07:50。'), ('user', first),
+                   ('assistant', '先前的更正已撤回。'), ('user', second),
+                   ('user', '「剛才的定案已撤回」只是引文。')]
+        ids = seed_history(self.store, self.sid, history + [('user', '另一項工作已接手。')] * 230)
+        context = self.app.prepare_context(self.sid, '桔園站的報到時間是什麼？')
+        actual = context['earlier_user_corrections']['excerpts']
+        self.assertEqual([(r['message_id'], r['content']) for r in actual],
+                         [(ids[1], first), (ids[3], second)])
+        self.assertFalse(is_explicit_correction('先前的定案已撤回了嗎？'))
+        self.assertFalse(is_explicit_correction('先前的定案已撤回，是嗎'))
+
+    def test_ranked_formal_decision_is_not_counted_twice_or_charged_to_correction_limit(self):
+        history = [('user', f'更正：第{i}項有新期限。') for i in range(6)]
+        history += [('user', f'正式定案：第{i}組的色卡改用青草色。') for i in range(5)]
+        ids = seed_history(self.store, self.sid, history)
+        provided = [{'message_id': mid, 'content': text, 'truncated': False}
+                    for mid, (_, text) in zip(ids[6:], history[6:])]
+        rows = self.store.earlier_correction_messages(self.sid, ids[-1] + 1, provided=provided)
+        self.assertEqual([r['id'] for r in reversed(rows)], ids[:6])
+        provided[-1]['truncated'] = True
+        rows = self.store.earlier_correction_messages(self.sid, ids[-1] + 1, provided=provided)
+        self.assertEqual(rows[0]['id'], ids[-1])
+
     def test_correction_scope_excludes_assistant_local_commands_and_retry_request(self):
         other = self.store.new_session()
         self.store.add_message(other, 'user', '更正：其他對話秘密')

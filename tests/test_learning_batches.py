@@ -139,6 +139,42 @@ if phase=='train':
             stream.write(b'\n')
         with self.assertRaisesRegex(ValueError, '階段報告'): review(self.root, self.bid)
 
+    def test_review_separates_new_and_inherited_holdouts_even_when_total_is_unchanged(self):
+        with patch.object(batches, 'phase_command', side_effect=self.command):
+            self.assertEqual(batches.run(self.store, self.bid)['status'], 'candidate')
+        origin = review(self.root, self.bid)['heldout_by_origin']
+        self.assertEqual(origin['groups']['added']['total'], 1)
+        self.assertNotIn('inherited', origin['groups'])
+        item = queue.confirm(self.store, '合成試印的線色？', '藍')
+        child = batches.prepare(self.store, [{'id': item['id'], 'revision': 1}], parent=self.bid,
+                                checks=[{'prompt': '合成試印用哪種線色？', 'answer': '藍'}])
+
+        def opposite_changes(path, phase):
+            command = self.command(path, phase)
+            fixture = path / (phase + '-fixture.json')
+            value = json.loads(fixture.read_text('utf8'))
+            wrong = 'heldout-1' if phase == 'baseline' else 'heldout-0'
+            next(row for row in value['rows'] if row['id'] == wrong)['output'] = '錯'
+            batches.save(fixture, value)
+            return command
+
+        with patch.object(batches, 'phase_command', side_effect=opposite_changes):
+            self.assertEqual(batches.run(self.store, child)['status'], 'rejected')
+        summary = review(self.root, child)
+        total = summary['groups']['heldout']
+        self.assertEqual((total['baseline'], total['reload']), (1, 1))
+        origin = summary['heldout_by_origin']
+        self.assertEqual(origin['status'], 'verified')
+        self.assertEqual(origin['groups']['inherited']['regressed_ids'], ['heldout-0'])
+        self.assertEqual(origin['groups']['added']['improved_ids'], ['heldout-1'])
+        parent_path = self.path / 'manifest.json'
+        batches.save(parent_path, {**self.manifest, 'checks': []})
+        self.assertEqual(review(self.root, child)['heldout_by_origin'], {'status': 'parent_unverified'})
+        parent_path.unlink()
+        historical = review(self.root, child)
+        self.assertEqual(historical['heldout_by_origin'], {'status': 'parent_missing'})
+        self.assertEqual(historical['groups']['heldout'], total)
+
     def test_cancelled_progress_only_grades_finished_phases_and_checks_step_sequence(self):
         receipt = json.loads((self.path / 'receipt.json').read_text('utf-8'))
         receipt.update(status='cancelled', phase='train')

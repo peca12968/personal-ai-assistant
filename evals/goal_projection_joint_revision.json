@@ -1,0 +1,802 @@
+[
+  {
+    "id": "projection_joint_approved",
+    "file_delivery": true,
+    "artifact": "projection.csv",
+    "prompt": "安排放映拷貝點交。請讀三份文件，排最早可連續完成的點交時段，算出各項費用。若缺報價，只問缺項，暫列時段與已知小計。收到答覆後更新受影響的項目；已算好且沒有變的費用請直接沿用。交付 projection.csv，三欄依序為項目、結果、依據。只列點交時段、封條費、片罐費、搬運費、總額各一筆，時段填起訖時間，金額只填整數。每列引用足以核對結果的文件行或補答，包括仍沿用的單價。總額也請附成本依據。",
+    "documents": [
+      {
+        "name": "crew-hours.txt",
+        "content": "2026-12-04 放映拷貝點交，需放映員與運送員共同在場，並連續使用檢片台 40 分鐘。\n放映員可在 13:00–15:25 到場。\n運送員可在 13:10–15:10 到場。\n"
+      },
+      {
+        "name": "bench-calendar.txt",
+        "content": "檢片台可用 13:00–15:00，僅在清潔期間封閉，結束當刻可開始點交。\n當日核定清潔為 14:00–14:30。\n"
+      },
+      {
+        "name": "projection-order.txt",
+        "content": "封條 8 捲，每捲 17 元。\n片罐 5 個，每個 28 元。\n搬運費尚未報價。\n"
+      }
+    ],
+    "required_tools": [
+      "calculate_expression",
+      "write_artifact",
+      "deliver"
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 2
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "搬運費"
+        ],
+        "partial_has": [
+          "13:10",
+          "13:50",
+          "(?<!\\d)136(?!\\d)",
+          "(?<!\\d)140(?!\\d)"
+        ],
+        "restore_before": true,
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 2
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ],
+        "answer": "搬運費確認 37 元。清潔改到 13:00–13:45、片罐改成 7 個的聯合方案已正式核定，取代原安排。"
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "點交時段": [
+          "(?:2026-12-04[ T])?13:45\\s*(?:–|—|-|～|~|至|到)\\s*14:25",
+          "[\\s\\S]+"
+        ],
+        "封條費": [
+          "136",
+          "[\\s\\S]+"
+        ],
+        "片罐費": [
+          "196",
+          "[\\s\\S]+"
+        ],
+        "搬運費": [
+          "37",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "369",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?點交時段\"?,",
+        "claim": "^\"?點交時段\"?,\"?(?:2026-12-04[ T])?13:45\\s*(?:–|—|-|～|~|至|到)\\s*14:25\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "放映員"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "運送員"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 1,
+            "text": "檢片台"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "聯合方案"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?封條費\"?,",
+        "claim": "^\"?封條費\"?,\"?136\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?片罐費\"?,",
+        "claim": "^\"?片罐費\"?,\"?196\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "7 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?搬運費\"?,",
+        "claim": "^\"?搬運費\"?,\"?37\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?369\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          },
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "projection_joint_rejected",
+    "file_delivery": true,
+    "artifact": "projection.csv",
+    "prompt": "安排放映拷貝點交。請讀三份文件，排最早可連續完成的點交時段，算出各項費用。若缺報價，只問缺項，暫列時段與已知小計。收到答覆後更新受影響的項目；已算好且沒有變的費用請直接沿用。交付 projection.csv，三欄依序為項目、結果、依據。只列點交時段、封條費、片罐費、搬運費、總額各一筆，時段填起訖時間，金額只填整數。每列引用足以核對結果的文件行或補答，包括仍沿用的單價。總額也請附成本依據。",
+    "documents": [
+      {
+        "name": "crew-hours.txt",
+        "content": "2026-12-04 放映拷貝點交，需放映員與運送員共同在場，並連續使用檢片台 40 分鐘。\n放映員可在 13:00–15:25 到場。\n運送員可在 13:10–15:10 到場。\n"
+      },
+      {
+        "name": "bench-calendar.txt",
+        "content": "檢片台可用 13:00–15:00，僅在清潔期間封閉，結束當刻可開始點交。\n當日核定清潔為 14:00–14:30。\n"
+      },
+      {
+        "name": "projection-order.txt",
+        "content": "封條 8 捲，每捲 17 元。\n片罐 5 個，每個 28 元。\n搬運費尚未報價。\n"
+      }
+    ],
+    "required_tools": [
+      "calculate_expression",
+      "write_artifact",
+      "deliver"
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 2
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "搬運費"
+        ],
+        "partial_has": [
+          "13:10",
+          "13:50",
+          "(?<!\\d)136(?!\\d)",
+          "(?<!\\d)140(?!\\d)"
+        ],
+        "restore_before": true,
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 2
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ],
+        "answer": "搬運費確認 37 元。清潔改到 13:00–13:45、片罐改成 7 個的聯合方案已正式否決，照原安排。"
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "點交時段": [
+          "(?:2026-12-04[ T])?13:10\\s*(?:–|—|-|～|~|至|到)\\s*13:50",
+          "[\\s\\S]+"
+        ],
+        "封條費": [
+          "136",
+          "[\\s\\S]+"
+        ],
+        "片罐費": [
+          "140",
+          "[\\s\\S]+"
+        ],
+        "搬運費": [
+          "37",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "313",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?點交時段\"?,",
+        "claim": "^\"?點交時段\"?,\"?(?:2026-12-04[ T])?13:10\\s*(?:–|—|-|～|~|至|到)\\s*13:50\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "放映員"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "運送員"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 1,
+            "text": "檢片台"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "聯合方案"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "核定清潔"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?封條費\"?,",
+        "claim": "^\"?封條費\"?,\"?136\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?片罐費\"?,",
+        "claim": "^\"?片罐費\"?,\"?140\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "7 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?搬運費\"?,",
+        "claim": "^\"?搬運費\"?,\"?37\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?313\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          },
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "projection_time_only",
+    "file_delivery": true,
+    "artifact": "projection.csv",
+    "prompt": "安排放映拷貝點交。請讀三份文件，排最早可連續完成的點交時段，算出各項費用。若缺報價，只問缺項，暫列時段與已知小計。收到答覆後更新受影響的項目；已算好且沒有變的費用請直接沿用。交付 projection.csv，三欄依序為項目、結果、依據。只列點交時段、封條費、片罐費、搬運費、總額各一筆，時段填起訖時間，金額只填整數。每列引用足以核對結果的文件行或補答，包括仍沿用的單價。總額也請附成本依據。",
+    "documents": [
+      {
+        "name": "crew-hours.txt",
+        "content": "2026-12-04 放映拷貝點交，需放映員與運送員共同在場，並連續使用檢片台 40 分鐘。\n放映員可在 13:00–15:25 到場。\n運送員可在 13:10–15:10 到場。\n"
+      },
+      {
+        "name": "bench-calendar.txt",
+        "content": "檢片台可用 13:00–15:00，僅在清潔期間封閉，結束當刻可開始點交。\n當日核定清潔為 14:00–14:30。\n"
+      },
+      {
+        "name": "projection-order.txt",
+        "content": "封條 8 捲，每捲 17 元。\n片罐 5 個，每個 28 元。\n搬運費尚未報價。\n"
+      }
+    ],
+    "required_tools": [
+      "calculate_expression",
+      "write_artifact",
+      "deliver"
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 2
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "搬運費"
+        ],
+        "partial_has": [
+          "13:10",
+          "13:50",
+          "(?<!\\d)136(?!\\d)",
+          "(?<!\\d)140(?!\\d)"
+        ],
+        "restore_before": true,
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 2
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ],
+        "answer": "搬運費確定 37 元。兩項分開議決：清潔改到 13:00–13:45 已核定；片罐改成 7 個的提案否決，依原單。"
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "點交時段": [
+          "(?:2026-12-04[ T])?13:45\\s*(?:–|—|-|～|~|至|到)\\s*14:25",
+          "[\\s\\S]+"
+        ],
+        "封條費": [
+          "136",
+          "[\\s\\S]+"
+        ],
+        "片罐費": [
+          "140",
+          "[\\s\\S]+"
+        ],
+        "搬運費": [
+          "37",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "313",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?點交時段\"?,",
+        "claim": "^\"?點交時段\"?,\"?(?:2026-12-04[ T])?13:45\\s*(?:–|—|-|～|~|至|到)\\s*14:25\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "放映員"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "運送員"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 1,
+            "text": "檢片台"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "清潔"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?封條費\"?,",
+        "claim": "^\"?封條費\"?,\"?136\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?片罐費\"?,",
+        "claim": "^\"?片罐費\"?,\"?140\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "7 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?搬運費\"?,",
+        "claim": "^\"?搬運費\"?,\"?37\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?313\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          },
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "projection_quantity_only",
+    "file_delivery": true,
+    "artifact": "projection.csv",
+    "prompt": "安排放映拷貝點交。請讀三份文件，排最早可連續完成的點交時段，算出各項費用。若缺報價，只問缺項，暫列時段與已知小計。收到答覆後更新受影響的項目；已算好且沒有變的費用請直接沿用。交付 projection.csv，三欄依序為項目、結果、依據。只列點交時段、封條費、片罐費、搬運費、總額各一筆，時段填起訖時間，金額只填整數。每列引用足以核對結果的文件行或補答，包括仍沿用的單價。總額也請附成本依據。",
+    "documents": [
+      {
+        "name": "crew-hours.txt",
+        "content": "2026-12-04 放映拷貝點交，需放映員與運送員共同在場，並連續使用檢片台 40 分鐘。\n放映員可在 13:00–15:25 到場。\n運送員可在 13:10–15:10 到場。\n"
+      },
+      {
+        "name": "bench-calendar.txt",
+        "content": "檢片台可用 13:00–15:00，僅在清潔期間封閉，結束當刻可開始點交。\n當日核定清潔為 14:00–14:30。\n"
+      },
+      {
+        "name": "projection-order.txt",
+        "content": "封條 8 捲，每捲 17 元。\n片罐 5 個，每個 28 元。\n搬運費尚未報價。\n"
+      }
+    ],
+    "required_tools": [
+      "calculate_expression",
+      "write_artifact",
+      "deliver"
+    ],
+    "required_read_ranges": [
+      {
+        "doc": 0,
+        "start_line": 1,
+        "end_line": 3
+      },
+      {
+        "doc": 1,
+        "start_line": 1,
+        "end_line": 2
+      },
+      {
+        "doc": 2,
+        "start_line": 1,
+        "end_line": 3
+      }
+    ],
+    "replies": [
+      {
+        "question_has": [
+          "搬運費"
+        ],
+        "partial_has": [
+          "13:10",
+          "13:50",
+          "(?<!\\d)136(?!\\d)",
+          "(?<!\\d)140(?!\\d)"
+        ],
+        "restore_before": true,
+        "required_read_ranges": [
+          {
+            "doc": 0,
+            "start_line": 1,
+            "end_line": 3
+          },
+          {
+            "doc": 1,
+            "start_line": 1,
+            "end_line": 2
+          },
+          {
+            "doc": 2,
+            "start_line": 1,
+            "end_line": 3
+          }
+        ],
+        "answer": "搬運費確定 37 元。片罐改成 7 個已核定；清潔改到 13:00–13:45 的提案否決，維持原時段。"
+      }
+    ],
+    "expected_csv": {
+      "header": [
+        "項目",
+        "結果",
+        "依據"
+      ],
+      "records": {
+        "點交時段": [
+          "(?:2026-12-04[ T])?13:10\\s*(?:–|—|-|～|~|至|到)\\s*13:50",
+          "[\\s\\S]+"
+        ],
+        "封條費": [
+          "136",
+          "[\\s\\S]+"
+        ],
+        "片罐費": [
+          "196",
+          "[\\s\\S]+"
+        ],
+        "搬運費": [
+          "37",
+          "[\\s\\S]+"
+        ],
+        "總額": [
+          "369",
+          "[\\s\\S]+"
+        ]
+      }
+    },
+    "claim_sources": [
+      {
+        "row_selector": "^\"?點交時段\"?,",
+        "claim": "^\"?點交時段\"?,\"?(?:2026-12-04[ T])?13:10\\s*(?:–|—|-|～|~|至|到)\\s*13:50\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 2,
+            "text": "放映員"
+          },
+          {
+            "kind": "document",
+            "doc": 0,
+            "line": 3,
+            "text": "運送員"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 1,
+            "text": "檢片台"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "清潔"
+          },
+          {
+            "kind": "document",
+            "doc": 1,
+            "line": 2,
+            "text": "核定清潔"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?封條費\"?,",
+        "claim": "^\"?封條費\"?,\"?136\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?片罐費\"?,",
+        "claim": "^\"?片罐費\"?,\"?196\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "7 個"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?搬運費\"?,",
+        "claim": "^\"?搬運費\"?,\"?37\"?,",
+        "sources": [
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      },
+      {
+        "row_selector": "^\"?總額\"?,",
+        "claim": "^\"?總額\"?,\"?369\"?,",
+        "sources": [
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 1,
+            "text": "17 元"
+          },
+          {
+            "kind": "document",
+            "doc": 2,
+            "line": 2,
+            "text": "28 元"
+          },
+          {
+            "kind": "reply",
+            "index": 0,
+            "text": "37 元"
+          }
+        ]
+      }
+    ]
+  }
+]

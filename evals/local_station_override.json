@@ -1,0 +1,117 @@
+{
+  "schema": "full_assistant_cases_v1",
+  "cases": [
+    {
+      "id": "current_override",
+      "group": "target",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "assistant",
+          "content": "Felmori 站的配給水果是 guava。"
+        }
+      ],
+      "question": "更正一下：Felmori 站的配給水果改為 melon。Felmori 站的配給水果是什麼？只答英文單字。",
+      "answer": "melon"
+    },
+    {
+      "id": "after_wrong_assistant",
+      "group": "target",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "user",
+          "content": "更正一下：Felmori 站的配給水果改為 melon。"
+        },
+        {
+          "role": "assistant",
+          "content": "guava"
+        }
+      ],
+      "question": "Felmori 站配給的水果是哪一種？只答英文單字。",
+      "answer": "melon"
+    },
+    {
+      "id": "second_new_value",
+      "group": "target",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "user",
+          "content": "更正一下：Felmori 站的配給水果改為 melon。"
+        },
+        {
+          "role": "assistant",
+          "content": "melon"
+        }
+      ],
+      "question": "我更正：Felmori 站的配給水果改為 lime。Felmori 站配給的水果是哪一種？只答英文單字。",
+      "answer": "lime"
+    },
+    {
+      "id": "other_station",
+      "group": "control",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "user",
+          "content": "更正一下：Felmori 站的配給水果改為 melon。"
+        },
+        {
+          "role": "assistant",
+          "content": "melon"
+        }
+      ],
+      "question": "Daxelor 站配給的水果是哪一種？只答英文單字。",
+      "answer": "guava"
+    },
+    {
+      "id": "other_attribute",
+      "group": "control",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "user",
+          "content": "更正一下：Felmori 站的配給水果改為 melon。"
+        },
+        {
+          "role": "assistant",
+          "content": "melon"
+        }
+      ],
+      "question": "Felmori 站的標記顏色是什麼？只答英文單字。",
+      "answer": "amber"
+    },
+    {
+      "id": "unapproved",
+      "group": "control",
+      "history": [
+        {
+          "role": "user",
+          "content": "合成站務表：Daxelor 站的配給水果為 guava、標記顏色為 violet。Felmori 站的配給水果為 plum、標記顏色為 amber。"
+        },
+        {
+          "role": "user",
+          "content": "有人建議將 Felmori 站的配給水果改為 melon。這個提案未核定，照原表。"
+        }
+      ],
+      "question": "Felmori 站配給的水果是哪一種？只答英文單字。",
+      "answer": "plum"
+    }
+  ]
+}

@@ -57,6 +57,48 @@ def cancelled_progress(path, manifest, receipt):
             'recorded_training_steps': steps, 'planned_training_steps': manifest['recipe']['steps']}
 
 
+def score_groups(cases, scores):
+    groups = {}
+    for case in cases:
+        cid = case['id']
+        group = groups.setdefault(case['group'], {'total': 0, 'baseline': 0, 'train': 0, 'reload': 0,
+                                                  'improved_ids': [], 'regressed_ids': [], 'reload_missed_ids': []})
+        group['total'] += 1
+        for phase in batches.PHASES:
+            group[phase] += int(scores[phase][cid])
+        if scores['reload'][cid] and not scores['baseline'][cid]:
+            group['improved_ids'].append(cid)
+        if not scores['reload'][cid]:
+            group['reload_missed_ids'].append(cid)
+            if scores['baseline'][cid]:
+                group['regressed_ids'].append(cid)
+    return groups
+
+
+def heldout_by_origin(data_dir, manifest, cases, scores):
+    parent = manifest['parent']
+    inherited = []
+    if parent is not None:
+        path = batches.folder(data_dir, parent['id']) / 'manifest.json'
+        try:
+            saved = local_models.read_json(path, 8 * 1024 * 1024)
+            digest = batches.queue.digest(saved)
+        except FileNotFoundError:
+            return {'status': 'parent_missing'}
+        except (ValueError, OSError, RecursionError):
+            return {'status': 'parent_unverified'}
+        if (not isinstance(saved, dict) or saved.get('id') != parent['id']
+                or digest != parent['manifest_sha256']):
+            return {'status': 'parent_unverified'}
+        inherited = saved.get('checks')
+        if not isinstance(inherited, list) or manifest['checks'][:len(inherited)] != inherited:
+            return {'status': 'parent_unverified'}
+    heldout = [case for case in cases if case['group'] == 'heldout']
+    by_origin = [{**case, 'group': 'inherited' if index < len(inherited) else 'added'}
+                 for index, case in enumerate(heldout)]
+    return {'status': 'verified', 'groups': score_groups(by_origin, scores)}
+
+
 def review(data_dir, batch_id):
     path = batches.folder(data_dir, batch_id)
     manifest = batches.read_manifest(path, live=True)
@@ -83,23 +125,12 @@ def review(data_dir, batch_id):
     if batches.adapter_files(path / 'adapter') != reports['train'].get('adapter_files'):
         raise ValueError('保存的參數檔案與訓練報告不符。')
 
-    groups = {}
+    cases = batches.evaluation_cases(manifest)
     scores = assessment['scores']
-    for case in batches.evaluation_cases(manifest):
-        cid = case['id']
-        group = groups.setdefault(case['group'], {'total': 0, 'baseline': 0, 'train': 0, 'reload': 0,
-                                                  'improved_ids': [], 'regressed_ids': [], 'reload_missed_ids': []})
-        group['total'] += 1
-        for phase in batches.PHASES:
-            group[phase] += int(scores[phase][cid])
-        if scores['reload'][cid] and not scores['baseline'][cid]:
-            group['improved_ids'].append(cid)
-        if not scores['reload'][cid]:
-            group['reload_missed_ids'].append(cid)
-            if scores['baseline'][cid]:
-                group['regressed_ids'].append(cid)
+    groups = score_groups(cases, scores)
+    origins = heldout_by_origin(data_dir, manifest, cases, scores)
     return {'batch': batch_id, 'scope': 'saved_short_prompt_phases', 'status': receipt['status'],
-            'groups': groups, 'failed_checks': [key for key, passed in assessment['checks'].items() if not passed]}
+            'groups': groups, 'heldout_by_origin': origins, 'failed_checks': [key for key, passed in assessment['checks'].items() if not passed]}
 
 
 def main():

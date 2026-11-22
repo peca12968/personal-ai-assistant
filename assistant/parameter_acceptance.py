@@ -9,6 +9,7 @@ from contextlib import contextmanager, closing
 from pathlib import Path
 
 from . import learned_models as models, learning_batches as batches, learning_queue as queue
+from .acceptance import strict_json
 from .engine import Assistant, EngineError, render_prompt
 from .documents import check_citations
 from .local_engine import LocalEngine
@@ -196,6 +197,31 @@ def run(data_dir,check_id,*,cancel=None,timeout=1800):
         return receipt
 
 
+def _verify_saved_turn(database, sid, case, row, context):
+    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db:
+        db.execute('BEGIN')
+        saved = db.execute("""
+            SELECT question.id, run.context_json, context.payload
+            FROM answer_runs AS run
+            JOIN messages AS question ON question.id=run.user_message_id
+                AND question.session_id=run.session_id AND question.role='user'
+            JOIN messages AS answer ON answer.id=run.answer_message_id
+                AND answer.session_id=run.session_id AND answer.role='assistant'
+            JOIN answer_contexts AS context ON context.message_id=answer.id
+            WHERE run.id=? AND run.session_id=? AND run.status='succeeded'
+                AND answer.id=? AND question.id<answer.id AND question.content=? AND answer.content=?
+            """, (row.get('run_id'), sid, row.get('message_id'), case['question'].strip(), row['answer'])).fetchone()
+        if saved is None:
+            raise ValueError('驗收執行、原問與交付回答無法連到同一輪。')
+        history = [(message['role'], message['content']) for message in case['history']]
+        prior = db.execute('SELECT role,content FROM messages WHERE session_id=? AND id<? ORDER BY id LIMIT ?',
+                           (sid, saved[0], len(history) + 1)).fetchall()
+    expected = queue.encoded(context)
+    if (prior != history or queue.encoded(strict_json(saved[1])) != expected
+            or queue.encoded(strict_json(saved[2])) != expected):
+        raise ValueError('正式助理保存的前文或回答背景與驗收規約不符。')
+
+
 def assess(path,manifest,rows):
     cases=manifest['suite']['cases']; order=[(phase,case['id']) for phase in PHASES for case in cases]
     if not isinstance(rows,list) or any(not isinstance(r,dict) for r in rows) or [(r.get('phase'),r.get('id')) for r in rows]!=order:
@@ -220,15 +246,8 @@ def assess(path,manifest,rows):
         if any(not citation['range_valid'] for citation in citations):
             visible+='\n\n來源檢查：有引用無法對照本次文件片段，請勿將該引用視為已驗證。'
         if visible!=row['answer']: raise ValueError('工作程序輸出與正式助理可見答案不一致。')
-        db=sqlite3.connect((path/(phase+'.sqlite3')).as_uri()+'?mode=ro',uri=True)
-        try:
-            answer=db.execute('SELECT content FROM messages WHERE id=? AND session_id=? AND role=?',
-                              (row.get('message_id'),manifest['sessions'][case['id']],'assistant')).fetchone()
-            run=db.execute('SELECT status,context_json FROM answer_runs WHERE id=? AND session_id=?',
-                           (row.get('run_id'),manifest['sessions'][case['id']])).fetchone()
-            if answer is None or answer[0]!=row['answer'] or run is None or run[0]!='succeeded' or json.loads(run[1])!=manifest['contexts'][phase][case['id']]:
-                raise ValueError('正式助理保存的回答／背景與驗收紀錄不符。')
-        finally: db.close()
+        _verify_saved_turn(path/(phase+'.sqlite3'), manifest['sessions'][case['id']], case, row,
+                           manifest['contexts'][phase][case['id']])
         for name in ('request.json','worker/result.json'):
             artifacts[relative+'/'+name]=models.file_hash(location/name)
         scores[phase][case['id']]=row['answer']==case['answer']
@@ -247,14 +266,27 @@ def report(data_dir,check_id):
     receipt=models.local_models.read_json(path/'receipt.json')
     if (not isinstance(receipt,dict) or receipt.get('schema')!='full_assistant_receipt_v1'
             or receipt.get('manifest_sha256')!=queue.digest(manifest)): raise ValueError('驗收規約已變更。')
+    mismatches = None
     if receipt.get('status')=='complete':
         if models.file_hash(path/'responses.json')!=receipt.get('responses_sha256'): raise ValueError('原始回答已變更。')
-        result=assess(path,manifest,models.local_models.read_json(path/'responses.json',8*1024*1024))
+        rows = models.local_models.read_json(path/'responses.json',8*1024*1024)
+        result=assess(path,manifest,rows)
         if result!=receipt.get('assessment'): raise ValueError('實際證據或保存驗收已變更。')
+        expected = {case['id']: case['answer'] for case in manifest['suite']['cases']}
+        mismatches = []
+        for row in rows:
+            phase, cid, answer = row['phase'], row['id'], row['answer']
+            if not result['scores'][phase][cid]:
+                mismatches.append({
+                    'phase': phase, 'case_id': cid,
+                    'matches_expected_with_added_period': answer in (expected[cid] + '。', expected[cid] + '.'),
+                    'matches_other_case_ids': [key for key, value in expected.items() if value == answer],
+                })
     current=True; error=None
     try:
         read_manifest(path,live=True)
         for selection in manifest['selections'].values(): models.validate(selection)
     except (ValueError,OSError,KeyError,TypeError,sqlite3.Error) as exc: current=False; error=str(exc)
     return {'receipt':receipt,'sources_and_parameters_still_current':current,'current_error':error,
+            'verified_mismatches':mismatches,
             'recorded_status_is_not_liveness':True,'automatic_activation':False}

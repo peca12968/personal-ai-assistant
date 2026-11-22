@@ -1,0 +1,51 @@
+{
+  "schema": "full_assistant_cases_v1",
+  "cases": [
+    {
+      "id": "original_north_flag", "group": "control",
+      "history": [{"role": "user", "content": "合成展務資料：北堤廳的桌旗圖案是海螺，票面是灰色。南堤廳的桌旗圖案是帆船，票面是藍色。"}],
+      "question": "北堤廳的桌旗圖案是什麼？只答圖案。", "answer": "海螺"
+    },
+    {
+      "id": "current_north_revision", "group": "target",
+      "history": [
+        {"role": "user", "content": "合成展務資料：北堤廳的桌旗圖案是海螺，票面是灰色。南堤廳的桌旗圖案是帆船，票面是藍色。"},
+        {"role": "assistant", "content": "北堤廳的桌旗圖案是海螺。"}
+      ],
+      "question": "我更正：北堤廳的桌旗圖案改為海燕。北堤廳的桌旗圖案是哪一種？只答圖案。", "answer": "海燕"
+    },
+    {
+      "id": "recall_after_incorrect_reply", "group": "target",
+      "history": [
+        {"role": "user", "content": "北堤廳的桌旗圖案是海螺，南堤廳的是帆船。"},
+        {"role": "user", "content": "更正：北堤廳的桌旗圖案改為海燕。"},
+        {"role": "assistant", "content": "北堤廳的桌旗圖案是海螺。"}
+      ],
+      "question": "北堤廳要印哪個桌旗圖案？只答圖案。", "answer": "海燕"
+    },
+    {
+      "id": "unchanged_south_flag", "group": "control",
+      "history": [
+        {"role": "user", "content": "北堤廳的桌旗圖案是海螺，南堤廳的是帆船。"},
+        {"role": "user", "content": "更正：北堤廳的桌旗圖案改為海燕。"}
+      ],
+      "question": "南堤廳的桌旗圖案是哪一種？只答圖案。", "answer": "帆船"
+    },
+    {
+      "id": "unchanged_north_ticket", "group": "control",
+      "history": [
+        {"role": "user", "content": "北堤廳的桌旗圖案是海螺，票面是灰色。南堤廳的桌旗圖案是帆船，票面是藍色。"},
+        {"role": "user", "content": "更正：北堤廳的桌旗圖案改為海燕。"}
+      ],
+      "question": "北堤廳的票面是什麼顏色？只答顏色。", "answer": "灰色"
+    },
+    {
+      "id": "unadopted_suggestion", "group": "control",
+      "history": [
+        {"role": "user", "content": "北堤廳的桌旗圖案是海螺。"},
+        {"role": "user", "content": "有人提議北堤廳換成海燕。這項提案已否決，沿用原圖案。"}
+      ],
+      "question": "北堤廳已決定使用哪個桌旗圖案？只答圖案。", "answer": "海螺"
+    }
+  ]
+}

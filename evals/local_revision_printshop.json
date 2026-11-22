@@ -1,0 +1,133 @@
+{
+  "cases": [
+    {
+      "answer": "弦月",
+      "group": "target",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正一下：汀沙版的封套紋樣改為雲峰。",
+          "role": "user"
+        },
+        {
+          "content": "雲峰",
+          "role": "assistant"
+        }
+      ],
+      "id": "tingsha_second",
+      "question": "我更正：汀沙版的封套紋樣改為弦月。汀沙版的封套紋樣是哪一種？只答圖案。"
+    },
+    {
+      "answer": "浪花",
+      "group": "target",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正一下：嶺泉版的封套紋樣改為石榴。",
+          "role": "user"
+        },
+        {
+          "content": "石榴",
+          "role": "assistant"
+        }
+      ],
+      "id": "lingquan_second",
+      "question": "我更正：嶺泉版的封套紋樣改為浪花。嶺泉版的封套紋樣是哪一種？只答圖案。"
+    },
+    {
+      "answer": "魚鱗",
+      "group": "control",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正：汀沙版的封套紋樣改為雲峰。",
+          "role": "user"
+        },
+        {
+          "content": "雲峰",
+          "role": "assistant"
+        }
+      ],
+      "id": "other_print",
+      "question": "我更正：汀沙版的封套紋樣改為弦月。嶺泉版的封套紋樣是哪一種？只答圖案。"
+    },
+    {
+      "answer": "灰色",
+      "group": "control",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正：汀沙版的封套紋樣改為雲峰。",
+          "role": "user"
+        },
+        {
+          "content": "雲峰",
+          "role": "assistant"
+        }
+      ],
+      "id": "other_attribute",
+      "question": "我更正：汀沙版的封套紋樣改為弦月。汀沙版的裝訂線是什麼顏色？只答顏色。"
+    },
+    {
+      "answer": "雲峰",
+      "group": "control",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正：汀沙版的封套紋樣改為雲峰。",
+          "role": "user"
+        },
+        {
+          "content": "雲峰",
+          "role": "assistant"
+        }
+      ],
+      "id": "withdrawn_proposal",
+      "question": "有人建議把汀沙版的封套紋樣改成弦月，該方案已撤回。汀沙版的封套紋樣是哪一種？只答圖案。"
+    },
+    {
+      "answer": "竹節",
+      "group": "target",
+      "history": [
+        {
+          "content": "合成印務單：汀沙版的封套紋樣是杉葉，裝訂線是灰色。嶺泉版的封套紋樣是魚鱗，裝訂線是褐色。",
+          "role": "user"
+        },
+        {
+          "content": "更正：汀沙版的封套紋樣改為雲峰。",
+          "role": "user"
+        },
+        {
+          "content": "雲峰",
+          "role": "assistant"
+        },
+        {
+          "content": "正式定案：嶺泉版的封套紋樣改用竹節。",
+          "role": "user"
+        },
+        {
+          "content": "嶺泉版維持魚鱗。",
+          "role": "assistant"
+        }
+      ],
+      "id": "assistant_error",
+      "question": "嶺泉版的封套紋樣是哪一種？只答圖案。"
+    }
+  ],
+  "schema": "full_assistant_cases_v1"
+}
